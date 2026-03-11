@@ -13,4 +13,5 @@
 
 - validation 相关的 Unity 宿主与 E2E 资产仍保留在验证宿主仓库 `../c3-client-tree2/`
 - 本仓库内的 `unity_session.py` 已去除对宿主 `Tools/python` 的直接依赖
-- 默认 `--project-path` 仍指向仓库根目录下的 `Project/`，当前进行宿主验证时应显式传入 `../c3-client-tree2/Project`
+- Unity 工程路径解析优先级为：`--project-path` > `UNITY_PROJECT_PATH` > 当前工作目录
+- repo 内 `.env` 记录当前验证宿主的 `UNITY_PROJECT_PATH`；相关操作前应先加载该环境变量

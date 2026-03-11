@@ -2,6 +2,7 @@
 import csv
 import io
 import json
+import os
 import re
 import subprocess
 import time
@@ -10,8 +11,7 @@ from pathlib import Path
 import cli
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[3]
-PROJECT_DIR = PROJECT_ROOT / "Project"
+UNITY_PROJECT_PATH_ENV = "UNITY_PROJECT_PATH"
 DEFAULT_READY_TIMEOUT_SECONDS = 180.0
 DEFAULT_HEALTH_TIMEOUT_SECONDS = 2.0
 DEFAULT_ACTIVITY_TIMEOUT_SECONDS = 20.0
@@ -162,6 +162,18 @@ def _probe_health(base_url, timeout_seconds):
     except Exception as exc:  # noqa: BLE001 - dependency-free diagnostics.
         return None, str(exc)
     return payload, None
+
+
+def resolve_project_path(project_path=None, cwd=None, env=None):
+    if project_path:
+        return Path(project_path)
+
+    env = os.environ if env is None else env
+    env_project_path = env.get(UNITY_PROJECT_PATH_ENV)
+    if env_project_path:
+        return Path(env_project_path)
+
+    return Path.cwd() if cwd is None else Path(cwd)
 
 
 def _get_unity_version(project_path):
@@ -507,7 +519,7 @@ def ensure_session_ready(
     activity_timeout_seconds=DEFAULT_ACTIVITY_TIMEOUT_SECONDS,
     health_timeout_seconds=DEFAULT_HEALTH_TIMEOUT_SECONDS,
 ):
-    project_path = Path(project_path or PROJECT_DIR)
+    project_path = resolve_project_path(project_path)
     log_path = _default_editor_log_path()
 
     initial_pids = _list_unity_pids()

@@ -44,7 +44,11 @@ def _build_parser():
 
 
 def _add_session_args(parser):
-    parser.add_argument("--project-path", default=str(unity_session.PROJECT_DIR))
+    parser.add_argument(
+        "--project-path",
+        default=None,
+        help="Unity project path. Resolution order: --project-path, UNITY_PROJECT_PATH, then current working directory.",
+    )
     parser.add_argument("--base-url", default=cli.DEFAULT_BASE_URL)
     parser.add_argument("--unity-exe-path", default=None)
     parser.add_argument(

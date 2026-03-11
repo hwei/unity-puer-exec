@@ -13,11 +13,14 @@ import unity_session  # type: ignore
 import unity_session_cli  # type: ignore
 
 
+SAMPLE_PROJECT_PATH = "X:/unity-project"
+
+
 def _make_session():
     session = unity_session.UnitySession(
         owner="launched",
         base_url="http://127.0.0.1:55231",
-        project_path="F:/C3/c3-client-tree2/Project",
+        project_path=SAMPLE_PROJECT_PATH,
         unity_pid=1234,
         launched=True,
     )
@@ -26,6 +29,27 @@ def _make_session():
 
 
 class UnitySessionCliTests(unittest.TestCase):
+    def test_project_path_argument_defaults_to_none(self):
+        parser = unity_session_cli._build_parser()
+        args = parser.parse_args(["ensure-ready"])
+        self.assertIsNone(args.project_path)
+
+    def test_ensure_ready_prefers_explicit_project_path(self):
+        with mock.patch.dict(os.environ, {unity_session.UNITY_PROJECT_PATH_ENV: "X:/from-env"}, clear=False), mock.patch.object(
+            unity_session, "ensure_session_ready", return_value=_make_session()
+        ) as ensure_session_ready:
+            unity_session_cli.run_cli(["ensure-ready", "--project-path", "X:/from-arg"])
+
+        self.assertEqual(ensure_session_ready.call_args.kwargs["project_path"], "X:/from-arg")
+
+    def test_ensure_ready_leaves_project_path_unset_for_runtime_resolution(self):
+        with mock.patch.dict(os.environ, {unity_session.UNITY_PROJECT_PATH_ENV: "X:/from-env"}, clear=False), mock.patch.object(
+            unity_session, "ensure_session_ready", return_value=_make_session()
+        ) as ensure_session_ready:
+            unity_session_cli.run_cli(["ensure-ready"])
+
+        self.assertIsNone(ensure_session_ready.call_args.kwargs["project_path"])
+
     def test_ensure_ready_returns_success_payload(self):
         session = _make_session()
 
