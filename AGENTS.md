@@ -4,9 +4,11 @@ This repository is the productized development repository for `unity-puer-exec`.
 
 ## Environment setup
 
-- Before running repository commands that need a Unity project path, load environment variables from `./.env`.
+- Repository Python entry points auto-load `./.env` when needed.
+- If you set `UNITY_PROJECT_PATH` in the process environment explicitly, that value overrides `./.env`.
 - `UNITY_PROJECT_PATH` points to the validation host Unity project.
 - This repository does not assume a repository-local `Project/` directory.
+- `./.env` is local-only and should not be committed; use `./.env.example` as the tracked template.
 
 ## Path resolution rule
 

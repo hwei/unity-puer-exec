@@ -25,6 +25,7 @@ def _make_session():
 
 
 def _require_test_project_path():
+    unity_session._ensure_dotenv_loaded(force=True)
     project_path = os.environ.get(unity_session.UNITY_PROJECT_PATH_ENV)
     if not project_path:
         raise AssertionError(
@@ -42,6 +43,38 @@ class UnitySessionTests(unittest.TestCase):
 
         self.assertEqual(resolved, Path("X:/from-arg"))
 
+    def test_load_dotenv_file_ignores_comments_and_blank_lines(self):
+        env = {}
+        with tempfile.TemporaryDirectory() as temp_dir:
+            dotenv_path = Path(temp_dir) / ".env"
+            dotenv_path.write_text(
+                "# comment\n\nUNITY_PROJECT_PATH=X:/from-dotenv\nIGNORED_VALUE = value\n",
+                encoding="utf-8",
+            )
+            loaded = unity_session._load_dotenv_file(dotenv_path, env=env)
+
+        self.assertEqual(loaded, True)
+        self.assertEqual(env[unity_session.UNITY_PROJECT_PATH_ENV], "X:/from-dotenv")
+        self.assertEqual(env["IGNORED_VALUE"], "value")
+
+    def test_load_dotenv_file_does_not_override_existing_environment(self):
+        env = {unity_session.UNITY_PROJECT_PATH_ENV: "X:/from-process-env"}
+        with tempfile.TemporaryDirectory() as temp_dir:
+            dotenv_path = Path(temp_dir) / ".env"
+            dotenv_path.write_text("UNITY_PROJECT_PATH=X:/from-dotenv\n", encoding="utf-8")
+            unity_session._load_dotenv_file(dotenv_path, env=env)
+
+        self.assertEqual(env[unity_session.UNITY_PROJECT_PATH_ENV], "X:/from-process-env")
+
+    def test_ensure_dotenv_loaded_returns_false_when_file_is_missing(self):
+        env = {}
+        with tempfile.TemporaryDirectory() as temp_dir:
+            dotenv_path = Path(temp_dir) / ".env"
+            loaded = unity_session._ensure_dotenv_loaded(env=env, dotenv_path=dotenv_path, force=True)
+
+        self.assertEqual(loaded, False)
+        self.assertEqual(env, {})
+
     def test_resolve_project_path_uses_environment_variable(self):
         with mock.patch.dict(os.environ, {unity_session.UNITY_PROJECT_PATH_ENV: "X:/from-env"}, clear=False):
             resolved = unity_session.resolve_project_path(None, cwd="X:/from-cwd")
@@ -49,10 +82,24 @@ class UnitySessionTests(unittest.TestCase):
         self.assertEqual(resolved, Path("X:/from-env"))
 
     def test_resolve_project_path_falls_back_to_cwd(self):
-        with mock.patch.dict(os.environ, {}, clear=True):
+        with mock.patch.dict(os.environ, {}, clear=True), mock.patch.object(
+            unity_session,
+            "_ensure_dotenv_loaded",
+            return_value=False,
+        ):
             resolved = unity_session.resolve_project_path(None, cwd="X:/from-cwd")
 
         self.assertEqual(resolved, Path("X:/from-cwd"))
+
+    def test_resolve_project_path_uses_dotenv_path_when_requested(self):
+        env = {}
+        with tempfile.TemporaryDirectory() as temp_dir:
+            dotenv_path = Path(temp_dir) / ".env"
+            dotenv_path.write_text("UNITY_PROJECT_PATH=X:/from-dotenv\n", encoding="utf-8")
+            unity_session._ensure_dotenv_loaded(env=env, dotenv_path=dotenv_path, force=True)
+            resolved = unity_session.resolve_project_path(None, cwd="X:/from-cwd", env=env)
+
+        self.assertEqual(resolved, Path("X:/from-dotenv"))
 
     def test_get_unity_version_reads_real_project_from_environment(self):
         project_path = _require_test_project_path()

@@ -12,12 +12,14 @@ import cli
 
 
 UNITY_PROJECT_PATH_ENV = "UNITY_PROJECT_PATH"
+ENV_FILE_NAME = ".env"
 DEFAULT_READY_TIMEOUT_SECONDS = 180.0
 DEFAULT_HEALTH_TIMEOUT_SECONDS = 2.0
 DEFAULT_ACTIVITY_TIMEOUT_SECONDS = 20.0
 DEFAULT_EDITOR_LOG_MAX_LINES = 40
 POLL_INTERVAL_SECONDS = 1.0
 RECOVERABLE_HEALTH_STATUSES = ("compiling", "not_available")
+_DOTENV_LOADED = False
 
 
 class UnitySessionError(Exception):
@@ -164,11 +166,53 @@ def _probe_health(base_url, timeout_seconds):
     return payload, None
 
 
+def _repo_root():
+    return Path(__file__).resolve().parents[3]
+
+
+def _dotenv_path(repo_root=None):
+    repo_root = _repo_root() if repo_root is None else Path(repo_root)
+    return repo_root / ENV_FILE_NAME
+
+
+def _load_dotenv_file(dotenv_path, env=None):
+    env = os.environ if env is None else env
+    dotenv_path = Path(dotenv_path)
+    if not dotenv_path.exists():
+        return False
+
+    with dotenv_path.open("r", encoding="utf-8") as handle:
+        for raw_line in handle:
+            line = raw_line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            key = key.strip()
+            value = value.strip()
+            if key and key not in env:
+                env[key] = value
+    return True
+
+
+def _ensure_dotenv_loaded(env=None, dotenv_path=None, force=False):
+    global _DOTENV_LOADED
+
+    env = os.environ if env is None else env
+    if _DOTENV_LOADED and not force and dotenv_path is None and env is os.environ:
+        return False
+
+    loaded = _load_dotenv_file(_dotenv_path() if dotenv_path is None else dotenv_path, env=env)
+    if env is os.environ and dotenv_path is None:
+        _DOTENV_LOADED = True
+    return loaded
+
+
 def resolve_project_path(project_path=None, cwd=None, env=None):
     if project_path:
         return Path(project_path)
 
     env = os.environ if env is None else env
+    _ensure_dotenv_loaded(env=env)
     env_project_path = env.get(UNITY_PROJECT_PATH_ENV)
     if env_project_path:
         return Path(env_project_path)
