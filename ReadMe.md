@@ -1,18 +1,24 @@
 # unity-puer-exec
 
-这个目录是 `unity-puer-exec` 阶段二的产品化开发仓库。
+这个仓库承载 `unity-puer-exec` 阶段二的产品化开发工作。
 
-当前已完成的首批迁移内容：
+当前包含：
 
-- `.claude/skills/unity-puer-exec/cli.py`
-- `.claude/skills/unity-puer-exec/unity_session.py`
-- `.claude/skills/unity-puer-exec/unity_session_cli.py`
-- `.claude/skills/unity-puer-exec/tests/`
+- runtime implementation under `.claude/skills/unity-puer-exec/`
+- repository-level docs under `docs/`
+- repository-level tests under `tests/`
 
-当前约束：
+快速入口：
 
-- validation 相关的 Unity 宿主与 E2E 资产仍保留在验证宿主仓库 `../c3-client-tree2/`
-- 本仓库内的 `unity_session.py` 已去除对宿主 `Tools/python` 的直接依赖
-- Unity 工程路径解析优先级为：`--project-path` > 进程环境中的 `UNITY_PROJECT_PATH` > repo 内 `.env` > 当前工作目录
-- repo 内 Python 入口会自动加载 `.env`
-- `.env` 是本地文件，不纳入版本控制；提交的模板文件是 `.env.example`
+- workflow: `docs/workflow.md`
+- active work: `docs/roadmap.md`
+- current status: `docs/status.md`
+- active decisions: `docs/decisions/`
+- tests: `python -m unittest discover -s tests -p "test_*.py"`
+
+目录概览：
+
+- `AGENTS.md`: repository-local execution rules
+- `docs/`: workflow, roadmap, status, decisions, and temporary plans
+- `tests/`: repository-level test entry points
+- `.claude/skills/unity-puer-exec/`: current runtime code

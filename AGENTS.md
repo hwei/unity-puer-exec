@@ -10,13 +10,23 @@ This repository is the productized development repository for `unity-puer-exec`.
 - This repository does not assume a repository-local `Project/` directory.
 - `./.env` is local-only and should not be committed; use `./.env.example` as the tracked template.
 
+## Documentation structure
+
+- `docs/workflow.md` defines the required development sequence.
+- `docs/roadmap.md` tracks active and future work with hierarchical task IDs.
+- `docs/status.md` tracks current focus, blockers, and next steps.
+- `docs/decisions/` stores active decisions still in force.
+- `docs/plans/` stores temporary execution plans only.
+- `tests/` is the canonical repository-level test location.
+
 ## Path resolution rule
 
 Unity project path resolution must follow this order:
 
 1. explicit `--project-path`
-2. `UNITY_PROJECT_PATH`
-3. current working directory
+2. `UNITY_PROJECT_PATH` from the process environment
+3. repository-local `.env`
+4. current working directory
 
 ## Repo boundary
 

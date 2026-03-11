@@ -2,12 +2,14 @@ import json
 import os
 import sys
 import unittest
+from pathlib import Path
 from unittest import mock
 
 
-SKILL_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-if SKILL_DIR not in sys.path:
-    sys.path.insert(0, SKILL_DIR)
+REPO_ROOT = Path(__file__).resolve().parents[1]
+SKILL_DIR = REPO_ROOT / ".claude" / "skills" / "unity-puer-exec"
+if str(SKILL_DIR) not in sys.path:
+    sys.path.insert(0, str(SKILL_DIR))
 
 import unity_session  # type: ignore
 import unity_session_cli  # type: ignore

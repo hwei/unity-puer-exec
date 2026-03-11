@@ -1,15 +1,16 @@
 import json
-import os
 import socket
 import sys
 import unittest
+from pathlib import Path
 from unittest import mock
 import urllib.request
 
 
-SKILL_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-if SKILL_DIR not in sys.path:
-    sys.path.insert(0, SKILL_DIR)
+REPO_ROOT = Path(__file__).resolve().parents[1]
+SKILL_DIR = REPO_ROOT / ".claude" / "skills" / "unity-puer-exec"
+if str(SKILL_DIR) not in sys.path:
+    sys.path.insert(0, str(SKILL_DIR))
 
 import cli  # type: ignore
 
@@ -81,7 +82,7 @@ class CliTests(unittest.TestCase):
             transport.calls,
             [
                 (
-                        "http://127.0.0.1:55231/exec",
+                    "http://127.0.0.1:55231/exec",
                     {
                         "id": mock.ANY,
                         "code": "return 1 + 1;",

@@ -6,9 +6,10 @@ from pathlib import Path
 from unittest import mock
 
 
-SKILL_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-if SKILL_DIR not in sys.path:
-    sys.path.insert(0, SKILL_DIR)
+REPO_ROOT = Path(__file__).resolve().parents[1]
+SKILL_DIR = REPO_ROOT / ".claude" / "skills" / "unity-puer-exec"
+if str(SKILL_DIR) not in sys.path:
+    sys.path.insert(0, str(SKILL_DIR))
 
 import unity_session  # type: ignore
 
@@ -25,6 +26,8 @@ def _make_session():
 
 
 def _require_test_project_path():
+    # This test intentionally exercises the repo-level runtime resolution path,
+    # so it loads .env before checking the process environment.
     unity_session._ensure_dotenv_loaded(force=True)
     project_path = os.environ.get(unity_session.UNITY_PROJECT_PATH_ENV)
     if not project_path:
