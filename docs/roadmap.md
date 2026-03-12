@@ -92,8 +92,8 @@
 - Status: planning
 - Parent: T1.2.2
 - Depends on: T1.2.1
-- Plan: none
-- Done means: the validation host stops carrying the committed validation package source and instead points its local package wiring at `unity-puer-exec/packages/com.txcombo.unity-puer-exec/`, with the resulting host operating model documented clearly enough for repeatable local use
+- Plan: docs/plans/0020-T1.2.2.1-rewire-validation-host-manifest.md
+- Done means: the validation host operating model clearly specifies a clean host baseline from the `unity-puer-exec` fork point and a local-only `manifest.json` injection path that points at `unity-puer-exec/packages/com.txcombo.unity-puer-exec/`, with the resulting workflow documented clearly enough for repeatable local use
 
 ##### T1.2.2.2 Run Minimal Host Validation Against Local Package
 
