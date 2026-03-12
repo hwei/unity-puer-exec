@@ -7,7 +7,7 @@
 
 `T1.2.2.1` uses a clean validation-host baseline plus a local-only manifest injection workflow.
 
-In the current workspace, the observed fork point for the validation host work is commit `6332fb81eaf4432ebe56e2a48b001cf62a88e75b`, which is the merge-base of `c3-client-tree2` branch `unity-puer-exec` with both `tree2` and `devel/c3-2`.
+In the current workspace, the preferred clean baseline for validation-host work is commit `e891b5495e8a8ae1950a41d0d85f6314676e13e9`, which is the merge-base of `c3-client-tree2` branch `unity-puer-exec` with `devel/c3-3`.
 
 Validation against the formal package should follow this model:
 
