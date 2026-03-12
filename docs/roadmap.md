@@ -72,11 +72,12 @@
 
 #### T1.2.1 Create Formal Package Home In `unity-puer-exec`
 
-- Status: planning
+- Status: done
 - Parent: T1.2
 - Depends on: T1.1 T1.1.1
-- Plan: docs/plans/0010-T1.2.1-formal-package-home.md
+- Plan: none
 - Done means: a formal Unity package home exists in `unity-puer-exec/`, with package metadata, assembly identity, and namespaces moved away from the validation-only identity while preserving the current Unity-side capability baseline
+- Output: packages/com.txcombo.unity-puer-exec/
 
 #### T1.2.2 Rewire Validation Host To Consume Local Package
 
