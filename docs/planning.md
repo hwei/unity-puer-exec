@@ -62,6 +62,7 @@ Template: `docs/plan-template.md`
 
 ## Subagent-Friendly Planning Rules
 
+- Before a plan is submitted for human review, it should receive one clean-context subagent review that focuses on ambiguity, missing preconditions, and execution risk.
 - `Shared Context` should stay pointer-first and should contain only stable facts another agent must know before acting.
 - `Work Items` should be independently readable and should identify:
   - the goal
