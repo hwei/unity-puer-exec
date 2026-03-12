@@ -2,11 +2,11 @@
 
 ## Current Focus
 
-- The validation-host local package injection workflow is now distilled; next work is `T1.2.2.2`, which will prove the host can actually import and run against the rewired local package.
+- `T1.2.2.2` is now in planning; the next step is to review and commit the minimal host-validation plan before running the rewired host against the formal local package.
 
 ## In Progress
 
-- No implementation task is currently in progress after `T1.2.1` completes.
+- `T1.2.2.2` planning is in progress under `docs/plans/0030-T1.2.2.2-minimal-host-validation.md`.
 
 ## Blocked
 
@@ -14,6 +14,6 @@
 
 ## Next
 
-- Start `T1.2.2.2` to run a minimal validation path against the rewired local package.
+- Review and commit the `T1.2.2.2` minimal host-validation plan, then execute the rewired host runtime check.
 - Start `T1.4` to make `unity-puer-exec` the authoritative CLI entry with complete help and stable commands.
 - Use `T1.5` to decide whether the CLI should remain script-based or ship as a more self-contained executable.
