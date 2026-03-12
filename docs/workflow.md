@@ -6,7 +6,7 @@ Repository work should follow this order:
 
 1. discuss the target change
 2. write a plan under `docs/plans/`
-3. review and commit the plan
+3. get human review for the plan, then commit the plan
 4. implement the change
 5. validate the change directly
 6. distill stable conclusions into long-lived documents or source comments
@@ -25,6 +25,7 @@ Repository work should follow this order:
 - If no gap exists, use a nearby higher number instead of renaming older plans.
 - Completed or deleted plan numbers are not reused.
 - Plans are temporary execution artifacts, not durable documentation.
+- The review step requires human review; implementer self-review does not satisfy step 3 by itself.
 
 ## Roadmap Maintenance
 
