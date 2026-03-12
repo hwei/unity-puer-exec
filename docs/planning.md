@@ -10,6 +10,16 @@ Plans in this repository should be:
 - readable by a subagent without replaying the full chat history
 - small enough to avoid becoming a duplicate of long-lived docs
 
+## Plan File Naming
+
+Use the task ID as the primary filename anchor:
+
+- default form: `Tx.y-short-slug.md`
+- default assumption: one active plan per task
+- if a task truly needs multiple concurrent or alternative plans, keep the same task ID and add a short suffix
+
+Do not use a repository-wide planning sequence. Plan files are temporary, and their identity should remain derivable from the roadmap task ID even after older plans are deleted.
+
 ## Pointer-First Shared Context
 
 Use `Shared Context` to capture only the stable facts another executor must know before acting.

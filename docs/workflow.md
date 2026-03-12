@@ -18,14 +18,12 @@ Repository work should follow this order:
 
 - Substantial work should start with a plan file.
 - Plan authoring rules live in `docs/planning.md`.
-- Plan file names should use the form `NNNN-Tx.y-short-slug.md`, for example:
-  - `0030-T1.2-repo-packaging.md`
-  - `0040-T1.2.1-test-fixture-cleanup.md`
-- `NNNN` is a sortable 4-digit planning sequence, usually incremented by 10.
-- Sequence numbers indicate rough planning order only.
-- When inserting a new plan between nearby plans, prefer an unused number in the gap.
-- If no gap exists, use a nearby higher number instead of renaming older plans.
-- Completed or deleted plan numbers are not reused.
+- Plan file names should use the form `Tx.y-short-slug.md`, for example:
+  - `T1.2-repo-packaging.md`
+  - `T1.2.1-test-fixture-cleanup.md`
+- The task ID is the primary identifier for a plan file.
+- Default to one active plan file per task.
+- If a task genuinely needs multiple concurrent or alternative plans, keep the same task ID and add a short distinguishing suffix instead of inventing a global sequence.
 - Plans are temporary execution artifacts, not durable documentation.
 - The review sequence is subagent review first, then human review.
 - Implementer self-review does not satisfy the subagent-review step or the human-review step by itself.
