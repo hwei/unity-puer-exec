@@ -16,6 +16,7 @@ Repository work should follow this order:
 ## Plan Rules
 
 - Substantial work should start with a plan file.
+- Plan authoring rules live in `docs/planning.md`.
 - Plan file names should use the form `NNNN-Tx.y-short-slug.md`, for example:
   - `0030-T1.2-repo-packaging.md`
   - `0040-T1.2.1-test-fixture-cleanup.md`
