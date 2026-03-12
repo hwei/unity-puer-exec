@@ -51,6 +51,7 @@
 - Depends on: none
 - Plan: none
 - Done means: the formal product boundary is documented, including the Unity package name, CLI name, repo responsibilities, and the validation host's remaining role
+- Output: docs/decisions/0004-product-boundary-and-naming.md
 
 #### T1.1.1 Define Validation Host Operating Model
 
@@ -59,6 +60,7 @@
 - Depends on: none
 - Plan: none
 - Done means: the validation host's operating model is documented, including the baseline branch expectation, the rule that product code lives outside the host, and how local-only test injection works without turning host-local changes into product commits
+- Output: docs/decisions/0003-validation-host-operating-model.md
 
 ### T1.2 Migrate Unity Package Out Of Validation Host
 
