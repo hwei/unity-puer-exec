@@ -52,6 +52,12 @@ Before deleting a completed plan, move stable conclusions into the right destina
 - `docs/decisions/` for active decisions still in force
 - source comments when the knowledge is local to specific code or tests
 
+## Truth Hierarchy
+
+- Source code and tests are the final behavioral source of truth for this repository.
+- Documentation exists to support planning, review, communication, and discovery.
+- When documentation and observed code or test behavior disagree, fix the documentation or change the code and tests deliberately; do not treat stale prose as authoritative by itself.
+
 ## Validation Rules
 
 - Mainline commits must leave the repository in a directly verifiable state.
