@@ -36,35 +36,74 @@
 
 ## Active Work
 
-## T1 Productize Repository Interface
+## T1 Productize Unity Package And CLI
 
 - Status: planning
 - Parent: none
 - Depends on: none
 - Plan: none
-- Done means: the repository can be consumed without relying on the migration-only skill skeleton layout
+- Done means: `unity-puer-exec` ships as a formal Unity package plus a formal CLI, with skill docs no longer acting as the primary product surface
 
-### T1.1 Define Repository-Facing Skill Entry
+### T1.1 Define Product Boundary And Naming
 
 - Status: planning
 - Parent: T1
 - Depends on: none
 - Plan: none
-- Done means: the repository has a stable repository-facing skill entry contract instead of relying on the current transitional README-only skill placeholder
+- Done means: the formal product boundary is documented, including the Unity package name, CLI name, repo responsibilities, and the validation host's remaining role
 
-### T1.2 Document Installation And Invocation Flow
+#### T1.1.1 Define Validation Host Operating Model
+
+- Status: planning
+- Parent: T1.1
+- Depends on: none
+- Plan: none
+- Done means: the validation host's operating model is documented, including the baseline branch expectation, the rule that product code lives outside the host, and how local-only test injection works without turning host-local changes into product commits
+
+### T1.2 Migrate Unity Package Out Of Validation Host
 
 - Status: planning
 - Parent: T1
-- Depends on: T1.1
+- Depends on: T1.1 T1.1.1
 - Plan: none
-- Done means: installation and invocation expectations are documented at the appropriate long-lived locations
+- Done means: the Unity-side package currently living in the validation host is moved into this repository and renamed away from the validation-only identity
 
-### T1.3 Define End-To-End Validation Entry
+### T1.3 Formalize Unity Package Structure
 
 - Status: draft
 - Parent: T1
 - Depends on: T1.2
 - Plan: none
-- Done means: TBD
-- Notes: The repository still lacks a normalized repo-level E2E entry after the initial migration.
+- Done means: the Unity package has production-facing assembly layout, namespaces, metadata, and documentation suitable for distribution instead of host-local validation use
+
+### T1.4 Formalize CLI As Primary Product Surface
+
+- Status: planning
+- Parent: T1
+- Depends on: T1.1
+- Plan: none
+- Done means: the CLI exposes stable commands, machine-usable output, and complete `--help`, and repository docs treat the CLI as the authoritative usage contract instead of the current skill-specific entry
+
+### T1.5 Decide CLI Packaging Strategy
+
+- Status: draft
+- Parent: T1
+- Depends on: T1.4
+- Plan: none
+- Done means: the repository has an explicit decision for how the CLI is distributed with minimal host-environment assumptions, including whether to publish a self-contained or AOT-built executable
+
+### T1.6 Define OpenUPM Distribution Story
+
+- Status: draft
+- Parent: T1
+- Depends on: T1.3 T1.4
+- Plan: none
+- Done means: package publishing, versioning, installation, and compatibility expectations are documented for OpenUPM consumers
+
+### T1.7 Define End-To-End Validation Entry
+
+- Status: draft
+- Parent: T1
+- Depends on: T1.1.1 T1.2 T1.4
+- Plan: none
+- Done means: the repository has a normalized repo-level E2E validation entry that proves the formal package and formal CLI work together against the validation host
