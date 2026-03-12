@@ -68,7 +68,23 @@
 - Parent: T1
 - Depends on: T1.1 T1.1.1
 - Plan: none
-- Done means: the Unity-side package currently living in the validation host is moved into this repository and renamed away from the validation-only identity
+- Done means: the Unity-side package currently living in the validation host is moved into this repository, renamed away from the validation-only identity, and consumed by the validation host as an external package instead of host-carried source
+
+#### T1.2.1 Create Formal Package Home In `unity-puer-exec`
+
+- Status: planning
+- Parent: T1.2
+- Depends on: T1.1 T1.1.1
+- Plan: none
+- Done means: a formal Unity package home exists in `unity-puer-exec/`, with package metadata, assembly identity, and namespaces moved away from the validation-only identity while preserving the current Unity-side capability baseline
+
+#### T1.2.2 Rewire Validation Host To Consume Local Package
+
+- Status: draft
+- Parent: T1.2
+- Depends on: T1.2.1
+- Plan: none
+- Done means: the validation host no longer carries the Unity package source as committed host-local product code and instead consumes the migrated local package through the operating model defined for host validation
 
 ### T1.3 Formalize Unity Package Structure
 
