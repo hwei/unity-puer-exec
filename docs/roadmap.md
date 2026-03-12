@@ -123,10 +123,10 @@
 
 #### T1.4.1 Define Formal CLI Contract And Command Tree
 
-- Status: draft
+- Status: planning
 - Parent: T1.4
 - Depends on: T1.1
-- Plan: none
+- Plan: docs/plans/T1.4.1-formal-cli-contract.md
 - Done means: the formal CLI command tree, command roles, output contract, and baseline exit-code model are documented independently of any specific implementation language or packaging choice
 
 #### T1.4.2 Establish Product-Owned CLI Baseline

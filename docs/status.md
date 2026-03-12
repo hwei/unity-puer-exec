@@ -6,7 +6,7 @@
 
 ## In Progress
 
-- No implementation task is currently in progress.
+- `T1.4.1` planning is in progress to define the formal CLI contract before any baseline migration or packaging decision.
 
 ## Blocked
 
@@ -14,7 +14,7 @@
 
 ## Next
 
-- Start `T1.4.1` to define the formal CLI contract and command tree independently of packaging choices.
+- Finish `T1.4.1` so the formal CLI contract covers command naming, parameter shape, output model, and workflow-oriented help guidance independently of packaging choices.
 - Use `T1.4.2` and `T1.4.3` to establish a product-owned CLI baseline before deciding whether to keep adapting that baseline or replace it.
 - Use `T1.5` to decide whether the final CLI should remain baseline-derived or ship as a more self-contained executable.
 - Reuse `docs/decisions/0006-minimal-host-validation-proof.md` when the repo later needs a repeatable minimal host proof path.
