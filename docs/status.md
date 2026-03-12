@@ -2,7 +2,7 @@
 
 ## Current Focus
 
-- `T1.2.2.2` is complete; the next major productization step is to formalize the CLI as the primary product surface under `T1.4`.
+- `T1.2.2.2` is complete; the next major productization step is to establish a formal, product-owned CLI baseline under `T1.4`.
 
 ## In Progress
 
@@ -14,6 +14,7 @@
 
 ## Next
 
-- Start `T1.4` to make `unity-puer-exec` the authoritative CLI entry with complete help and stable commands.
-- Use `T1.5` to decide whether the CLI should remain script-based or ship as a more self-contained executable.
+- Start `T1.4.1` to define the formal CLI contract and command tree independently of packaging choices.
+- Use `T1.4.2` and `T1.4.3` to establish a product-owned CLI baseline before deciding whether to keep adapting that baseline or replace it.
+- Use `T1.5` to decide whether the final CLI should remain baseline-derived or ship as a more self-contained executable.
 - Reuse `docs/decisions/0006-minimal-host-validation-proof.md` when the repo later needs a repeatable minimal host proof path.
