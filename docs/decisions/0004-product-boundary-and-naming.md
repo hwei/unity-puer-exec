@@ -7,12 +7,12 @@
 
 The formal product consists of:
 
-- a Unity package named `com.c3.unity-puer-exec`
+- a Unity package named `com.txcombo.unity-puer-exec`
 - a primary CLI named `unity-puer-exec`
 
-The product's public naming should use `Unity Puer Exec`, not the current validation-only wording.
+The product's public naming should use `UnityPuerExec`, not the current validation-only wording or a `C3`-prefixed product identity.
 
-The Unity-side code should converge on the root namespace `C3.UnityPuerExec`. Validation-only suffixes such as `Validation` are transitional and should be removed from the formal package during migration.
+The Unity-side code should converge on the root namespace `UnityPuerExec`. Validation-only suffixes such as `Validation` are transitional and should be removed from the formal package during migration.
 
 The CLI contract is centered on the `unity-puer-exec` command family. The current `unity-puer-session` entry point is transitional. Its capabilities may continue to exist during the migration period, but the long-lived product surface should be documented and discoverable through `unity-puer-exec`.
 
@@ -34,6 +34,6 @@ Current implementation locations are transitional:
 
 ## Consequences
 
-- Repository-facing docs should describe the product in terms of `com.c3.unity-puer-exec` and `unity-puer-exec`.
+- Repository-facing docs should describe the product in terms of `com.txcombo.unity-puer-exec`, `UnityPuerExec`, and `unity-puer-exec`.
 - Migration work must rename Unity package metadata, namespaces, and assembly names away from `Validation`.
 - CLI formalization work should consolidate or clearly subordinate transitional companion entry points under the primary `unity-puer-exec` surface.
