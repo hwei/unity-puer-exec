@@ -81,11 +81,27 @@
 
 #### T1.2.2 Rewire Validation Host To Consume Local Package
 
-- Status: draft
+- Status: planning
 - Parent: T1.2
 - Depends on: T1.2.1
 - Plan: none
-- Done means: the validation host no longer carries the Unity package source as committed host-local product code and instead consumes the migrated local package through the operating model defined for host validation
+- Done means: the validation host no longer carries the Unity package source as committed host-local product code, consumes the migrated local package through the operating model defined for host validation, and has a minimal host-side validation path for that wiring
+
+##### T1.2.2.1 Rewire Validation Host Manifest To Local Package
+
+- Status: planning
+- Parent: T1.2.2
+- Depends on: T1.2.1
+- Plan: none
+- Done means: the validation host stops carrying the committed validation package source and instead points its local package wiring at `unity-puer-exec/packages/com.txcombo.unity-puer-exec/`, with the resulting host operating model documented clearly enough for repeatable local use
+
+##### T1.2.2.2 Run Minimal Host Validation Against Local Package
+
+- Status: draft
+- Parent: T1.2.2
+- Depends on: T1.2.2.1
+- Plan: none
+- Done means: the validation host can import the rewired local package and pass at least one minimal runtime validation path that proves the host is consuming the formal package instead of a host-carried source copy
 
 ### T1.3 Formalize Unity Package Structure
 
