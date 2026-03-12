@@ -98,11 +98,12 @@
 
 ##### T1.2.2.2 Run Minimal Host Validation Against Local Package
 
-- Status: planning
+- Status: done
 - Parent: T1.2.2
 - Depends on: T1.2.2.1
-- Plan: docs/plans/0030-T1.2.2.2-minimal-host-validation.md
+- Plan: none
 - Done means: the validation host can import the rewired local package and pass at least one minimal runtime validation path that proves the host is consuming the formal package instead of a host-carried source copy
+- Output: docs/decisions/0006-minimal-host-validation-proof.md
 
 ### T1.3 Formalize Unity Package Structure
 
