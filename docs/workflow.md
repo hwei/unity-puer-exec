@@ -16,10 +16,26 @@ Repository work should follow this order:
 ## Plan Rules
 
 - Substantial work should start with a plan file.
-- Plan file names should use the relevant task ID when possible, for example:
-  - `T1.2-repo-packaging.md`
-  - `T1.2.1-test-fixture-cleanup.md`
+- Plan file names should use the form `NNNN-Tx.y-short-slug.md`, for example:
+  - `0030-T1.2-repo-packaging.md`
+  - `0040-T1.2.1-test-fixture-cleanup.md`
+- `NNNN` is a sortable 4-digit planning sequence, usually incremented by 10.
+- Sequence numbers indicate rough planning order only.
+- When inserting a new plan between nearby plans, prefer an unused number in the gap.
+- If no gap exists, use a nearby higher number instead of renaming older plans.
+- Completed or deleted plan numbers are not reused.
 - Plans are temporary execution artifacts, not durable documentation.
+
+## Roadmap Maintenance
+
+- `docs/roadmap.md` is a live planning document, not a historical ledger.
+- Task IDs use the form `T1`, `T1.2`, `T1.2.1`, where `T` means `Task` and dots indicate hierarchy only.
+- Same-level task numbering provides the default local planning order, while exact non-default dependencies must still be written in `Depends on`.
+- New issues discovered during implementation should first be added as `draft`.
+- If a newly discovered issue is required to finish the current task, refine it under the current parent before implementation continues.
+- Material changes to task scope, hierarchy, or dependencies should be reflected in `docs/roadmap.md` before writing or revising the execution plan.
+- Active roadmap tasks should record their current execution plan in a `Plan` field, or `Plan: none` when no executable plan exists yet.
+- `done` and `dropped` tasks may be removed from `docs/roadmap.md` after their stable conclusions have been distilled and any immediate parent-task state updates have been completed.
 
 ## Distillation Rules
 
