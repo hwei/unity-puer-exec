@@ -49,7 +49,7 @@
 - Status: planning
 - Parent: T1
 - Depends on: none
-- Plan: none
+- Plan: docs/plans/0030-T1.1-product-boundary-and-naming.md
 - Done means: the formal product boundary is documented, including the Unity package name, CLI name, repo responsibilities, and the validation host's remaining role
 
 #### T1.1.1 Define Validation Host Operating Model
