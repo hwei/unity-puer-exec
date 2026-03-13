@@ -114,6 +114,14 @@ Use the smallest shape that still keeps the task executable from a clean context
 
 Template: `docs/plan-template.md`
 
+## Retrospective Use
+
+A plan may gain a `Retrospective` section during or after execution.
+
+Use it only for stable follow-up findings or workflow improvement ideas that need human review before they can affect long-lived planning or process documents.
+
+Do not use `Retrospective` to reopen agreed constraints or to smuggle new implementation scope into the current task.
+
 ## Subagent-Friendly Planning Rules
 
 - Before a plan is submitted for human review, it should receive one clean-context subagent review that focuses on ambiguity, missing preconditions, and execution risk.

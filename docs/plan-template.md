@@ -60,4 +60,14 @@ Concrete risks worth watching.
 ## Exit Criteria
 
 Observable statements that mean the task is done.
+
+## Retrospective
+
+Use only when execution reveals stable findings worth human review.
+
+1. Title
+   - Observation:
+   - Why it matters:
+   - Suggested next step:
+   - Disposition: pending human review
 ```
