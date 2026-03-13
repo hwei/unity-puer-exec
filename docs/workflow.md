@@ -5,19 +5,21 @@
 Repository work should follow this order:
 
 1. discuss the target change
-2. write a plan under `docs/plans/`
-3. get subagent review for the plan
-4. get human review for the plan, then commit the plan
-5. implement the change
-6. validate the change directly
-7. distill stable conclusions into long-lived documents or source comments
-8. delete the completed plan file
-9. commit the implementation together with the plan deletion
+2. resolve key downstream-shaping decisions or explicitly split them into exploration work
+3. write a plan under `docs/plans/`
+4. get subagent review for the plan
+5. get human review for the plan, then commit the plan
+6. implement the change
+7. validate the change directly
+8. distill stable conclusions into long-lived documents or source comments
+9. delete the completed plan file
+10. commit the implementation together with the plan deletion
 
 ## Plan Rules
 
 - Substantial work should start with a plan file.
 - Plan authoring rules live in `docs/planning.md`.
+- Planning starts after discussion has already produced the agreed constraints needed to keep execution deterministic.
 - Plan file names should use the form `Tx.y-short-slug.md`, for example:
   - `T1.2-repo-packaging.md`
   - `T1.2.1-test-fixture-cleanup.md`
@@ -27,6 +29,7 @@ Repository work should follow this order:
 - Plans are temporary execution artifacts, not durable documentation.
 - The review sequence is subagent review first, then human review.
 - Implementer self-review does not satisfy the subagent-review step or the human-review step by itself.
+- If subagent review finds unresolved key decisions that affect task boundaries, parameters, outputs, or command responsibilities, the task should return to discussion or be split into exploration work. The agent should not resolve those decisions unilaterally just to satisfy review.
 
 ## Roadmap Maintenance
 

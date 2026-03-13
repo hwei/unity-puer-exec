@@ -185,3 +185,20 @@
 - Depends on: T1.1.1 T1.2 T1.4
 - Plan: none
 - Done means: the repository has a normalized repo-level E2E validation entry that proves the formal package and formal CLI work together against the validation host
+
+## T2 Improve Repository Workflow And Planning
+
+- Status: done
+- Parent: none
+- Depends on: none
+- Plan: none
+- Done means: repository workflow and planning rules support deterministic execution by distinguishing discussion, decision planning, implementation planning, and exploration planning
+
+### T2.1 Tighten Planning Workflow For Decision Certainty
+
+- Status: done
+- Parent: T2
+- Depends on: none
+- Plan: none
+- Done means: workflow and planning rules make agreed constraints explicit, require key downstream-shaping decisions to be resolved before execution planning, and allow subagent review to send work back to discussion
+- Output: docs/workflow.md docs/planning.md docs/plan-template.md

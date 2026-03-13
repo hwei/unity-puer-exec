@@ -5,9 +5,17 @@ Authoring rules: `docs/planning.md`
 ```md
 # Plan: T?.? Short Title
 
+## Plan Type
+
+Decision Plan | Implementation Plan | Exploration Plan
+
 ## Scope
 
 What this task will and will not do.
+
+## Agreed Constraints
+
+The already-settled decisions execution must not reinterpret.
 
 ## Shared Context
 
@@ -28,6 +36,14 @@ Requirement and scenario statements for behavior that matters.
    - Goal:
    - Write scope:
    - Parallelism:
+
+## Open Questions
+
+Only non-critical questions that do not change the current task's target behavior.
+
+## Out Of Scope
+
+Things explicitly excluded or moved to later work.
 
 ## Integration
 
