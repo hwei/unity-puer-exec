@@ -222,10 +222,10 @@
 
 ### T2.4 Minimize Agent Token Cost For Documentation Workflow Under Clarified Planning Rules
 
-- Status: draft
+- Status: planning
 - Parent: T2
 - Depends on: T2.3
-- Plan: none
+- Plan: docs/plans/T2.4-doc-structure-token-minimization.md
 - Done means: repository documentation is reorganized so an agent can load only the minimum document slice needed for the current workflow state without changing the underlying workflow semantics
 
 ### T2.5 Keep `ReadMe.md` User-Facing And Move Developer Guidance To `AGENTS.md`
