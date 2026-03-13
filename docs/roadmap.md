@@ -130,11 +130,19 @@
 - Done means: the formal CLI command tree, command roles, output contract, and baseline exit-code model are documented independently of any specific implementation language or packaging choice
 - Output: docs/decisions/0007-formal-cli-contract.md
 
+##### T1.4.1.1 Revise CLI Session Discovery And Lifecycle Contract
+
+- Status: planning
+- Parent: T1.4.1
+- Depends on: T1.4.1
+- Plan: docs/plans/T1.4.1.1-cli-session-discovery-and-lifecycle.md
+- Done means: the formal CLI contract is revised so session endpoint discovery, Unity launch responsibility, and command lifecycle behavior are explicit enough to guide `T1.4.2` without preserving the current `--base-url` and `--keep-unity` assumptions by accident
+
 #### T1.4.2 Establish Product-Owned CLI Baseline
 
 - Status: draft
 - Parent: T1.4
-- Depends on: T1.4.1
+- Depends on: T1.4.1.1
 - Plan: none
 - Done means: the repository has a product-owned CLI implementation baseline outside the current skill-owned location, preserving current capability coverage without yet committing to the final packaging strategy or implementation language
 
