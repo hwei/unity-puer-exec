@@ -213,11 +213,12 @@
 
 ### T2.3 Clarify Governance-Plan Boundaries
 
-- Status: planning
+- Status: done
 - Parent: T2
 - Depends on: T2.1
-- Plan: docs/plans/T2.3-governance-plan-boundaries.md
+- Plan: none
 - Done means: workflow and planning rules replace `Decision Plan` with `Governance Plan`, make it explicit that `Governance Plan` is for changes whose main output is project-management documentation rather than final product artifacts, and clarify when such a plan may directly modify long-lived governance documents without requiring a follow-up implementation task
+- Output: docs/workflow.md docs/planning.md docs/plan-template.md
 
 ### T2.4 Minimize Agent Token Cost For Documentation Workflow Under Clarified Planning Rules
 

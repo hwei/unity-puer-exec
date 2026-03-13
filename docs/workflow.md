@@ -22,6 +22,7 @@ Repository work should follow this order:
 - Substantial work should start with a plan file.
 - Plan authoring rules live in `docs/planning.md`.
 - Planning starts after discussion has already produced the agreed constraints needed to keep execution deterministic.
+- Plan type should follow the task's main output: use `Governance Plan` for project-management documentation, `Implementation Plan` for final product artifacts, and `Exploration Plan` for critical unknowns.
 - Plan file names should use the form `Tx.y-short-slug.md`, for example:
   - `T1.2-repo-packaging.md`
   - `T1.2.1-test-fixture-cleanup.md`

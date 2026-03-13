@@ -14,18 +14,28 @@ Plans in this repository should be:
 
 This repository distinguishes three kinds of plans:
 
-- `Decision Plan`
-  - used when the main task is to distill an already discussed direction into a durable contract or decision
+- `Governance Plan`
+  - used when the main task is to change project-management documentation rather than final product artifacts
+  - applies to governance-facing documents such as `AGENTS.md`, `docs/workflow.md`, `docs/planning.md`, `docs/roadmap.md`, `docs/status.md`, and `docs/decisions/`
+  - may directly modify those long-lived governance documents as the task's primary output
   - should begin from explicit agreed constraints
-  - should not leave key product or contract choices to execution-time inference
+  - should not leave governance-boundary or process-shaping choices to execution-time inference
 - `Implementation Plan`
-  - used when the main task is to change code or tests under an already defined contract
+  - used when the main task is to change final product artifacts
+  - applies to code, tests, and product-user-facing documentation such as `ReadMe.md`, CLI `--help`, package usage docs, and other user-facing contract docs
+  - may also update governance-facing documents when implementation needs to distill or summarize results there
   - should treat key contract and behavior decisions as inputs, not open questions
 - `Exploration Plan`
   - used when a critical unknown cannot yet be resolved through discussion alone
   - should define what to investigate, how to investigate it, what evidence to produce, and how that output constrains later plans
 
-If a task does not fit cleanly, prefer splitting it rather than mixing decision-making, exploration, and implementation into one plan.
+Plan type is determined by the task's main output, not merely by whether the task edits documentation or code.
+
+If a task does not fit cleanly, prefer splitting it rather than mixing governance work, exploration, and implementation into one plan.
+
+If a primarily governance task includes auxiliary changes that would directly alter final product behavior, test behavior, or product-user-facing documentation, split that work into an `Implementation Plan`.
+
+If a governance task is too large or unstable for one task, its follow-up work should default to another `Governance Plan` unless the main output shifts to final product artifacts.
 
 ## Plan File Naming
 
@@ -57,7 +67,7 @@ Do not use `Shared Context` to mirror large chunks of existing docs or chat hist
 
 ## Agreed Constraints
 
-Plans that shape decisions or behavior must contain `Agreed Constraints`.
+Plans that shape governance, behavior, or externally visible contracts must contain `Agreed Constraints`.
 
 `Agreed Constraints` should record the key points that are already settled before execution begins. These are the constraints another executor must not reinterpret during implementation.
 
@@ -78,6 +88,8 @@ If one of those items is still unresolved, do not hide it inside an implementati
 
 Open questions are allowed, but they must not change the current task's target behavior or downstream contract once implementation starts.
 
+For `Governance Plan` tasks, the same rule applies to governance-boundary choices such as document authority, document role, entry ownership, and classification rules.
+
 ## OpenSpec-Inspired Rules
 
 This repository does not adopt OpenSpec wholesale, but it intentionally borrows a small subset of its strengths:
@@ -92,6 +104,8 @@ In this repository, those ideas map to:
 - `docs/roadmap.md` for active task structure and dependency state
 - `docs/decisions/` for durable conclusions still in force
 - source comments or tests for localized behavioral contracts
+
+`Governance Plan` is the repository's plan type for changing those governance documents directly.
 
 ## Plan Shape
 

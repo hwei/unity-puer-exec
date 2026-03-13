@@ -7,7 +7,7 @@ Authoring rules: `docs/planning.md`
 
 ## Plan Type
 
-Decision Plan | Implementation Plan | Exploration Plan
+Governance Plan | Implementation Plan | Exploration Plan
 
 ## Scope
 
