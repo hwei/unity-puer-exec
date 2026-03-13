@@ -188,7 +188,7 @@
 
 ## T2 Improve Repository Workflow And Planning
 
-- Status: done
+- Status: planning
 - Parent: none
 - Depends on: none
 - Plan: none
@@ -202,3 +202,11 @@
 - Plan: none
 - Done means: workflow and planning rules make agreed constraints explicit, require key downstream-shaping decisions to be resolved before execution planning, and allow subagent review to send work back to discussion
 - Output: docs/workflow.md docs/planning.md docs/plan-template.md
+
+### T2.2 Minimize Agent Token Cost For Documentation Workflow
+
+- Status: planning
+- Parent: T2
+- Depends on: T2.1
+- Plan: docs/plans/T2.2-doc-structure-token-minimization.md
+- Done means: repository documentation is reorganized so an agent can load only the minimum document slice needed for the current workflow state without changing the underlying workflow semantics
