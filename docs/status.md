@@ -1,5 +1,7 @@
 # Status
 
+Use this file only for current focus, blockers, and next steps. For workflow routing, start from `docs/index.md`.
+
 ## Current Focus
 
 - `T1.4.1.1` planning is paused at a committed checkpoint, and workflow rules now separate agreed decisions from execution-time questions more explicitly.

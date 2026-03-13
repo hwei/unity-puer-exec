@@ -12,7 +12,11 @@ This repository is the productized development repository for `unity-puer-exec`.
 
 ## Documentation structure
 
-- `docs/workflow.md` defines the required development sequence.
+- `docs/index.md` is the docs-local router by workflow state.
+- `docs/workflow.md` defines the required development sequence and implementation-time read path.
+- `docs/workflow-closeout.md` defines distillation, retrospective, disposition, and plan-deletion rules.
+- `docs/planning.md` is the planning quickstart.
+- `docs/planning-rules.md` holds deeper planning rationale and subagent-friendly authoring rules.
 - `docs/roadmap.md` tracks active and future work with hierarchical task IDs.
 - `docs/status.md` tracks current focus, blockers, and next steps.
 - `docs/decisions/` stores active decisions still in force.

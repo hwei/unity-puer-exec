@@ -1,5 +1,7 @@
 # Workflow
 
+Use this file for the required repository sequence and for the default read path during planning and implementation.
+
 ## Required Sequence
 
 Repository work should follow this order:
@@ -11,16 +13,41 @@ Repository work should follow this order:
 5. get human review for the plan, then commit the plan
 6. implement the change
 7. validate the change directly
-8. distill stable conclusions into long-lived documents or source comments
+8. distill stable conclusions by following `docs/workflow-closeout.md`
 9. record retrospective findings in the active plan file for human review when execution reveals stable follow-up findings or workflow improvement ideas
 10. get human disposition on any recorded retrospective findings
 11. delete the completed plan file when no retrospective findings remain unresolved
 12. commit the implementation together with the plan deletion
 
+## Read Paths
+
+- Fresh-session orientation:
+  - start in `AGENTS.md`
+  - then use `docs/index.md`
+  - then `docs/status.md`
+- Continuing active work:
+  - start in `docs/status.md`
+  - then `docs/roadmap.md`
+  - then the active plan file when one exists
+- Writing or revising a plan:
+  - read this file first
+  - then `docs/planning.md`
+  - then `docs/plan-template.md`
+  - open `docs/planning-rules.md` only when the quickstart points there
+- Implementing an approved plan:
+  - read this file first
+  - then `docs/roadmap.md`
+  - then the active plan file
+- Closing out a completed task:
+  - switch to `docs/workflow-closeout.md`
+  - then the active plan file
+  - then `docs/roadmap.md` only when a follow-up or output pointer must be updated
+
 ## Plan Rules
 
 - Substantial work should start with a plan file.
-- Plan authoring rules live in `docs/planning.md`.
+- Planning quickstart lives in `docs/planning.md`.
+- Deeper planning authoring rules live in `docs/planning-rules.md`.
 - Planning starts after discussion has already produced the agreed constraints needed to keep execution deterministic.
 - Plan type should follow the task's main output: use `Governance Plan` for project-management documentation, `Implementation Plan` for final product artifacts, and `Exploration Plan` for critical unknowns.
 - Plan file names should use the form `Tx.y-short-slug.md`, for example:
@@ -45,33 +72,6 @@ Repository work should follow this order:
 - Active roadmap tasks should record their current execution plan in a `Plan` field, or `Plan: none` when no executable plan exists yet.
 - Completed roadmap tasks should keep a minimal pointer such as `Output: ...` to the long-lived location that holds the distilled result.
 - `done` and `dropped` tasks may be removed from `docs/roadmap.md` after their stable conclusions have been distilled and any immediate parent-task state updates have been completed.
-
-## Distillation Rules
-
-Before deleting a completed plan, move stable conclusions into the right destination:
-
-- `ReadMe.md` for repository purpose, structure, and quick entry points
-- `docs/roadmap.md` for active and future work
-- `docs/status.md` for current focus, blockers, and next steps
-- `docs/decisions/` for active decisions still in force
-- source comments when the knowledge is local to specific code or tests
-
-## Retrospective Rules
-
-Before deleting a completed plan, the agent should add a brief `Retrospective` section to the active plan file when execution reveals stable follow-up findings or workflow improvement ideas.
-
-- Retrospective findings are discussion inputs, not automatic repository updates.
-- The agent should not modify `docs/roadmap.md`, `docs/workflow.md`, `docs/planning.md`, or other long-lived process documents unilaterally based on retrospective findings.
-- Each retrospective item should state the observation, why it matters, and the suggested next step.
-- Retrospective items remain in the plan until a human explicitly disposes of them.
-- Human disposition may accept, defer, reject, or split the finding into follow-up work.
-- Accepted findings should be reflected in the appropriate long-lived artifact before the plan is deleted.
-- Deferred findings should be preserved in an explicit repo-visible location chosen during human disposition.
-- Rejected findings may remain only as disposed notes in the plan and do not require further repository changes.
-- If a finding is split into follow-up work, the follow-up task and any required roadmap update should be created before the plan is deleted.
-- If execution reveals no retrospective findings, the plan may be deleted without an additional retrospective review step.
-- A completed plan should not be deleted while it still contains unresolved retrospective items.
-- If a newly discovered issue is required to claim the current task is complete, the agent should raise it before treating the task as done.
 
 ## Truth Hierarchy
 
