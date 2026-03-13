@@ -205,8 +205,24 @@
 
 ### T2.2 Minimize Agent Token Cost For Documentation Workflow
 
-- Status: planning
+- Status: dropped
 - Parent: T2
 - Depends on: T2.1
 - Plan: docs/plans/T2.2-doc-structure-token-minimization.md
+- Done means: repository documentation is reorganized so an agent can load only the minimum document slice needed for the current workflow state without changing the underlying workflow semantics
+
+### T2.3 Clarify Decision-Plan Execution Boundaries
+
+- Status: planning
+- Parent: T2
+- Depends on: T2.1
+- Plan: none
+- Done means: workflow and planning rules make it explicit when a task should use a `Decision Plan` instead of an `Implementation Plan`, and clarify when a `Decision Plan` may directly modify long-lived documents without requiring a follow-up implementation task
+
+### T2.4 Minimize Agent Token Cost For Documentation Workflow Under Clarified Planning Rules
+
+- Status: draft
+- Parent: T2
+- Depends on: T2.3
+- Plan: none
 - Done means: repository documentation is reorganized so an agent can load only the minimum document slice needed for the current workflow state without changing the underlying workflow semantics
