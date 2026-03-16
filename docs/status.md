@@ -16,7 +16,7 @@ Use this file only for current focus, blockers, and next steps. For workflow rou
 
 ## Next
 
-- Use `T1.4.4` to implement the formal CLI help surface from `docs/decisions/0007-formal-cli-contract.md`.
+- Use `T1.4.5` to rewrite repository-facing docs so they point to `unity-puer-exec` help and `docs/decisions/0007-formal-cli-contract.md` instead of acting as the primary usage contract.
 - Use `T1.4.6` to add real validation-host CLI integration coverage instead of relying only on protocol-level tests.
 - Use `T1.4.1.2` later to explore whether the CLI should adopt an explicit user-visible session identity model beyond the internal async continuation token/session-marker model.
 - Use `T1.5` to decide whether the final CLI should remain baseline-derived or ship as a more self-contained executable.

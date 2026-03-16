@@ -38,6 +38,78 @@ class UnityPuerExecCliTests(unittest.TestCase):
         args = parser.parse_args(["wait-until-ready"])
         self.assertEqual(args.command, "wait-until-ready")
 
+    def test_top_level_help_renders_formal_sections(self):
+        exit_code, stdout, stderr = unity_puer_exec.run_cli(["--help"])
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(stderr, "")
+        self.assertIn("Overview", stdout)
+        self.assertIn("Commands", stdout)
+        self.assertIn("Global Selector Rules", stdout)
+        self.assertIn("Common Workflows", stdout)
+        self.assertIn("cold-start-exec-and-get-result", stdout)
+        self.assertIn("See `exec --help`.", stdout)
+
+    def test_exec_help_renders_quick_start_more_help_and_workflows(self):
+        exit_code, stdout, stderr = unity_puer_exec.run_cli(["exec", "--help"])
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(stderr, "")
+        self.assertIn("Quick Start", stdout)
+        self.assertIn("More Help", stdout)
+        self.assertIn("Related Workflows", stdout)
+        self.assertIn("`--help-args`", stdout)
+        self.assertIn("`--help-status`", stdout)
+        self.assertIn("cold-start-exec-and-get-result", stdout)
+
+    def test_exec_help_args_renders_argument_template(self):
+        exit_code, stdout, stderr = unity_puer_exec.run_cli(["exec", "--help-args"])
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(stderr, "")
+        self.assertIn("Arguments", stdout)
+        self.assertIn("Selector Rules", stdout)
+        self.assertIn("Timeout Rules", stdout)
+        self.assertIn("`--file <path>`", stdout)
+        self.assertIn("`--code <inline-js>`", stdout)
+
+    def test_get_result_help_status_renders_exit_guidance(self):
+        exit_code, stdout, stderr = unity_puer_exec.run_cli(["get-result", "--help-status"])
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(stderr, "")
+        self.assertIn("Success Statuses", stdout)
+        self.assertIn("Non-success Statuses", stdout)
+        self.assertIn("`session_stale` -> exit 14", stdout)
+        self.assertIn("`missing` -> exit 13", stdout)
+
+    def test_help_example_renders_known_workflow(self):
+        exit_code, stdout, stderr = unity_puer_exec.run_cli(["--help-example", "long-job-and-log-pattern"])
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(stderr, "")
+        self.assertIn("Goal", stdout)
+        self.assertIn("Steps", stdout)
+        self.assertIn("What To Notice", stdout)
+        self.assertIn("fake workload", stdout)
+        self.assertIn("reduces the chance of missing an early log line", stdout)
+
+    def test_help_example_unknown_id_is_usage_error_on_stderr(self):
+        exit_code, stdout, stderr = unity_puer_exec.run_cli(["--help-example", "missing-example"])
+
+        self.assertEqual(exit_code, 2)
+        self.assertEqual(stdout, "")
+        self.assertIn("unknown example id: missing-example", stderr)
+        self.assertIn("available examples:", stderr)
+        self.assertIn("cold-start-exec-and-get-result", stderr)
+
+    def test_deep_help_rejects_extra_execution_arguments(self):
+        exit_code, stdout, stderr = unity_puer_exec.run_cli(["exec", "--help-args", "--project-path", "X:/project"])
+
+        self.assertEqual(exit_code, 2)
+        self.assertEqual(stdout, "")
+        self.assertIn("usage: unity-puer-exec exec [--help | --help-args | --help-status]", stderr)
+
     def test_wait_until_ready_prefers_explicit_project_path(self):
         with mock.patch.dict(os.environ, {unity_session.UNITY_PROJECT_PATH_ENV: "X:/from-env"}, clear=False), mock.patch.object(
             unity_session,

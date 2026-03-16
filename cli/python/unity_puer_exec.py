@@ -8,6 +8,7 @@ import sys
 import uuid
 
 import cli
+import help_surface
 import unity_session
 
 
@@ -21,30 +22,31 @@ EXIT_NOT_STOPPED = 16
 EXIT_UNITY_START_FAILED = 20
 EXIT_UNITY_NOT_READY = 21
 CONTINUATION_TOKEN_VERSION = 1
+HELP_FLAGS = ("--help", "--help-args", "--help-status")
 
 
 def _build_parser():
-    parser = argparse.ArgumentParser(prog="unity-puer-exec")
+    parser = argparse.ArgumentParser(prog="unity-puer-exec", add_help=False)
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    ready_parser = subparsers.add_parser("wait-until-ready")
+    ready_parser = subparsers.add_parser("wait-until-ready", add_help=False)
     _add_selector_args(ready_parser)
     ready_parser.add_argument("--unity-exe-path", default=None)
     ready_parser.add_argument("--ready-timeout-seconds", type=float, default=unity_session.DEFAULT_READY_TIMEOUT_SECONDS)
     ready_parser.add_argument("--activity-timeout-seconds", type=float, default=unity_session.DEFAULT_ACTIVITY_TIMEOUT_SECONDS)
     ready_parser.add_argument("--health-timeout-seconds", type=float, default=unity_session.DEFAULT_HEALTH_TIMEOUT_SECONDS)
 
-    wait_log_parser = subparsers.add_parser("wait-for-log-pattern")
+    wait_log_parser = subparsers.add_parser("wait-for-log-pattern", add_help=False)
     _add_selector_args(wait_log_parser)
     wait_log_parser.add_argument("--pattern", required=True)
     wait_log_parser.add_argument("--timeout-seconds", type=float, default=unity_session.DEFAULT_READY_TIMEOUT_SECONDS)
     wait_log_parser.add_argument("--activity-timeout-seconds", type=float, default=unity_session.DEFAULT_ACTIVITY_TIMEOUT_SECONDS)
     wait_log_parser.add_argument("--health-timeout-seconds", type=float, default=unity_session.DEFAULT_HEALTH_TIMEOUT_SECONDS)
 
-    get_log_source_parser = subparsers.add_parser("get-log-source")
+    get_log_source_parser = subparsers.add_parser("get-log-source", add_help=False)
     _add_selector_args(get_log_source_parser)
 
-    exec_parser = subparsers.add_parser("exec")
+    exec_parser = subparsers.add_parser("exec", add_help=False)
     _add_selector_args(exec_parser)
     exec_parser.add_argument("--unity-exe-path", default=None)
     exec_parser.add_argument("--wait-timeout-ms", type=int, default=cli.DEFAULT_WAIT_TIMEOUT_MS)
@@ -53,11 +55,11 @@ def _build_parser():
     script_source.add_argument("--stdin", action="store_true")
     script_source.add_argument("--code")
 
-    get_result_parser = subparsers.add_parser("get-result")
+    get_result_parser = subparsers.add_parser("get-result", add_help=False)
     get_result_parser.add_argument("--continuation-token", required=True)
     get_result_parser.add_argument("--wait-timeout-ms", type=int, default=cli.DEFAULT_WAIT_TIMEOUT_MS)
 
-    ensure_stopped_parser = subparsers.add_parser("ensure-stopped")
+    ensure_stopped_parser = subparsers.add_parser("ensure-stopped", add_help=False)
     _add_selector_args(ensure_stopped_parser)
     ensure_stopped_parser.add_argument("--timeout-seconds", type=float, default=unity_session.DEFAULT_STOP_TIMEOUT_SECONDS)
     stop_mode = ensure_stopped_parser.add_mutually_exclusive_group()
@@ -74,6 +76,10 @@ def _add_selector_args(parser):
 
 def _emit_payload(payload):
     return json.dumps(payload, ensure_ascii=True)
+
+
+def _usage_text_error(message):
+    return 2, "", message
 
 
 def _usage_error(message, status="failed"):
@@ -427,7 +433,51 @@ def _run_command(args):
         return 1, _emit_payload(payload), ""
 
 
+def _format_available_examples():
+    return ", ".join(help_surface.available_example_ids())
+
+
+def _handle_top_level_help(argv):
+    if argv == ["--help"]:
+        return 0, help_surface.render_top_level_help(), ""
+    if not argv or argv[0] != "--help-example":
+        return None
+    if len(argv) != 2:
+        return _usage_text_error(
+            "usage: unity-puer-exec --help-example <example-id>\navailable examples: {}".format(_format_available_examples())
+        )
+    example_id = argv[1]
+    if example_id not in help_surface.available_example_ids():
+        return _usage_text_error(
+            "unknown example id: {}\navailable examples: {}".format(example_id, _format_available_examples())
+        )
+    return 0, help_surface.render_workflow_example(example_id), ""
+
+
+def _handle_command_help(argv):
+    if not argv or argv[0] not in help_surface.COMMANDS:
+        return None
+    command = argv[0]
+    if len(argv) == 2 and argv[1] == "--help":
+        return 0, help_surface.render_command_help(command), ""
+    if len(argv) == 2 and argv[1] == "--help-args":
+        return 0, help_surface.render_command_args_help(command), ""
+    if len(argv) == 2 and argv[1] == "--help-status":
+        return 0, help_surface.render_command_status_help(command), ""
+    if any(token in HELP_FLAGS for token in argv[1:]):
+        return _usage_text_error(
+            "usage: unity-puer-exec {} [--help | --help-args | --help-status]".format(command)
+        )
+    return None
+
+
 def run_cli(argv):
+    help_result = _handle_top_level_help(argv)
+    if help_result is not None:
+        return help_result
+    help_result = _handle_command_help(argv)
+    if help_result is not None:
+        return help_result
     parser = _build_parser()
     args = parser.parse_args(argv)
     return _run_command(args)

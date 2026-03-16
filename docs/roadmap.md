@@ -176,11 +176,12 @@
 
 #### T1.4.4 Implement Formal Help Surface
 
-- Status: draft
+- Status: done
 - Parent: T1.4
 - Depends on: T1.4.3
-- Plan: docs/plans/T1.4.4-formal-help-surface.md
+- Plan: none
 - Done means: `unity-puer-exec --help` and per-command `--help` fully implement the help contract defined in `docs/decisions/0007-formal-cli-contract.md`, so an AI agent can discover workflows, parameter rules, key machine states, and exit codes without relying on repository skill docs
+- Output: cli/python/help_surface.py cli/python/unity_puer_exec.py tests/test_unity_session_cli.py
 
 #### T1.4.5 Rewrite Repository Docs To Point To The CLI
 
