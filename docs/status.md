@@ -4,7 +4,7 @@ Use this file only for current focus, blockers, and next steps. For workflow rou
 
 ## Current Focus
 
-- `T1.4.1.1` planning is paused at a committed checkpoint, and workflow rules now separate agreed decisions from execution-time questions more explicitly.
+- `T1.4.1.1` is complete, and the revised CLI contract now records the selector model, `wait-until-ready`, `get-log-source`, and `ensure-stopped` as governance-level guidance for the implementation baseline.
 
 ## In Progress
 
@@ -16,7 +16,6 @@ Use this file only for current focus, blockers, and next steps. For workflow rou
 
 ## Next
 
-- Resume `T1.4.1.1` under the tightened planning rules.
 - Use `T1.4.1.2` later to explore whether the CLI should adopt explicit session identity beyond the current best-effort selector model.
 - Use `T1.4.2` to establish a product-owned CLI baseline that follows the revised `docs/decisions/0007-formal-cli-contract.md`.
 - Use `T1.4.3` to formalize `--help`, stdout-first machine output, and transitional alias behavior on that baseline.

@@ -132,11 +132,12 @@
 
 ##### T1.4.1.1 Revise CLI Session Discovery And Lifecycle Contract
 
-- Status: planning
+- Status: done
 - Parent: T1.4.1
 - Depends on: T1.4.1
-- Plan: docs/plans/T1.4.1.1-cli-session-discovery-and-lifecycle.md
+- Plan: none
 - Done means: the formal CLI contract is revised so session endpoint discovery, Unity launch responsibility, and command lifecycle behavior are explicit enough to guide `T1.4.2` without preserving the current `--base-url` and `--keep-unity` assumptions by accident
+- Output: docs/decisions/0007-formal-cli-contract.md
 
 ##### T1.4.1.2 Explore Session-Aware CLI Contract
 
