@@ -8,9 +8,9 @@ import urllib.request
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-SKILL_DIR = REPO_ROOT / ".claude" / "skills" / "unity-puer-exec"
-if str(SKILL_DIR) not in sys.path:
-    sys.path.insert(0, str(SKILL_DIR))
+CLI_DIR = REPO_ROOT / "cli" / "python"
+if str(CLI_DIR) not in sys.path:
+    sys.path.insert(0, str(CLI_DIR))
 
 import cli  # type: ignore
 

@@ -4,7 +4,7 @@ Use this file only for current focus, blockers, and next steps. For workflow rou
 
 ## Current Focus
 
-- `T1.4.1.1` is complete, and the revised CLI contract now records the selector model, `wait-until-ready`, `get-log-source`, and `ensure-stopped` as governance-level guidance for the implementation baseline.
+- `T1.4.2` is complete: the repo-owned Python CLI baseline now lives under `cli/python/`, and the next implementation focus is closing the remaining formal contract gaps under `T1.4.3`.
 
 ## In Progress
 
@@ -17,7 +17,7 @@ Use this file only for current focus, blockers, and next steps. For workflow rou
 ## Next
 
 - Use `T1.4.1.2` later to explore whether the CLI should adopt explicit session identity beyond the current best-effort selector model.
-- Use `T1.4.2` to establish a product-owned CLI baseline that follows the revised `docs/decisions/0007-formal-cli-contract.md`.
-- Use `T1.4.3` to formalize `--help`, stdout-first machine output, and transitional alias behavior on that baseline.
+- Use `T1.4.3` to fully implement the non-help portions of `docs/decisions/0007-formal-cli-contract.md` on the repo-owned baseline, including machine states such as `session_missing` and `session_stale`.
+- Use `T1.4.4` to implement the formal CLI help surface from `docs/decisions/0007-formal-cli-contract.md`.
 - Use `T1.5` to decide whether the final CLI should remain baseline-derived or ship as a more self-contained executable.
 - Reuse `docs/decisions/0006-minimal-host-validation-proof.md` when the repo later needs a repeatable minimal host proof path.

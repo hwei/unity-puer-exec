@@ -8,7 +8,8 @@
 - the formal CLI product line, targeting `unity-puer-exec`
 - current Unity package source under `packages/com.txcombo.unity-puer-exec/`
 - validation-host wiring helper under `tools/prepare_validation_host.py`
-- transitional runtime implementation under `.claude/skills/unity-puer-exec/`
+- repo-owned Python CLI baseline under `cli/python/`
+- transitional compatibility wrappers under `.claude/skills/unity-puer-exec/`
 - repository-level docs under `docs/`
 - repository-level tests under `tests/`
 
@@ -36,4 +37,5 @@
 - `packages/com.txcombo.unity-puer-exec/`: formal Unity package home
 - `tools/prepare_validation_host.py`: local validation-host manifest rewiring helper
 - `tests/`: repository-level test entry points
-- `.claude/skills/unity-puer-exec/`: current transitional runtime code location
+- `cli/python/`: repo-owned Python CLI baseline location
+- `.claude/skills/unity-puer-exec/`: transitional compatibility wrapper location
