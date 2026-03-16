@@ -199,6 +199,30 @@
 - Plan: none
 - Done means: the repository has at least one repeatable integration validation path that runs the product-owned CLI against the validation host consuming the local `com.txcombo.unity-puer-exec` package, proving the formal CLI contract against a real Unity-side execution service instead of a fake server, including at least one direct `exec`, one `exec -> running -> get-result --continuation-token` flow, and one non-exec command such as `get-log-source` or `ensure-stopped`
 
+#### T1.4.7 Align Empty Invocation With Top-Level Help Contract
+
+- Status: draft
+- Parent: T1.4
+- Depends on: T1.4.4
+- Plan: none
+- Done means: invoking `unity-puer-exec` with no arguments follows the same formal discovery contract as `unity-puer-exec --help`, so agents do not see two conflicting entry behaviors for the product CLI surface
+
+#### T1.4.8 Make `wait-until-ready` A True `exec` Alias
+
+- Status: draft
+- Parent: T1.4
+- Depends on: T1.4.3 T1.4.4
+- Plan: none
+- Done means: `wait-until-ready` is no longer only a parallel management-path implementation that shares readiness internals with `exec`; instead it is a true alias or thin wrapper over the existing `exec` readiness path, and the CLI contract, payload shape, help text, and tests all reflect that tighter ownership model explicitly
+
+#### T1.4.9 Make Help Examples Self-Contained
+
+- Status: draft
+- Parent: T1.4
+- Depends on: T1.4.4
+- Plan: none
+- Done means: CLI workflow examples no longer rely on placeholder script paths alone; when an example depends on a script such as `request-editor-exit-via-exec`, the help surface includes the minimal example script body or another equally self-contained contract description so an agent can execute the workflow without guessing hidden file contents
+
 ### T1.5 Decide CLI Packaging Strategy
 
 - Status: draft
