@@ -179,7 +179,7 @@
 - Status: draft
 - Parent: T1.4
 - Depends on: T1.4.3
-- Plan: none
+- Plan: docs/plans/T1.4.4-formal-help-surface.md
 - Done means: `unity-puer-exec --help` and per-command `--help` fully implement the help contract defined in `docs/decisions/0007-formal-cli-contract.md`, so an AI agent can discover workflows, parameter rules, key machine states, and exit codes without relying on repository skill docs
 
 #### T1.4.5 Rewrite Repository Docs To Point To The CLI
