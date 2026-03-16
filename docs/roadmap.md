@@ -138,6 +138,14 @@
 - Plan: docs/plans/T1.4.1.1-cli-session-discovery-and-lifecycle.md
 - Done means: the formal CLI contract is revised so session endpoint discovery, Unity launch responsibility, and command lifecycle behavior are explicit enough to guide `T1.4.2` without preserving the current `--base-url` and `--keep-unity` assumptions by accident
 
+##### T1.4.1.2 Explore Session-Aware CLI Contract
+
+- Status: draft
+- Parent: T1.4.1
+- Depends on: T1.4.1.1
+- Plan: none
+- Done means: the roadmap records follow-up work to explore whether the CLI should grow an explicit session identity model so direct-service observation and later log/result flows can make stronger same-session guarantees than the best-effort selector model adopted in `T1.4.1.1`
+
 #### T1.4.2 Establish Product-Owned CLI Baseline
 
 - Status: draft
