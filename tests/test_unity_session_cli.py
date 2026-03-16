@@ -50,6 +50,16 @@ class UnityPuerExecCliTests(unittest.TestCase):
         self.assertIn("cold-start-exec-and-get-result", stdout)
         self.assertIn("See `exec --help`.", stdout)
 
+    def test_empty_invocation_matches_top_level_help_contract(self):
+        empty_exit_code, empty_stdout, empty_stderr = unity_puer_exec.run_cli([])
+        help_exit_code, help_stdout, help_stderr = unity_puer_exec.run_cli(["--help"])
+
+        self.assertEqual(empty_exit_code, 0)
+        self.assertEqual(empty_stderr, "")
+        self.assertEqual(help_exit_code, 0)
+        self.assertEqual(help_stderr, "")
+        self.assertEqual(empty_stdout, help_stdout)
+
     def test_exec_help_renders_quick_start_more_help_and_workflows(self):
         exit_code, stdout, stderr = unity_puer_exec.run_cli(["exec", "--help"])
 

@@ -438,9 +438,9 @@ def _format_available_examples():
 
 
 def _handle_top_level_help(argv):
-    if argv == ["--help"]:
+    if not argv or argv == ["--help"]:
         return 0, help_surface.render_top_level_help(), ""
-    if not argv or argv[0] != "--help-example":
+    if argv[0] != "--help-example":
         return None
     if len(argv) != 2:
         return _usage_text_error(
