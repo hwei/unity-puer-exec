@@ -5,6 +5,7 @@ Use this file only to route to the next governance document for the current work
 ## Common Reads
 
 - Fresh-session orientation:
+  - `docs/workflow.md`
   - `docs/status.md`
   - `docs/roadmap.md`
   - if the current task will lead to substantial implementation, confirm its active `Plan` field before proceeding
@@ -12,6 +13,11 @@ Use this file only to route to the next governance document for the current work
   - `docs/status.md`
   - `docs/roadmap.md`
   - the active plan file when one exists
+- Executing a roadmap task:
+  - `docs/workflow.md`
+  - `docs/roadmap.md`
+  - confirm the current task has an active executable `Plan`; if not, return to planning instead of implementing
+  - then open the active plan file
 - Writing or revising a plan:
   - `docs/workflow.md`
   - `docs/planning.md`
@@ -25,6 +31,10 @@ Use this file only to route to the next governance document for the current work
   - `docs/workflow-closeout.md`
   - the active plan file
   - `docs/roadmap.md` only when a follow-up task or output pointer must be updated
+- Before commit after roadmap work:
+  - `docs/workflow-closeout.md`
+  - `docs/roadmap.md`
+  - confirm whether the current task needs a state, `Plan`, or `Output` update before treating the task execution as closed
 
 ## Canonical Roles
 
