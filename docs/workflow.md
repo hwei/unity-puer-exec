@@ -70,6 +70,7 @@ Repository work should follow this order:
 - If a newly discovered issue is required to finish the current task, refine it under the current parent before implementation continues.
 - Material changes to task scope, hierarchy, or dependencies should be reflected in `docs/roadmap.md` before writing or revising the execution plan.
 - Active roadmap tasks should record their current execution plan in a `Plan` field, or `Plan: none` when no executable plan exists yet.
+- If a task closes by producing a durable decision that a direct successor must follow during implementation, the successor task description must be updated in `docs/roadmap.md` before the current task is treated as fully closed.
 - Completed roadmap tasks should keep a minimal pointer such as `Output: ...` to the long-lived location that holds the distilled result.
 - `done` and `dropped` tasks may be removed from `docs/roadmap.md` after their stable conclusions have been distilled and any immediate parent-task state updates have been completed.
 

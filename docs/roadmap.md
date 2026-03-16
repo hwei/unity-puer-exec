@@ -263,3 +263,12 @@
 - Depends on: T2.3
 - Plan: none
 - Done means: `ReadMe.md` serves final users rather than repository developers, and developer guidance consistently points to `AGENTS.md` instead of treating `ReadMe.md` as the primary development entry
+
+### T2.6 Propagate Durable Decisions Into Successor Task Descriptions
+
+- Status: done
+- Parent: T2
+- Depends on: T2.1 T2.3
+- Plan: none
+- Done means: when a task produces a durable decision that a direct successor must follow, workflow and planning rules require the successor task's roadmap description to be updated so a fresh session can see that decision as an implementation input without reconstructing it from dependency edges alone
+- Output: docs/workflow.md docs/planning.md

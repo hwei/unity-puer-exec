@@ -74,6 +74,8 @@ Open questions are allowed, but they must not change the current task's target b
 
 For `Governance Plan` tasks, the same rule applies to governance-boundary choices such as document authority, document role, entry ownership, and classification rules.
 
+When a task's output is a durable decision that a direct successor must treat as an implementation input, update the direct successor task description in `docs/roadmap.md` explicitly. A dependency edge or `Output:` pointer alone is not enough if a fresh session could otherwise miss that required input.
+
 ## Plan Shape
 
 Plans should usually contain these sections:
