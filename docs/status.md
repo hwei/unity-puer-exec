@@ -5,6 +5,7 @@ Use this file only for current focus, blockers, and next steps. For workflow rou
 ## Current Focus
 
 - `T2.7` is complete: the repository entry path now makes the plan-first rule explicit in `AGENTS.md`, `docs/index.md`, and `docs/workflow.md`, and `docs/workflow-closeout.md` now defines retroactive-plan recovery as an exception-only closeout path.
+- `T1.4.10` is complete: the misleading legacy direct-exec shell module/test names are gone, the retained shared transport layer now lives under `cli/python/direct_exec_client.py`, and formal CLI coverage remains centered on `unity_puer_exec.py`.
 
 ## In Progress
 

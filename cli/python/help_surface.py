@@ -1,4 +1,4 @@
-import cli
+import direct_exec_client
 
 
 COMMANDS = (
@@ -196,7 +196,7 @@ COMMAND_HELP = {
             ],
             "failure": [
                 ("address_conflict", 2, "both selectors were provided; choose exactly one."),
-                ("not_available", cli.EXIT_NOT_AVAILABLE, "the direct execution target could not be reached."),
+                ("not_available", direct_exec_client.EXIT_NOT_AVAILABLE, "the direct execution target could not be reached."),
                 ("unity_start_failed", EXIT_UNITY_START_FAILED, "Unity could not be launched for the selected project."),
                 ("unity_stalled", EXIT_UNITY_NOT_READY, "readiness stopped making progress before execution could proceed."),
                 ("unity_not_ready", EXIT_UNITY_NOT_READY, "Unity did not become ready before execution could proceed."),
@@ -226,11 +226,11 @@ COMMAND_HELP = {
                 "`running`: the job is still running; continue with the same `continuation_token`.",
             ],
             "failure": [
-                ("compiling", cli.EXIT_COMPILING, "the target is compiling and cannot satisfy the request yet."),
-                ("not_available", cli.EXIT_NOT_AVAILABLE, "the continuation target is not reachable right now."),
-                ("missing", cli.EXIT_MISSING, "the async job is no longer available on the continuation target."),
-                ("session_missing", cli.EXIT_SESSION_STATE, "the target no longer exposes the session continuity information needed for safe continuation."),
-                ("session_stale", cli.EXIT_SESSION_STATE, "the target session changed since the token was issued, so same-session continuation is unsafe."),
+                ("compiling", direct_exec_client.EXIT_COMPILING, "the target is compiling and cannot satisfy the request yet."),
+                ("not_available", direct_exec_client.EXIT_NOT_AVAILABLE, "the continuation target is not reachable right now."),
+                ("missing", direct_exec_client.EXIT_MISSING, "the async job is no longer available on the continuation target."),
+                ("session_missing", direct_exec_client.EXIT_SESSION_STATE, "the target no longer exposes the session continuity information needed for safe continuation."),
+                ("session_stale", direct_exec_client.EXIT_SESSION_STATE, "the target session changed since the token was issued, so same-session continuation is unsafe."),
                 ("failed", 1, "the token was malformed or another unexpected command failure occurred."),
             ],
         },

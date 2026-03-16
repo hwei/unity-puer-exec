@@ -233,6 +233,14 @@
 - Plan: none
 - Done means: once the end-to-end tool loop is complete enough to validate realistic scripts, the remaining illustrative workflow examples such as `cold-start-exec-and-get-result` and `long-job-and-log-pattern` are updated from placeholder file paths to runnable, empirically validated example snippets and tests lock the resulting contract
 
+#### T1.4.10 Clarify Legacy Direct-Exec Client Ownership
+
+- Status: done
+- Parent: T1.4
+- Depends on: T1.4.3 T1.4.4
+- Plan: none
+- Done means: the legacy direct `/exec` and `/get-result` transport layer no longer presents itself as the formal `unity-puer-exec` CLI entry, obsolete shell-only code is removed, file names and tests clearly describe the remaining module as a shared direct execution client, and product-facing CLI coverage stays centered on the formal contract implementation
+- Output: cli/python/direct_exec_client.py tests/test_direct_exec_client.py
 ### T1.5 Decide CLI Packaging Strategy
 
 - Status: draft

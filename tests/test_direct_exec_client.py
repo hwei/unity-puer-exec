@@ -12,7 +12,7 @@ CLI_DIR = REPO_ROOT / "cli" / "python"
 if str(CLI_DIR) not in sys.path:
     sys.path.insert(0, str(CLI_DIR))
 
-import cli  # type: ignore
+import direct_exec_client  # type: ignore
 
 
 class FakeTransport:
@@ -30,7 +30,7 @@ class TimeoutTransport:
         raise socket.timeout()
 
 
-class CliTests(unittest.TestCase):
+class DirectExecClientTests(unittest.TestCase):
     def test_http_transport_disables_proxy_for_localhost(self):
         response = mock.Mock()
         response.read.return_value = b'{"ok": true, "status": "ready"}'
@@ -40,7 +40,7 @@ class CliTests(unittest.TestCase):
         opener.open.return_value = response
 
         with mock.patch.object(urllib.request, "build_opener", return_value=opener) as build_opener:
-            transport = cli.HttpTransport()
+            transport = direct_exec_client.HttpTransport()
             payload = transport.post_json(
                 "http://127.0.0.1:55231/health",
                 {"ping": True},
@@ -52,7 +52,13 @@ class CliTests(unittest.TestCase):
         self.assertIsInstance(proxy_handler, urllib.request.ProxyHandler)
         self.assertEqual(proxy_handler.proxies, {})
 
-    def test_exec_completed_prints_current_job_and_spawned_jobs(self):
+    def test_request_timeout_adds_http_buffer(self):
+        self.assertEqual(
+            direct_exec_client._request_timeout_seconds(1500),
+            6.5,
+        )
+
+    def test_invoke_command_completed_payload_stays_on_stdout(self):
         transport = FakeTransport([
             {
                 "ok": True,
@@ -63,16 +69,15 @@ class CliTests(unittest.TestCase):
             }
         ])
 
-        exit_code, stdout, stderr = cli.run_cli(
-            [
-                "exec",
-                "--base-url",
-                "http://127.0.0.1:55231",
-                "--wait-timeout-ms",
-                "1500",
-                "--code",
-                "return 1 + 1;",
-            ],
+        exit_code, stdout, stderr = direct_exec_client.invoke_command(
+            "exec",
+            "http://127.0.0.1:55231",
+            {
+                "id": "req-1",
+                "code": "return 1 + 1;",
+                "wait_timeout_ms": 1500,
+            },
+            1500,
             transport=transport,
         )
 
@@ -84,7 +89,7 @@ class CliTests(unittest.TestCase):
                 (
                     "http://127.0.0.1:55231/exec",
                     {
-                        "id": mock.ANY,
+                        "id": "req-1",
                         "code": "return 1 + 1;",
                         "wait_timeout_ms": 1500,
                     },
@@ -97,7 +102,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(body["job_id"], "exec-1")
         self.assertEqual(body["spawn_job_ids"], ["job-1", "job-2"])
 
-    def test_exec_running_returns_dedicated_exit_code(self):
+    def test_invoke_command_running_returns_dedicated_exit_code(self):
         transport = FakeTransport([
             {
                 "ok": True,
@@ -107,16 +112,19 @@ class CliTests(unittest.TestCase):
             }
         ])
 
-        exit_code, stdout, stderr = cli.run_cli(
-            [
-                "exec",
-                "--code",
-                "await host.delayMs(5000); return 42;",
-            ],
+        exit_code, stdout, stderr = direct_exec_client.invoke_command(
+            "exec",
+            "http://127.0.0.1:55231",
+            {
+                "id": "req-2",
+                "code": "await host.delayMs(5000); return 42;",
+                "wait_timeout_ms": 1000,
+            },
+            1000,
             transport=transport,
         )
 
-        self.assertEqual(exit_code, cli.EXIT_RUNNING)
+        self.assertEqual(exit_code, direct_exec_client.EXIT_RUNNING)
         self.assertEqual(stderr, "")
         body = json.loads(stdout)
         self.assertEqual(body["status"], "running")
@@ -133,7 +141,7 @@ class CliTests(unittest.TestCase):
             }
         ])
 
-        exit_code, stdout, stderr = cli.invoke_command(
+        exit_code, stdout, stderr = direct_exec_client.invoke_command(
             "get-result",
             "http://127.0.0.1:55231",
             {"job_id": "job-2", "wait_timeout_ms": 800},
@@ -141,7 +149,7 @@ class CliTests(unittest.TestCase):
             transport=transport,
         )
 
-        self.assertEqual(exit_code, cli.EXIT_SESSION_STATE)
+        self.assertEqual(exit_code, direct_exec_client.EXIT_SESSION_STATE)
         self.assertEqual(stderr, "")
         body = json.loads(stdout)
         self.assertEqual(body["status"], "session_stale")
@@ -155,18 +163,15 @@ class CliTests(unittest.TestCase):
             }
         ])
 
-        exit_code, stdout, stderr = cli.run_cli(
-            [
-                "get-result",
-                "--job-id",
-                "job-missing",
-                "--wait-timeout-ms",
-                "800",
-            ],
+        exit_code, stdout, stderr = direct_exec_client.invoke_command(
+            "get-result",
+            "http://127.0.0.1:55231",
+            {"job_id": "job-missing", "wait_timeout_ms": 800},
+            800,
             transport=transport,
         )
 
-        self.assertEqual(exit_code, cli.EXIT_MISSING)
+        self.assertEqual(exit_code, direct_exec_client.EXIT_MISSING)
         self.assertEqual(stderr, "")
         body = json.loads(stdout)
         self.assertEqual(body["status"], "missing")
@@ -183,12 +188,15 @@ class CliTests(unittest.TestCase):
             }
         ])
 
-        exit_code, stdout, stderr = cli.run_cli(
-            [
-                "exec",
-                "--code",
-                "throw new Error('boom')",
-            ],
+        exit_code, stdout, stderr = direct_exec_client.invoke_command(
+            "exec",
+            "http://127.0.0.1:55231",
+            {
+                "id": "req-3",
+                "code": "throw new Error('boom')",
+                "wait_timeout_ms": 1000,
+            },
+            1000,
             transport=transport,
         )
 
@@ -199,16 +207,19 @@ class CliTests(unittest.TestCase):
         self.assertEqual(body["error"], "boom")
 
     def test_socket_timeout_returns_not_available_payload(self):
-        exit_code, stdout, stderr = cli.run_cli(
-            [
-                "exec",
-                "--code",
-                "return 1;",
-            ],
+        exit_code, stdout, stderr = direct_exec_client.invoke_command(
+            "exec",
+            "http://127.0.0.1:55231",
+            {
+                "id": "req-4",
+                "code": "return 1;",
+                "wait_timeout_ms": 1000,
+            },
+            1000,
             transport=TimeoutTransport(),
         )
 
-        self.assertEqual(exit_code, cli.EXIT_NOT_AVAILABLE)
+        self.assertEqual(exit_code, direct_exec_client.EXIT_NOT_AVAILABLE)
         self.assertEqual(stderr, "")
         body = json.loads(stdout)
         self.assertEqual(body["status"], "not_available")

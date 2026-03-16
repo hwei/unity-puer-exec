@@ -8,7 +8,7 @@ import subprocess
 import time
 from pathlib import Path
 
-import cli
+import direct_exec_client
 
 
 UNITY_PROJECT_PATH_ENV = "UNITY_PROJECT_PATH"
@@ -159,7 +159,7 @@ def _is_pid_running(pid):
 
 
 def _probe_health(base_url, timeout_seconds):
-    transport = cli.HttpTransport()
+    transport = direct_exec_client.HttpTransport()
     health_url = base_url.rstrip("/") + "/health"
     try:
         payload = transport.post_json(health_url, {}, timeout_seconds)
@@ -571,7 +571,7 @@ def wait_ready_with_activity(
 
 def ensure_session_ready(
     project_path=None,
-    base_url=cli.DEFAULT_BASE_URL,
+    base_url=direct_exec_client.DEFAULT_BASE_URL,
     unity_exe_path=None,
     ready_timeout_seconds=DEFAULT_READY_TIMEOUT_SECONDS,
     activity_timeout_seconds=DEFAULT_ACTIVITY_TIMEOUT_SECONDS,
@@ -645,7 +645,7 @@ def get_log_source(project_path=None, base_url=None):
 
     session = UnitySession(
         owner="observation",
-        base_url=(base_url or cli.DEFAULT_BASE_URL),
+        base_url=(base_url or direct_exec_client.DEFAULT_BASE_URL),
         project_path=resolved_project_path,
         unity_pid=None,
         launched=False,
@@ -670,7 +670,7 @@ def create_observation_session(project_path=None, base_url=None):
     resolved_project_path = resolve_project_path(project_path)
     session_data = read_session_artifact(resolved_project_path)
     unity_pid = None
-    effective_base_url = base_url or cli.DEFAULT_BASE_URL
+    effective_base_url = base_url or direct_exec_client.DEFAULT_BASE_URL
     owner = "observation"
     if session_data is not None:
         effective_base_url = session_data.get("base_url") or effective_base_url
@@ -711,7 +711,7 @@ def ensure_stopped(project_path=None, base_url=None, mode="inspect", timeout_sec
     session_data = read_session_artifact(resolved_project_path)
     session = UnitySession(
         owner="project_control",
-        base_url=(session_data or {}).get("base_url", cli.DEFAULT_BASE_URL),
+        base_url=(session_data or {}).get("base_url", direct_exec_client.DEFAULT_BASE_URL),
         project_path=resolved_project_path,
         unity_pid=(session_data or {}).get("unity_pid"),
         launched=False,

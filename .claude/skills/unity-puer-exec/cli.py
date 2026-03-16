@@ -4,8 +4,8 @@ from pathlib import Path
 
 
 def _load_product_module():
-    module_path = Path(__file__).resolve().parents[3] / "cli" / "python" / "cli.py"
-    spec = importlib.util.spec_from_file_location("unity_puer_exec_product_cli", module_path)
+    module_path = Path(__file__).resolve().parents[3] / "cli" / "python" / "direct_exec_client.py"
+    spec = importlib.util.spec_from_file_location("unity_puer_exec_product_direct_exec_client", module_path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
