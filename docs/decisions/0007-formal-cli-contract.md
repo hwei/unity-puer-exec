@@ -62,10 +62,7 @@ Rules:
 - additional fields are non-contractual best-effort data unless a later decision promotes them
 - the CLI must not trust a discovered endpoint blindly; later implementation should validate reachability before treating the artifact as live
 
-Machine-readable discovery outcomes that remain part of the formal surface include:
-
-- `session_missing`
-- `session_stale`
+Project-scoped session discovery remains separate from async continuation. Missing or stale discovery artifacts may still matter for project-scoped command behavior, but the formal async continuation states `session_missing` and `session_stale` are reserved for token-driven continuation under `get-result`.
 
 This revision does not introduce an explicit CLI session identity model. Stronger same-session guarantees for direct-service observation are deferred to follow-up work.
 
@@ -180,28 +177,66 @@ Rules:
 
 - in `--project-path` mode, `exec` may implicitly prepare Unity enough to satisfy the request
 - in `--base-url` mode, `exec` targets an already chosen direct service and does not own Unity launch
+- when `exec` returns a continuable running result, it must also return `continuation_token`
 
 Success results:
 
 - `status = "completed"`
 - `status = "running"`
 
+### Async Continuation Model
+
+Async continuation is token-driven rather than selector-driven.
+
+Formal continuation rules:
+
+- `exec` remains selector-driven
+- `get-result` is continuation-token driven and takes no selector inputs
+- `continuation_token` must be self-sufficient for continuation routing
+- `continuation_token` is the only formal continuation input for `get-result`
+- legacy `get-result --base-url --job-id` is outside the formal contract in this revision
+
+Encoding and shape rules:
+
+- `continuation_token` is an opaque string for callers
+- the token is encoded as base64url UTF-8 JSON
+- internal token field layout is not contractual except for the minimum semantic content listed here
+- the minimum semantic content carried by the token must include:
+  - `v` token version
+  - continuation target routing information
+  - `job_id`
+  - `session_marker`
+
+Continuity-proof rules:
+
+- `session_marker` is the async continuation proof field
+- the Unity-side execution service generates `session_marker` when the execution service/listener starts
+- `session_marker` remains stable only for one continuity-preserving execution-service lifetime
+- if the execution service/listener restarts, or any lifecycle event invalidates prior in-memory job continuity, a new `session_marker` must be generated
+- `get-result` continuity checks compare the token-carried `session_marker` against the currently reached execution service's `session_marker`
+
 ### `get-result`
 
 Purpose:
 
-- poll a previously returned async job identifier until a result is available or a machine state prevents completion
+- poll a previously returned async continuation token until a result is available or a machine state prevents completion
 
 Formal inputs:
 
-- `--base-url`
-- `--job-id`
+- `--continuation-token`
 - `--wait-timeout-ms`
 
 Rules:
 
+- `get-result` takes no selector inputs
+- the continuation token alone supplies routing and continuity information
 - `get-result` does not restart, reprovision, or rediscover Unity
-- if the underlying service continuity required by the job is gone, the command must report that machine state instead of silently creating a new session
+- invalid or malformed continuation token input is a CLI usage error
+- if the continuation target encoded by the token is unreachable or cannot answer, the command must report `not_available`
+- if the continuation target can answer but cannot recover the originating session identified by the token, the command must report `session_missing`
+- if the continuation target is reachable but its current `session_marker` does not match the token's originating `session_marker`, the command must report `session_stale`
+- if the continuation target still matches the originating session and the requested job is absent, the command must report `missing`
+- if the underlying service continuity required by the token is gone, the command must report that machine state instead of silently creating a new session
 
 Success result:
 
@@ -278,6 +313,14 @@ General rules:
 - timeout inputs in the formal surface must be positive values
 - selector exclusivity is part of the formal surface and should not be left to incidental implementation behavior
 
+Async continuation rules:
+
+- `get-result` uses `--continuation-token` rather than selector inputs
+- `continuation_token` is the response field name for continuable `exec` results
+- `--continuation-token` is the request field name for `get-result`
+- malformed continuation token input is a CLI usage error
+- callers must treat continuation tokens as opaque values rather than as a stable decoded schema
+
 Ownership rules:
 
 - `--unity-exe-path` belongs only to project-scoped commands that may prepare Unity
@@ -340,8 +383,6 @@ Expected non-success machine-state shape:
 
 - `ok = false`
 - `status` is one of:
-  - `session_missing`
-  - `session_stale`
   - `address_conflict`
   - `no_observation_target`
   - `not_stopped`
@@ -364,6 +405,7 @@ Unexpected failure shape:
 - `ok`
 - `status`
 - optional `job_id`
+- optional `continuation_token`
 - optional `result`
 - optional `spawn_job_ids`
 - optional `error`
@@ -373,6 +415,7 @@ Stability rules:
 
 - `ok` and `status` are always stable
 - `job_id` is stable when the command refers to a concrete job
+- `continuation_token` is stable when the command returns a continuable running result
 - `result` is stable only as an optional container for host-returned execution output; its nested shape remains owned by the Unity-side execution protocol
 - `spawn_job_ids` is optional and stable only as a list of additional async job identifiers when present
 
@@ -380,6 +423,7 @@ Success and expected machine-state payloads remain on stdout:
 
 - `exec`:
   - `status = "completed"` or `status = "running"`
+  - `continuation_token` is included when `status = "running"`
 - `get-result`:
   - `status = "completed"`, `status = "running"`, `status = "compiling"`, `status = "missing"`, `status = "not_available"`, `status = "session_missing"`, or `status = "session_stale"`
 
@@ -399,7 +443,7 @@ The baseline exit-code model is:
 - `11`: target is compiling and cannot satisfy the request yet
 - `12`: target service is not available
 - `13`: requested async job is missing
-- `14`: session discovery is missing or stale for a non-launching command
+- `14`: async continuation session is missing or stale
 - `15`: no eligible observation target exists
 - `16`: target is not stopped under `ensure-stopped`
 - `20`: Unity launch failed
@@ -417,7 +461,7 @@ Top-level `unity-puer-exec --help` must communicate:
 - the flat command list
 - one typical project-scoped workflow:
   - run `exec --project-path ...`
-  - if the job is still running, run `get-result`
+  - if the job is still running, capture `continuation_token` and run `get-result --continuation-token ...`
 - one typical readiness-oriented workflow:
   - run `wait-until-ready`
   - then run later work commands as needed
@@ -427,6 +471,7 @@ Top-level `unity-puer-exec --help` must communicate:
 - that `wait-until-ready` is a specialized shortcut over the readiness path already used by project-scoped `exec`
 - that file or stdin script input is preferred over inline code for multi-line or AI-generated scripts
 - that `ensure-stopped` is the stopped-state command and does not promise graceful shutdown
+- that `get-result` continues prior async work by using the `continuation_token` returned from `exec`
 
 Per-command `--help` must communicate:
 
@@ -446,11 +491,13 @@ Per-command `--help` must communicate:
 - Preferring `get-log-source` over `get-log-path` leaves room for non-file-backed observation sources.
 - Preferring stdin or file input avoids shell-escaping fragility for generated JavaScript.
 - A stdout-first JSON contract is easier for machine callers than splitting structured payloads across stdout and stderr.
+- A self-contained continuation token keeps async continuation coherent without forcing a broader user-visible session identity model onto the whole CLI.
 
 ## Consequences
 
 - `T1.4.2` should establish a product-owned CLI baseline that matches this revised selector model, command tree, and stopped-state contract.
-- `T1.4.3` should implement the stdout-first machine contract, formal help text, and transitional compatibility behavior defined here.
-- `T1.4.1.2` should explore whether future CLI revisions need an explicit session identity model for stronger same-session guarantees.
-- `T1.4.4` should rewrite repository-facing usage docs to point to `unity-puer-exec` help and this decision, not to skill docs.
+- `T1.4.3` should implement the non-help machine contract defined here, including token-driven async continuation and the stdout-first execution payload behavior.
+- `T1.4.1.2` should explore whether future CLI revisions need a broader explicit session identity model for observation and other cross-call workflows beyond the internal async continuation token adopted here.
+- `T1.4.4` should implement the formal CLI help surface defined here.
+- `T1.4.5` should rewrite repository-facing usage docs to point to `unity-puer-exec` help and this decision, not to skill docs.
 - `T1.5` may keep evolving the baseline or replace the implementation language, but the replacement must preserve this formal command contract unless a later decision supersedes it.

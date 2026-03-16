@@ -145,7 +145,16 @@
 - Parent: T1.4.1
 - Depends on: T1.4.1.1
 - Plan: none
-- Done means: the roadmap records follow-up work to explore whether the CLI should grow an explicit session identity model so direct-service observation and later log/result flows can make stronger same-session guarantees than the best-effort selector model adopted in `T1.4.1.1`
+- Done means: the roadmap records follow-up work to explore whether the CLI should grow an explicit user-visible session identity model for observation and other cross-call workflows beyond the internal async continuation token/session-marker model adopted in `T1.4.1.3`
+
+##### T1.4.1.3 Revise Async Continuation Contract
+
+- Status: done
+- Parent: T1.4.1
+- Depends on: T1.4.1.1
+- Plan: none
+- Done means: `docs/decisions/0007-formal-cli-contract.md` explicitly defines how async execution continuation proves session continuity for `exec` and `get-result`, so `session_missing` and `session_stale` are implementable without execution-time reinterpretation
+- Output: docs/decisions/0007-formal-cli-contract.md
 
 #### T1.4.2 Establish Product-Owned CLI Baseline
 
@@ -160,7 +169,7 @@
 
 - Status: draft
 - Parent: T1.4
-- Depends on: T1.4.2
+- Depends on: T1.4.1.3 T1.4.2
 - Plan: none
 - Done means: the product-owned CLI baseline fully implements the non-help portions of `docs/decisions/0007-formal-cli-contract.md`, including selector rules, command responsibilities, machine states, stdout/stderr placement for structured payloads, and explicit exit-code behavior
 
