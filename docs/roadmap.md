@@ -167,11 +167,12 @@
 
 #### T1.4.3 Implement Formal CLI Behavior Contract
 
-- Status: draft
+- Status: done
 - Parent: T1.4
 - Depends on: T1.4.1.3 T1.4.2
 - Plan: none
 - Done means: the product-owned CLI baseline fully implements the non-help portions of `docs/decisions/0007-formal-cli-contract.md`, including selector rules, command responsibilities, machine states, stdout/stderr placement for structured payloads, and explicit exit-code behavior
+- Output: cli/python/ packages/com.txcombo.unity-puer-exec/Editor/UnityPuerExecServer.cs tests/test_cli.py tests/test_unity_session_cli.py
 
 #### T1.4.4 Implement Formal Help Surface
 
@@ -188,6 +189,14 @@
 - Depends on: T1.4.4
 - Plan: none
 - Done means: repository-facing usage docs point to the formal CLI contract as the primary entry surface, and skill-specific guidance no longer acts as the authoritative usage contract
+
+#### T1.4.6 Add CLI Integration Validation
+
+- Status: draft
+- Parent: T1.4
+- Depends on: T1.4.3
+- Plan: none
+- Done means: the repository has at least one repeatable integration validation path that runs the product-owned CLI against the validation host consuming the local `com.txcombo.unity-puer-exec` package, proving the formal CLI contract against a real Unity-side execution service instead of a fake server, including at least one direct `exec`, one `exec -> running -> get-result --continuation-token` flow, and one non-exec command such as `get-log-source` or `ensure-stopped`
 
 ### T1.5 Decide CLI Packaging Strategy
 
@@ -272,3 +281,12 @@
 - Plan: none
 - Done means: when a task produces a durable decision that a direct successor must follow, workflow and planning rules require the successor task's roadmap description to be updated so a fresh session can see that decision as an implementation input without reconstructing it from dependency edges alone
 - Output: docs/workflow.md docs/planning.md
+
+### T2.7 Enforce Plan-First Implementation Workflow
+
+- Status: done
+- Parent: T2
+- Depends on: T2.1 T2.3 T2.4
+- Plan: none
+- Done means: repository entry guidance and workflow documents make the pre-implementation plan requirement explicit enough that a fresh session is unlikely to skip plan creation for substantial work, and closeout guidance clearly defines how to recover when a task was implemented before its plan existed
+- Output: AGENTS.md docs/index.md docs/workflow.md docs/workflow-closeout.md

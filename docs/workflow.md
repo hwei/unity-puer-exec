@@ -35,6 +35,7 @@ Repository work should follow this order:
   - then `docs/plan-template.md`
   - open `docs/planning-rules.md` only when the quickstart points there
 - Implementing an approved plan:
+  - first confirm the current roadmap task and its `Plan` field; if no active plan exists, return to planning before implementation
   - read this file first
   - then `docs/roadmap.md`
   - then the active plan file
@@ -46,6 +47,7 @@ Repository work should follow this order:
 ## Plan Rules
 
 - Substantial work should start with a plan file.
+- Before implementing a roadmap task, explicitly check its `Plan` field in `docs/roadmap.md`; if the field does not point to an active executable plan, implementation should not begin yet.
 - Planning quickstart lives in `docs/planning.md`.
 - Deeper planning authoring rules live in `docs/planning-rules.md`.
 - Planning starts after discussion has already produced the agreed constraints needed to keep execution deterministic.

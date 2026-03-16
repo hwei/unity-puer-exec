@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 import argparse
+import base64
+import binascii
 import json
+import re
 import sys
 import uuid
 
@@ -17,6 +20,7 @@ EXIT_NO_OBSERVATION_TARGET = 15
 EXIT_NOT_STOPPED = 16
 EXIT_UNITY_START_FAILED = 20
 EXIT_UNITY_NOT_READY = 21
+CONTINUATION_TOKEN_VERSION = 1
 
 
 def _build_parser():
@@ -50,8 +54,7 @@ def _build_parser():
     script_source.add_argument("--code")
 
     get_result_parser = subparsers.add_parser("get-result")
-    get_result_parser.add_argument("--base-url", required=True)
-    get_result_parser.add_argument("--job-id", required=True)
+    get_result_parser.add_argument("--continuation-token", required=True)
     get_result_parser.add_argument("--wait-timeout-ms", type=int, default=cli.DEFAULT_WAIT_TIMEOUT_MS)
 
     ensure_stopped_parser = subparsers.add_parser("ensure-stopped")
@@ -74,12 +77,20 @@ def _emit_payload(payload):
 
 
 def _usage_error(message, status="failed"):
-    return 2, "", _emit_payload({"ok": False, "status": status, "error": message})
+    payload = {"ok": False, "status": status, "error": message}
+    if status == "address_conflict":
+        return 2, _emit_payload(payload), ""
+    return 2, "", _emit_payload(payload)
 
 
 def _validate_positive(value, name):
     if value is not None and value <= 0:
         raise ValueError("{} must be positive".format(name))
+
+
+def _validate_project_mode_only(selector, option_name, value):
+    if selector == "base_url" and value:
+        raise ValueError("{} is only valid with --project-path".format(option_name))
 
 
 def _resolve_selector(args):
@@ -88,6 +99,118 @@ def _resolve_selector(args):
     if getattr(args, "base_url", None):
         return "base_url"
     return "project_path"
+
+
+def _encode_continuation_token(payload):
+    raw = json.dumps(payload, ensure_ascii=True, separators=(",", ":")).encode("utf-8")
+    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+
+def _decode_continuation_token(token):
+    if not token:
+        raise ValueError("continuation-token is required")
+
+    padding = "=" * (-len(token) % 4)
+    try:
+        decoded = base64.urlsafe_b64decode((token + padding).encode("ascii"))
+        payload = json.loads(decoded.decode("utf-8"))
+    except (ValueError, binascii.Error, UnicodeDecodeError, json.JSONDecodeError):
+        raise ValueError("malformed continuation token")
+
+    if not isinstance(payload, dict):
+        raise ValueError("malformed continuation token")
+
+    if payload.get("v") != CONTINUATION_TOKEN_VERSION:
+        raise ValueError("unsupported continuation token version")
+
+    base_url = payload.get("base_url")
+    job_id = payload.get("job_id")
+    session_marker = payload.get("session_marker")
+    if not isinstance(base_url, str) or not base_url:
+        raise ValueError("malformed continuation token")
+    if not isinstance(job_id, str) or not job_id:
+        raise ValueError("malformed continuation token")
+    if not isinstance(session_marker, str) or not session_marker:
+        raise ValueError("malformed continuation token")
+
+    return {
+        "v": payload["v"],
+        "base_url": base_url.rstrip("/"),
+        "job_id": job_id,
+        "session_marker": session_marker,
+    }
+
+
+def _extract_session_marker(exec_payload, base_url):
+    session_marker = exec_payload.get("session_marker")
+    if isinstance(session_marker, str) and session_marker:
+        return session_marker
+
+    _is_ready, health_payload, _error = unity_session.inspect_direct_service(base_url)
+    if health_payload is None:
+        raise RuntimeError("unable to obtain session marker for continuation")
+
+    session_marker = health_payload.get("session_marker")
+    if not isinstance(session_marker, str) or not session_marker:
+        raise RuntimeError("continuation target did not provide a session marker")
+    return session_marker
+
+
+def _add_continuation_token(stdout_text, base_url):
+    payload = json.loads(stdout_text)
+    if payload.get("status") != "running" or not payload.get("ok"):
+        return stdout_text
+
+    job_id = payload.get("job_id")
+    if not isinstance(job_id, str) or not job_id:
+        raise RuntimeError("running exec response did not include job_id")
+
+    continuation_token = _encode_continuation_token(
+        {
+            "v": CONTINUATION_TOKEN_VERSION,
+            "base_url": base_url.rstrip("/"),
+            "job_id": job_id,
+            "session_marker": _extract_session_marker(payload, base_url),
+        }
+    )
+    payload.pop("session_marker", None)
+    payload["continuation_token"] = continuation_token
+    return _emit_payload(payload)
+
+
+def _expected_execution_payload(status, error=None, job_id=None):
+    payload = {"ok": False, "status": status}
+    if job_id is not None:
+        payload["job_id"] = job_id
+    if error is not None:
+        payload["error"] = str(error)
+    return payload
+
+
+def _probe_continuation_target(token_payload):
+    _is_ready, health_payload, health_error = unity_session.inspect_direct_service(token_payload["base_url"])
+    if health_payload is None:
+        payload = _expected_execution_payload("not_available", error=health_error, job_id=token_payload["job_id"])
+        return EXIT_NOT_AVAILABLE, _emit_payload(payload), ""
+
+    session_marker = health_payload.get("session_marker")
+    if not isinstance(session_marker, str) or not session_marker:
+        payload = _expected_execution_payload(
+            "session_missing",
+            error="continuation target did not provide session continuity information",
+            job_id=token_payload["job_id"],
+        )
+        return EXIT_SESSION_STATE, _emit_payload(payload), ""
+
+    if session_marker != token_payload["session_marker"]:
+        payload = _expected_execution_payload(
+            "session_stale",
+            error="continuation target session has changed since exec returned the token",
+            job_id=token_payload["job_id"],
+        )
+        return EXIT_SESSION_STATE, _emit_payload(payload), ""
+
+    return None
 
 
 def _success_payload(operation, session=None, result=None):
@@ -125,6 +248,7 @@ def _read_exec_code(args):
 def _run_exec(args):
     selector = _resolve_selector(args)
     _validate_positive(args.wait_timeout_ms, "wait-timeout-ms")
+    _validate_project_mode_only(selector, "unity-exe-path", args.unity_exe_path)
 
     if selector == "project_path":
         session = unity_session.ensure_session_ready(
@@ -136,13 +260,31 @@ def _run_exec(args):
         base_url = args.base_url
 
     payload = {"id": uuid.uuid4().hex, "code": _read_exec_code(args), "wait_timeout_ms": args.wait_timeout_ms}
-    return cli.invoke_command("exec", base_url, payload, args.wait_timeout_ms)
+    exit_code, stdout_text, stderr_text = cli.invoke_command("exec", base_url, payload, args.wait_timeout_ms)
+    if stdout_text and exit_code == EXIT_RUNNING:
+        stdout_text = _add_continuation_token(stdout_text, base_url)
+    return exit_code, stdout_text, stderr_text
 
 
 def _run_get_result(args):
     _validate_positive(args.wait_timeout_ms, "wait-timeout-ms")
-    payload = {"job_id": args.job_id, "wait_timeout_ms": args.wait_timeout_ms}
-    return cli.invoke_command("get-result", args.base_url, payload, args.wait_timeout_ms)
+    token_payload = _decode_continuation_token(args.continuation_token)
+    probe_result = _probe_continuation_target(token_payload)
+    if probe_result is not None:
+        return probe_result
+
+    payload = {"job_id": token_payload["job_id"], "wait_timeout_ms": args.wait_timeout_ms}
+    exit_code, stdout_text, stderr_text = cli.invoke_command(
+        "get-result",
+        token_payload["base_url"],
+        payload,
+        args.wait_timeout_ms,
+    )
+    if exit_code == EXIT_MISSING and stdout_text:
+        follow_up = _probe_continuation_target(token_payload)
+        if follow_up is not None:
+            return follow_up
+    return exit_code, stdout_text, stderr_text
 
 
 def _run_wait_until_ready(args):
@@ -150,6 +292,7 @@ def _run_wait_until_ready(args):
     _validate_positive(args.ready_timeout_seconds, "ready-timeout-seconds")
     _validate_positive(args.activity_timeout_seconds, "activity-timeout-seconds")
     _validate_positive(args.health_timeout_seconds, "health-timeout-seconds")
+    _validate_project_mode_only(selector, "unity-exe-path", args.unity_exe_path)
 
     if selector == "project_path":
         session = unity_session.ensure_session_ready(
@@ -177,6 +320,10 @@ def _run_wait_for_log_pattern(args):
     _validate_positive(args.timeout_seconds, "timeout-seconds")
     _validate_positive(args.activity_timeout_seconds, "activity-timeout-seconds")
     _validate_positive(args.health_timeout_seconds, "health-timeout-seconds")
+    try:
+        re.compile(args.pattern)
+    except re.error as exc:
+        raise ValueError("invalid regex: {}".format(exc))
 
     if selector == "project_path":
         session = unity_session.create_observation_session(project_path=args.project_path)
@@ -235,6 +382,9 @@ def _run_ensure_stopped(args):
         mode = "immediate_kill"
     elif not args.inspect_only:
         mode = "timeout_then_kill"
+
+    if selector == "base_url" and args.immediate_kill:
+        raise ValueError("immediate-kill is only valid with --project-path")
 
     if selector == "project_path":
         stopped, session = unity_session.ensure_stopped(project_path=args.project_path, mode=mode, timeout_seconds=args.timeout_seconds)

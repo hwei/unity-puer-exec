@@ -156,6 +156,7 @@ namespace UnityPuerExec
         private static CancellationTokenSource listenerCancellation;
         private static JsEnv jsEnv;
         private static string envInitError = "";
+        private static string sessionMarker = Guid.NewGuid().ToString("N");
         private static int mainThreadId;
         private static volatile bool isCompiling;
         private static volatile bool isUpdating;
@@ -234,6 +235,7 @@ namespace UnityPuerExec.Generated
         private static void Start()
         {
             StopListener();
+            sessionMarker = Guid.NewGuid().ToString("N");
 
             listenerCancellation = new CancellationTokenSource();
             listener = new HttpListener();
@@ -563,6 +565,7 @@ namespace UnityPuerExec.Generated
                            "\"ok\":true," +
                            "\"status\":\"completed\"," +
                            "\"job_id\":\"" + JsonEscape(snapshot.JobId) + "\"," +
+                           "\"session_marker\":\"" + JsonEscape(sessionMarker) + "\"," +
                            "\"result\":" + (snapshot.ResultJson ?? "null") + "," +
                            "\"spawn_job_ids\":" + BuildStringArrayJson(snapshot.SpawnedJobIds) +
                            "}";
@@ -571,6 +574,7 @@ namespace UnityPuerExec.Generated
                            "\"ok\":false," +
                            "\"status\":\"failed\"," +
                            "\"job_id\":\"" + JsonEscape(snapshot.JobId) + "\"," +
+                           "\"session_marker\":\"" + JsonEscape(sessionMarker) + "\"," +
                            "\"error\":\"" + JsonEscape(snapshot.Error) + "\"," +
                            "\"stack\":\"" + JsonEscape(snapshot.Stack) + "\"" +
                            "}";
@@ -579,6 +583,7 @@ namespace UnityPuerExec.Generated
                            "\"ok\":true," +
                            "\"status\":\"running\"," +
                            "\"job_id\":\"" + JsonEscape(snapshot.JobId) + "\"," +
+                           "\"session_marker\":\"" + JsonEscape(sessionMarker) + "\"," +
                            "\"spawn_job_ids\":" + BuildStringArrayJson(snapshot.SpawnedJobIds) +
                            "}";
             }
@@ -593,6 +598,7 @@ namespace UnityPuerExec.Generated
                            "\"ok\":true," +
                            "\"status\":\"completed\"," +
                            "\"job_id\":\"" + JsonEscape(snapshot.JobId) + "\"," +
+                           "\"session_marker\":\"" + JsonEscape(sessionMarker) + "\"," +
                            "\"result\":" + (snapshot.ResultJson ?? "null") +
                            "}";
                 case UnityPuerExecJobStatus.Failed:
@@ -600,6 +606,7 @@ namespace UnityPuerExec.Generated
                            "\"ok\":false," +
                            "\"status\":\"failed\"," +
                            "\"job_id\":\"" + JsonEscape(snapshot.JobId) + "\"," +
+                           "\"session_marker\":\"" + JsonEscape(sessionMarker) + "\"," +
                            "\"error\":\"" + JsonEscape(snapshot.Error) + "\"," +
                            "\"stack\":\"" + JsonEscape(snapshot.Stack) + "\"" +
                            "}";
@@ -608,6 +615,7 @@ namespace UnityPuerExec.Generated
                            "\"ok\":true," +
                            "\"status\":\"running\"," +
                            "\"job_id\":\"" + JsonEscape(snapshot.JobId) + "\"" +
+                           ",\"session_marker\":\"" + JsonEscape(sessionMarker) + "\"" +
                            "}";
             }
         }
@@ -616,15 +624,17 @@ namespace UnityPuerExec.Generated
         {
             if (IsCompilingOrReloading())
             {
-                return "{\"ok\":false,\"status\":\"compiling\"}";
+                return "{\"ok\":false,\"status\":\"compiling\",\"session_marker\":\"" + JsonEscape(sessionMarker) + "\"}";
             }
 
             if (jsEnv == null && !string.IsNullOrEmpty(envInitError))
             {
-                return "{\"ok\":false,\"status\":\"not_available\",\"error\":\"" + JsonEscape(envInitError) + "\"}";
+                return "{\"ok\":false,\"status\":\"not_available\",\"session_marker\":\"" + JsonEscape(sessionMarker) +
+                       "\",\"error\":\"" + JsonEscape(envInitError) + "\"}";
             }
 
-            return "{\"ok\":true,\"status\":\"ready\",\"port\":" + Port + "}";
+            return "{\"ok\":true,\"status\":\"ready\",\"port\":" + Port +
+                   ",\"session_marker\":\"" + JsonEscape(sessionMarker) + "\"}";
         }
 
         private static string BuildStringArrayJson(IReadOnlyList<string> values)

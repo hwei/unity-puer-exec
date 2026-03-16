@@ -3,6 +3,7 @@ import os
 import sys
 import tempfile
 import unittest
+from base64 import urlsafe_b64decode
 from pathlib import Path
 from unittest import mock
 
@@ -89,17 +90,26 @@ class UnityPuerExecCliTests(unittest.TestCase):
                 "ensure_session_ready",
                 return_value=_make_session(),
             ), mock.patch.object(
+                unity_session,
+                "inspect_direct_service",
+                return_value=(True, {"ok": True, "status": "ready", "session_marker": "marker-1"}, None),
+            ), mock.patch.object(
                 unity_puer_exec.cli,
                 "invoke_command",
-                return_value=(0, json.dumps({"ok": True, "status": "completed"}), ""),
+                return_value=(unity_puer_exec.EXIT_RUNNING, json.dumps({"ok": True, "status": "running", "job_id": "job-7"}), ""),
             ) as invoke_command:
                 exit_code, stdout, stderr = unity_puer_exec.run_cli(["exec", "--file", str(script_path)])
 
-        self.assertEqual(exit_code, 0)
+        self.assertEqual(exit_code, unity_puer_exec.EXIT_RUNNING)
         self.assertEqual(stderr, "")
         payload = invoke_command.call_args.args[2]
         self.assertEqual(payload["code"], "return 7;")
-        self.assertEqual(json.loads(stdout)["status"], "completed")
+        body = json.loads(stdout)
+        self.assertEqual(body["status"], "running")
+        self.assertIn("continuation_token", body)
+        token_payload = json.loads(urlsafe_b64decode(body["continuation_token"] + "=" * (-len(body["continuation_token"]) % 4)))
+        self.assertEqual(token_payload["job_id"], "job-7")
+        self.assertEqual(token_payload["session_marker"], "marker-1")
 
     def test_get_log_source_returns_success_payload(self):
         session = _make_session()
@@ -139,9 +149,79 @@ class UnityPuerExecCliTests(unittest.TestCase):
         )
 
         self.assertEqual(exit_code, 2)
+        self.assertEqual(stderr, "")
+        payload = json.loads(stdout)
+        self.assertEqual(payload["status"], "address_conflict")
+
+    def test_get_result_uses_continuation_token_routing(self):
+        token = unity_puer_exec._encode_continuation_token(
+            {
+                "v": unity_puer_exec.CONTINUATION_TOKEN_VERSION,
+                "base_url": "http://127.0.0.1:55231",
+                "job_id": "job-22",
+                "session_marker": "marker-22",
+            }
+        )
+
+        with mock.patch.object(
+            unity_session,
+            "inspect_direct_service",
+            return_value=(True, {"ok": True, "status": "ready", "session_marker": "marker-22"}, None),
+        ), mock.patch.object(
+            unity_puer_exec.cli,
+            "invoke_command",
+            return_value=(0, json.dumps({"ok": True, "status": "completed", "job_id": "job-22", "result": {"value": 9}}), ""),
+        ) as invoke_command:
+            exit_code, stdout, stderr = unity_puer_exec.run_cli(
+                ["get-result", "--continuation-token", token, "--wait-timeout-ms", "800"]
+            )
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(stderr, "")
+        self.assertEqual(
+            invoke_command.call_args.args,
+            ("get-result", "http://127.0.0.1:55231", {"job_id": "job-22", "wait_timeout_ms": 800}, 800),
+        )
+        self.assertEqual(json.loads(stdout)["status"], "completed")
+
+    def test_get_result_reports_session_stale_on_marker_mismatch(self):
+        token = unity_puer_exec._encode_continuation_token(
+            {
+                "v": unity_puer_exec.CONTINUATION_TOKEN_VERSION,
+                "base_url": "http://127.0.0.1:55231",
+                "job_id": "job-23",
+                "session_marker": "marker-old",
+            }
+        )
+
+        with mock.patch.object(
+            unity_session,
+            "inspect_direct_service",
+            return_value=(True, {"ok": True, "status": "ready", "session_marker": "marker-new"}, None),
+        ):
+            exit_code, stdout, stderr = unity_puer_exec.run_cli(["get-result", "--continuation-token", token])
+
+        self.assertEqual(exit_code, unity_puer_exec.EXIT_SESSION_STATE)
+        self.assertEqual(stderr, "")
+        payload = json.loads(stdout)
+        self.assertEqual(payload["status"], "session_stale")
+        self.assertEqual(payload["job_id"], "job-23")
+
+    def test_get_result_rejects_malformed_continuation_token(self):
+        exit_code, stdout, stderr = unity_puer_exec.run_cli(["get-result", "--continuation-token", "%%%"])
+
+        self.assertEqual(exit_code, 2)
         self.assertEqual(stdout, "")
         payload = json.loads(stderr)
-        self.assertEqual(payload["status"], "address_conflict")
+        self.assertEqual(payload["status"], "failed")
+
+    def test_wait_for_log_pattern_rejects_invalid_regex(self):
+        exit_code, stdout, stderr = unity_puer_exec.run_cli(["wait-for-log-pattern", "--pattern", "("])
+
+        self.assertEqual(exit_code, 2)
+        self.assertEqual(stdout, "")
+        payload = json.loads(stderr)
+        self.assertEqual(payload["status"], "failed")
 
     def test_launch_error_maps_to_exit_code_20(self):
         session = _make_session()

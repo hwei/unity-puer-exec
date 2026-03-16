@@ -12,6 +12,17 @@ Before deleting a completed plan, move stable conclusions into the right destina
 - `docs/decisions/` for active decisions still in force
 - source comments when the knowledge is local to specific code or tests
 
+## Retroactive Plan Recovery
+
+If a task was implemented before its plan file existed, recover in this order:
+
+1. create a retroactive task-scoped plan under `docs/plans/` that records the executed scope, agreed constraints, validation, and current closeout state
+2. point the roadmap task's `Plan` field at that plan
+3. add a `Retrospective` entry to that plan explaining the workflow miss and the suggested follow-up
+4. stop and wait for human disposition before reflecting that retrospective into long-lived governance documents
+
+This recovery path is an exception for closeout hygiene only. It does not replace the default requirement to create and review a plan before substantial implementation begins.
+
 ## Retrospective Rules
 
 Before deleting a completed plan, the agent should add a brief `Retrospective` section to the active plan file when execution reveals stable follow-up findings or workflow improvement ideas.

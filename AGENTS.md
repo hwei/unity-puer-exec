@@ -2,6 +2,12 @@
 
 This repository is the productized development repository for `unity-puer-exec`.
 
+## Fresh-session workflow
+
+- Start in `docs/index.md`.
+- When working on a roadmap task, check `docs/status.md` and `docs/roadmap.md` before implementing.
+- Before substantial implementation, confirm the current task has an active plan in its `Plan` field. If no plan exists, return to planning and create one under `docs/plans/`.
+
 ## Environment setup
 
 - Repository Python entry points auto-load `./.env` when needed.
@@ -10,16 +16,11 @@ This repository is the productized development repository for `unity-puer-exec`.
 - This repository does not assume a repository-local `Project/` directory.
 - `./.env` is local-only and should not be committed; use `./.env.example` as the tracked template.
 
-## Documentation structure
+## Documentation entry points
 
-- `docs/index.md` is the docs-local router by workflow state.
-- `docs/workflow.md` defines the required development sequence and implementation-time read path.
-- `docs/workflow-closeout.md` defines distillation, retrospective, disposition, and plan-deletion rules.
-- `docs/planning.md` is the planning quickstart.
-- `docs/planning-rules.md` holds deeper planning rationale and subagent-friendly authoring rules.
+- `docs/index.md` routes to the next governance document for the current workflow state.
 - `docs/roadmap.md` tracks active and future work with hierarchical task IDs.
 - `docs/status.md` tracks current focus, blockers, and next steps.
-- `docs/decisions/` stores active decisions still in force.
 - `docs/plans/` stores temporary execution plans only.
 - `tests/` is the canonical repository-level test location.
 
@@ -31,10 +32,3 @@ Unity project path resolution must follow this order:
 2. `UNITY_PROJECT_PATH` from the process environment
 3. repository-local `.env`
 4. current working directory
-
-## Repo boundary
-
-- Validation host repository: `../c3-client-tree2/`
-- Productized development repository: `./`
-
-When a task touches both repositories, explicitly distinguish between the validation host and the productized repository.

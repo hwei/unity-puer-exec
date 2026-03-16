@@ -7,6 +7,7 @@ Use this file only to route to the next governance document for the current work
 - Fresh-session orientation:
   - `docs/status.md`
   - `docs/roadmap.md`
+  - if the current task will lead to substantial implementation, confirm its active `Plan` field before proceeding
 - Continuing active work:
   - `docs/status.md`
   - `docs/roadmap.md`
@@ -16,6 +17,7 @@ Use this file only to route to the next governance document for the current work
   - `docs/planning.md`
   - `docs/plan-template.md`
 - Implementing an approved plan:
+  - first confirm the current roadmap task has an active plan; if not, return to planning
   - `docs/workflow.md`
   - `docs/roadmap.md`
   - the active plan file

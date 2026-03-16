@@ -123,6 +123,29 @@ class CliTests(unittest.TestCase):
         self.assertEqual(body["job_id"], "exec-2")
         self.assertEqual(body["spawn_job_ids"], ["job-9"])
 
+    def test_session_state_payloads_stay_on_stdout(self):
+        transport = FakeTransport([
+            {
+                "ok": False,
+                "status": "session_stale",
+                "job_id": "job-2",
+                "error": "marker changed",
+            }
+        ])
+
+        exit_code, stdout, stderr = cli.invoke_command(
+            "get-result",
+            "http://127.0.0.1:55231",
+            {"job_id": "job-2", "wait_timeout_ms": 800},
+            800,
+            transport=transport,
+        )
+
+        self.assertEqual(exit_code, cli.EXIT_SESSION_STATE)
+        self.assertEqual(stderr, "")
+        body = json.loads(stdout)
+        self.assertEqual(body["status"], "session_stale")
+
     def test_get_result_missing_is_non_zero(self):
         transport = FakeTransport([
             {
@@ -186,8 +209,8 @@ class CliTests(unittest.TestCase):
         )
 
         self.assertEqual(exit_code, cli.EXIT_NOT_AVAILABLE)
-        self.assertEqual(stdout, "")
-        body = json.loads(stderr)
+        self.assertEqual(stderr, "")
+        body = json.loads(stdout)
         self.assertEqual(body["status"], "not_available")
         self.assertEqual(body["error"], "timed out")
 

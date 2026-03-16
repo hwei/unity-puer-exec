@@ -12,6 +12,7 @@ EXIT_RUNNING = 10
 EXIT_COMPILING = 11
 EXIT_NOT_AVAILABLE = 12
 EXIT_MISSING = 13
+EXIT_SESSION_STATE = 14
 
 DEFAULT_BASE_URL = "http://127.0.0.1:55231"
 DEFAULT_WAIT_TIMEOUT_MS = 1000
@@ -47,6 +48,8 @@ def _status_to_exit_code(payload):
         return EXIT_NOT_AVAILABLE
     if status == "missing":
         return EXIT_MISSING
+    if status in ("session_missing", "session_stale"):
+        return EXIT_SESSION_STATE
     return 1
 
 
@@ -84,17 +87,17 @@ def invoke_command(command, base_url, payload, wait_timeout_ms, transport=None):
             "status": "not_available",
             "error": str(exc.reason),
         }
-        return EXIT_NOT_AVAILABLE, "", json.dumps(error_payload)
+        return EXIT_NOT_AVAILABLE, json.dumps(error_payload, ensure_ascii=True), ""
     except socket.timeout:
         error_payload = {
             "ok": False,
             "status": "not_available",
             "error": "timed out",
         }
-        return EXIT_NOT_AVAILABLE, "", json.dumps(error_payload)
+        return EXIT_NOT_AVAILABLE, json.dumps(error_payload, ensure_ascii=True), ""
 
     exit_code = _status_to_exit_code(response)
-    if exit_code == 0 or exit_code in (EXIT_RUNNING, EXIT_COMPILING, EXIT_NOT_AVAILABLE, EXIT_MISSING):
+    if exit_code in (0, EXIT_RUNNING, EXIT_COMPILING, EXIT_NOT_AVAILABLE, EXIT_MISSING, EXIT_SESSION_STATE):
         return exit_code, json.dumps(response, ensure_ascii=True), ""
     return exit_code, "", json.dumps(response, ensure_ascii=True)
 
