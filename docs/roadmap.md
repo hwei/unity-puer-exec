@@ -220,8 +220,16 @@
 - Status: draft
 - Parent: T1.4
 - Depends on: T1.4.4
+- Plan: docs/plans/T1.4.9-help-examples-self-contained.md
+- Done means: the `request-editor-exit-via-exec` help example no longer relies on a placeholder script path alone; the help surface includes the minimal literal `request-exit.js` body so an agent can execute that workflow without guessing hidden file contents
+
+#### T1.4.10 Replace Placeholder Workflow Snippets With Validated Examples
+
+- Status: draft
+- Parent: T1.4
+- Depends on: T1.4.4
 - Plan: none
-- Done means: CLI workflow examples no longer rely on placeholder script paths alone; when an example depends on a script such as `request-editor-exit-via-exec`, the help surface includes the minimal example script body or another equally self-contained contract description so an agent can execute the workflow without guessing hidden file contents
+- Done means: once the end-to-end tool loop is complete enough to validate realistic scripts, the remaining illustrative workflow examples such as `cold-start-exec-and-get-result` and `long-job-and-log-pattern` are updated from placeholder file paths to runnable, empirically validated example snippets and tests lock the resulting contract
 
 ### T1.5 Decide CLI Packaging Strategy
 
