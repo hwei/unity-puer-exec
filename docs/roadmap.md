@@ -201,10 +201,11 @@
 
 #### T1.4.7 Align Empty Invocation With Top-Level Help Contract
 
-- Status: draft
+- Status: done
 - Parent: T1.4
 - Depends on: T1.4.4
 - Plan: none
+- Output: `cli/python/unity_puer_exec.py` `tests/test_unity_session_cli.py`
 - Done means: invoking `unity-puer-exec` with no arguments follows the same formal discovery contract as `unity-puer-exec --help`, so agents do not see two conflicting entry behaviors for the product CLI surface
 
 #### T1.4.8 Make `wait-until-ready` A True `exec` Alias
