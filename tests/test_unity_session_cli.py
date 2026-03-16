@@ -166,7 +166,7 @@ class UnityPuerExecCliTests(unittest.TestCase):
                 "inspect_direct_service",
                 return_value=(True, {"ok": True, "status": "ready", "session_marker": "marker-1"}, None),
             ), mock.patch.object(
-                unity_puer_exec.cli,
+                unity_puer_exec.direct_exec_client,
                 "invoke_command",
                 return_value=(unity_puer_exec.EXIT_RUNNING, json.dumps({"ok": True, "status": "running", "job_id": "job-7"}), ""),
             ) as invoke_command:
@@ -240,7 +240,7 @@ class UnityPuerExecCliTests(unittest.TestCase):
             "inspect_direct_service",
             return_value=(True, {"ok": True, "status": "ready", "session_marker": "marker-22"}, None),
         ), mock.patch.object(
-            unity_puer_exec.cli,
+            unity_puer_exec.direct_exec_client,
             "invoke_command",
             return_value=(0, json.dumps({"ok": True, "status": "completed", "job_id": "job-22", "result": {"value": 9}}), ""),
         ) as invoke_command:

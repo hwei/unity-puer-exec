@@ -223,6 +223,14 @@
 - Plan: none
 - Done means: CLI workflow examples no longer rely on placeholder script paths alone; when an example depends on a script such as `request-editor-exit-via-exec`, the help surface includes the minimal example script body or another equally self-contained contract description so an agent can execute the workflow without guessing hidden file contents
 
+#### T1.4.10 Clarify Legacy Direct-Exec Client Ownership
+
+- Status: done
+- Parent: T1.4
+- Depends on: T1.4.3 T1.4.4
+- Plan: none
+- Done means: the legacy direct `/exec` and `/get-result` transport layer no longer presents itself as the formal `unity-puer-exec` CLI entry, obsolete shell-only code is removed, file names and tests clearly describe the remaining module as a shared direct execution client, and product-facing CLI coverage stays centered on the formal contract implementation
+- Output: cli/python/direct_exec_client.py tests/test_direct_exec_client.py
 ### T1.5 Decide CLI Packaging Strategy
 
 - Status: draft

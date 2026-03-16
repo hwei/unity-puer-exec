@@ -7,15 +7,15 @@ import re
 import sys
 import uuid
 
-import cli
+import direct_exec_client
 import help_surface
 import unity_session
 
 
-EXIT_RUNNING = cli.EXIT_RUNNING
-EXIT_COMPILING = cli.EXIT_COMPILING
-EXIT_NOT_AVAILABLE = cli.EXIT_NOT_AVAILABLE
-EXIT_MISSING = cli.EXIT_MISSING
+EXIT_RUNNING = direct_exec_client.EXIT_RUNNING
+EXIT_COMPILING = direct_exec_client.EXIT_COMPILING
+EXIT_NOT_AVAILABLE = direct_exec_client.EXIT_NOT_AVAILABLE
+EXIT_MISSING = direct_exec_client.EXIT_MISSING
 EXIT_SESSION_STATE = 14
 EXIT_NO_OBSERVATION_TARGET = 15
 EXIT_NOT_STOPPED = 16
@@ -49,7 +49,7 @@ def _build_parser():
     exec_parser = subparsers.add_parser("exec", add_help=False)
     _add_selector_args(exec_parser)
     exec_parser.add_argument("--unity-exe-path", default=None)
-    exec_parser.add_argument("--wait-timeout-ms", type=int, default=cli.DEFAULT_WAIT_TIMEOUT_MS)
+    exec_parser.add_argument("--wait-timeout-ms", type=int, default=direct_exec_client.DEFAULT_WAIT_TIMEOUT_MS)
     script_source = exec_parser.add_mutually_exclusive_group(required=True)
     script_source.add_argument("--file", dest="file_path")
     script_source.add_argument("--stdin", action="store_true")
@@ -57,7 +57,7 @@ def _build_parser():
 
     get_result_parser = subparsers.add_parser("get-result", add_help=False)
     get_result_parser.add_argument("--continuation-token", required=True)
-    get_result_parser.add_argument("--wait-timeout-ms", type=int, default=cli.DEFAULT_WAIT_TIMEOUT_MS)
+    get_result_parser.add_argument("--wait-timeout-ms", type=int, default=direct_exec_client.DEFAULT_WAIT_TIMEOUT_MS)
 
     ensure_stopped_parser = subparsers.add_parser("ensure-stopped", add_help=False)
     _add_selector_args(ensure_stopped_parser)
@@ -266,7 +266,12 @@ def _run_exec(args):
         base_url = args.base_url
 
     payload = {"id": uuid.uuid4().hex, "code": _read_exec_code(args), "wait_timeout_ms": args.wait_timeout_ms}
-    exit_code, stdout_text, stderr_text = cli.invoke_command("exec", base_url, payload, args.wait_timeout_ms)
+    exit_code, stdout_text, stderr_text = direct_exec_client.invoke_command(
+        "exec",
+        base_url,
+        payload,
+        args.wait_timeout_ms,
+    )
     if stdout_text and exit_code == EXIT_RUNNING:
         stdout_text = _add_continuation_token(stdout_text, base_url)
     return exit_code, stdout_text, stderr_text
@@ -280,7 +285,7 @@ def _run_get_result(args):
         return probe_result
 
     payload = {"job_id": token_payload["job_id"], "wait_timeout_ms": args.wait_timeout_ms}
-    exit_code, stdout_text, stderr_text = cli.invoke_command(
+    exit_code, stdout_text, stderr_text = direct_exec_client.invoke_command(
         "get-result",
         token_payload["base_url"],
         payload,
