@@ -320,10 +320,14 @@ WORKFLOW_EXAMPLES = {
     "request-editor-exit-via-exec": {
         "goal": "Request a normal Unity Editor exit through a script instead of using stopped-state control.",
         "steps": [
-            (
-                "`unity-puer-exec exec --project-path X:/project --file X:/scripts/request-exit.js --wait-timeout-ms 1000`",
-                "Expected observation: stdout reports the execution result for the exit-request script or returns `running` if the request is still in progress.",
-            ),
+            {
+                "command": "`unity-puer-exec exec --project-path X:/project --file X:/scripts/request-exit.js --wait-timeout-ms 1000`",
+                "script_body": [
+                    "const EditorApplication = puer.loadType('UnityEditor.EditorApplication');",
+                    "EditorApplication.Exit(0);",
+                ],
+                "observation": "Expected observation: stdout reports the execution result for the exit-request script or returns `running` if the request is still in progress.",
+            },
         ],
         "notice": [
             "This example assumes Unity is already available for the selected project.",
@@ -385,7 +389,17 @@ def render_command_status_help(command):
 def render_workflow_example(example_id):
     info = WORKFLOW_EXAMPLES[example_id]
     steps = []
-    for index, (command, observation) in enumerate(info["steps"], start=1):
+    for index, step in enumerate(info["steps"], start=1):
+        if isinstance(step, dict):
+            step_lines = ["{}. {}".format(index, step["command"])]
+            script_body = step.get("script_body")
+            if script_body:
+                step_lines.append("   Example script body:")
+                step_lines.extend("     {}".format(line) for line in script_body)
+            step_lines.append("   {}".format(step["observation"]))
+            steps.append("\n".join(step_lines))
+            continue
+        command, observation = step
         steps.append("{}. {}\n   {}".format(index, command, observation))
     sections = [
         "Goal\n{}".format(info["goal"]),

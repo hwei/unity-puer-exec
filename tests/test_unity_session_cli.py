@@ -94,6 +94,16 @@ class UnityPuerExecCliTests(unittest.TestCase):
         self.assertIn("fake workload", stdout)
         self.assertIn("reduces the chance of missing an early log line", stdout)
 
+    def test_exit_help_example_renders_inline_request_exit_script(self):
+        exit_code, stdout, stderr = unity_puer_exec.run_cli(["--help-example", "request-editor-exit-via-exec"])
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(stderr, "")
+        self.assertIn("Example script body:", stdout)
+        self.assertIn("const EditorApplication = puer.loadType('UnityEditor.EditorApplication');", stdout)
+        self.assertIn("EditorApplication.Exit(0);", stdout)
+        self.assertIn("Expected observation:", stdout)
+
     def test_help_example_unknown_id_is_usage_error_on_stderr(self):
         exit_code, stdout, stderr = unity_puer_exec.run_cli(["--help-example", "missing-example"])
 

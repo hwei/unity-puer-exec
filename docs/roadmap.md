@@ -217,11 +217,12 @@
 
 #### T1.4.9 Make Help Examples Self-Contained
 
-- Status: draft
+- Status: done
 - Parent: T1.4
 - Depends on: T1.4.4
-- Plan: docs/plans/T1.4.9-help-examples-self-contained.md
+- Plan: none
 - Done means: the `request-editor-exit-via-exec` help example no longer relies on a placeholder script path alone; the help surface includes the minimal literal `request-exit.js` body so an agent can execute that workflow without guessing hidden file contents
+- Output: `request-editor-exit-via-exec` in `cli/python/help_surface.py` now inlines the minimal `request-exit.js` body, and `tests/test_unity_session_cli.py` locks that contract
 
 #### T1.4.10 Replace Placeholder Workflow Snippets With Validated Examples
 
