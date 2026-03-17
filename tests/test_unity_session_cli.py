@@ -102,6 +102,15 @@ class UnityPuerExecCliTests(unittest.TestCase):
         self.assertIn("What To Notice", stdout)
         self.assertIn("correlation_id", stdout)
         self.assertIn("log_offset", stdout)
+        self.assertIn("Do not assume `running` already includes `result.correlation_id`", stdout)
+
+    def test_exec_help_describes_running_without_immediate_correlation_id_guarantee(self):
+        exit_code, stdout, stderr = unity_puer_exec.run_cli(["exec", "--help-status"])
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(stderr, "")
+        self.assertIn("`running`: the script is still running", stdout)
+        self.assertIn("the script must make that id available through its own workflow", stdout)
 
     def test_exit_help_example_renders_inline_request_exit_script(self):
         exit_code, stdout, stderr = unity_puer_exec.run_cli(["--help-example", "request-editor-exit-via-exec"])

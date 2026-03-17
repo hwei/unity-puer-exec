@@ -195,7 +195,7 @@ COMMAND_HELP = {
         "status": {
             "success": [
                 "`completed`: the script finished and any host return value is in `result`.",
-                "`running`: the script is still running; use a prior `correlation_id` plus `wait-for-result-marker` if the script emits a result marker.",
+                "`running`: the script is still running; if early observation needs a `correlation_id`, the script must make that id available through its own workflow before completion.",
             ],
             "failure": [
                 ("address_conflict", 2, "both selectors were provided; choose exactly one."),
@@ -289,11 +289,11 @@ COMMAND_HELP = {
 
 WORKFLOW_EXAMPLES = {
     "exec-and-wait-for-result-marker": {
-        "goal": "Run a long-running script that returns `correlation_id`, capture `log_offset`, then wait for the terminal result marker.",
+        "goal": "Run a long-running script, capture `log_offset`, and wait for the terminal result marker once the script has made the intended `correlation_id` available.",
         "steps": [
             (
                 "`unity-puer-exec exec --project-path X:/project --file X:/scripts/do-work.js --wait-timeout-ms 1000 --include-log-offset`",
-                "Expected observation: stdout returns machine-readable JSON with `result.correlation_id`; if the script is still active, the response may use `status = \"running\"` and still include top-level `log_offset`.",
+                "Expected observation: stdout returns machine-readable JSON. If the script finishes within the wait budget, any host return value is in `result`. If the script is still active, the response may use `status = \"running\"` and still include top-level `log_offset`.",
             ),
             (
                 "`unity-puer-exec wait-for-result-marker --project-path X:/project --correlation-id ID --start-offset OFFSET`",
@@ -304,7 +304,8 @@ WORKFLOW_EXAMPLES = {
             "`exec` is allowed to launch or recover Unity when you target a project with `--project-path`.",
             "`--file` is the preferred script input for multi-line or AI-generated scripts.",
             "`running` is an expected machine state, not an error; branch on it and keep observing via result markers.",
-            "Use `log_offset` plus `correlation_id` together so observation begins after the originating `exec` request.",
+            "Do not assume `running` already includes `result.correlation_id`; if you need correlation-aware observation before completion, design the script to expose that id deliberately.",
+            "Use `log_offset` plus the script-provided `correlation_id` together so observation begins after the originating `exec` request.",
         ],
     },
     "request-editor-exit-via-exec": {
