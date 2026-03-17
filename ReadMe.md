@@ -2,17 +2,6 @@
 
 这个仓库承载 `unity-puer-exec` 的产品化开发工作。
 
-当前包含：
-
-- the formal Unity package product line, targeting `com.txcombo.unity-puer-exec`
-- the formal CLI product line, targeting `unity-puer-exec`
-- current Unity package source under `packages/com.txcombo.unity-puer-exec/`
-- validation-host wiring helper under `tools/prepare_validation_host.py`
-- repo-owned Python CLI baseline under `cli/python/`
-- transitional compatibility wrappers under `.claude/skills/unity-puer-exec/`
-- OpenSpec governance and specs under `openspec/`
-- repository-level tests under `tests/`
-
 产品边界：
 
 - `unity-puer-exec/` 是正式 Unity package、正式 CLI、以及产品文档的 source of truth
@@ -24,17 +13,16 @@
 
 快速入口：
 
-- project context: `openspec/project.md`
-- durable specs: `openspec/specs/`
-- active changes: `openspec/changes/`
+- repository context: `openspec/project.md`
+- durable requirements: `openspec/specs/`
+- active change work: `openspec/changes/`
 - tests: `python -m unittest discover -s tests -p "test_*.py"`
 
 目录概览：
 
-- `AGENTS.md`: repository-local execution rules
-- `openspec/`: project context, durable specs, active changes, archived changes
+- `AGENTS.md`: repository-local execution rules for agents
+- `openspec/`: canonical governance, specs, and change artifacts
 - `packages/com.txcombo.unity-puer-exec/`: formal Unity package home
 - `tools/prepare_validation_host.py`: local validation-host manifest rewiring helper
 - `tests/`: repository-level test entry points
 - `cli/python/`: repo-owned Python CLI baseline location
-- `.claude/skills/unity-puer-exec/`: transitional compatibility wrapper location

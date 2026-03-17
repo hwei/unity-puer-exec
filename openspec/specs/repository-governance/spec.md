@@ -8,14 +8,14 @@ Define the repository's canonical OpenSpec-first workflow, including change gati
 
 ### Requirement: OpenSpec is the canonical repository workflow
 
-The repository SHALL use OpenSpec as the canonical system for project context, durable governance rules, and active change planning. Legacy governance documents MUST NOT remain authoritative once their content has been migrated into OpenSpec artifacts.
+The repository SHALL use OpenSpec as the canonical system for project context, durable governance rules, and active change planning. Legacy governance documents MUST NOT remain authoritative once their content has been migrated into OpenSpec artifacts, and the working tree SHALL NOT keep a parallel legacy `docs/` workflow entry path.
 
 #### Scenario: Fresh contributor looks for process entry
 
 - **WHEN** a contributor or agent needs the repository workflow entry point
 - **THEN** `openspec/project.md` provides repository-wide context
 - **AND** `openspec/specs/repository-governance/spec.md` defines the durable workflow rules
-- **AND** legacy `docs/` files act only as redirects or history
+- **AND** the working tree does not provide a parallel `docs/` workflow entry path
 
 ### Requirement: Substantial work requires OpenSpec change context
 

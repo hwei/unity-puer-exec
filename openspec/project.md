@@ -22,13 +22,13 @@
 - Use `openspec/specs/` for durable requirements that should survive individual changes.
 - Use `openspec/changes/` for scoped change work. Proposal, specs, and tasks are the default minimum before substantial implementation.
 - Treat temporary execution context as ephemeral. Distill stable conclusions into `openspec/specs/`, source, tests, or concise repository guidance rather than keeping long-lived plan prose.
+- The working tree does not keep a parallel legacy `docs/` workflow entry path.
 
 ## Agent Conventions
 
 - Prefer reading only the minimal OpenSpec artifacts needed for the current task.
 - When a change affects behavior or workflow materially, create or continue an OpenSpec change instead of editing long-lived truth directly without change context.
 - Keep product behavior in code and tests, and keep durable contract statements in OpenSpec specs. Do not use stale prose as authoritative when code and tests disagree.
-- Legacy `docs/` files are transitional references only unless a file explicitly says otherwise.
 
 ## Repository Layout
 

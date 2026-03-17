@@ -12,4 +12,4 @@
 - `openspec/specs/` holds durable requirements that survive individual changes.
 - `openspec/changes/` holds active and archived change artifacts.
 - `tests/` is the canonical repository-level test location.
-- Legacy `docs/` files are transitional references only unless a file explicitly says otherwise.
+- Use OpenSpec artifacts directly; there is no parallel `docs/` workflow surface in the working tree.
