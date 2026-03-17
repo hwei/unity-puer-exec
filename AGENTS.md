@@ -12,6 +12,7 @@
 - `openspec/specs/` holds durable requirements that survive individual changes.
 - `openspec/changes/` holds active and archived change artifacts.
 - `tests/` is the canonical repository-level test location.
+- `.tmp/` is the preferred local-only location for transient validation probes and scratch scripts.
 - Use OpenSpec artifacts directly; there is no parallel `docs/` workflow surface in the working tree.
 
 ## Change metadata
@@ -35,6 +36,7 @@
 - Before starting apply work, inspect `git status`.
 - If the working tree contains unrelated or risky in-progress edits, prefer creating a commit checkpoint before continuing.
 - A clean tree is preferred for apply work, but git commits are an execution habit rather than a hard OpenSpec workflow gate.
+- Place ad hoc validation probes and short-lived scratch scripts under `.tmp/` instead of the repository root.
 
 ## Apply closeout
 
