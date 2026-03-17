@@ -82,6 +82,30 @@ Representative high-level example:
 unity-puer-exec wait-for-result-marker --project-path X:/project --correlation-id 12ab...
 ```
 
+Representative success payload shape:
+
+```json
+{
+  "ok": true,
+  "status": "completed",
+  "operation": "wait-for-result-marker",
+  "session": {
+    "...": "..."
+  },
+  "result": {
+    "status": "result_marker_matched",
+    "marker": {
+      "correlation_id": "12ab...",
+      "...": "..."
+    },
+    "diagnostics": {
+      "matched_log_text": "[UnityPuerExecResult] {...}",
+      "matched_log_pattern": "^\\[UnityPuerExecResult\\] (.+)$"
+    }
+  }
+}
+```
+
 Minimal accepted contract for the alias:
 - marker prefix is fixed by the product
 - marker body is a single-line JSON object
@@ -93,6 +117,10 @@ Matching behavior:
 - lines that share the prefix but are not valid JSON are ignored as non-matching marker candidates
 - lines whose parsed JSON does not contain the requested `correlation_id` are ignored as non-matching marker candidates
 - the command keeps scanning until a valid matching marker is found or the normal wait timeout / readiness failure path is reached
+
+Diagnostics behavior for the current evaluation:
+- the alias keeps returning lightweight diagnostics by default for consistency with current observation commands
+- a later change may hide diagnostics by default and expose them only in an explicit debug mode
 
 ### Decision: Treat session matching as a general command guard
 
@@ -149,5 +177,4 @@ Why this is attractive:
 ## Open Questions
 
 - Should `exec` itself generate a correlation id and print it in the initial response, or should helper code inside the script own correlation generation?
-- Should `wait-for-result-marker` expose only the parsed marker object, or also retain the matched raw line and extraction diagnostics?
 - Is it acceptable to require single-line terminal markers in the first iteration, given the current chunk-based observation implementation?
