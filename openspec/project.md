@@ -33,6 +33,9 @@
 - Maintain repository-owned change metadata in `meta.yaml` for every non-archived change. The current convention is `status`, `change_type`, `priority`, `blocked_by`, `assumption_state`, `evidence`, and `updated_at`.
 - When new work is discovered during execution, classify it as in-scope, prerequisite, or adjacent before continuing implementation.
 - When starting work from a clean tree, consult the backlog tooling rather than guessing from prose alone.
+- When apply work ends, always produce an explicit closeout finding summary stating whether new follow-up candidates were discovered.
+- If follow-up candidates are discovered during closeout, classify them as `product-improvement`, `workflow-improvement`, `tooling-improvement`, or `validation-gap`, and discuss them with the human before promoting them into further work.
+- When a change is ready to close, recommend whether to run `git commit`, `openspec archive`, and the final `git commit`, but leave execution to the human unless explicitly asked.
 - Keep product behavior in code and tests, and keep durable contract statements in OpenSpec specs. Do not use stale prose as authoritative when code and tests disagree.
 
 ## Change Type Policy

@@ -35,3 +35,12 @@
 - Before starting apply work, inspect `git status`.
 - If the working tree contains unrelated or risky in-progress edits, prefer creating a commit checkpoint before continuing.
 - A clean tree is preferred for apply work, but git commits are an execution habit rather than a hard OpenSpec workflow gate.
+
+## Apply closeout
+
+- Every apply session should end with an explicit closeout finding summary.
+- The summary must say either `No new follow-up work identified` or `New follow-up candidates identified`.
+- Allowed follow-up categories are `product-improvement`, `workflow-improvement`, `tooling-improvement`, and `validation-gap`.
+- If new follow-up candidates are identified, discuss them with the human before promoting them into queued changes, implementation work, or other persistent follow-up actions.
+- When the change state is ready to close, recommend whether to run `git commit`, `openspec archive`, and the final `git commit`.
+- Do not execute the closeout sequence automatically unless the human explicitly asks for it.

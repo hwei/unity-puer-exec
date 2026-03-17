@@ -47,6 +47,16 @@ Stable follow-up findings discovered during implementation SHALL remain explicit
 - **THEN** the finding is recorded as explicit retrospective context for that change
 - **AND** long-lived governance artifacts change only after explicit disposition
 
+### Requirement: Apply-closeout findings require human discussion before promotion
+
+New follow-up candidates discovered during apply closeout SHALL remain explicit review inputs until the human accepts, defers, rejects, or converts them into follow-up work. Agents MUST NOT silently promote apply-closeout findings into queued changes or further implementation without human discussion.
+
+#### Scenario: Apply closeout identifies a workflow-improvement candidate
+
+- **WHEN** an apply closeout reports a new workflow-improvement candidate
+- **THEN** the candidate is surfaced as an explicit discussion item
+- **AND** the agent waits for human disposition before promoting it into a queued change or further implementation
+
 ### Requirement: Discovered work is triaged before scope continues
 
 Work discovered during execution SHALL be classified before implementation continues. Discoveries that are required to complete the current change SHALL update current change artifacts first; prerequisite discoveries SHALL be recorded in a separate change and block the current change when necessary; adjacent discoveries SHALL be captured as follow-up work without silently expanding current scope.
