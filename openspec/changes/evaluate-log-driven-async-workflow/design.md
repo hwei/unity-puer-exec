@@ -135,7 +135,7 @@ Why this is attractive:
 
 Accepted parameter rule:
 - `exec` returns `log_offset` only when the caller explicitly requests it
-- the first iteration should prefer an explicit parameter such as `--include-log-offset`
+- the first iteration uses the explicit parameter name `--include-log-offset`
 - callers that plan to use `wait-for-result-marker` are expected to opt in up front
 
 Representative workflow:
@@ -187,7 +187,7 @@ Why this is attractive:
 4. Are there important scenarios where the final structured `result` from `get-result` is materially better than a log-emitted result envelope?
 5. Does deleting `/get-result` actually simplify package and CLI implementation overall, or only shift complexity into examples and user scripts?
 6. Should the first iteration require single-line/single-write terminal markers, or should observation be upgraded to tolerate chunk-boundary splits before the workflow is formalized?
-7. What should the explicit opt-in parameter be called for requesting `log_offset` from `exec`?
+7. Should `log_offset` live inside `result`, or at top level beside command metadata?
 
 ## Risks / Trade-offs
 
@@ -215,6 +215,5 @@ Why this is attractive:
 ## Open Questions
 
 - Should `exec` itself generate a correlation id and print it in the initial response, or should helper code inside the script own correlation generation?
-- Should the opt-in parameter be named `--include-log-offset`, `--return-log-offset`, or something similar?
 - Should `log_offset` always live inside `result`, or should it sit at top level beside the command-family metadata?
 - Is it acceptable to require single-line terminal markers in the first iteration, given the current chunk-based observation implementation?
