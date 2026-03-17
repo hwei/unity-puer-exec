@@ -21,6 +21,8 @@
 - Use `openspec/project.md` for repository-wide context and collaboration rules.
 - Use `openspec/specs/` for durable requirements that should survive individual changes.
 - Use `openspec/changes/` for scoped change work. Proposal, specs, and tasks are the default minimum before substantial implementation.
+- Treat non-archived OpenSpec changes as the repository planning surface.
+- Treat backlog specifically as changes whose `meta.yaml` status is `queued`.
 - Treat temporary execution context as ephemeral. Distill stable conclusions into `openspec/specs/`, source, tests, or concise repository guidance rather than keeping long-lived plan prose.
 - The working tree does not keep a parallel legacy `docs/` workflow entry path.
 
@@ -28,14 +30,28 @@
 
 - Prefer reading only the minimal OpenSpec artifacts needed for the current task.
 - When a change affects behavior or workflow materially, create or continue an OpenSpec change instead of editing long-lived truth directly without change context.
+- Maintain repository-owned change metadata in `meta.yaml` for every non-archived change. The current convention is `status`, `change_type`, `priority`, `blocked_by`, `assumption_state`, `evidence`, and `updated_at`.
+- When new work is discovered during execution, classify it as in-scope, prerequisite, or adjacent before continuing implementation.
+- When starting work from a clean tree, consult the backlog tooling rather than guessing from prose alone.
 - Keep product behavior in code and tests, and keep durable contract statements in OpenSpec specs. Do not use stale prose as authoritative when code and tests disagree.
+
+## Change Type Policy
+
+- `feature`: proposal, tasks, and durable specs are expected; add design when architecture changes materially.
+- `harness`: proposal and tasks are expected; add design in most cases; add durable specs when contracts or workflow rules change.
+- `validation`: proposal and tasks are expected; add design only when coordination or setup is non-trivial; add durable specs only when validation policy becomes long-lived truth.
+- `refactor`: proposal and tasks are expected; add design when risk or coordination is significant; add durable specs only when external behavior or governance changes.
+- `spike`: keep proposal lightweight and tasks explicit; add design only when it helps reasoning; add durable specs only if the spike graduates into stable requirements.
 
 ## Repository Layout
 
 - `openspec/project.md`: repository-wide context and collaboration guidance
 - `openspec/specs/`: durable capability requirements
 - `openspec/changes/`: active and archived change proposals
+- `openspec/templates/change-meta.yaml`: repository-owned metadata template for non-archived changes
 - `packages/com.txcombo.unity-puer-exec/`: formal Unity package home
 - `cli/python/`: repo-owned Python CLI baseline
+- `tools/new_openspec_change.py`: helper that creates a new OpenSpec change and seeds `meta.yaml`
+- `tools/openspec_backlog.py`: filter and rank non-archived changes from `meta.yaml`
 - `tools/prepare_validation_host.py`: validation-host wiring helper
 - `tests/`: canonical repository-level tests

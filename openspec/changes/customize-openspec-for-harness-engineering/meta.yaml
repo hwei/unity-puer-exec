@@ -1,0 +1,7 @@
+status: active
+change_type: refactor
+priority: P0
+blocked_by: []
+assumption_state: valid
+evidence: tests
+updated_at: 2026-03-17

@@ -46,3 +46,35 @@ Stable follow-up findings discovered during implementation SHALL remain explicit
 - **WHEN** an executor identifies a stable workflow finding while closing out a change
 - **THEN** the finding is recorded as explicit retrospective context for that change
 - **AND** long-lived governance artifacts change only after explicit disposition
+
+### Requirement: Discovered work is triaged before scope continues
+
+Work discovered during execution SHALL be classified before implementation continues. Discoveries that are required to complete the current change SHALL update current change artifacts first; prerequisite discoveries SHALL be recorded in a separate change and block the current change when necessary; adjacent discoveries SHALL be captured as follow-up work without silently expanding current scope.
+
+#### Scenario: Executor discovers unfinished prerequisite work
+
+- **WHEN** an executor learns that the current change depends on unfinished prerequisite work
+- **THEN** the executor records or continues a separate prerequisite change
+- **AND** the current change is marked blocked when the prerequisite prevents correct continuation
+- **AND** execution does not proceed on the stale assumption that the prerequisite is already satisfied
+
+### Requirement: Artifact weight follows change type
+
+The repository SHALL define artifact expectations by change type so feature, harness, validation, refactor, and spike work are documented with appropriate weight. Contributors MUST satisfy the repository's minimum artifact policy for the selected change type before implementation is treated as normal workflow.
+
+#### Scenario: Maintainer prepares a validation change
+
+- **WHEN** a maintainer creates a validation-oriented change
+- **THEN** the maintainer provides the minimum artifacts required for validation work by repository policy
+- **AND** durable product specs are only introduced when the change creates durable validation requirements
+
+### Requirement: Superseded changes are archived rather than deleted
+
+Changes that are no longer the recommended execution path SHALL be marked superseded rather than silently deleted. Once their disposition is clear, superseded changes SHALL be archived so they no longer appear in active planning scans, typically without updating main specs when no durable requirement change is being merged.
+
+#### Scenario: Older change is replaced by newer direction
+
+- **WHEN** a maintainer decides that an existing non-archived change has been replaced by a newer change or conclusion
+- **THEN** the older change is marked superseded
+- **AND** the older change is archived once its disposition is stable
+- **AND** the repository keeps the archived record instead of deleting the change from history
