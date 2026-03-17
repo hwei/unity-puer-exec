@@ -151,12 +151,16 @@ Representative `exec` result shape for this workflow:
   "ok": true,
   "status": "completed",
   "operation": "exec",
+  "log_offset": 12345,
   "result": {
-    "correlation_id": "12ab...",
-    "log_offset": 12345
+    "correlation_id": "12ab..."
   }
 }
 ```
+
+Placement rule:
+- `log_offset` lives at top level in the `exec` response, not inside `result`
+- the field describes observation metadata captured before or around command execution, not the script's semantic return value
 
 ### Decision: Treat session matching as a general command guard
 
@@ -187,8 +191,6 @@ Why this is attractive:
 4. Are there important scenarios where the final structured `result` from `get-result` is materially better than a log-emitted result envelope?
 5. Does deleting `/get-result` actually simplify package and CLI implementation overall, or only shift complexity into examples and user scripts?
 6. Should the first iteration require single-line/single-write terminal markers, or should observation be upgraded to tolerate chunk-boundary splits before the workflow is formalized?
-7. Should `log_offset` live inside `result`, or at top level beside command metadata?
-
 ## Risks / Trade-offs
 
 - [We weaken the formal machine contract] -> Require explicit evaluation of extracted-result shape, failure signaling, and branchable non-success states before removing `get-result`.
@@ -215,5 +217,4 @@ Why this is attractive:
 ## Open Questions
 
 - Should `exec` itself generate a correlation id and print it in the initial response, or should helper code inside the script own correlation generation?
-- Should `log_offset` always live inside `result`, or should it sit at top level beside the command-family metadata?
 - Is it acceptable to require single-line terminal markers in the first iteration, given the current chunk-based observation implementation?
