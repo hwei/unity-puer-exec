@@ -1,6 +1,6 @@
 # unity-puer-exec
 
-这个仓库承载 `unity-puer-exec` 阶段二的产品化开发工作。
+这个仓库承载 `unity-puer-exec` 的产品化开发工作。
 
 当前包含：
 
@@ -10,7 +10,7 @@
 - validation-host wiring helper under `tools/prepare_validation_host.py`
 - repo-owned Python CLI baseline under `cli/python/`
 - transitional compatibility wrappers under `.claude/skills/unity-puer-exec/`
-- repository-level docs under `docs/`
+- OpenSpec governance and specs under `openspec/`
 - repository-level tests under `tests/`
 
 产品边界：
@@ -24,16 +24,15 @@
 
 快速入口：
 
-- workflow: `docs/workflow.md`
-- active work: `docs/roadmap.md`
-- current status: `docs/status.md`
-- active decisions: `docs/decisions/`
+- project context: `openspec/project.md`
+- durable specs: `openspec/specs/`
+- active changes: `openspec/changes/`
 - tests: `python -m unittest discover -s tests -p "test_*.py"`
 
 目录概览：
 
 - `AGENTS.md`: repository-local execution rules
-- `docs/`: workflow, roadmap, status, decisions, and temporary plans
+- `openspec/`: project context, durable specs, active changes, archived changes
 - `packages/com.txcombo.unity-puer-exec/`: formal Unity package home
 - `tools/prepare_validation_host.py`: local validation-host manifest rewiring helper
 - `tests/`: repository-level test entry points

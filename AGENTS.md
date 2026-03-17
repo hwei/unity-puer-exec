@@ -6,10 +6,10 @@
 - This repository does not assume a repository-local `Project/` directory.
 - `./.env` is local-only and should not be committed; use `./.env.example` as the tracked template.
 
-## Documentation entry points
+## OpenSpec entry points
 
-- `docs/index.md` routes to the next governance document for the current workflow state.
-- `docs/roadmap.md` tracks active and future work with hierarchical task IDs.
-- `docs/status.md` tracks current focus, blockers, and next steps.
-- `docs/plans/` stores temporary execution plans only.
+- `openspec/project.md` is the canonical repository-wide context file.
+- `openspec/specs/` holds durable requirements that survive individual changes.
+- `openspec/changes/` holds active and archived change artifacts.
 - `tests/` is the canonical repository-level test location.
+- Legacy `docs/` files are transitional references only unless a file explicitly says otherwise.
