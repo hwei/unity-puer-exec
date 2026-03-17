@@ -76,6 +76,34 @@ Representative low-level example:
 unity-puer-exec wait-for-log-pattern --project-path X:/project --pattern "^\[UnityPuerExecResult\] (.+)$" --extract-json-group 1
 ```
 
+Representative low-level success payload shape:
+
+```json
+{
+  "ok": true,
+  "status": "completed",
+  "operation": "wait-for-log-pattern",
+  "session": {
+    "...": "..."
+  },
+  "result": {
+    "status": "log_pattern_matched",
+    "extracted_json": {
+      "correlation_id": "12ab..."
+    },
+    "diagnostics": {
+      "matched_log_pattern": "^\\[UnityPuerExecResult\\] (.+)$"
+    }
+  }
+}
+```
+
+Extraction contract:
+- `--extract-group N` returns the matched text for group `N`
+- `--extract-json-group N` parses group `N` as JSON and returns only the parsed object
+- the response does not repeat the requested group index because it is already known to the caller
+- the response does not include duplicated matched text by default; callers that need the full match should request `--extract-group 0` or consult diagnostics
+
 Representative high-level example:
 
 ```text
