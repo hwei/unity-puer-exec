@@ -29,24 +29,60 @@ The proposed direction is to treat long-running work as an observation problem r
 - Session matching can be expressed as a reusable command concern rather than a continuation-token-only concern.
 - Some valuable long-running workloads are better modeled as milestone observation and result-marker capture than as server-side job continuation.
 
-## Candidate Decisions
+## Decisions
 
-### Candidate Decision: Prefer correlation-aware log markers over continuation tokens for long-running workflows
+### Decision: Prefer single-line JSON result markers over continuation tokens for long-running workflows
 
-The leading candidate is to have long-running scripts emit a result envelope into the Editor log, for example `<result-12ab...>payload</result-12ab...>`, where the correlation id is random per invocation. The CLI would then rely on `wait-for-log-pattern` to observe and extract that specific envelope.
+The accepted direction for this evaluation is to have long-running scripts emit a single-line JSON result envelope into the Editor log, with a random correlation id per invocation. The CLI would then rely on `wait-for-log-pattern` to observe and extract that specific envelope. The first iteration should prefer a stable marker prefix plus a JSON object on one line, rather than multi-line or XML-like envelopes.
+
+Representative shape:
+
+```text
+[UnityPuerExecResult] {"correlation_id":"12ab...","kind":"completed","payload":"..."}
+```
 
 Why this is attractive:
 - Removes `get-result` as a dedicated command surface.
 - Avoids forcing the package or a user-owned server to implement a job lookup API.
 - Allows observation to survive session replacement if the log source remains the intended source of truth.
 - Makes the async protocol more explicit in user-authored scripts instead of hiding it behind package internals.
+- Fits the current chunk-based observation implementation better than multi-line envelopes.
 
 Risks:
 - The protocol becomes partly user-defined, so examples or helpers must be very clear.
-- Logs are append-only text, so large payloads, escaping, and partial writes need a documented boundary.
+- Logs are append-only text, so payload size, escaping, and single-write expectations need a documented boundary.
 - Concurrent jobs require unique correlation ids and careful pattern selection.
 
-### Candidate Decision: Treat session matching as a general command guard
+Current implementation note:
+- The existing `wait-for-log-pattern` implementation searches only the newly appended log chunk since the prior file-size offset. It does not keep an overlap buffer across polling rounds. A multi-part marker that starts in one chunk and ends in a later chunk is therefore not reliably matchable today.
+
+### Decision: Keep `wait-for-log-pattern` as the regex primitive, but add extraction and a high-level marker alias
+
+The accepted direction for this evaluation is to keep `wait-for-log-pattern` as the low-level regex-based observation command. That primitive should gain extraction capability, including `--extract-json-group`, so callers can capture and parse structured data from a matched group. On top of that primitive, the CLI should add a high-level alias, `wait-for-result-marker`, for the specific single-line JSON marker workflow.
+
+Why this is attractive:
+- Preserves a general observation primitive instead of overloading the command with only one special-case workflow.
+- Lets advanced users keep using regex directly.
+- Avoids forcing callers to hand-write brittle full-JSON regexes when the recommended workflow is simply "wait for my result marker".
+- Gives the help surface a clean split between a low-level primitive and a high-level recommended long-job command.
+
+Planned shape:
+- `wait-for-log-pattern` keeps `--pattern` and gains extraction options such as `--extract-group` and `--extract-json-group`
+- `wait-for-result-marker` accepts `--correlation-id` and internally applies the standard marker regex plus JSON extraction
+
+Representative low-level example:
+
+```text
+unity-puer-exec wait-for-log-pattern --project-path X:/project --pattern "^\[UnityPuerExecResult\] (.+)$" --extract-json-group 1
+```
+
+Representative high-level example:
+
+```text
+unity-puer-exec wait-for-result-marker --project-path X:/project --correlation-id 12ab...
+```
+
+### Decision: Treat session matching as a general command guard
 
 If session identity matters, it should not be a special rule attached only to `get-result`. A more coherent direction is for commands such as `exec` and `wait-for-log-pattern` to accept an optional expected session identity and fail when the addressed session does not match.
 
@@ -58,7 +94,7 @@ Why this is attractive:
 Open trade-off:
 - Cross-session log observation is valuable for some workloads, so session checks likely need to be optional rather than mandatory on every path.
 
-### Candidate Decision: Use helpers or examples, not a mandatory package runtime API
+### Decision: Use helpers or examples, not a mandatory package runtime API
 
 The repository can provide a documented snippet or helper library that generates a random correlation id, emits start/progress/result markers, and formats result payloads for extraction. That should remain an aid, not a hard dependency.
 
@@ -69,11 +105,12 @@ Why this is attractive:
 
 ## Evaluation Questions
 
-1. Can `wait-for-log-pattern` reliably return extracted payload content, not just matched text, in a way that remains formal and machine-readable?
+1. What exact JSON extraction payload shape should `--extract-json-group` return?
 2. Can a log-driven workflow represent success, failure, timeout, and cancellation clearly enough without falling back to ad hoc prose parsing?
 3. Can correlation ids plus optional session guards prevent false matches when multiple long-running jobs log concurrently?
 4. Are there important scenarios where the final structured `result` from `get-result` is materially better than a log-emitted result envelope?
 5. Does deleting `/get-result` actually simplify package and CLI implementation overall, or only shift complexity into examples and user scripts?
+6. Should the first iteration require single-line/single-write terminal markers, or should observation be upgraded to tolerate chunk-boundary splits before the workflow is formalized?
 
 ## Risks / Trade-offs
 
@@ -88,8 +125,10 @@ Why this is attractive:
    - start marker with correlation id
    - optional progress markers
    - terminal success or failure marker with payload
-2. Prototype `wait-for-log-pattern` extraction for a correlation-specific terminal marker.
-3. Compare the resulting UX against `exec -> get-result` for:
+   - in a single-line JSON terminal envelope with a stable marker prefix
+2. Prototype `wait-for-log-pattern` extraction for a correlation-specific terminal marker, including `--extract-json-group`.
+3. Prototype `wait-for-result-marker` as the high-level alias for the single-line JSON result-marker workflow.
+4. Compare the resulting UX against `exec -> get-result` for:
    - single long job
    - concurrent long jobs
    - session restart between start and observation
@@ -97,6 +136,6 @@ Why this is attractive:
 
 ## Open Questions
 
-- Should the log result protocol use XML-like tags, JSON lines with a correlation id, or another envelope that is easier to escape and parse?
 - Should `exec` itself generate a correlation id and print it in the initial response, or should helper code inside the script own correlation generation?
-- If a script emits structured result markers, does the CLI need a dedicated extraction mode beyond raw regex matching?
+- Should `wait-for-result-marker` expose only the parsed marker object, or also retain the matched raw line and extraction diagnostics?
+- Is it acceptable to require single-line terminal markers in the first iteration, given the current chunk-based observation implementation?

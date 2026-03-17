@@ -6,9 +6,10 @@
 
 ## 2. Prototype and evidence
 
-- [ ] 2.1 Prototype a long-running script pattern that emits random-id-correlated terminal markers into the Unity log.
-- [ ] 2.2 Prototype or design `wait-for-log-pattern` result extraction for correlation-specific payload capture.
-- [ ] 2.3 Validate the candidate model against at least single-job, concurrent-job, and session-replacement scenarios.
+- [ ] 2.1 Prototype a long-running script pattern that emits single-line JSON terminal markers with random correlation ids into the Unity log.
+- [ ] 2.2 Design `wait-for-log-pattern` extraction, including `--extract-json-group`, so callers do not need to hand-write brittle full-JSON regexes.
+- [ ] 2.3 Design `wait-for-result-marker` as the high-level alias for the single-line JSON marker workflow.
+- [ ] 2.4 Validate the candidate model against at least single-job, concurrent-job, and session-replacement scenarios.
 
 ## 3. Formalization path if accepted
 
