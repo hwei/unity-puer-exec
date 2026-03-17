@@ -18,13 +18,7 @@ namespace UnityPuerExec
         public string id = "";
         public string code = "";
         public int wait_timeout_ms = 1000;
-    }
-
-    [Serializable]
-    internal class GetResultRequest
-    {
-        public string job_id = "";
-        public int wait_timeout_ms = 1000;
+        public bool include_log_offset = false;
     }
 
     internal enum UnityPuerExecJobStatus
@@ -313,12 +307,6 @@ namespace UnityPuerExec.Generated
                     return;
                 }
 
-                if (path.Equals("/get-result", StringComparison.OrdinalIgnoreCase))
-                {
-                    await HandleGetResultAsync(context);
-                    return;
-                }
-
                 if (path.Equals("/health", StringComparison.OrdinalIgnoreCase))
                 {
                     await WriteJsonAsync(context, BuildHealthResponseJson());
@@ -361,6 +349,7 @@ namespace UnityPuerExec.Generated
 
             var job = CreateJob("exec", request.id);
             Debug.Log($"[UnityPuerExec] Exec request accepted job={job.JobId}");
+            var logOffset = request.include_log_offset ? ReadEditorLogOffset() : (long?)null;
             var enqueueCompletion = new TaskCompletionSource<bool>();
             MainThreadActions.Enqueue(() =>
             {
@@ -380,38 +369,9 @@ namespace UnityPuerExec.Generated
             await enqueueCompletion.Task;
             Debug.Log($"[UnityPuerExec] Exec waiting job={job.JobId}");
             await WaitForTerminalOrTimeoutAsync(job, request.wait_timeout_ms);
-            var payload = BuildExecResponseJson(job.Snapshot());
+            var payload = BuildExecResponseJson(job.Snapshot(), logOffset);
             Debug.Log($"[UnityPuerExec] Exec responding job={job.JobId} payload={payload}");
             await WriteJsonAsync(context, payload);
-        }
-
-        private static async Task HandleGetResultAsync(HttpListenerContext context)
-        {
-            var requestJson = await ReadRequestBodyAsync(context.Request);
-            var request = JsonUtility.FromJson<GetResultRequest>(requestJson);
-            if (request == null || string.IsNullOrEmpty(request.job_id))
-            {
-                context.Response.StatusCode = 400;
-                await WriteJsonAsync(
-                    context,
-                    "{\"ok\":false,\"status\":\"failed\",\"error\":\"invalid_get_result_request\"}"
-                );
-                return;
-            }
-
-            if (!Jobs.TryGetValue(request.job_id, out var job))
-            {
-                await WriteJsonAsync(
-                    context,
-                    "{\"ok\":false,\"status\":\"missing\",\"job_id\":\"" +
-                    JsonEscape(request.job_id) +
-                    "\"}"
-                );
-                return;
-            }
-
-            await WaitForTerminalOrTimeoutAsync(job, request.wait_timeout_ms);
-            await WriteJsonAsync(context, BuildGetResultResponseJson(job.Snapshot()));
         }
 
         private static async Task<string> ReadRequestBodyAsync(HttpListenerRequest request)
@@ -556,48 +516,16 @@ namespace UnityPuerExec.Generated
             return builder.ToString();
         }
 
-        private static string BuildExecResponseJson(UnityPuerExecJobSnapshot snapshot)
+        private static string BuildExecResponseJson(UnityPuerExecJobSnapshot snapshot, long? logOffset)
         {
+            var logOffsetJson = logOffset.HasValue ? "\"log_offset\":" + logOffset.Value + "," : "";
             switch (snapshot.Status)
             {
                 case UnityPuerExecJobStatus.Completed:
                     return "{" +
                            "\"ok\":true," +
                            "\"status\":\"completed\"," +
-                           "\"job_id\":\"" + JsonEscape(snapshot.JobId) + "\"," +
-                           "\"session_marker\":\"" + JsonEscape(sessionMarker) + "\"," +
-                           "\"result\":" + (snapshot.ResultJson ?? "null") + "," +
-                           "\"spawn_job_ids\":" + BuildStringArrayJson(snapshot.SpawnedJobIds) +
-                           "}";
-                case UnityPuerExecJobStatus.Failed:
-                    return "{" +
-                           "\"ok\":false," +
-                           "\"status\":\"failed\"," +
-                           "\"job_id\":\"" + JsonEscape(snapshot.JobId) + "\"," +
-                           "\"session_marker\":\"" + JsonEscape(sessionMarker) + "\"," +
-                           "\"error\":\"" + JsonEscape(snapshot.Error) + "\"," +
-                           "\"stack\":\"" + JsonEscape(snapshot.Stack) + "\"" +
-                           "}";
-                default:
-                    return "{" +
-                           "\"ok\":true," +
-                           "\"status\":\"running\"," +
-                           "\"job_id\":\"" + JsonEscape(snapshot.JobId) + "\"," +
-                           "\"session_marker\":\"" + JsonEscape(sessionMarker) + "\"," +
-                           "\"spawn_job_ids\":" + BuildStringArrayJson(snapshot.SpawnedJobIds) +
-                           "}";
-            }
-        }
-
-        private static string BuildGetResultResponseJson(UnityPuerExecJobSnapshot snapshot)
-        {
-            switch (snapshot.Status)
-            {
-                case UnityPuerExecJobStatus.Completed:
-                    return "{" +
-                           "\"ok\":true," +
-                           "\"status\":\"completed\"," +
-                           "\"job_id\":\"" + JsonEscape(snapshot.JobId) + "\"," +
+                           logOffsetJson +
                            "\"session_marker\":\"" + JsonEscape(sessionMarker) + "\"," +
                            "\"result\":" + (snapshot.ResultJson ?? "null") +
                            "}";
@@ -605,7 +533,7 @@ namespace UnityPuerExec.Generated
                     return "{" +
                            "\"ok\":false," +
                            "\"status\":\"failed\"," +
-                           "\"job_id\":\"" + JsonEscape(snapshot.JobId) + "\"," +
+                           logOffsetJson +
                            "\"session_marker\":\"" + JsonEscape(sessionMarker) + "\"," +
                            "\"error\":\"" + JsonEscape(snapshot.Error) + "\"," +
                            "\"stack\":\"" + JsonEscape(snapshot.Stack) + "\"" +
@@ -614,8 +542,9 @@ namespace UnityPuerExec.Generated
                     return "{" +
                            "\"ok\":true," +
                            "\"status\":\"running\"," +
-                           "\"job_id\":\"" + JsonEscape(snapshot.JobId) + "\"" +
-                           ",\"session_marker\":\"" + JsonEscape(sessionMarker) + "\"" +
+                           logOffsetJson +
+                           "\"session_marker\":\"" + JsonEscape(sessionMarker) + "\"," +
+                           "\"result\":null" +
                            "}";
             }
         }
@@ -658,6 +587,24 @@ namespace UnityPuerExec.Generated
 
             builder.Append(']');
             return builder.ToString();
+        }
+
+        private static long ReadEditorLogOffset()
+        {
+            try
+            {
+                var path = Application.consoleLogPath;
+                if (string.IsNullOrEmpty(path) || !File.Exists(path))
+                {
+                    return 0;
+                }
+
+                return new FileInfo(path).Length;
+            }
+            catch
+            {
+                return 0;
+            }
         }
 
         private static string JsonEscape(string value)

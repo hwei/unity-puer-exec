@@ -63,9 +63,8 @@ class DirectExecClientTests(unittest.TestCase):
             {
                 "ok": True,
                 "status": "completed",
-                "job_id": "exec-1",
+                "log_offset": 12345,
                 "result": {"value": 2},
-                "spawn_job_ids": ["job-1", "job-2"],
             }
         ])
 
@@ -99,16 +98,15 @@ class DirectExecClientTests(unittest.TestCase):
         )
         body = json.loads(stdout)
         self.assertEqual(body["status"], "completed")
-        self.assertEqual(body["job_id"], "exec-1")
-        self.assertEqual(body["spawn_job_ids"], ["job-1", "job-2"])
+        self.assertEqual(body["log_offset"], 12345)
 
     def test_invoke_command_running_returns_dedicated_exit_code(self):
         transport = FakeTransport([
             {
                 "ok": True,
                 "status": "running",
-                "job_id": "exec-2",
-                "spawn_job_ids": ["job-9"],
+                "log_offset": 678,
+                "result": {"correlation_id": "id-9"},
             }
         ])
 
@@ -128,23 +126,22 @@ class DirectExecClientTests(unittest.TestCase):
         self.assertEqual(stderr, "")
         body = json.loads(stdout)
         self.assertEqual(body["status"], "running")
-        self.assertEqual(body["job_id"], "exec-2")
-        self.assertEqual(body["spawn_job_ids"], ["job-9"])
+        self.assertEqual(body["log_offset"], 678)
+        self.assertEqual(body["result"]["correlation_id"], "id-9")
 
     def test_session_state_payloads_stay_on_stdout(self):
         transport = FakeTransport([
             {
                 "ok": False,
                 "status": "session_stale",
-                "job_id": "job-2",
                 "error": "marker changed",
             }
         ])
 
         exit_code, stdout, stderr = direct_exec_client.invoke_command(
-            "get-result",
+            "wait-for-result-marker",
             "http://127.0.0.1:55231",
-            {"job_id": "job-2", "wait_timeout_ms": 800},
+            {"correlation_id": "id-2"},
             800,
             transport=transport,
         )
@@ -154,19 +151,18 @@ class DirectExecClientTests(unittest.TestCase):
         body = json.loads(stdout)
         self.assertEqual(body["status"], "session_stale")
 
-    def test_get_result_missing_is_non_zero(self):
+    def test_missing_payload_is_non_zero(self):
         transport = FakeTransport([
             {
                 "ok": False,
                 "status": "missing",
-                "job_id": "job-missing",
             }
         ])
 
         exit_code, stdout, stderr = direct_exec_client.invoke_command(
-            "get-result",
+            "wait-for-log-pattern",
             "http://127.0.0.1:55231",
-            {"job_id": "job-missing", "wait_timeout_ms": 800},
+            {"pattern": "x"},
             800,
             transport=transport,
         )
@@ -175,14 +171,12 @@ class DirectExecClientTests(unittest.TestCase):
         self.assertEqual(stderr, "")
         body = json.loads(stdout)
         self.assertEqual(body["status"], "missing")
-        self.assertEqual(body["job_id"], "job-missing")
 
     def test_failed_response_goes_to_stderr(self):
         transport = FakeTransport([
             {
                 "ok": False,
                 "status": "failed",
-                "job_id": "exec-err",
                 "error": "boom",
                 "stack": "stack-text",
             }

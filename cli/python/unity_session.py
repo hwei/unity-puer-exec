@@ -42,6 +42,12 @@ class UnityStalledError(UnitySessionError):
     pass
 
 
+class UnitySessionStateError(UnitySessionError):
+    def __init__(self, status, message, session=None):
+        super().__init__(message, session=session)
+        self.status = status
+
+
 class UnitySession:
     def __init__(self, owner, base_url, project_path, unity_pid=None, unity_exe_path=None, launched=False, process=None):
         self.owner = owner
@@ -498,6 +504,10 @@ def wait_for_log_pattern(
     activity_timeout_seconds=DEFAULT_ACTIVITY_TIMEOUT_SECONDS,
     health_timeout_seconds=DEFAULT_HEALTH_TIMEOUT_SECONDS,
     log_path=None,
+    start_offset=None,
+    extract_group=None,
+    extract_json_group=None,
+    expected_session_marker=None,
 ):
     compiled_pattern = re.compile(pattern)
     log_path = Path(log_path or _default_editor_log_path())
@@ -505,16 +515,33 @@ def wait_for_log_pattern(
     last_health_error = None
     last_payload = None
     activity_tracker = _create_activity_tracker(log_path)
-    scan_offset = _read_editor_log_size(log_path)
+    scan_offset = start_offset if start_offset is not None else _read_editor_log_size(log_path)
 
     while time.time() < deadline:
         payload, error = _probe_health(session.base_url, health_timeout_seconds)
         if payload is not None:
             last_payload = payload
             last_health_error = json.dumps(payload, ensure_ascii=True)
+            if expected_session_marker is not None:
+                observed_session_marker = payload.get("session_marker")
+                if not isinstance(observed_session_marker, str) or not observed_session_marker:
+                    _finalize_session_diagnostics(session, log_path, last_health_error, activity_tracker, last_payload=last_payload)
+                    raise UnitySessionStateError(
+                        "session_missing",
+                        "observation target did not provide session continuity information",
+                        session=session,
+                    )
+                if observed_session_marker != expected_session_marker:
+                    _finalize_session_diagnostics(session, log_path, last_health_error, activity_tracker, last_payload=last_payload)
+                    raise UnitySessionStateError(
+                        "session_stale",
+                        "observation target session has changed since the expected session marker was recorded",
+                        session=session,
+                    )
         else:
             last_health_error = error
 
+        chunk_start_offset = scan_offset
         scan_offset, chunk = _read_editor_log_chunk(log_path, scan_offset)
         _update_activity_tracker(activity_tracker, log_path)
         match = compiled_pattern.search(chunk)
@@ -522,7 +549,11 @@ def wait_for_log_pattern(
             _finalize_session_diagnostics(session, log_path, last_health_error, activity_tracker, last_payload=last_payload)
             session.diagnostics["matched_log_pattern"] = pattern
             session.diagnostics["matched_log_text"] = match.group(0)
-            session.diagnostics["matched_log_offset"] = scan_offset
+            session.diagnostics["matched_log_offset"] = chunk_start_offset + len(chunk[: match.end()].encode("utf-8"))
+            if extract_group is not None:
+                session.diagnostics["extracted_group"] = match.group(extract_group)
+            if extract_json_group is not None:
+                session.diagnostics["extracted_json"] = json.loads(match.group(extract_json_group))
             return session
 
         if session.launched and session.process is not None and session.process.poll() is not None:

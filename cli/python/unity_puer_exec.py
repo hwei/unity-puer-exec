@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 import argparse
-import base64
-import binascii
 import json
 import re
 import sys
+import time
 import uuid
 
 import direct_exec_client
@@ -21,8 +20,9 @@ EXIT_NO_OBSERVATION_TARGET = 15
 EXIT_NOT_STOPPED = 16
 EXIT_UNITY_START_FAILED = 20
 EXIT_UNITY_NOT_READY = 21
-CONTINUATION_TOKEN_VERSION = 1
 HELP_FLAGS = ("--help", "--help-args", "--help-status")
+RESULT_MARKER_PREFIX = "[UnityPuerExecResult]"
+RESULT_MARKER_PATTERN = r"(?m)^\[UnityPuerExecResult\] (.+)$"
 
 
 def _build_parser():
@@ -39,9 +39,14 @@ def _build_parser():
     wait_log_parser = subparsers.add_parser("wait-for-log-pattern", add_help=False)
     _add_selector_args(wait_log_parser)
     wait_log_parser.add_argument("--pattern", required=True)
+    wait_log_parser.add_argument("--start-offset", type=int, default=None)
+    wait_log_parser.add_argument("--expected-session-marker", default=None)
     wait_log_parser.add_argument("--timeout-seconds", type=float, default=unity_session.DEFAULT_READY_TIMEOUT_SECONDS)
     wait_log_parser.add_argument("--activity-timeout-seconds", type=float, default=unity_session.DEFAULT_ACTIVITY_TIMEOUT_SECONDS)
     wait_log_parser.add_argument("--health-timeout-seconds", type=float, default=unity_session.DEFAULT_HEALTH_TIMEOUT_SECONDS)
+    extract_mode = wait_log_parser.add_mutually_exclusive_group()
+    extract_mode.add_argument("--extract-group", type=int, default=None)
+    extract_mode.add_argument("--extract-json-group", type=int, default=None)
 
     get_log_source_parser = subparsers.add_parser("get-log-source", add_help=False)
     _add_selector_args(get_log_source_parser)
@@ -50,14 +55,20 @@ def _build_parser():
     _add_selector_args(exec_parser)
     exec_parser.add_argument("--unity-exe-path", default=None)
     exec_parser.add_argument("--wait-timeout-ms", type=int, default=direct_exec_client.DEFAULT_WAIT_TIMEOUT_MS)
+    exec_parser.add_argument("--include-log-offset", action="store_true")
     script_source = exec_parser.add_mutually_exclusive_group(required=True)
     script_source.add_argument("--file", dest="file_path")
     script_source.add_argument("--stdin", action="store_true")
     script_source.add_argument("--code")
 
-    get_result_parser = subparsers.add_parser("get-result", add_help=False)
-    get_result_parser.add_argument("--continuation-token", required=True)
-    get_result_parser.add_argument("--wait-timeout-ms", type=int, default=direct_exec_client.DEFAULT_WAIT_TIMEOUT_MS)
+    wait_result_parser = subparsers.add_parser("wait-for-result-marker", add_help=False)
+    _add_selector_args(wait_result_parser)
+    wait_result_parser.add_argument("--correlation-id", required=True)
+    wait_result_parser.add_argument("--start-offset", type=int, default=None)
+    wait_result_parser.add_argument("--expected-session-marker", default=None)
+    wait_result_parser.add_argument("--timeout-seconds", type=float, default=unity_session.DEFAULT_READY_TIMEOUT_SECONDS)
+    wait_result_parser.add_argument("--activity-timeout-seconds", type=float, default=unity_session.DEFAULT_ACTIVITY_TIMEOUT_SECONDS)
+    wait_result_parser.add_argument("--health-timeout-seconds", type=float, default=unity_session.DEFAULT_HEALTH_TIMEOUT_SECONDS)
 
     ensure_stopped_parser = subparsers.add_parser("ensure-stopped", add_help=False)
     _add_selector_args(ensure_stopped_parser)
@@ -94,6 +105,11 @@ def _validate_positive(value, name):
         raise ValueError("{} must be positive".format(name))
 
 
+def _validate_non_negative(value, name):
+    if value is not None and value < 0:
+        raise ValueError("{} must be non-negative".format(name))
+
+
 def _validate_project_mode_only(selector, option_name, value):
     if selector == "base_url" and value:
         raise ValueError("{} is only valid with --project-path".format(option_name))
@@ -107,116 +123,11 @@ def _resolve_selector(args):
     return "project_path"
 
 
-def _encode_continuation_token(payload):
-    raw = json.dumps(payload, ensure_ascii=True, separators=(",", ":")).encode("utf-8")
-    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
-
-
-def _decode_continuation_token(token):
-    if not token:
-        raise ValueError("continuation-token is required")
-
-    padding = "=" * (-len(token) % 4)
-    try:
-        decoded = base64.urlsafe_b64decode((token + padding).encode("ascii"))
-        payload = json.loads(decoded.decode("utf-8"))
-    except (ValueError, binascii.Error, UnicodeDecodeError, json.JSONDecodeError):
-        raise ValueError("malformed continuation token")
-
-    if not isinstance(payload, dict):
-        raise ValueError("malformed continuation token")
-
-    if payload.get("v") != CONTINUATION_TOKEN_VERSION:
-        raise ValueError("unsupported continuation token version")
-
-    base_url = payload.get("base_url")
-    job_id = payload.get("job_id")
-    session_marker = payload.get("session_marker")
-    if not isinstance(base_url, str) or not base_url:
-        raise ValueError("malformed continuation token")
-    if not isinstance(job_id, str) or not job_id:
-        raise ValueError("malformed continuation token")
-    if not isinstance(session_marker, str) or not session_marker:
-        raise ValueError("malformed continuation token")
-
-    return {
-        "v": payload["v"],
-        "base_url": base_url.rstrip("/"),
-        "job_id": job_id,
-        "session_marker": session_marker,
-    }
-
-
-def _extract_session_marker(exec_payload, base_url):
-    session_marker = exec_payload.get("session_marker")
-    if isinstance(session_marker, str) and session_marker:
-        return session_marker
-
-    _is_ready, health_payload, _error = unity_session.inspect_direct_service(base_url)
-    if health_payload is None:
-        raise RuntimeError("unable to obtain session marker for continuation")
-
-    session_marker = health_payload.get("session_marker")
-    if not isinstance(session_marker, str) or not session_marker:
-        raise RuntimeError("continuation target did not provide a session marker")
-    return session_marker
-
-
-def _add_continuation_token(stdout_text, base_url):
-    payload = json.loads(stdout_text)
-    if payload.get("status") != "running" or not payload.get("ok"):
-        return stdout_text
-
-    job_id = payload.get("job_id")
-    if not isinstance(job_id, str) or not job_id:
-        raise RuntimeError("running exec response did not include job_id")
-
-    continuation_token = _encode_continuation_token(
-        {
-            "v": CONTINUATION_TOKEN_VERSION,
-            "base_url": base_url.rstrip("/"),
-            "job_id": job_id,
-            "session_marker": _extract_session_marker(payload, base_url),
-        }
-    )
-    payload.pop("session_marker", None)
-    payload["continuation_token"] = continuation_token
-    return _emit_payload(payload)
-
-
-def _expected_execution_payload(status, error=None, job_id=None):
+def _expected_execution_payload(status, error=None):
     payload = {"ok": False, "status": status}
-    if job_id is not None:
-        payload["job_id"] = job_id
     if error is not None:
         payload["error"] = str(error)
     return payload
-
-
-def _probe_continuation_target(token_payload):
-    _is_ready, health_payload, health_error = unity_session.inspect_direct_service(token_payload["base_url"])
-    if health_payload is None:
-        payload = _expected_execution_payload("not_available", error=health_error, job_id=token_payload["job_id"])
-        return EXIT_NOT_AVAILABLE, _emit_payload(payload), ""
-
-    session_marker = health_payload.get("session_marker")
-    if not isinstance(session_marker, str) or not session_marker:
-        payload = _expected_execution_payload(
-            "session_missing",
-            error="continuation target did not provide session continuity information",
-            job_id=token_payload["job_id"],
-        )
-        return EXIT_SESSION_STATE, _emit_payload(payload), ""
-
-    if session_marker != token_payload["session_marker"]:
-        payload = _expected_execution_payload(
-            "session_stale",
-            error="continuation target session has changed since exec returned the token",
-            job_id=token_payload["job_id"],
-        )
-        return EXIT_SESSION_STATE, _emit_payload(payload), ""
-
-    return None
 
 
 def _success_payload(operation, session=None, result=None):
@@ -265,36 +176,18 @@ def _run_exec(args):
     else:
         base_url = args.base_url
 
-    payload = {"id": uuid.uuid4().hex, "code": _read_exec_code(args), "wait_timeout_ms": args.wait_timeout_ms}
+    payload = {
+        "id": uuid.uuid4().hex,
+        "code": _read_exec_code(args),
+        "wait_timeout_ms": args.wait_timeout_ms,
+        "include_log_offset": args.include_log_offset,
+    }
     exit_code, stdout_text, stderr_text = direct_exec_client.invoke_command(
         "exec",
         base_url,
         payload,
         args.wait_timeout_ms,
     )
-    if stdout_text and exit_code == EXIT_RUNNING:
-        stdout_text = _add_continuation_token(stdout_text, base_url)
-    return exit_code, stdout_text, stderr_text
-
-
-def _run_get_result(args):
-    _validate_positive(args.wait_timeout_ms, "wait-timeout-ms")
-    token_payload = _decode_continuation_token(args.continuation_token)
-    probe_result = _probe_continuation_target(token_payload)
-    if probe_result is not None:
-        return probe_result
-
-    payload = {"job_id": token_payload["job_id"], "wait_timeout_ms": args.wait_timeout_ms}
-    exit_code, stdout_text, stderr_text = direct_exec_client.invoke_command(
-        "get-result",
-        token_payload["base_url"],
-        payload,
-        args.wait_timeout_ms,
-    )
-    if exit_code == EXIT_MISSING and stdout_text:
-        follow_up = _probe_continuation_target(token_payload)
-        if follow_up is not None:
-            return follow_up
     return exit_code, stdout_text, stderr_text
 
 
@@ -331,6 +224,7 @@ def _run_wait_for_log_pattern(args):
     _validate_positive(args.timeout_seconds, "timeout-seconds")
     _validate_positive(args.activity_timeout_seconds, "activity-timeout-seconds")
     _validate_positive(args.health_timeout_seconds, "health-timeout-seconds")
+    _validate_non_negative(args.start_offset, "start-offset")
     try:
         re.compile(args.pattern)
     except re.error as exc:
@@ -355,13 +249,81 @@ def _run_wait_for_log_pattern(args):
         args.timeout_seconds,
         activity_timeout_seconds=args.activity_timeout_seconds,
         health_timeout_seconds=args.health_timeout_seconds,
+        start_offset=args.start_offset,
+        extract_group=args.extract_group,
+        extract_json_group=args.extract_json_group,
+        expected_session_marker=args.expected_session_marker,
     )
+    result = {"status": "log_pattern_matched"}
+    if args.extract_group is not None:
+        result["extracted_group"] = session.diagnostics["extracted_group"]
+    if args.extract_json_group is not None:
+        result["extracted_json"] = session.diagnostics["extracted_json"]
+    result["diagnostics"] = {"matched_log_pattern": session.diagnostics.get("matched_log_pattern")}
     payload = _success_payload(
         "wait-for-log-pattern",
         session=session,
-        result={"status": "log_pattern_matched", "diagnostics": dict(session.diagnostics)},
+        result=result,
     )
     return 0, _emit_payload(payload), ""
+
+
+def _run_wait_for_result_marker(args):
+    selector = _resolve_selector(args)
+    _validate_positive(args.timeout_seconds, "timeout-seconds")
+    _validate_positive(args.activity_timeout_seconds, "activity-timeout-seconds")
+    _validate_positive(args.health_timeout_seconds, "health-timeout-seconds")
+    _validate_non_negative(args.start_offset, "start-offset")
+
+    if selector == "project_path":
+        session = unity_session.create_observation_session(project_path=args.project_path)
+    else:
+        session = unity_session.create_direct_session(args.base_url)
+
+    if session is None:
+        payload = _expected_failure_payload(
+            "wait-for-result-marker",
+            "no_observation_target",
+            "no observable Unity log source is available",
+        )
+        return EXIT_NO_OBSERVATION_TARGET, _emit_payload(payload), ""
+
+    deadline = time.time() + args.timeout_seconds
+    while True:
+        remaining = max(deadline - time.time(), 0.001)
+        session = unity_session.wait_for_log_pattern(
+            session,
+            RESULT_MARKER_PATTERN,
+            remaining,
+            activity_timeout_seconds=args.activity_timeout_seconds,
+            health_timeout_seconds=args.health_timeout_seconds,
+            start_offset=args.start_offset,
+            extract_group=1,
+            expected_session_marker=args.expected_session_marker,
+        )
+        marker_text = session.diagnostics.get("extracted_group")
+        try:
+            marker = json.loads(marker_text)
+        except (TypeError, json.JSONDecodeError):
+            marker = None
+        if isinstance(marker, dict) and marker.get("correlation_id") == args.correlation_id:
+            payload = _success_payload(
+                "wait-for-result-marker",
+                session=session,
+                result={
+                    "status": "result_marker_matched",
+                    "marker": marker,
+                    "diagnostics": {
+                        "matched_log_text": session.diagnostics.get("matched_log_text"),
+                        "matched_log_pattern": session.diagnostics.get("matched_log_pattern"),
+                    },
+                },
+            )
+            return 0, _emit_payload(payload), ""
+        next_offset = session.diagnostics.get("matched_log_offset")
+        args.start_offset = next_offset
+        if next_offset is None:
+            raise RuntimeError("result marker wait matched without a follow-up offset")
 
 
 def _run_get_log_source(args):
@@ -414,12 +376,12 @@ def _run_command(args):
     try:
         if args.command == "exec":
             return _run_exec(args)
-        if args.command == "get-result":
-            return _run_get_result(args)
         if args.command == "wait-until-ready":
             return _run_wait_until_ready(args)
         if args.command == "wait-for-log-pattern":
             return _run_wait_for_log_pattern(args)
+        if args.command == "wait-for-result-marker":
+            return _run_wait_for_result_marker(args)
         if args.command == "get-log-source":
             return _run_get_log_source(args)
         return _run_ensure_stopped(args)
@@ -433,6 +395,9 @@ def _run_command(args):
         status = "unity_stalled" if isinstance(exc, unity_session.UnityStalledError) else "unity_not_ready"
         payload = _expected_failure_payload(args.command, status, exc, session=exc.session)
         return EXIT_UNITY_NOT_READY, _emit_payload(payload), ""
+    except unity_session.UnitySessionStateError as exc:
+        payload = _expected_failure_payload(args.command, exc.status, exc, session=exc.session)
+        return EXIT_SESSION_STATE, _emit_payload(payload), ""
     except Exception as exc:  # noqa: BLE001 - CLI should normalize unexpected failures.
         payload = _unexpected_failure_payload(args.command, exc)
         return 1, _emit_payload(payload), ""

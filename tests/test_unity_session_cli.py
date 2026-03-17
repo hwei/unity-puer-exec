@@ -3,7 +3,6 @@ import os
 import sys
 import tempfile
 import unittest
-from base64 import urlsafe_b64decode
 from pathlib import Path
 from unittest import mock
 
@@ -47,7 +46,7 @@ class UnityPuerExecCliTests(unittest.TestCase):
         self.assertIn("Commands", stdout)
         self.assertIn("Global Selector Rules", stdout)
         self.assertIn("Common Workflows", stdout)
-        self.assertIn("cold-start-exec-and-get-result", stdout)
+        self.assertIn("exec-and-wait-for-result-marker", stdout)
         self.assertIn("See `exec --help`.", stdout)
 
     def test_empty_invocation_matches_top_level_help_contract(self):
@@ -70,7 +69,7 @@ class UnityPuerExecCliTests(unittest.TestCase):
         self.assertIn("Related Workflows", stdout)
         self.assertIn("`--help-args`", stdout)
         self.assertIn("`--help-status`", stdout)
-        self.assertIn("cold-start-exec-and-get-result", stdout)
+        self.assertIn("exec-and-wait-for-result-marker", stdout)
 
     def test_exec_help_args_renders_argument_template(self):
         exit_code, stdout, stderr = unity_puer_exec.run_cli(["exec", "--help-args"])
@@ -83,26 +82,26 @@ class UnityPuerExecCliTests(unittest.TestCase):
         self.assertIn("`--file <path>`", stdout)
         self.assertIn("`--code <inline-js>`", stdout)
 
-    def test_get_result_help_status_renders_exit_guidance(self):
-        exit_code, stdout, stderr = unity_puer_exec.run_cli(["get-result", "--help-status"])
+    def test_wait_for_result_marker_help_status_renders_exit_guidance(self):
+        exit_code, stdout, stderr = unity_puer_exec.run_cli(["wait-for-result-marker", "--help-status"])
 
         self.assertEqual(exit_code, 0)
         self.assertEqual(stderr, "")
         self.assertIn("Success Statuses", stdout)
         self.assertIn("Non-success Statuses", stdout)
         self.assertIn("`session_stale` -> exit 14", stdout)
-        self.assertIn("`missing` -> exit 13", stdout)
+        self.assertIn("`no_observation_target` -> exit 15", stdout)
 
     def test_help_example_renders_known_workflow(self):
-        exit_code, stdout, stderr = unity_puer_exec.run_cli(["--help-example", "long-job-and-log-pattern"])
+        exit_code, stdout, stderr = unity_puer_exec.run_cli(["--help-example", "exec-and-wait-for-result-marker"])
 
         self.assertEqual(exit_code, 0)
         self.assertEqual(stderr, "")
         self.assertIn("Goal", stdout)
         self.assertIn("Steps", stdout)
         self.assertIn("What To Notice", stdout)
-        self.assertIn("fake workload", stdout)
-        self.assertIn("reduces the chance of missing an early log line", stdout)
+        self.assertIn("correlation_id", stdout)
+        self.assertIn("log_offset", stdout)
 
     def test_exit_help_example_renders_inline_request_exit_script(self):
         exit_code, stdout, stderr = unity_puer_exec.run_cli(["--help-example", "request-editor-exit-via-exec"])
@@ -121,7 +120,7 @@ class UnityPuerExecCliTests(unittest.TestCase):
         self.assertEqual(stdout, "")
         self.assertIn("unknown example id: missing-example", stderr)
         self.assertIn("available examples:", stderr)
-        self.assertIn("cold-start-exec-and-get-result", stderr)
+        self.assertIn("exec-and-wait-for-result-marker", stderr)
 
     def test_deep_help_rejects_extra_execution_arguments(self):
         exit_code, stdout, stderr = unity_puer_exec.run_cli(["exec", "--help-args", "--project-path", "X:/project"])
@@ -157,6 +156,7 @@ class UnityPuerExecCliTests(unittest.TestCase):
     def test_wait_for_log_pattern_returns_success_payload(self):
         session = _make_session()
         session.diagnostics["matched_log_text"] = "[Build] complete"
+        session.diagnostics["matched_log_pattern"] = r"\[Build\] complete"
 
         with mock.patch.object(unity_session, "create_observation_session", return_value=session), mock.patch.object(
             unity_session, "wait_for_log_pattern", return_value=session
@@ -171,7 +171,40 @@ class UnityPuerExecCliTests(unittest.TestCase):
         self.assertEqual(payload["status"], "completed")
         self.assertEqual(payload["operation"], "wait-for-log-pattern")
         self.assertEqual(payload["result"]["status"], "log_pattern_matched")
-        self.assertEqual(payload["result"]["diagnostics"]["matched_log_text"], "[Build] complete")
+        self.assertEqual(payload["result"]["diagnostics"]["matched_log_pattern"], r"\[Build\] complete")
+
+    def test_wait_for_log_pattern_extract_json_group_returns_parsed_object(self):
+        session = _make_session()
+        session.diagnostics["matched_log_pattern"] = r"\[UnityPuerExecResult\] (.+)"
+        session.diagnostics["extracted_json"] = {"correlation_id": "id-1", "value": 7}
+
+        with mock.patch.object(unity_session, "create_observation_session", return_value=session), mock.patch.object(
+            unity_session, "wait_for_log_pattern", return_value=session
+        ):
+            exit_code, stdout, stderr = unity_puer_exec.run_cli(
+                ["wait-for-log-pattern", "--pattern", r"\[UnityPuerExecResult\] (.+)", "--extract-json-group", "1"]
+            )
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(stderr, "")
+        payload = json.loads(stdout)
+        self.assertEqual(payload["result"]["extracted_json"]["correlation_id"], "id-1")
+
+    def test_wait_for_log_pattern_extract_modes_are_mutually_exclusive(self):
+        with self.assertRaises(SystemExit) as exc:
+            unity_puer_exec.run_cli(
+                [
+                    "wait-for-log-pattern",
+                    "--pattern",
+                    r"\[Build\] complete",
+                    "--extract-group",
+                    "0",
+                    "--extract-json-group",
+                    "1",
+                ]
+            )
+
+        self.assertEqual(exc.exception.code, 2)
 
     def test_exec_reads_file_input(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -182,26 +215,25 @@ class UnityPuerExecCliTests(unittest.TestCase):
                 "ensure_session_ready",
                 return_value=_make_session(),
             ), mock.patch.object(
-                unity_session,
-                "inspect_direct_service",
-                return_value=(True, {"ok": True, "status": "ready", "session_marker": "marker-1"}, None),
-            ), mock.patch.object(
                 unity_puer_exec.direct_exec_client,
                 "invoke_command",
-                return_value=(unity_puer_exec.EXIT_RUNNING, json.dumps({"ok": True, "status": "running", "job_id": "job-7"}), ""),
+                return_value=(
+                    unity_puer_exec.EXIT_RUNNING,
+                    json.dumps({"ok": True, "status": "running", "log_offset": 12345, "result": {"correlation_id": "id-7"}}),
+                    "",
+                ),
             ) as invoke_command:
-                exit_code, stdout, stderr = unity_puer_exec.run_cli(["exec", "--file", str(script_path)])
+                exit_code, stdout, stderr = unity_puer_exec.run_cli(["exec", "--file", str(script_path), "--include-log-offset"])
 
         self.assertEqual(exit_code, unity_puer_exec.EXIT_RUNNING)
         self.assertEqual(stderr, "")
         payload = invoke_command.call_args.args[2]
         self.assertEqual(payload["code"], "return 7;")
+        self.assertTrue(payload["include_log_offset"])
         body = json.loads(stdout)
         self.assertEqual(body["status"], "running")
-        self.assertIn("continuation_token", body)
-        token_payload = json.loads(urlsafe_b64decode(body["continuation_token"] + "=" * (-len(body["continuation_token"]) % 4)))
-        self.assertEqual(token_payload["job_id"], "job-7")
-        self.assertEqual(token_payload["session_marker"], "marker-1")
+        self.assertEqual(body["log_offset"], 12345)
+        self.assertEqual(body["result"]["correlation_id"], "id-7")
 
     def test_get_log_source_returns_success_payload(self):
         session = _make_session()
@@ -245,67 +277,46 @@ class UnityPuerExecCliTests(unittest.TestCase):
         payload = json.loads(stdout)
         self.assertEqual(payload["status"], "address_conflict")
 
-    def test_get_result_uses_continuation_token_routing(self):
-        token = unity_puer_exec._encode_continuation_token(
-            {
-                "v": unity_puer_exec.CONTINUATION_TOKEN_VERSION,
-                "base_url": "http://127.0.0.1:55231",
-                "job_id": "job-22",
-                "session_marker": "marker-22",
-            }
-        )
+    def test_wait_for_result_marker_returns_matching_marker(self):
+        session = _make_session()
+        first = _make_session()
+        first.diagnostics["matched_log_pattern"] = unity_puer_exec.RESULT_MARKER_PATTERN
+        first.diagnostics["matched_log_text"] = '[UnityPuerExecResult] {"correlation_id":"other"}'
+        first.diagnostics["matched_log_offset"] = 100
+        first.diagnostics["extracted_group"] = '{"correlation_id":"other"}'
+        session.diagnostics["matched_log_pattern"] = unity_puer_exec.RESULT_MARKER_PATTERN
+        session.diagnostics["matched_log_text"] = '[UnityPuerExecResult] {"correlation_id":"wanted","value":9}'
+        session.diagnostics["matched_log_offset"] = 150
+        session.diagnostics["extracted_group"] = '{"correlation_id":"wanted","value":9}'
 
-        with mock.patch.object(
-            unity_session,
-            "inspect_direct_service",
-            return_value=(True, {"ok": True, "status": "ready", "session_marker": "marker-22"}, None),
-        ), mock.patch.object(
-            unity_puer_exec.direct_exec_client,
-            "invoke_command",
-            return_value=(0, json.dumps({"ok": True, "status": "completed", "job_id": "job-22", "result": {"value": 9}}), ""),
-        ) as invoke_command:
+        with mock.patch.object(unity_session, "create_observation_session", return_value=first), mock.patch.object(
+            unity_session, "wait_for_log_pattern", side_effect=[first, session]
+        ):
             exit_code, stdout, stderr = unity_puer_exec.run_cli(
-                ["get-result", "--continuation-token", token, "--wait-timeout-ms", "800"]
+                ["wait-for-result-marker", "--correlation-id", "wanted", "--start-offset", "10"]
             )
 
         self.assertEqual(exit_code, 0)
         self.assertEqual(stderr, "")
-        self.assertEqual(
-            invoke_command.call_args.args,
-            ("get-result", "http://127.0.0.1:55231", {"job_id": "job-22", "wait_timeout_ms": 800}, 800),
-        )
-        self.assertEqual(json.loads(stdout)["status"], "completed")
+        payload = json.loads(stdout)
+        self.assertEqual(payload["result"]["status"], "result_marker_matched")
+        self.assertEqual(payload["result"]["marker"]["correlation_id"], "wanted")
 
-    def test_get_result_reports_session_stale_on_marker_mismatch(self):
-        token = unity_puer_exec._encode_continuation_token(
-            {
-                "v": unity_puer_exec.CONTINUATION_TOKEN_VERSION,
-                "base_url": "http://127.0.0.1:55231",
-                "job_id": "job-23",
-                "session_marker": "marker-old",
-            }
-        )
+    def test_wait_for_result_marker_maps_session_guard_failure(self):
+        session = _make_session()
+        error = unity_session.UnitySessionStateError("session_stale", "stale", session=session)
 
-        with mock.patch.object(
-            unity_session,
-            "inspect_direct_service",
-            return_value=(True, {"ok": True, "status": "ready", "session_marker": "marker-new"}, None),
+        with mock.patch.object(unity_session, "create_observation_session", return_value=session), mock.patch.object(
+            unity_session, "wait_for_log_pattern", side_effect=error
         ):
-            exit_code, stdout, stderr = unity_puer_exec.run_cli(["get-result", "--continuation-token", token])
+            exit_code, stdout, stderr = unity_puer_exec.run_cli(
+                ["wait-for-result-marker", "--correlation-id", "wanted", "--expected-session-marker", "marker-1"]
+            )
 
         self.assertEqual(exit_code, unity_puer_exec.EXIT_SESSION_STATE)
         self.assertEqual(stderr, "")
         payload = json.loads(stdout)
         self.assertEqual(payload["status"], "session_stale")
-        self.assertEqual(payload["job_id"], "job-23")
-
-    def test_get_result_rejects_malformed_continuation_token(self):
-        exit_code, stdout, stderr = unity_puer_exec.run_cli(["get-result", "--continuation-token", "%%%"])
-
-        self.assertEqual(exit_code, 2)
-        self.assertEqual(stdout, "")
-        payload = json.loads(stderr)
-        self.assertEqual(payload["status"], "failed")
 
     def test_wait_for_log_pattern_rejects_invalid_regex(self):
         exit_code, stdout, stderr = unity_puer_exec.run_cli(["wait-for-log-pattern", "--pattern", "("])

@@ -4,9 +4,9 @@ import direct_exec_client
 COMMANDS = (
     "wait-until-ready",
     "wait-for-log-pattern",
+    "wait-for-result-marker",
     "get-log-source",
     "exec",
-    "get-result",
     "ensure-stopped",
 )
 
@@ -16,8 +16,7 @@ EXIT_UNITY_START_FAILED = 20
 EXIT_UNITY_NOT_READY = 21
 
 WORKFLOW_IDS = (
-    "cold-start-exec-and-get-result",
-    "long-job-and-log-pattern",
+    "exec-and-wait-for-result-marker",
     "request-editor-exit-via-exec",
 )
 
@@ -33,15 +32,14 @@ def _bullet_lines(items):
 TOP_LEVEL_COMMANDS = {
     "wait-until-ready": "prepare a project or direct service until Unity is ready. See `wait-until-ready --help`.",
     "wait-for-log-pattern": "observe logs until a regular-expression pattern appears. See `wait-for-log-pattern --help`.",
+    "wait-for-result-marker": "wait for the standard single-line JSON result marker emitted by a long-running script. See `wait-for-result-marker --help`.",
     "get-log-source": "report the observable Unity log source for the selected target. See `get-log-source --help`.",
     "exec": "run JavaScript against a project or direct service; primary entry for script execution. See `exec --help`.",
-    "get-result": "continue waiting for async execution by using a prior `continuation_token`. See `get-result --help`.",
     "ensure-stopped": "check or force a stopped state; not the recommended graceful-exit path. See `ensure-stopped --help`.",
 }
 
 TOP_LEVEL_WORKFLOWS = {
-    "cold-start-exec-and-get-result": "start Unity on demand, run a file-based script, then continue a running job with `get-result`.",
-    "long-job-and-log-pattern": "register log observation first, start a fake long-running workload, then block until a log milestone appears.",
+    "exec-and-wait-for-result-marker": "run a script that returns `correlation_id`, capture `log_offset`, then wait for the terminal result marker.",
     "request-editor-exit-via-exec": "request a normal Unity Editor exit through `exec` instead of using `ensure-stopped`.",
 }
 
@@ -94,12 +92,16 @@ COMMAND_HELP = {
             "`unity-puer-exec wait-for-log-pattern --project-path X:/project --pattern \"\\\\[Build\\\\] done\"`",
             "The pattern is a regular expression, not a literal string.",
         ],
-        "related_workflows": ("long-job-and-log-pattern",),
+        "related_workflows": ("exec-and-wait-for-result-marker",),
         "args": {
             "Arguments": [
                 "`--project-path <path>`: observe a project's Unity log source.",
                 "`--base-url <url>`: observe through a direct service target.",
                 "`--pattern <regex>`: required regular expression to wait for.",
+                "`--start-offset <offset>`: optional log offset from which to begin scanning.",
+                "`--expected-session-marker <marker>`: optional same-session guard for observation.",
+                "`--extract-group <n>`: return the matched text for capture group `n`.",
+                "`--extract-json-group <n>`: parse capture group `n` as JSON and return the parsed object.",
                 "`--timeout-seconds <seconds>`: total wait budget for the requested pattern.",
                 "`--activity-timeout-seconds <seconds>`: how long observation may stay idle before stalling.",
                 "`--health-timeout-seconds <seconds>`: timeout for each health probe.",
@@ -113,6 +115,7 @@ COMMAND_HELP = {
                 "All timeout values must be positive numbers.",
                 "`--timeout-seconds` bounds the observation wait itself.",
                 "Invalid regex input is a CLI usage error before any observation starts.",
+                "`--extract-group` and `--extract-json-group` are mutually exclusive.",
             ],
         },
         "status": {
@@ -163,8 +166,7 @@ COMMAND_HELP = {
             "`unity-puer-exec exec --project-path X:/project --stdin < script.js`",
         ],
         "related_workflows": (
-            "cold-start-exec-and-get-result",
-            "long-job-and-log-pattern",
+            "exec-and-wait-for-result-marker",
             "request-editor-exit-via-exec",
         ),
         "args": {
@@ -173,6 +175,7 @@ COMMAND_HELP = {
                 "`--base-url <url>`: target an already-known direct service instead of a project.",
                 "`--unity-exe-path <path>`: override the Unity executable for project-scoped startup only.",
                 "`--wait-timeout-ms <ms>`: how long to wait before returning the current execution state.",
+                "`--include-log-offset`: include top-level observation `log_offset` in the response for later result-marker waiting.",
                 "`--file <path>`: preferred script input for multi-line or AI-generated scripts.",
                 "`--stdin`: read script content from standard input.",
                 "`--code <inline-js>`: inline script source; compatibility path with quoting and multiline drawbacks.",
@@ -192,7 +195,7 @@ COMMAND_HELP = {
         "status": {
             "success": [
                 "`completed`: the script finished and any host return value is in `result`.",
-                "`running`: the job is still running; use the returned `continuation_token` with `get-result`.",
+                "`running`: the script is still running; use a prior `correlation_id` plus `wait-for-result-marker` if the script emits a result marker.",
             ],
             "failure": [
                 ("address_conflict", 2, "both selectors were provided; choose exactly one."),
@@ -204,34 +207,43 @@ COMMAND_HELP = {
             ],
         },
     },
-    "get-result": {
+    "wait-for-result-marker": {
         "quick_start": [
-            "Continue waiting for an async execution job by using the `continuation_token` returned from `exec`.",
-            "`unity-puer-exec get-result --continuation-token TOKEN`",
+            "Wait for the standard single-line JSON result marker emitted by a long-running script.",
+            "`unity-puer-exec wait-for-result-marker --project-path X:/project --correlation-id ID --start-offset 12345`",
         ],
-        "related_workflows": ("cold-start-exec-and-get-result",),
+        "related_workflows": ("exec-and-wait-for-result-marker",),
         "args": {
             "Arguments": [
-                "`--continuation-token <token>`: required opaque token returned from a prior `exec` running result.",
-                "`--wait-timeout-ms <ms>`: how long to wait before returning the current continuation state.",
+                "`--project-path <path>` or `--base-url <url>`: select the observation target.",
+                "`--correlation-id <id>`: required result-marker correlation id to match.",
+                "`--start-offset <offset>`: optional starting log offset, typically returned from `exec --include-log-offset`.",
+                "`--expected-session-marker <marker>`: optional same-session guard.",
+                "`--timeout-seconds <seconds>`: total wait budget for the terminal marker.",
+                "`--activity-timeout-seconds <seconds>`: how long observation may stay idle before stalling.",
+                "`--health-timeout-seconds <seconds>`: timeout for each health probe.",
+            ],
+            "Selector Rules": [
+                "Use exactly one selector: `--project-path` or `--base-url`.",
+                "Omitting `--expected-session-marker` allows cross-session observation when the log source is still the intended source of truth.",
             ],
             "Timeout Rules": [
-                "`--wait-timeout-ms` must be a positive integer.",
-                "The command may return another expected machine state instead of completing within one wait window.",
+                "All timeout values must be positive numbers.",
+                "The command ignores invalid-JSON marker candidates and markers whose `correlation_id` does not match.",
             ],
         },
         "status": {
             "success": [
-                "`completed`: the async job finished and any host return value is in `result`.",
-                "`running`: the job is still running; continue with the same `continuation_token`.",
+                "`completed`: a matching result marker was found and `result.status` is `result_marker_matched`.",
             ],
             "failure": [
-                ("compiling", direct_exec_client.EXIT_COMPILING, "the target is compiling and cannot satisfy the request yet."),
-                ("not_available", direct_exec_client.EXIT_NOT_AVAILABLE, "the continuation target is not reachable right now."),
-                ("missing", direct_exec_client.EXIT_MISSING, "the async job is no longer available on the continuation target."),
-                ("session_missing", direct_exec_client.EXIT_SESSION_STATE, "the target no longer exposes the session continuity information needed for safe continuation."),
-                ("session_stale", direct_exec_client.EXIT_SESSION_STATE, "the target session changed since the token was issued, so same-session continuation is unsafe."),
-                ("failed", 1, "the token was malformed or another unexpected command failure occurred."),
+                ("address_conflict", 2, "both selectors were provided; choose exactly one."),
+                ("no_observation_target", EXIT_NO_OBSERVATION_TARGET, "no eligible Unity log source could be observed for the selected target."),
+                ("session_missing", direct_exec_client.EXIT_SESSION_STATE, "the target no longer exposes the session continuity information needed for safe guarded observation."),
+                ("session_stale", direct_exec_client.EXIT_SESSION_STATE, "the target session changed since the expected session marker was recorded."),
+                ("unity_stalled", EXIT_UNITY_NOT_READY, "observation lost forward progress before the marker appeared."),
+                ("unity_not_ready", EXIT_UNITY_NOT_READY, "the observed target stopped being ready while waiting."),
+                ("failed", 1, "another unexpected command failure occurred while waiting for the marker."),
             ],
         },
     },
@@ -276,45 +288,23 @@ COMMAND_HELP = {
 
 
 WORKFLOW_EXAMPLES = {
-    "cold-start-exec-and-get-result": {
-        "goal": "Cold-start Unity for a project, run a file-based script, and continue a running job result with the returned continuation token.",
+    "exec-and-wait-for-result-marker": {
+        "goal": "Run a long-running script that returns `correlation_id`, capture `log_offset`, then wait for the terminal result marker.",
         "steps": [
             (
-                "`unity-puer-exec exec --project-path X:/project --file X:/scripts/do-work.js --wait-timeout-ms 1000`",
-                "Expected observation: the first response is a JSON object on stdout with `status = \"running\"` and a `continuation_token`.",
+                "`unity-puer-exec exec --project-path X:/project --file X:/scripts/do-work.js --wait-timeout-ms 1000 --include-log-offset`",
+                "Expected observation: stdout returns machine-readable JSON with `result.correlation_id`; if the script is still active, the response may use `status = \"running\"` and still include top-level `log_offset`.",
             ),
             (
-                "`unity-puer-exec get-result --continuation-token TOKEN --wait-timeout-ms 1000`",
-                "Expected observation: stdout stays machine-readable and eventually reaches `status = \"completed\"` when the job finishes.",
+                "`unity-puer-exec wait-for-result-marker --project-path X:/project --correlation-id ID --start-offset OFFSET`",
+                "Expected observation: stdout stays machine-readable and eventually reaches `status = \"completed\"` with `result.status = \"result_marker_matched\"`.",
             ),
         ],
         "notice": [
             "`exec` is allowed to launch or recover Unity when you target a project with `--project-path`.",
             "`--file` is the preferred script input for multi-line or AI-generated scripts.",
-            "`running` is an expected machine state, not an error; branch on it and continue with `get-result`.",
-            "Treat `continuation_token` as opaque and reuse it rather than decoding or rebuilding it.",
-        ],
-    },
-    "long-job-and-log-pattern": {
-        "goal": "Observe a long-running workload without missing an early log milestone by registering log observation before starting the workload.",
-        "steps": [
-            (
-                "`unity-puer-exec wait-for-log-pattern --project-path X:/project --pattern \"\\\\[FakeBuild\\\\] complete\" --timeout-seconds 0.1`",
-                "Expected observation: the short initial wait may return a non-success wait state, but it establishes the observation point before the workload starts.",
-            ),
-            (
-                "`unity-puer-exec exec --project-path X:/project --file X:/scripts/fake-build.js --wait-timeout-ms 200`",
-                "Expected observation: the fake workload starts and may return `running` while Unity continues to print progress logs.",
-            ),
-            (
-                "`unity-puer-exec wait-for-log-pattern --project-path X:/project --pattern \"\\\\[FakeBuild\\\\] complete\" --timeout-seconds 30`",
-                "Expected observation: stdout eventually reports `status = \"completed\"` with `result.status = \"log_pattern_matched\"` once the milestone log appears.",
-            ),
-        ],
-        "notice": [
-            "This example uses a fake workload only to demonstrate the observation sequence; it is not a built-in compile command.",
-            "Registering the first observation window before starting the workload reduces the chance of missing an early log line.",
-            "`wait-for-log-pattern` matches from the current observation point rather than replaying the full historical Editor log.",
+            "`running` is an expected machine state, not an error; branch on it and keep observing via result markers.",
+            "Use `log_offset` plus `correlation_id` together so observation begins after the originating `exec` request.",
         ],
     },
     "request-editor-exit-via-exec": {

@@ -2,13 +2,13 @@
 
 ## Purpose
 
-Define the durable machine-facing contract for the `unity-puer-exec` CLI, including command surface, selector rules, async continuation, structured output, exit codes, and help discoverability.
+Define the durable machine-facing contract for the `unity-puer-exec` CLI, including command surface, selector rules, log-driven long-running observation, structured output, exit codes, and help discoverability.
 
 ## Requirements
 
 ### Requirement: The CLI has one primary entry and flat command tree
 
-The formal CLI SHALL use `unity-puer-exec` as its single primary entry. The authoritative flat command tree SHALL include `wait-until-ready`, `wait-for-log-pattern`, `get-log-source`, `exec`, `get-result`, and `ensure-stopped`.
+The formal CLI SHALL use `unity-puer-exec` as its single primary entry. The authoritative flat command tree SHALL include `wait-until-ready`, `wait-for-log-pattern`, `wait-for-result-marker`, `get-log-source`, `exec`, and `ensure-stopped`.
 
 #### Scenario: Agent discovers the CLI surface
 
@@ -46,21 +46,38 @@ Selector-driven commands SHALL accept exactly one of `--project-path` or `--base
 - **THEN** the command may prepare Unity as needed for the execution request
 - **AND** the command returns either `status = "completed"` or `status = "running"`
 
-### Requirement: Async continuation is token-driven
+### Requirement: Async execution remains machine-usable without continuation tokens
 
-`get-result` SHALL take no selector inputs and SHALL continue prior async work only through `--continuation-token`. The continuation token MUST carry opaque routing and continuity information sufficient to detect whether the caller is still addressing the originating execution-service lifetime.
+Long-running execution SHALL remain machine-usable without token-driven continuation. `exec` SHALL provide enough machine-readable information for a caller to observe the intended long-running work, including an explicit opt-in path for returning the observation start offset used by result-marker waiting. When that opt-in path is requested, `exec` SHALL return top-level `log_offset` consistently for both `completed` and `running` responses. `wait-for-log-pattern` SHALL remain the regex-oriented observation primitive and SHALL support extraction modes including parsed JSON group extraction for structured markers. The extraction modes that return plain text and parsed JSON SHALL be mutually exclusive. The CLI SHALL provide a higher-level `wait-for-result-marker` path for the recommended single-line JSON result-marker workflow so callers do not need to author brittle full-JSON regexes themselves.
 
-#### Scenario: Running exec returns a continuation token
+#### Scenario: Long-running script uses a correlation-aware result marker
 
-- **WHEN** `exec` returns `status = "running"`
-- **THEN** the response includes `continuation_token`
-- **AND** later polling uses `get-result --continuation-token ...`
+- **WHEN** `exec` starts a script that emits a correlation-specific terminal result marker into the Unity log
+- **THEN** the initial `exec` response includes enough machine-readable information for the caller to observe that marker
+- **AND** when the caller explicitly requests log offset capture, the response includes the observation start offset
+- **AND** the caller can use either `wait-for-log-pattern` with extraction or `wait-for-result-marker` to detect and extract the intended terminal marker without polling a dedicated `get-result` command
 
-#### Scenario: Continuity is lost before polling completes
+#### Scenario: Alias ignores non-matching marker candidates while waiting
 
-- **WHEN** `get-result` reaches a target that cannot recover the originating session or no longer matches the originating `session_marker`
-- **THEN** the command reports `session_missing` or `session_stale`
-- **AND** the command does not silently continue against a replacement session
+- **WHEN** `wait-for-result-marker` observes lines with the standard marker prefix but the extracted JSON is invalid or the `correlation_id` does not match the requested value
+- **THEN** those lines are treated as non-matching candidates rather than terminal command failures
+- **AND** the command continues waiting until a matching marker is found or the normal wait termination condition is reached
+
+### Requirement: Session identity is not tied only to result continuation
+
+If session identity checking is needed for safe execution or observation, the formal CLI SHALL expose it as a command-level guard rather than as behavior unique to token-driven continuation. Commands that support session guards SHALL fail explicitly when the addressed session does not match the expected session.
+
+#### Scenario: Caller requires same-session observation
+
+- **WHEN** a caller starts work and later waits with an explicit expected session identity
+- **THEN** the relevant command reports a machine-readable failure if the addressed session no longer matches
+- **AND** the CLI does not silently treat a replacement session as equivalent
+
+#### Scenario: Caller does not require same-session observation
+
+- **WHEN** a caller waits for a result marker without providing an expected session identity
+- **THEN** the command may continue observing based on the selected log source and other supplied filters
+- **AND** the absence of a session guard does not itself count as a usage error
 
 ### Requirement: Observation and stop commands keep their boundary
 
@@ -104,5 +121,5 @@ Top-level and per-command help SHALL describe the single-entry model, the flat c
 #### Scenario: Agent reads help to discover normal workflow
 
 - **WHEN** an agent reads `unity-puer-exec --help`
-- **THEN** help explains the normal `exec` then `get-result` continuation workflow
+- **THEN** help explains the normal `exec` plus result-marker observation workflow
 - **AND** help also explains readiness, observation, and stopped-state workflows
