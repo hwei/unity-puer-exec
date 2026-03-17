@@ -37,6 +37,12 @@ If session identity checking is needed for safe execution or observation, the fo
 - **THEN** the relevant command reports a machine-readable failure if the addressed session no longer matches
 - **AND** the CLI does not silently treat a replacement session as equivalent
 
+#### Scenario: Caller does not require same-session observation
+
+- **WHEN** a caller waits for a result marker without providing an expected session identity
+- **THEN** the command may continue observing based on the selected log source and other supplied filters
+- **AND** the absence of a session guard does not itself count as a usage error
+
 ### Requirement: Help remains sufficient for long-running workflow discovery
 
 Top-level and per-command help SHALL explain the recommended long-running workflow in terms of the accepted durable contract. If log-driven observation replaces token-driven continuation, help SHALL distinguish the low-level regex observation primitive from the recommended result-marker workflow, and SHALL show how `exec` and `wait-for-result-marker` work together, including correlation markers and expected machine states.

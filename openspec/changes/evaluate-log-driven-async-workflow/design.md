@@ -141,6 +141,7 @@ Minimal accepted contract for the alias:
 - the CLI filters only on `correlation_id`
 - all other JSON fields are treated as opaque marker payload and returned without CLI-owned semantics
 - the alias accepts `--start-offset` so waiting can begin after the originating `exec` observation point
+- the alias also supports an optional session guard parameter for callers that want same-session safety
 
 Matching behavior:
 - lines that share the prefix but are not valid JSON are ignored as non-matching marker candidates
@@ -202,6 +203,11 @@ Why this is attractive:
 Open trade-off:
 - Cross-session log observation is valuable for some workloads, so session checks likely need to be optional rather than mandatory on every path.
 
+Accepted direction for result-marker waiting:
+- `wait-for-result-marker` supports an optional session guard parameter
+- callers may omit the session guard when cross-session observation is acceptable
+- callers may provide the session guard when they want same-session safety in addition to `correlation_id` filtering
+
 ### Decision: Use helpers or examples, not a mandatory package runtime API
 
 The repository can provide a documented snippet or helper library that generates a random correlation id, emits start/progress/result markers, and formats result payloads for extraction. That should remain an aid, not a hard dependency.
@@ -219,6 +225,7 @@ Why this is attractive:
 4. Are there important scenarios where the final structured `result` from `get-result` is materially better than a log-emitted result envelope?
 5. Does deleting `/get-result` actually simplify package and CLI implementation overall, or only shift complexity into examples and user scripts?
 6. Should the first iteration require single-line/single-write terminal markers, or should observation be upgraded to tolerate chunk-boundary splits before the workflow is formalized?
+7. What should the optional session guard parameter be named on `wait-for-result-marker`?
 ## Risks / Trade-offs
 
 - [We weaken the formal machine contract] -> Require explicit evaluation of extracted-result shape, failure signaling, and branchable non-success states before removing `get-result`.
@@ -241,8 +248,10 @@ Why this is attractive:
    - concurrent long jobs
    - session restart between start and observation
    - custom server implementation that does not own a job table
+   - optional same-session guard versus cross-session observation
 
 ## Open Questions
 
 - Should `exec` itself generate a correlation id and print it in the initial response, or should helper code inside the script own correlation generation?
+- What should the optional session guard parameter be named when exposed on `wait-for-result-marker`?
 - Is it acceptable to require single-line terminal markers in the first iteration, given the current chunk-based observation implementation?
