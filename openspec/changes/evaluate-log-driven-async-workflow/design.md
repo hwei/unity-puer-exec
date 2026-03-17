@@ -125,15 +125,21 @@ Diagnostics behavior for the current evaluation:
 
 ### Decision: `exec` should return the observation start offset for result-marker workflows
 
-The accepted direction for this evaluation is that the recommended long-running workflow should not require a separate checkpoint command before `exec`. Instead, `exec` should return the observation start offset that corresponds to the log position at which the execution request began. That offset becomes the natural `--start-offset` for later result-marker waiting.
+The accepted direction for this evaluation is that the recommended long-running workflow should not require a separate checkpoint command before `exec`. Instead, `exec` should support an explicit opt-in parameter that returns the observation start offset corresponding to the log position at which the execution request began. That offset becomes the natural `--start-offset` for later result-marker waiting.
 
 Why this is attractive:
 - avoids an extra tool call just to establish a log checkpoint
 - keeps the workflow compact: `exec` returns what the caller needs to start waiting safely
 - avoids forcing `wait-for-log-pattern` to grow a special "return offset without matching" mode
+- avoids making `exec` guess whether the script's return value contains a `correlation_id` or any result-marker intent
+
+Accepted parameter rule:
+- `exec` returns `log_offset` only when the caller explicitly requests it
+- the first iteration should prefer an explicit parameter such as `--include-log-offset`
+- callers that plan to use `wait-for-result-marker` are expected to opt in up front
 
 Representative workflow:
-1. `exec` starts the script
+1. `exec --include-log-offset` starts the script
 2. the script synchronously returns `correlation_id`
 3. `exec` also returns `log_offset`
 4. `wait-for-result-marker` waits using both `--correlation-id` and `--start-offset`
@@ -181,7 +187,7 @@ Why this is attractive:
 4. Are there important scenarios where the final structured `result` from `get-result` is materially better than a log-emitted result envelope?
 5. Does deleting `/get-result` actually simplify package and CLI implementation overall, or only shift complexity into examples and user scripts?
 6. Should the first iteration require single-line/single-write terminal markers, or should observation be upgraded to tolerate chunk-boundary splits before the workflow is formalized?
-7. Should `exec` always return `log_offset`, or only when the script-returned result includes a `correlation_id` intended for marker waiting?
+7. What should the explicit opt-in parameter be called for requesting `log_offset` from `exec`?
 
 ## Risks / Trade-offs
 
@@ -197,7 +203,7 @@ Why this is attractive:
    - optional progress markers
    - terminal success or failure marker with payload
    - in a single-line JSON terminal envelope with a stable marker prefix
-2. Prototype `exec` returning `log_offset` together with a script-returned `correlation_id`.
+2. Prototype `exec` returning `log_offset` behind an explicit opt-in parameter together with a script-returned `correlation_id`.
 3. Prototype `wait-for-log-pattern` extraction for a correlation-specific terminal marker, including `--extract-json-group`.
 4. Prototype `wait-for-result-marker` as the high-level alias for the single-line JSON result-marker workflow, including `--start-offset`.
 5. Compare the resulting UX against `exec -> get-result` for:
@@ -209,5 +215,6 @@ Why this is attractive:
 ## Open Questions
 
 - Should `exec` itself generate a correlation id and print it in the initial response, or should helper code inside the script own correlation generation?
+- Should the opt-in parameter be named `--include-log-offset`, `--return-log-offset`, or something similar?
 - Should `log_offset` always live inside `result`, or should it sit at top level beside the command-family metadata?
 - Is it acceptable to require single-line terminal markers in the first iteration, given the current chunk-based observation implementation?

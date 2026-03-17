@@ -12,12 +12,13 @@ The formal CLI SHALL use `unity-puer-exec` as its single primary entry. If log-d
 
 ### Requirement: Async execution remains machine-usable
 
-If the formal CLI removes token-driven continuation, long-running execution SHALL still remain machine-usable. `exec` SHALL provide enough machine-readable information for a caller to observe the intended long-running work, including the observation start offset for result-marker waiting. `wait-for-log-pattern` SHALL remain the regex-oriented observation primitive and SHALL support extraction modes including parsed JSON group extraction for structured markers. The CLI SHALL also provide a higher-level `wait-for-result-marker` path for the recommended single-line JSON result-marker workflow so callers do not need to author brittle full-JSON regexes themselves.
+If the formal CLI removes token-driven continuation, long-running execution SHALL still remain machine-usable. `exec` SHALL provide enough machine-readable information for a caller to observe the intended long-running work, including an explicit opt-in path for returning the observation start offset used by result-marker waiting. `wait-for-log-pattern` SHALL remain the regex-oriented observation primitive and SHALL support extraction modes including parsed JSON group extraction for structured markers. The CLI SHALL also provide a higher-level `wait-for-result-marker` path for the recommended single-line JSON result-marker workflow so callers do not need to author brittle full-JSON regexes themselves.
 
 #### Scenario: Long-running script uses a correlation-aware result marker
 
 - **WHEN** `exec` starts a script that emits a correlation-specific terminal result marker into the Unity log
-- **THEN** the initial `exec` response includes enough machine-readable information for the caller to observe that marker, including the observation start offset
+- **THEN** the initial `exec` response includes enough machine-readable information for the caller to observe that marker
+- **AND** when the caller explicitly requests log offset capture, the response includes the observation start offset
 - **AND** the caller can use either `wait-for-log-pattern` with extraction or `wait-for-result-marker` to detect and extract the intended terminal marker without polling a dedicated `get-result` command
 
 #### Scenario: Alias ignores non-matching marker candidates while waiting
