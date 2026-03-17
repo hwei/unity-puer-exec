@@ -38,7 +38,7 @@ The accepted direction for this evaluation is to have long-running scripts emit 
 Representative shape:
 
 ```text
-[UnityPuerExecResult] {"correlation_id":"12ab...","kind":"completed","payload":"..."}
+[UnityPuerExecResult] {"correlation_id":"12ab...","payload":"..."}
 ```
 
 Why this is attractive:
@@ -81,6 +81,18 @@ Representative high-level example:
 ```text
 unity-puer-exec wait-for-result-marker --project-path X:/project --correlation-id 12ab...
 ```
+
+Minimal accepted contract for the alias:
+- marker prefix is fixed by the product
+- marker body is a single-line JSON object
+- the JSON object MUST include `correlation_id`
+- the CLI filters only on `correlation_id`
+- all other JSON fields are treated as opaque marker payload and returned without CLI-owned semantics
+
+Matching behavior:
+- lines that share the prefix but are not valid JSON are ignored as non-matching marker candidates
+- lines whose parsed JSON does not contain the requested `correlation_id` are ignored as non-matching marker candidates
+- the command keeps scanning until a valid matching marker is found or the normal wait timeout / readiness failure path is reached
 
 ### Decision: Treat session matching as a general command guard
 

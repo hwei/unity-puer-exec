@@ -20,6 +20,12 @@ If the formal CLI removes token-driven continuation, long-running execution SHAL
 - **THEN** the initial `exec` response includes enough machine-readable information for the caller to observe that marker
 - **AND** the caller can use either `wait-for-log-pattern` with extraction or `wait-for-result-marker` to detect and extract the intended terminal marker without polling a dedicated `get-result` command
 
+#### Scenario: Alias ignores non-matching marker candidates while waiting
+
+- **WHEN** `wait-for-result-marker` observes lines with the standard marker prefix but the extracted JSON is invalid or the `correlation_id` does not match the requested value
+- **THEN** those lines are treated as non-matching candidates rather than terminal command failures
+- **AND** the command continues waiting until a matching marker is found or the normal wait termination condition is reached
+
 ### Requirement: Session identity is not tied only to result continuation
 
 If session identity checking is needed for safe execution or observation, the formal CLI SHALL expose it as a command-level guard rather than as behavior unique to `get-result`. Commands that support session guards SHALL fail explicitly when the addressed session does not match the expected session.
