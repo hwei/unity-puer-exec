@@ -79,7 +79,7 @@ unity-puer-exec wait-for-log-pattern --project-path X:/project --pattern "^\[Uni
 Representative high-level example:
 
 ```text
-unity-puer-exec wait-for-result-marker --project-path X:/project --correlation-id 12ab...
+unity-puer-exec wait-for-result-marker --project-path X:/project --correlation-id 12ab... --start-offset 12345
 ```
 
 Representative success payload shape:
@@ -112,6 +112,7 @@ Minimal accepted contract for the alias:
 - the JSON object MUST include `correlation_id`
 - the CLI filters only on `correlation_id`
 - all other JSON fields are treated as opaque marker payload and returned without CLI-owned semantics
+- the alias accepts `--start-offset` so waiting can begin after the originating `exec` observation point
 
 Matching behavior:
 - lines that share the prefix but are not valid JSON are ignored as non-matching marker candidates
@@ -121,6 +122,35 @@ Matching behavior:
 Diagnostics behavior for the current evaluation:
 - the alias keeps returning lightweight diagnostics by default for consistency with current observation commands
 - a later change may hide diagnostics by default and expose them only in an explicit debug mode
+
+### Decision: `exec` should return the observation start offset for result-marker workflows
+
+The accepted direction for this evaluation is that the recommended long-running workflow should not require a separate checkpoint command before `exec`. Instead, `exec` should return the observation start offset that corresponds to the log position at which the execution request began. That offset becomes the natural `--start-offset` for later result-marker waiting.
+
+Why this is attractive:
+- avoids an extra tool call just to establish a log checkpoint
+- keeps the workflow compact: `exec` returns what the caller needs to start waiting safely
+- avoids forcing `wait-for-log-pattern` to grow a special "return offset without matching" mode
+
+Representative workflow:
+1. `exec` starts the script
+2. the script synchronously returns `correlation_id`
+3. `exec` also returns `log_offset`
+4. `wait-for-result-marker` waits using both `--correlation-id` and `--start-offset`
+
+Representative `exec` result shape for this workflow:
+
+```json
+{
+  "ok": true,
+  "status": "completed",
+  "operation": "exec",
+  "result": {
+    "correlation_id": "12ab...",
+    "log_offset": 12345
+  }
+}
+```
 
 ### Decision: Treat session matching as a general command guard
 
@@ -151,6 +181,7 @@ Why this is attractive:
 4. Are there important scenarios where the final structured `result` from `get-result` is materially better than a log-emitted result envelope?
 5. Does deleting `/get-result` actually simplify package and CLI implementation overall, or only shift complexity into examples and user scripts?
 6. Should the first iteration require single-line/single-write terminal markers, or should observation be upgraded to tolerate chunk-boundary splits before the workflow is formalized?
+7. Should `exec` always return `log_offset`, or only when the script-returned result includes a `correlation_id` intended for marker waiting?
 
 ## Risks / Trade-offs
 
@@ -166,9 +197,10 @@ Why this is attractive:
    - optional progress markers
    - terminal success or failure marker with payload
    - in a single-line JSON terminal envelope with a stable marker prefix
-2. Prototype `wait-for-log-pattern` extraction for a correlation-specific terminal marker, including `--extract-json-group`.
-3. Prototype `wait-for-result-marker` as the high-level alias for the single-line JSON result-marker workflow.
-4. Compare the resulting UX against `exec -> get-result` for:
+2. Prototype `exec` returning `log_offset` together with a script-returned `correlation_id`.
+3. Prototype `wait-for-log-pattern` extraction for a correlation-specific terminal marker, including `--extract-json-group`.
+4. Prototype `wait-for-result-marker` as the high-level alias for the single-line JSON result-marker workflow, including `--start-offset`.
+5. Compare the resulting UX against `exec -> get-result` for:
    - single long job
    - concurrent long jobs
    - session restart between start and observation
@@ -177,4 +209,5 @@ Why this is attractive:
 ## Open Questions
 
 - Should `exec` itself generate a correlation id and print it in the initial response, or should helper code inside the script own correlation generation?
+- Should `log_offset` always live inside `result`, or should it sit at top level beside the command-family metadata?
 - Is it acceptable to require single-line terminal markers in the first iteration, given the current chunk-based observation implementation?
