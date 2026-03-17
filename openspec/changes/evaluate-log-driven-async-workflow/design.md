@@ -101,6 +101,7 @@ Representative low-level success payload shape:
 Extraction contract:
 - `--extract-group N` returns the matched text for group `N`
 - `--extract-json-group N` parses group `N` as JSON and returns only the parsed object
+- `--extract-group` and `--extract-json-group` are mutually exclusive request modes
 - the response does not repeat the requested group index because it is already known to the caller
 - the response does not include duplicated matched text by default; callers that need the full match should request `--extract-group 0` or consult diagnostics
 
@@ -151,6 +152,7 @@ Matching behavior:
 Diagnostics behavior for the current evaluation:
 - the alias keeps returning lightweight diagnostics by default for consistency with current observation commands
 - a later change may hide diagnostics by default and expose them only in an explicit debug mode
+- the intended long-term direction is to hide `wait-for-result-marker` diagnostics by default once the dedicated change for that behavior lands
 
 ### Decision: `exec` should return the observation start offset for result-marker workflows
 
@@ -166,6 +168,7 @@ Accepted parameter rule:
 - `exec` returns `log_offset` only when the caller explicitly requests it
 - the first iteration uses the explicit parameter name `--include-log-offset`
 - callers that plan to use `wait-for-result-marker` are expected to opt in up front
+- when `--include-log-offset` is supplied, `exec` returns top-level `log_offset` consistently for both `completed` and `running` responses
 
 Representative workflow:
 1. `exec --include-log-offset` starts the script
