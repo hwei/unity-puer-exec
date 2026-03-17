@@ -151,6 +151,7 @@ namespace UnityPuerExec
         private static JsEnv jsEnv;
         private static string envInitError = "";
         private static string sessionMarker = Guid.NewGuid().ToString("N");
+        private static string cachedConsoleLogPath = "";
         private static int mainThreadId;
         private static volatile bool isCompiling;
         private static volatile bool isUpdating;
@@ -230,6 +231,7 @@ namespace UnityPuerExec.Generated
         {
             StopListener();
             sessionMarker = Guid.NewGuid().ToString("N");
+            RefreshConsoleLogPathCache();
 
             listenerCancellation = new CancellationTokenSource();
             listener = new HttpListener();
@@ -463,6 +465,7 @@ namespace UnityPuerExec.Generated
         {
             isCompiling = EditorApplication.isCompiling;
             isUpdating = EditorApplication.isUpdating;
+            RefreshConsoleLogPathCache();
 
             while (MainThreadActions.TryDequeue(out var action))
             {
@@ -589,11 +592,26 @@ namespace UnityPuerExec.Generated
             return builder.ToString();
         }
 
-        private static long ReadEditorLogOffset()
+        private static void RefreshConsoleLogPathCache()
         {
             try
             {
                 var path = Application.consoleLogPath;
+                if (!string.IsNullOrEmpty(path))
+                {
+                    cachedConsoleLogPath = path;
+                }
+            }
+            catch
+            {
+            }
+        }
+
+        private static long ReadEditorLogOffset()
+        {
+            try
+            {
+                var path = cachedConsoleLogPath;
                 if (string.IsNullOrEmpty(path) || !File.Exists(path))
                 {
                     return 0;

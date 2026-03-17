@@ -235,6 +235,39 @@ class UnityPuerExecCliTests(unittest.TestCase):
         self.assertEqual(body["log_offset"], 12345)
         self.assertEqual(body["result"]["correlation_id"], "id-7")
 
+    def test_exec_completed_response_preserves_top_level_log_offset(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            script_path = Path(temp_dir) / "script.js"
+            script_path.write_text("return { correlation_id: 'id-8' };", encoding="utf-8")
+            with mock.patch.object(
+                unity_session,
+                "ensure_session_ready",
+                return_value=_make_session(),
+            ), mock.patch.object(
+                unity_puer_exec.direct_exec_client,
+                "invoke_command",
+                return_value=(
+                    0,
+                    json.dumps(
+                        {
+                            "ok": True,
+                            "status": "completed",
+                            "log_offset": 67890,
+                            "result": {"correlation_id": "id-8"},
+                        }
+                    ),
+                    "",
+                ),
+            ):
+                exit_code, stdout, stderr = unity_puer_exec.run_cli(["exec", "--file", str(script_path), "--include-log-offset"])
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(stderr, "")
+        body = json.loads(stdout)
+        self.assertEqual(body["status"], "completed")
+        self.assertEqual(body["log_offset"], 67890)
+        self.assertEqual(body["result"]["correlation_id"], "id-8")
+
     def test_get_log_source_returns_success_payload(self):
         session = _make_session()
         result = {"status": "log_source_available", "source": "file", "path": "X:/Editor.log"}

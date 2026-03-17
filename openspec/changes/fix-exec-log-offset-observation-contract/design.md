@@ -23,6 +23,10 @@ This change should:
 - preserve the current top-level placement and opt-in behavior of `log_offset`
 - prove the corrected behavior through real Unity host validation
 
+## Authoritative Source
+
+For the current Windows host-validation baseline, the authoritative observation source remains the Unity Editor log file observed by CLI wait commands. In practice this is the same file reported by `Application.consoleLogPath`, but the package must not rely on reading that Unity API from a background request thread. The package side should instead cache the effective log path on the Unity main thread and measure `log_offset` against that cached path.
+
 ## Validation Targets
 
 After the fix lands, real-host validation should prove at least these cases:
