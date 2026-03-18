@@ -345,7 +345,7 @@ WORKFLOW_EXAMPLES = {
 
 def render_top_level_help():
     sections = [
-        "Overview\nunity-puer-exec is the primary CLI surface for preparing Unity, executing JavaScript, observing long-running work, and checking session state.",
+        "Overview\nunity-puer-exec is the primary CLI surface for preparing Unity, executing JavaScript, observing long-running work, and checking session state.\nLegacy aliases remain compatibility shims and are not authoritative command surfaces.",
         "Commands\n{}".format(_bullet_lines("{}: {}".format(name, TOP_LEVEL_COMMANDS[name]) for name in COMMANDS)),
         "Global Selector Rules\n- Use exactly one selector on commands that target a Unity session: `--project-path` or `--base-url`.\n- `--project-path` is the normal choice when the CLI should discover, launch, or recover Unity for a project.\n- `--base-url` is for a direct service you already know how to reach.",
         "Common Workflows\nUse `unity-puer-exec --help-example <example-id>` to view full steps.\n{}".format(

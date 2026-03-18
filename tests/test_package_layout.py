@@ -33,6 +33,24 @@ class PackageLayoutTests(unittest.TestCase):
         self.assertNotIn("namespace C3.UnityPuerExecValidation", content)
         self.assertNotIn("CS.C3.UnityPuerExecValidation.UnityPuerExecBridge", content)
 
+    def test_server_file_drops_dead_transitional_helpers(self):
+        server_path = PACKAGE_ROOT / "Editor" / "UnityPuerExecServer.cs"
+        content = server_path.read_text(encoding="utf-8")
+
+        self.assertNotIn("public static class UnityPuerExecBatch", content)
+        self.assertNotIn("private static string BuildStringArrayJson", content)
+
+    def test_compile_trigger_compatibility_moves_to_dedicated_file(self):
+        server_path = PACKAGE_ROOT / "Editor" / "UnityPuerExecServer.cs"
+        compat_path = PACKAGE_ROOT / "Editor" / "UnityPuerExecCompileCompat.cs"
+        server_content = server_path.read_text(encoding="utf-8")
+        compat_content = compat_path.read_text(encoding="utf-8")
+
+        self.assertTrue(compat_path.exists())
+        self.assertNotIn("private const string CompileTriggerDirectory", server_content)
+        self.assertIn("internal static class UnityPuerExecCompileCompat", compat_content)
+        self.assertIn("TriggerValidationCompile", compat_content)
+
 
 if __name__ == "__main__":
     unittest.main()

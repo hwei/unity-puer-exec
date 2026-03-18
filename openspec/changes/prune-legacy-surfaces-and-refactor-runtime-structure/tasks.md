@@ -1,18 +1,18 @@
 ## 1. Prune Confirmed-Dead Runtime Surfaces
 
-- [ ] 1.1 Confirm repository-local removal candidates and delete the confirmed-dead transitional helpers
-- [ ] 1.2 Remove or tighten tests and assertions that still mention deleted transitional helpers
-- [ ] 1.3 Record any still-uncertain compatibility surfaces as explicit shim candidates instead of deleting them blindly
+- [x] 1.1 Confirm repository-local removal candidates and delete the confirmed-dead transitional helpers
+- [x] 1.2 Remove or tighten tests and assertions that still mention deleted transitional helpers
+- [x] 1.3 Record any still-uncertain compatibility surfaces as explicit shim candidates instead of deleting them blindly
 
 ## 2. Isolate Compatibility Shims
 
-- [ ] 2.1 Reduce `unity-puer-session` to a clearly marked compatibility adapter with no independent business logic
-- [ ] 2.2 Isolate compile-trigger compatibility code from the primary Unity Editor runtime path
-- [ ] 2.3 Update README, help text, and code comments so compatibility surfaces are described as non-authoritative
+- [x] 2.1 Reduce `unity-puer-session` to a clearly marked compatibility adapter with no independent business logic
+- [x] 2.2 Isolate compile-trigger compatibility code from the primary Unity Editor runtime path
+- [x] 2.3 Update README, help text, and code comments so compatibility surfaces are described as non-authoritative
 
 ## 3. Refactor Python Runtime Structure
 
-- [ ] 3.1 Extract shared CLI command metadata and thin the `unity_puer_exec.py` entry module
+- [x] 3.1 Extract shared CLI command metadata and thin the `unity_puer_exec.py` entry module
 - [ ] 3.2 Split session/runtime responsibilities into focused modules while preserving current behavior
 - [ ] 3.3 Update Python unit tests to validate the new module seams and preserved CLI contract
 

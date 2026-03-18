@@ -9,6 +9,11 @@ The repository already separates product source, validation tooling, tests, and 
 
 The change also needs to deal with compatibility leftovers deliberately. Some surfaces are still repository-owned compatibility paths, while others appear to be dead transitional code. This work should prune confirmed-dead code first, isolate compatibility shims second, and only then redistribute the remaining runtime code into clearer modules.
 
+Repository inspection during apply has already separated the first buckets:
+
+- Confirmed-dead candidates: `UnityPuerExecBatch`, `BuildStringArrayJson`, and the unused `--keep-unity` alias flag.
+- Explicit shim candidates pending later isolation work: `unity-puer-session` and the compile-trigger bridge path exposed through `TriggerValidationCompile`.
+
 ## Goals / Non-Goals
 
 **Goals:**

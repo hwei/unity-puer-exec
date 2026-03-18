@@ -10,6 +10,7 @@
 - 验证宿主应从干净基线出发，并通过本地 `manifest.json` 注入消费正式 package；辅助脚本见 `tools/prepare_validation_host.py`
 - Unity 侧正式命名以 `UnityPuerExec` 为准，不加 `C3` 前缀
 - 当前 `unity-puer-session` 仍可视为过渡入口；长期以 `unity-puer-exec` 为主入口
+- 兼容入口与迁移辅助面应保持瘦包装性质，不应继续承载新的正式能力或独立工作流
 
 快速入口：
 

@@ -6,24 +6,23 @@ import unity_puer_exec
 
 
 def _build_parser():
+    # Transitional compatibility shim for legacy callers. New behavior belongs
+    # in unity-puer-exec, not in this alias surface.
     parser = argparse.ArgumentParser(prog="unity-puer-session")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     ensure_ready_parser = subparsers.add_parser("ensure-ready")
     _add_session_args(ensure_ready_parser)
     ensure_ready_parser.add_argument("--ready-timeout-seconds", type=float, default=180.0)
-    ensure_ready_parser.add_argument("--keep-unity", action="store_true")
 
     wait_recovered_parser = subparsers.add_parser("wait-until-recovered")
     _add_session_args(wait_recovered_parser)
     wait_recovered_parser.add_argument("--timeout-seconds", type=float, default=180.0)
-    wait_recovered_parser.add_argument("--keep-unity", action="store_true")
 
     wait_log_parser = subparsers.add_parser("wait-for-log-pattern")
     _add_session_args(wait_log_parser)
     wait_log_parser.add_argument("--pattern", required=True)
     wait_log_parser.add_argument("--timeout-seconds", type=float, default=180.0)
-    wait_log_parser.add_argument("--keep-unity", action="store_true")
 
     return parser
 
