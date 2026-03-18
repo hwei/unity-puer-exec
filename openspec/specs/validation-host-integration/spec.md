@@ -3,9 +3,7 @@
 ## Purpose
 
 Define the stable contract between this repository and the external Unity validation host, including project-path resolution, host boundaries, local package wiring, and validation expectations.
-
 ## Requirements
-
 ### Requirement: Unity project path resolution is deterministic
 
 Unity project path resolution SHALL follow this order:
@@ -56,3 +54,20 @@ The repository SHALL distinguish static host wiring proof from runtime validatio
 - **WHEN** local package host integration is treated as complete
 - **THEN** the repository can point to both a wiring path and a runtime validation expectation
 - **AND** manifest editing alone is not the only durable validation story
+
+### Requirement: Real-host runtime validation covers critical CLI workflows
+The repository SHALL provide a repeatable runtime validation workflow for the external Unity host that exercises the critical project-scoped CLI integration path, not only manifest rewiring or mocked Python contracts.
+
+#### Scenario: Contributor runs the critical real-host regression path
+- **WHEN** a contributor runs the repository-owned real-host validation workflow against a prepared `UNITY_PROJECT_PATH`
+- **THEN** the workflow exercises project-scoped readiness, `exec --include-log-offset`, and both high-level and low-level log-observation commands against the real Unity host
+- **AND** the workflow reports failures in a form that distinguishes runtime host-validation regressions from ordinary mocked test failures
+
+### Requirement: Real-host observation validation proves checkpoint compatibility
+The repository SHALL maintain a repeatable real-host validation expectation proving that the observation checkpoint returned by `exec --include-log-offset` remains compatible with the actual log source consumed by the CLI observation commands.
+
+#### Scenario: Contributor validates observation from the returned checkpoint
+- **WHEN** the real-host validation workflow starts an execution that emits a correlation-aware result marker and then observes from the returned `log_offset`
+- **THEN** `wait-for-result-marker` succeeds from that checkpoint against the real host
+- **AND** `wait-for-log-pattern` with structured extraction can observe the same marker from a compatible checkpoint without falling back to a full-log scan
+
