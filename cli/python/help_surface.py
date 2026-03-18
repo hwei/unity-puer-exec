@@ -57,9 +57,11 @@ COMMAND_HELP = {
                 "`--project-path <path>`: select a Unity project and allow Unity launch when needed.",
                 "`--base-url <url>`: target an already-known direct service instead of a project.",
                 "`--unity-exe-path <path>`: override the Unity executable for project-scoped startup only.",
+                "`--unity-log-path <path>`: explicit non-default Unity Editor log path for pre-session project-scoped startup and observation.",
                 "`--ready-timeout-seconds <seconds>`: total time allowed for readiness.",
                 "`--activity-timeout-seconds <seconds>`: how long readiness may stay idle before stalling.",
                 "`--health-timeout-seconds <seconds>`: timeout for each health probe.",
+                "`--include-diagnostics`: include top-level debug diagnostics in the machine-readable response.",
             ],
             "Selector Rules": [
                 "Use exactly one selector: `--project-path` or `--base-url`.",
@@ -97,6 +99,7 @@ COMMAND_HELP = {
             "Arguments": [
                 "`--project-path <path>`: observe a project's Unity log source.",
                 "`--base-url <url>`: observe through a direct service target.",
+                "`--unity-log-path <path>`: explicit non-default Unity Editor log path for pre-session project-scoped observation.",
                 "`--pattern <regex>`: required regular expression to wait for.",
                 "`--start-offset <offset>`: optional log offset from which to begin scanning.",
                 "`--expected-session-marker <marker>`: optional same-session guard for observation.",
@@ -105,11 +108,13 @@ COMMAND_HELP = {
                 "`--timeout-seconds <seconds>`: total wait budget for the requested pattern.",
                 "`--activity-timeout-seconds <seconds>`: how long observation may stay idle before stalling.",
                 "`--health-timeout-seconds <seconds>`: timeout for each health probe.",
+                "`--include-diagnostics`: include top-level debug diagnostics in the machine-readable response.",
             ],
             "Selector Rules": [
                 "Use exactly one selector: `--project-path` or `--base-url`.",
                 "`--project-path` is the normal choice when the CLI should locate observation from a project.",
                 "`--base-url` is for a direct service that is already known.",
+                "Before a project-scoped session has produced `session_marker`, pass the same `--unity-log-path` on log-related commands when you intentionally avoid the default log location.",
             ],
             "Timeout Rules": [
                 "All timeout values must be positive numbers.",
@@ -141,6 +146,8 @@ COMMAND_HELP = {
             "Arguments": [
                 "`--project-path <path>`: locate the log source for a Unity project.",
                 "`--base-url <url>`: report the log source for a direct service target.",
+                "`--unity-log-path <path>`: explicit non-default Unity Editor log path for pre-session project-scoped discovery.",
+                "`--include-diagnostics`: include top-level debug diagnostics in the machine-readable response.",
             ],
             "Selector Rules": [
                 "Use exactly one selector: `--project-path` or `--base-url`.",
@@ -174,8 +181,10 @@ COMMAND_HELP = {
                 "`--project-path <path>`: select a Unity project and allow Unity launch when needed.",
                 "`--base-url <url>`: target an already-known direct service instead of a project.",
                 "`--unity-exe-path <path>`: override the Unity executable for project-scoped startup only.",
+                "`--unity-log-path <path>`: explicit non-default Unity Editor log path for project-scoped startup before `session_marker` exists.",
                 "`--wait-timeout-ms <ms>`: how long to wait before returning the current execution state.",
                 "`--include-log-offset`: include top-level observation `log_offset` in the response for later result-marker waiting.",
+                "`--include-diagnostics`: include top-level debug diagnostics in the machine-readable response.",
                 "`--file <path>`: preferred script input for multi-line or AI-generated scripts.",
                 "`--stdin`: read script content from standard input.",
                 "`--code <inline-js>`: inline script source; compatibility path with quoting and multiline drawbacks.",
@@ -216,16 +225,19 @@ COMMAND_HELP = {
         "args": {
             "Arguments": [
                 "`--project-path <path>` or `--base-url <url>`: select the observation target.",
+                "`--unity-log-path <path>`: explicit non-default Unity Editor log path for pre-session project-scoped observation.",
                 "`--correlation-id <id>`: required result-marker correlation id to match.",
                 "`--start-offset <offset>`: optional starting log offset, typically returned from `exec --include-log-offset`.",
                 "`--expected-session-marker <marker>`: optional same-session guard.",
                 "`--timeout-seconds <seconds>`: total wait budget for the terminal marker.",
                 "`--activity-timeout-seconds <seconds>`: how long observation may stay idle before stalling.",
                 "`--health-timeout-seconds <seconds>`: timeout for each health probe.",
+                "`--include-diagnostics`: include top-level debug diagnostics in the machine-readable response.",
             ],
             "Selector Rules": [
                 "Use exactly one selector: `--project-path` or `--base-url`.",
                 "Omitting `--expected-session-marker` allows cross-session observation when the log source is still the intended source of truth.",
+                "Before a project-scoped session has produced `session_marker`, pass the same `--unity-log-path` on log-related commands when you intentionally avoid the default log location.",
             ],
             "Timeout Rules": [
                 "All timeout values must be positive numbers.",
@@ -261,6 +273,7 @@ COMMAND_HELP = {
                 "`--timeout-seconds <seconds>`: wait budget for stop confirmation.",
                 "`--inspect-only`: report whether the target is already stopped without changing it.",
                 "`--immediate-kill`: skip graceful waiting and kill immediately; project mode only.",
+                "`--include-diagnostics`: include top-level debug diagnostics in the machine-readable response.",
             ],
             "Selector Rules": [
                 "Use exactly one selector: `--project-path` or `--base-url`.",
@@ -306,6 +319,7 @@ WORKFLOW_EXAMPLES = {
             "`running` is an expected machine state, not an error; branch on it and keep observing via result markers.",
             "Do not assume `running` already includes `result.correlation_id`; if you need correlation-aware observation before completion, design the script to expose that id deliberately.",
             "Use `log_offset` plus the script-provided `correlation_id` together so observation begins after the originating `exec` request.",
+            "If the session has not yet produced `session_marker` and you intentionally use a non-default Unity log file, keep passing the same `--unity-log-path` on the log-related commands in that workflow.",
         ],
     },
     "request-editor-exit-via-exec": {

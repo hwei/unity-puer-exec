@@ -32,30 +32,38 @@ def _build_parser():
     ready_parser = subparsers.add_parser("wait-until-ready", add_help=False)
     _add_selector_args(ready_parser)
     ready_parser.add_argument("--unity-exe-path", default=None)
+    ready_parser.add_argument("--unity-log-path", default=None)
     ready_parser.add_argument("--ready-timeout-seconds", type=float, default=unity_session.DEFAULT_READY_TIMEOUT_SECONDS)
     ready_parser.add_argument("--activity-timeout-seconds", type=float, default=unity_session.DEFAULT_ACTIVITY_TIMEOUT_SECONDS)
     ready_parser.add_argument("--health-timeout-seconds", type=float, default=unity_session.DEFAULT_HEALTH_TIMEOUT_SECONDS)
+    _add_diagnostics_arg(ready_parser)
 
     wait_log_parser = subparsers.add_parser("wait-for-log-pattern", add_help=False)
     _add_selector_args(wait_log_parser)
+    wait_log_parser.add_argument("--unity-log-path", default=None)
     wait_log_parser.add_argument("--pattern", required=True)
     wait_log_parser.add_argument("--start-offset", type=int, default=None)
     wait_log_parser.add_argument("--expected-session-marker", default=None)
     wait_log_parser.add_argument("--timeout-seconds", type=float, default=unity_session.DEFAULT_READY_TIMEOUT_SECONDS)
     wait_log_parser.add_argument("--activity-timeout-seconds", type=float, default=unity_session.DEFAULT_ACTIVITY_TIMEOUT_SECONDS)
     wait_log_parser.add_argument("--health-timeout-seconds", type=float, default=unity_session.DEFAULT_HEALTH_TIMEOUT_SECONDS)
+    _add_diagnostics_arg(wait_log_parser)
     extract_mode = wait_log_parser.add_mutually_exclusive_group()
     extract_mode.add_argument("--extract-group", type=int, default=None)
     extract_mode.add_argument("--extract-json-group", type=int, default=None)
 
     get_log_source_parser = subparsers.add_parser("get-log-source", add_help=False)
     _add_selector_args(get_log_source_parser)
+    get_log_source_parser.add_argument("--unity-log-path", default=None)
+    _add_diagnostics_arg(get_log_source_parser)
 
     exec_parser = subparsers.add_parser("exec", add_help=False)
     _add_selector_args(exec_parser)
     exec_parser.add_argument("--unity-exe-path", default=None)
+    exec_parser.add_argument("--unity-log-path", default=None)
     exec_parser.add_argument("--wait-timeout-ms", type=int, default=direct_exec_client.DEFAULT_WAIT_TIMEOUT_MS)
     exec_parser.add_argument("--include-log-offset", action="store_true")
+    _add_diagnostics_arg(exec_parser)
     script_source = exec_parser.add_mutually_exclusive_group(required=True)
     script_source.add_argument("--file", dest="file_path")
     script_source.add_argument("--stdin", action="store_true")
@@ -63,16 +71,19 @@ def _build_parser():
 
     wait_result_parser = subparsers.add_parser("wait-for-result-marker", add_help=False)
     _add_selector_args(wait_result_parser)
+    wait_result_parser.add_argument("--unity-log-path", default=None)
     wait_result_parser.add_argument("--correlation-id", required=True)
     wait_result_parser.add_argument("--start-offset", type=int, default=None)
     wait_result_parser.add_argument("--expected-session-marker", default=None)
     wait_result_parser.add_argument("--timeout-seconds", type=float, default=unity_session.DEFAULT_READY_TIMEOUT_SECONDS)
     wait_result_parser.add_argument("--activity-timeout-seconds", type=float, default=unity_session.DEFAULT_ACTIVITY_TIMEOUT_SECONDS)
     wait_result_parser.add_argument("--health-timeout-seconds", type=float, default=unity_session.DEFAULT_HEALTH_TIMEOUT_SECONDS)
+    _add_diagnostics_arg(wait_result_parser)
 
     ensure_stopped_parser = subparsers.add_parser("ensure-stopped", add_help=False)
     _add_selector_args(ensure_stopped_parser)
     ensure_stopped_parser.add_argument("--timeout-seconds", type=float, default=unity_session.DEFAULT_STOP_TIMEOUT_SECONDS)
+    _add_diagnostics_arg(ensure_stopped_parser)
     stop_mode = ensure_stopped_parser.add_mutually_exclusive_group()
     stop_mode.add_argument("--inspect-only", action="store_true")
     stop_mode.add_argument("--immediate-kill", action="store_true")
@@ -83,6 +94,10 @@ def _build_parser():
 def _add_selector_args(parser):
     parser.add_argument("--project-path", default=None)
     parser.add_argument("--base-url", default=None)
+
+
+def _add_diagnostics_arg(parser):
+    parser.add_argument("--include-diagnostics", action="store_true")
 
 
 def _emit_payload(payload):
@@ -130,27 +145,41 @@ def _expected_execution_payload(status, error=None):
     return payload
 
 
-def _success_payload(operation, session=None, result=None):
+def _attach_diagnostics(payload, include_diagnostics=False, session=None, diagnostics=None):
+    if not include_diagnostics:
+        payload.pop("diagnostics", None)
+        return payload
+    merged = {}
+    if session is not None and session.diagnostics:
+        merged.update(session.diagnostics)
+    if diagnostics:
+        merged.update(diagnostics)
+    if merged:
+        payload["diagnostics"] = merged
+    return payload
+
+
+def _success_payload(operation, session=None, result=None, include_diagnostics=False, diagnostics=None):
     payload = {"ok": True, "status": "completed", "operation": operation}
     if session is not None:
         payload["session"] = session.to_payload()
     if result is not None:
         payload["result"] = result
-    return payload
+    return _attach_diagnostics(payload, include_diagnostics=include_diagnostics, session=session, diagnostics=diagnostics)
 
 
-def _expected_failure_payload(operation, status, error, session=None):
+def _expected_failure_payload(operation, status, error, session=None, include_diagnostics=False, diagnostics=None):
     payload = {"ok": False, "status": status, "operation": operation, "error": str(error)}
     if session is not None:
         payload["session"] = session.to_payload()
-    return payload
+    return _attach_diagnostics(payload, include_diagnostics=include_diagnostics, session=session, diagnostics=diagnostics)
 
 
-def _unexpected_failure_payload(operation, error, session=None):
+def _unexpected_failure_payload(operation, error, session=None, include_diagnostics=False, diagnostics=None):
     payload = {"ok": False, "status": "failed", "operation": operation, "error": str(error)}
     if session is not None:
         payload["session"] = session.to_payload()
-    return payload
+    return _attach_diagnostics(payload, include_diagnostics=include_diagnostics, session=session, diagnostics=diagnostics)
 
 
 def _read_exec_code(args):
@@ -166,11 +195,13 @@ def _run_exec(args):
     selector = _resolve_selector(args)
     _validate_positive(args.wait_timeout_ms, "wait-timeout-ms")
     _validate_project_mode_only(selector, "unity-exe-path", args.unity_exe_path)
+    _validate_project_mode_only(selector, "unity-log-path", args.unity_log_path)
 
     if selector == "project_path":
         session = unity_session.ensure_session_ready(
             project_path=args.project_path,
             unity_exe_path=args.unity_exe_path,
+            unity_log_path=args.unity_log_path,
         )
         base_url = session.base_url
     else:
@@ -181,6 +212,7 @@ def _run_exec(args):
         "code": _read_exec_code(args),
         "wait_timeout_ms": args.wait_timeout_ms,
         "include_log_offset": args.include_log_offset,
+        "include_diagnostics": args.include_diagnostics,
     }
     exit_code, stdout_text, stderr_text = direct_exec_client.invoke_command(
         "exec",
@@ -188,6 +220,16 @@ def _run_exec(args):
         payload,
         args.wait_timeout_ms,
     )
+    if stdout_text:
+        body = json.loads(stdout_text)
+        if not args.include_diagnostics:
+            body.pop("diagnostics", None)
+        stdout_text = _emit_payload(body)
+    if stderr_text:
+        body = json.loads(stderr_text)
+        if not args.include_diagnostics:
+            body.pop("diagnostics", None)
+        stderr_text = _emit_payload(body)
     return exit_code, stdout_text, stderr_text
 
 
@@ -197,6 +239,7 @@ def _run_wait_until_ready(args):
     _validate_positive(args.activity_timeout_seconds, "activity-timeout-seconds")
     _validate_positive(args.health_timeout_seconds, "health-timeout-seconds")
     _validate_project_mode_only(selector, "unity-exe-path", args.unity_exe_path)
+    _validate_project_mode_only(selector, "unity-log-path", args.unity_log_path)
 
     if selector == "project_path":
         session = unity_session.ensure_session_ready(
@@ -205,6 +248,7 @@ def _run_wait_until_ready(args):
             ready_timeout_seconds=args.ready_timeout_seconds,
             activity_timeout_seconds=args.activity_timeout_seconds,
             health_timeout_seconds=args.health_timeout_seconds,
+            unity_log_path=args.unity_log_path,
         )
     else:
         session = unity_session.create_direct_session(args.base_url)
@@ -215,7 +259,12 @@ def _run_wait_until_ready(args):
             health_timeout_seconds=args.health_timeout_seconds,
         )
 
-    payload = _success_payload("wait-until-ready", session=session, result={"status": "recovered"})
+    payload = _success_payload(
+        "wait-until-ready",
+        session=session,
+        result={"status": "recovered"},
+        include_diagnostics=args.include_diagnostics,
+    )
     return 0, _emit_payload(payload), ""
 
 
@@ -225,13 +274,14 @@ def _run_wait_for_log_pattern(args):
     _validate_positive(args.activity_timeout_seconds, "activity-timeout-seconds")
     _validate_positive(args.health_timeout_seconds, "health-timeout-seconds")
     _validate_non_negative(args.start_offset, "start-offset")
+    _validate_project_mode_only(selector, "unity-log-path", args.unity_log_path)
     try:
         re.compile(args.pattern)
     except re.error as exc:
         raise ValueError("invalid regex: {}".format(exc))
 
     if selector == "project_path":
-        session = unity_session.create_observation_session(project_path=args.project_path)
+        session = unity_session.create_observation_session(project_path=args.project_path, unity_log_path=args.unity_log_path)
     else:
         session = unity_session.create_direct_session(args.base_url)
 
@@ -240,6 +290,7 @@ def _run_wait_for_log_pattern(args):
             "wait-for-log-pattern",
             "no_observation_target",
             "no observable Unity log source is available",
+            include_diagnostics=args.include_diagnostics,
         )
         return EXIT_NO_OBSERVATION_TARGET, _emit_payload(payload), ""
 
@@ -259,11 +310,11 @@ def _run_wait_for_log_pattern(args):
         result["extracted_group"] = session.diagnostics["extracted_group"]
     if args.extract_json_group is not None:
         result["extracted_json"] = session.diagnostics["extracted_json"]
-    result["diagnostics"] = {"matched_log_pattern": session.diagnostics.get("matched_log_pattern")}
     payload = _success_payload(
         "wait-for-log-pattern",
         session=session,
         result=result,
+        include_diagnostics=args.include_diagnostics,
     )
     return 0, _emit_payload(payload), ""
 
@@ -274,9 +325,10 @@ def _run_wait_for_result_marker(args):
     _validate_positive(args.activity_timeout_seconds, "activity-timeout-seconds")
     _validate_positive(args.health_timeout_seconds, "health-timeout-seconds")
     _validate_non_negative(args.start_offset, "start-offset")
+    _validate_project_mode_only(selector, "unity-log-path", args.unity_log_path)
 
     if selector == "project_path":
-        session = unity_session.create_observation_session(project_path=args.project_path)
+        session = unity_session.create_observation_session(project_path=args.project_path, unity_log_path=args.unity_log_path)
     else:
         session = unity_session.create_direct_session(args.base_url)
 
@@ -285,6 +337,7 @@ def _run_wait_for_result_marker(args):
             "wait-for-result-marker",
             "no_observation_target",
             "no observable Unity log source is available",
+            include_diagnostics=args.include_diagnostics,
         )
         return EXIT_NO_OBSERVATION_TARGET, _emit_payload(payload), ""
 
@@ -313,11 +366,8 @@ def _run_wait_for_result_marker(args):
                 result={
                     "status": "result_marker_matched",
                     "marker": marker,
-                    "diagnostics": {
-                        "matched_log_text": session.diagnostics.get("matched_log_text"),
-                        "matched_log_pattern": session.diagnostics.get("matched_log_pattern"),
-                    },
                 },
+                include_diagnostics=args.include_diagnostics,
             )
             return 0, _emit_payload(payload), ""
         next_offset = session.diagnostics.get("matched_log_offset")
@@ -328,8 +378,9 @@ def _run_wait_for_result_marker(args):
 
 def _run_get_log_source(args):
     selector = _resolve_selector(args)
+    _validate_project_mode_only(selector, "unity-log-path", args.unity_log_path)
     if selector == "project_path":
-        source = unity_session.get_log_source(project_path=args.project_path)
+        source = unity_session.get_log_source(project_path=args.project_path, unity_log_path=args.unity_log_path)
     else:
         source = unity_session.get_log_source(base_url=args.base_url)
 
@@ -338,11 +389,17 @@ def _run_get_log_source(args):
             "get-log-source",
             "no_observation_target",
             "no observable Unity log source is available",
+            include_diagnostics=args.include_diagnostics,
         )
         return EXIT_NO_OBSERVATION_TARGET, _emit_payload(payload), ""
 
     session, result = source
-    payload = _success_payload("get-log-source", session=session, result=result)
+    payload = _success_payload(
+        "get-log-source",
+        session=session,
+        result=result,
+        include_diagnostics=args.include_diagnostics,
+    )
     return 0, _emit_payload(payload), ""
 
 
@@ -365,10 +422,21 @@ def _run_ensure_stopped(args):
         stopped, session = unity_session.ensure_stopped(base_url=args.base_url, mode="inspect", timeout_seconds=args.timeout_seconds)
 
     if not stopped:
-        payload = _expected_failure_payload("ensure-stopped", "not_stopped", "target is not stopped", session=session)
+        payload = _expected_failure_payload(
+            "ensure-stopped",
+            "not_stopped",
+            "target is not stopped",
+            session=session,
+            include_diagnostics=args.include_diagnostics,
+        )
         return EXIT_NOT_STOPPED, _emit_payload(payload), ""
 
-    payload = _success_payload("ensure-stopped", session=session, result={"status": "stopped"})
+    payload = _success_payload(
+        "ensure-stopped",
+        session=session,
+        result={"status": "stopped"},
+        include_diagnostics=args.include_diagnostics,
+    )
     return 0, _emit_payload(payload), ""
 
 
@@ -389,17 +457,39 @@ def _run_command(args):
         status = "address_conflict" if str(exc) == "address_conflict" else "failed"
         return _usage_error(str(exc), status=status)
     except unity_session.UnityLaunchError as exc:
-        payload = _expected_failure_payload(args.command, "unity_start_failed", exc, session=exc.session)
+        payload = _expected_failure_payload(
+            args.command,
+            "unity_start_failed",
+            exc,
+            session=exc.session,
+            include_diagnostics=getattr(args, "include_diagnostics", False),
+        )
         return EXIT_UNITY_START_FAILED, _emit_payload(payload), ""
     except (unity_session.UnityStalledError, unity_session.UnityNotReadyError) as exc:
         status = "unity_stalled" if isinstance(exc, unity_session.UnityStalledError) else "unity_not_ready"
-        payload = _expected_failure_payload(args.command, status, exc, session=exc.session)
+        payload = _expected_failure_payload(
+            args.command,
+            status,
+            exc,
+            session=exc.session,
+            include_diagnostics=getattr(args, "include_diagnostics", False),
+        )
         return EXIT_UNITY_NOT_READY, _emit_payload(payload), ""
     except unity_session.UnitySessionStateError as exc:
-        payload = _expected_failure_payload(args.command, exc.status, exc, session=exc.session)
+        payload = _expected_failure_payload(
+            args.command,
+            exc.status,
+            exc,
+            session=exc.session,
+            include_diagnostics=getattr(args, "include_diagnostics", False),
+        )
         return EXIT_SESSION_STATE, _emit_payload(payload), ""
     except Exception as exc:  # noqa: BLE001 - CLI should normalize unexpected failures.
-        payload = _unexpected_failure_payload(args.command, exc)
+        payload = _unexpected_failure_payload(
+            args.command,
+            exc,
+            include_diagnostics=getattr(args, "include_diagnostics", False),
+        )
         return 1, _emit_payload(payload), ""
 
 

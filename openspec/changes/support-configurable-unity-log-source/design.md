@@ -13,28 +13,44 @@
 
 ## Preferred Direction
 
-Observation should prefer a Unity-provided log path when one is available and fall back to the current default path only when no better source exists. This keeps current behavior working while allowing non-default installations and explicit launch-time overrides.
+The CLI should treat the session artifact as the authoritative source for the effective Unity log path, but only after a valid `session_marker` has been established. Before a caller has obtained a `session_marker`, the CLI should not assume a non-default log path unless the caller explicitly provides one.
 
 ## Candidate Contract Shape
 
 ### Observation
 
-- `get-log-source` should report the effective observable log source, not just the guessed default path
-- project-bound observation flows should prefer a Unity-provided log path when the selected target can provide one
-- CLI should still retain a default-path fallback so observation can work before Unity becomes fully ready
+Log-related commands should resolve their effective log source using the following model:
+
+- after a valid `session_marker` exists, prefer `effective_log_path` recorded in the session artifact
+- before a valid `session_marker` exists, a caller that depends on a non-default path must explicitly provide `--unity-log-path`
+- when neither a valid artifact path nor an explicit override is available, fall back to the platform default path
+
+This makes `session_marker` the boundary between a pre-session launch/setup phase and a stable session-observation phase.
 
 ### Launch
 
-When `unity-puer-exec` launches Unity itself, the launch path should support an explicit log-path override. The final argument name can be decided during implementation, but the workflow should allow:
+When `unity-puer-exec` launches Unity itself, the launch path should support an explicit `--unity-log-path` override. That override is required for stable pre-session observation when the caller intentionally avoids the default log location.
 
-- caller requests a custom Unity log file path
-- Unity is launched with that log-path override
-- subsequent observation commands use the same effective path
+The intended workflow is:
+
+- caller launches or waits with `--unity-log-path <path>`
+- before `session_marker` is available, log-related commands that rely on that non-default path continue passing the same `--unity-log-path`
+- once `session_marker` is available, the session artifact records `effective_log_path` and later commands can omit the flag
+
+### Command Scope
+
+The `--unity-log-path` parameter should be available on project-scoped commands that may launch Unity or depend on log observation before `session_marker` is available. At minimum this includes:
+
+- `wait-until-ready`
+- `get-log-source`
+- `wait-for-log-pattern`
+- `wait-for-result-marker`
 
 ## Validation
 
 Host validation should prove at least:
 
 - default-path observation still works
-- a non-default log path can be observed when Unity exposes or is launched with that path
-- launch-driven sessions can align `wait-for-log-pattern` and `wait-for-result-marker` with the effective log source
+- a non-default log path can be observed before `session_marker` exists when the caller explicitly provides `--unity-log-path`
+- after `session_marker` exists, the session artifact supplies the effective log path and later commands no longer need the flag
+- launch-driven sessions can align `wait-for-log-pattern` and `wait-for-result-marker` with the same effective log source

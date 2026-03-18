@@ -81,6 +81,7 @@ class UnityPuerExecCliTests(unittest.TestCase):
         self.assertIn("Timeout Rules", stdout)
         self.assertIn("`--file <path>`", stdout)
         self.assertIn("`--code <inline-js>`", stdout)
+        self.assertIn("`--include-diagnostics`", stdout)
 
     def test_wait_for_result_marker_help_status_renders_exit_guidance(self):
         exit_code, stdout, stderr = unity_puer_exec.run_cli(["wait-for-result-marker", "--help-status"])
@@ -148,6 +149,16 @@ class UnityPuerExecCliTests(unittest.TestCase):
 
         self.assertEqual(ensure_session_ready.call_args.kwargs["project_path"], "X:/from-arg")
 
+    def test_wait_until_ready_forwards_unity_log_path(self):
+        with mock.patch.object(
+            unity_session,
+            "ensure_session_ready",
+            return_value=_make_session(),
+        ) as ensure_session_ready:
+            unity_puer_exec.run_cli(["wait-until-ready", "--project-path", "X:/project", "--unity-log-path", "X:/Logs/Editor.log"])
+
+        self.assertEqual(ensure_session_ready.call_args.kwargs["unity_log_path"], "X:/Logs/Editor.log")
+
     def test_wait_until_ready_returns_success_payload(self):
         session = _make_session()
 
@@ -161,6 +172,20 @@ class UnityPuerExecCliTests(unittest.TestCase):
         self.assertEqual(payload["operation"], "wait-until-ready")
         self.assertEqual(payload["result"]["status"], "recovered")
         self.assertEqual(payload["session"]["unity_pid"], 1234)
+        self.assertNotIn("diagnostics", payload)
+        self.assertNotIn("diagnostics", payload["session"])
+
+    def test_wait_until_ready_include_diagnostics_returns_top_level_diagnostics(self):
+        session = _make_session()
+
+        with mock.patch.object(unity_session, "ensure_session_ready", return_value=session):
+            exit_code, stdout, stderr = unity_puer_exec.run_cli(["wait-until-ready", "--include-diagnostics"])
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(stderr, "")
+        payload = json.loads(stdout)
+        self.assertEqual(payload["diagnostics"]["phase"], "test")
+        self.assertNotIn("diagnostics", payload["session"])
 
     def test_wait_for_log_pattern_returns_success_payload(self):
         session = _make_session()
@@ -180,7 +205,26 @@ class UnityPuerExecCliTests(unittest.TestCase):
         self.assertEqual(payload["status"], "completed")
         self.assertEqual(payload["operation"], "wait-for-log-pattern")
         self.assertEqual(payload["result"]["status"], "log_pattern_matched")
-        self.assertEqual(payload["result"]["diagnostics"]["matched_log_pattern"], r"\[Build\] complete")
+        self.assertNotIn("diagnostics", payload)
+        self.assertNotIn("diagnostics", payload["result"])
+
+    def test_wait_for_log_pattern_include_diagnostics_returns_top_level_diagnostics(self):
+        session = _make_session()
+        session.diagnostics["matched_log_text"] = "[Build] complete"
+        session.diagnostics["matched_log_pattern"] = r"\[Build\] complete"
+
+        with mock.patch.object(unity_session, "create_observation_session", return_value=session), mock.patch.object(
+            unity_session, "wait_for_log_pattern", return_value=session
+        ):
+            exit_code, stdout, stderr = unity_puer_exec.run_cli(
+                ["wait-for-log-pattern", "--pattern", r"\[Build\] complete", "--timeout-seconds", "5", "--include-diagnostics"]
+            )
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(stderr, "")
+        payload = json.loads(stdout)
+        self.assertEqual(payload["diagnostics"]["matched_log_pattern"], r"\[Build\] complete")
+        self.assertEqual(payload["diagnostics"]["matched_log_text"], "[Build] complete")
 
     def test_wait_for_log_pattern_extract_json_group_returns_parsed_object(self):
         session = _make_session()
@@ -198,6 +242,7 @@ class UnityPuerExecCliTests(unittest.TestCase):
         self.assertEqual(stderr, "")
         payload = json.loads(stdout)
         self.assertEqual(payload["result"]["extracted_json"]["correlation_id"], "id-1")
+        self.assertNotIn("diagnostics", payload)
 
     def test_wait_for_log_pattern_extract_modes_are_mutually_exclusive(self):
         with self.assertRaises(SystemExit) as exc:
@@ -244,6 +289,51 @@ class UnityPuerExecCliTests(unittest.TestCase):
         self.assertEqual(body["log_offset"], 12345)
         self.assertEqual(body["result"]["correlation_id"], "id-7")
 
+    def test_exec_include_diagnostics_is_forwarded_and_preserved_top_level(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            script_path = Path(temp_dir) / "script.js"
+            script_path.write_text("return 7;", encoding="utf-8")
+            with mock.patch.object(
+                unity_session,
+                "ensure_session_ready",
+                return_value=_make_session(),
+            ), mock.patch.object(
+                unity_puer_exec.direct_exec_client,
+                "invoke_command",
+                return_value=(
+                    0,
+                    json.dumps({"ok": True, "status": "completed", "diagnostics": {"transport": "debug"}}),
+                    "",
+                ),
+            ) as invoke_command:
+                exit_code, stdout, stderr = unity_puer_exec.run_cli(
+                    ["exec", "--file", str(script_path), "--include-diagnostics"]
+                )
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(stderr, "")
+        payload = invoke_command.call_args.args[2]
+        self.assertTrue(payload["include_diagnostics"])
+        body = json.loads(stdout)
+        self.assertEqual(body["diagnostics"]["transport"], "debug")
+
+    def test_exec_forwards_unity_log_path(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            script_path = Path(temp_dir) / "script.js"
+            script_path.write_text("return 7;", encoding="utf-8")
+            with mock.patch.object(
+                unity_session,
+                "ensure_session_ready",
+                return_value=_make_session(),
+            ) as ensure_session_ready, mock.patch.object(
+                unity_puer_exec.direct_exec_client,
+                "invoke_command",
+                return_value=(0, json.dumps({"ok": True, "status": "completed"}), ""),
+            ):
+                unity_puer_exec.run_cli(["exec", "--file", str(script_path), "--unity-log-path", "X:/Logs/Editor.log"])
+
+        self.assertEqual(ensure_session_ready.call_args.kwargs["unity_log_path"], "X:/Logs/Editor.log")
+
     def test_exec_completed_response_preserves_top_level_log_offset(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             script_path = Path(temp_dir) / "script.js"
@@ -277,6 +367,30 @@ class UnityPuerExecCliTests(unittest.TestCase):
         self.assertEqual(body["log_offset"], 67890)
         self.assertEqual(body["result"]["correlation_id"], "id-8")
 
+    def test_exec_hides_diagnostics_by_default(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            script_path = Path(temp_dir) / "script.js"
+            script_path.write_text("return { correlation_id: 'id-8' };", encoding="utf-8")
+            with mock.patch.object(
+                unity_session,
+                "ensure_session_ready",
+                return_value=_make_session(),
+            ), mock.patch.object(
+                unity_puer_exec.direct_exec_client,
+                "invoke_command",
+                return_value=(
+                    0,
+                    json.dumps({"ok": True, "status": "completed", "diagnostics": {"transport": "debug"}}),
+                    "",
+                ),
+            ):
+                exit_code, stdout, stderr = unity_puer_exec.run_cli(["exec", "--file", str(script_path)])
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(stderr, "")
+        body = json.loads(stdout)
+        self.assertNotIn("diagnostics", body)
+
     def test_get_log_source_returns_success_payload(self):
         session = _make_session()
         result = {"status": "log_source_available", "source": "file", "path": "X:/Editor.log"}
@@ -290,6 +404,16 @@ class UnityPuerExecCliTests(unittest.TestCase):
         self.assertEqual(payload["operation"], "get-log-source")
         self.assertEqual(payload["result"]["status"], "log_source_available")
         self.assertEqual(payload["result"]["path"], "X:/Editor.log")
+        self.assertNotIn("diagnostics", payload)
+
+    def test_get_log_source_forwards_unity_log_path(self):
+        session = _make_session()
+        result = {"status": "log_source_available", "source": "file", "path": "X:/Logs/Editor.log"}
+
+        with mock.patch.object(unity_session, "get_log_source", return_value=(session, result)) as get_log_source:
+            unity_puer_exec.run_cli(["get-log-source", "--project-path", "X:/project", "--unity-log-path", "X:/Logs/Editor.log"])
+
+        self.assertEqual(get_log_source.call_args.kwargs["unity_log_path"], "X:/Logs/Editor.log")
 
     def test_get_log_source_no_target_maps_to_exit_code_15(self):
         with mock.patch.object(unity_session, "get_log_source", return_value=None):
@@ -343,6 +467,27 @@ class UnityPuerExecCliTests(unittest.TestCase):
         payload = json.loads(stdout)
         self.assertEqual(payload["result"]["status"], "result_marker_matched")
         self.assertEqual(payload["result"]["marker"]["correlation_id"], "wanted")
+        self.assertNotIn("diagnostics", payload["result"])
+
+    def test_wait_for_result_marker_include_diagnostics_returns_top_level_diagnostics(self):
+        session = _make_session()
+        session.diagnostics["matched_log_pattern"] = unity_puer_exec.RESULT_MARKER_PATTERN
+        session.diagnostics["matched_log_text"] = '[UnityPuerExecResult] {"correlation_id":"wanted","value":9}'
+        session.diagnostics["matched_log_offset"] = 150
+        session.diagnostics["extracted_group"] = '{"correlation_id":"wanted","value":9}'
+
+        with mock.patch.object(unity_session, "create_observation_session", return_value=session), mock.patch.object(
+            unity_session, "wait_for_log_pattern", return_value=session
+        ):
+            exit_code, stdout, stderr = unity_puer_exec.run_cli(
+                ["wait-for-result-marker", "--correlation-id", "wanted", "--include-diagnostics"]
+            )
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(stderr, "")
+        payload = json.loads(stdout)
+        self.assertEqual(payload["diagnostics"]["matched_log_pattern"], unity_puer_exec.RESULT_MARKER_PATTERN)
+        self.assertEqual(payload["diagnostics"]["matched_log_text"], '[UnityPuerExecResult] {"correlation_id":"wanted","value":9}')
 
     def test_wait_for_result_marker_maps_session_guard_failure(self):
         session = _make_session()
@@ -359,6 +504,46 @@ class UnityPuerExecCliTests(unittest.TestCase):
         self.assertEqual(stderr, "")
         payload = json.loads(stdout)
         self.assertEqual(payload["status"], "session_stale")
+
+    def test_wait_for_log_pattern_forwards_unity_log_path(self):
+        session = _make_session()
+        with mock.patch.object(unity_session, "create_observation_session", return_value=session) as create_observation_session, mock.patch.object(
+            unity_session, "wait_for_log_pattern", return_value=session
+        ):
+            unity_puer_exec.run_cli(
+                [
+                    "wait-for-log-pattern",
+                    "--project-path",
+                    "X:/project",
+                    "--pattern",
+                    r"\[Build\] complete",
+                    "--unity-log-path",
+                    "X:/Logs/Editor.log",
+                ]
+            )
+
+        self.assertEqual(create_observation_session.call_args.kwargs["unity_log_path"], "X:/Logs/Editor.log")
+
+    def test_wait_for_result_marker_forwards_unity_log_path(self):
+        session = _make_session()
+        session.diagnostics["matched_log_offset"] = 150
+        session.diagnostics["extracted_group"] = '{"correlation_id":"wanted"}'
+        with mock.patch.object(unity_session, "create_observation_session", return_value=session) as create_observation_session, mock.patch.object(
+            unity_session, "wait_for_log_pattern", return_value=session
+        ):
+            unity_puer_exec.run_cli(
+                [
+                    "wait-for-result-marker",
+                    "--project-path",
+                    "X:/project",
+                    "--correlation-id",
+                    "wanted",
+                    "--unity-log-path",
+                    "X:/Logs/Editor.log",
+                ]
+            )
+
+        self.assertEqual(create_observation_session.call_args.kwargs["unity_log_path"], "X:/Logs/Editor.log")
 
     def test_wait_for_log_pattern_rejects_invalid_regex(self):
         exit_code, stdout, stderr = unity_puer_exec.run_cli(["wait-for-log-pattern", "--pattern", "("])

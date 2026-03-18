@@ -104,6 +104,119 @@ class UnitySessionTests(unittest.TestCase):
 
         self.assertEqual(resolved, Path("X:/from-dotenv"))
 
+    def test_resolve_effective_log_path_prefers_session_artifact(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_path = Path(temp_dir)
+            unity_session.write_session_artifact(
+                project_path,
+                {
+                    "base_url": "http://127.0.0.1:55231",
+                    "unity_pid": 1234,
+                    "session_marker": "marker-1",
+                    "effective_log_path": "X:/artifact/Editor.log",
+                },
+            )
+            with mock.patch.object(unity_session, "_is_pid_running", return_value=True):
+                resolved = unity_session._resolve_effective_log_path(project_path, unity_log_path="X:/explicit/Editor.log")
+
+        self.assertEqual(resolved, Path("X:/artifact/Editor.log"))
+
+    def test_resolve_effective_log_path_uses_explicit_path_before_session_marker_exists(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_path = Path(temp_dir)
+            unity_session.write_session_artifact(
+                project_path,
+                {
+                    "base_url": "http://127.0.0.1:55231",
+                    "unity_pid": 1234,
+                    "effective_log_path": "X:/artifact/Editor.log",
+                },
+            )
+
+            resolved = unity_session._resolve_effective_log_path(project_path, unity_log_path="X:/explicit/Editor.log")
+
+        self.assertEqual(resolved, Path("X:/explicit/Editor.log"))
+
+    def test_create_observation_session_uses_explicit_log_path_before_session_marker_exists(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_path = Path(temp_dir)
+            with mock.patch.object(unity_session, "_list_unity_pids", return_value=[]):
+                session = unity_session.create_observation_session(project_path=project_path, unity_log_path="X:/custom/Editor.log")
+
+        self.assertIsNotNone(session)
+        self.assertEqual(Path(session.effective_log_path), Path("X:/custom/Editor.log"))
+        self.assertEqual(session.owner, "observation")
+
+    def test_create_observation_session_prefers_artifact_path_after_session_marker_exists(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_path = Path(temp_dir)
+            unity_session.write_session_artifact(
+                project_path,
+                {
+                    "base_url": "http://127.0.0.1:55231",
+                    "unity_pid": 1234,
+                    "session_marker": "marker-1",
+                    "effective_log_path": "X:/artifact/Editor.log",
+                },
+            )
+            with mock.patch.object(unity_session, "_is_pid_running", return_value=True):
+                session = unity_session.create_observation_session(
+                    project_path=project_path,
+                    unity_log_path="X:/explicit/Editor.log",
+                )
+
+        self.assertEqual(Path(session.effective_log_path), Path("X:/artifact/Editor.log"))
+        self.assertEqual(session.owner, "session_artifact")
+
+    def test_resolve_effective_log_path_ignores_stale_artifact(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_path = Path(temp_dir)
+            unity_session.write_session_artifact(
+                project_path,
+                {
+                    "base_url": "http://127.0.0.1:55231",
+                    "unity_pid": 1234,
+                    "session_marker": "marker-1",
+                    "effective_log_path": "X:/artifact/Editor.log",
+                },
+            )
+            with mock.patch.object(unity_session, "_is_pid_running", return_value=False):
+                resolved = unity_session._resolve_effective_log_path(project_path, unity_log_path="X:/explicit/Editor.log")
+
+        self.assertEqual(resolved, Path("X:/explicit/Editor.log"))
+
+    def test_persist_ready_session_artifact_requires_session_marker(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_path = Path(temp_dir)
+            session = unity_session.UnitySession(
+                owner="test",
+                base_url="http://127.0.0.1:55231",
+                project_path=project_path,
+                unity_pid=1234,
+            )
+            unity_session._persist_ready_session_artifact(session, Path("X:/artifact/Editor.log"))
+
+            artifact = unity_session.read_session_artifact(project_path)
+
+        self.assertIsNone(artifact)
+
+    def test_persist_ready_session_artifact_writes_effective_log_path(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_path = Path(temp_dir)
+            session = unity_session.UnitySession(
+                owner="test",
+                base_url="http://127.0.0.1:55231",
+                project_path=project_path,
+                unity_pid=1234,
+            )
+            session.diagnostics["last_health_payload"] = {"session_marker": "marker-1"}
+
+            unity_session._persist_ready_session_artifact(session, Path("X:/artifact/Editor.log"))
+            artifact = unity_session.read_session_artifact(project_path)
+
+        self.assertEqual(artifact["session_marker"], "marker-1")
+        self.assertEqual(Path(artifact["effective_log_path"]), Path("X:/artifact/Editor.log"))
+
     def test_get_unity_version_reads_real_project_from_environment(self):
         project_path = _require_test_project_path()
         version = unity_session._get_unity_version(project_path)

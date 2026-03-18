@@ -2,16 +2,17 @@
 
 ## 1. Contract
 
-- [ ] Define the durable CLI contract for effective Unity log-source discovery and fallback
-- [ ] Define how launch-driven sessions can request a custom Unity log path
+- [x] Define `session_marker` as the boundary after which the session artifact becomes the authority for `effective_log_path`
+- [x] Define `--unity-log-path` as the explicit pre-session override for non-default log locations
 
 ## 2. Implementation
 
-- [ ] Update CLI observation path resolution to prefer a Unity-provided effective log source over a hard-coded default path
-- [ ] Add launch support for a caller-specified Unity log path when `unity-puer-exec` starts Unity
-- [ ] Ensure `get-log-source` reports the effective source used by observation commands
+- [x] Extend the session artifact to persist `effective_log_path` once a valid `session_marker` exists
+- [x] Add `--unity-log-path` to project-scoped commands that may launch Unity or observe logs before `session_marker` exists
+- [x] Update CLI log-source resolution to prefer artifact `effective_log_path`, otherwise fall back to explicit `--unity-log-path`, otherwise the platform default path
+- [x] Ensure `get-log-source` reports the same effective source used by observation commands
 
 ## 3. Validation
 
-- [ ] Add tests for non-default log-source resolution
-- [ ] Add real-host validation evidence for launch-time custom log-path handling
+- [x] Add tests for pre-session custom log-path usage and post-session artifact-based recovery
+- [x] Add real-host validation evidence for launch-time custom log-path handling

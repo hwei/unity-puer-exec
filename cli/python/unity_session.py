@@ -49,7 +49,17 @@ class UnitySessionStateError(UnitySessionError):
 
 
 class UnitySession:
-    def __init__(self, owner, base_url, project_path, unity_pid=None, unity_exe_path=None, launched=False, process=None):
+    def __init__(
+        self,
+        owner,
+        base_url,
+        project_path,
+        unity_pid=None,
+        unity_exe_path=None,
+        launched=False,
+        process=None,
+        effective_log_path=None,
+    ):
         self.owner = owner
         self.base_url = base_url.rstrip("/")
         self.project_path = str(project_path)
@@ -57,6 +67,7 @@ class UnitySession:
         self.unity_exe_path = unity_exe_path
         self.launched = launched
         self.process = process
+        self.effective_log_path = str(effective_log_path) if effective_log_path else None
         self.diagnostics = {}
 
     def to_payload(self):
@@ -65,7 +76,6 @@ class UnitySession:
             "launched": self.launched,
             "base_url": self.base_url,
             "project_path": self.project_path,
-            "diagnostics": self.diagnostics,
         }
         if self.unity_pid is not None:
             payload["unity_pid"] = self.unity_pid
@@ -240,6 +250,65 @@ def read_session_artifact(project_path):
         return json.load(handle)
 
 
+def write_session_artifact(project_path, payload):
+    session_path = _session_artifact_path(project_path)
+    session_path.parent.mkdir(parents=True, exist_ok=True)
+    with session_path.open("w", encoding="utf-8") as handle:
+        json.dump(payload, handle, ensure_ascii=True, indent=2)
+
+
+def _session_artifact_log_path(session_data):
+    if not isinstance(session_data, dict):
+        return None
+    session_marker = session_data.get("session_marker")
+    effective_log_path = session_data.get("effective_log_path")
+    unity_pid = session_data.get("unity_pid")
+    if not isinstance(session_marker, str) or not session_marker:
+        return None
+    if not isinstance(effective_log_path, str) or not effective_log_path:
+        return None
+    if unity_pid is not None and not _is_pid_running(unity_pid):
+        return None
+    return Path(effective_log_path)
+
+
+def _resolve_effective_log_path(project_path, unity_log_path=None, session_data=None):
+    if session_data is None:
+        session_data = read_session_artifact(project_path)
+    artifact_log_path = _session_artifact_log_path(session_data)
+    if artifact_log_path is not None:
+        return artifact_log_path
+    if unity_log_path:
+        return Path(unity_log_path)
+    return _default_editor_log_path()
+
+
+def _session_marker_from_payload(payload):
+    if not isinstance(payload, dict):
+        return None
+    session_marker = payload.get("session_marker")
+    if isinstance(session_marker, str) and session_marker:
+        return session_marker
+    return None
+
+
+def _persist_ready_session_artifact(session, effective_log_path, payload=None):
+    session_marker = _session_marker_from_payload(payload)
+    if session_marker is None and session.diagnostics:
+        session_marker = _session_marker_from_payload(session.diagnostics.get("last_health_payload"))
+    if not session_marker:
+        return
+    write_session_artifact(
+        session.project_path,
+        {
+            "base_url": session.base_url,
+            "unity_pid": session.unity_pid,
+            "session_marker": session_marker,
+            "effective_log_path": str(effective_log_path),
+        },
+    )
+
+
 def _get_unity_version(project_path):
     project_version_path = Path(project_path) / "ProjectSettings" / "ProjectVersion.txt"
     try:
@@ -295,12 +364,14 @@ def _resolve_unity_exe_path(project_path, unity_exe_path):
         raise UnityLaunchError("failed to resolve Unity.exe: {}".format(exc))
 
 
-def _launch_unity(project_path, unity_exe_path):
+def _launch_unity(project_path, unity_exe_path, unity_log_path=None):
     args = [
         unity_exe_path,
         "-projectPath",
         str(project_path),
     ]
+    if unity_log_path:
+        args.extend(["-logFile", str(unity_log_path)])
     try:
         process = subprocess.Popen(args)
     except OSError as exc:
@@ -395,7 +466,7 @@ def _wait_for_session(
     timeout_message=None,
     iteration_observer=None,
 ):
-    log_path = Path(log_path or _default_editor_log_path())
+    log_path = Path(log_path or session.effective_log_path or _default_editor_log_path())
     deadline = time.time() + timeout_seconds
     last_health_error = None
     last_payload = None
@@ -510,7 +581,7 @@ def wait_for_log_pattern(
     expected_session_marker=None,
 ):
     compiled_pattern = re.compile(pattern)
-    log_path = Path(log_path or _default_editor_log_path())
+    log_path = Path(log_path or session.effective_log_path or _default_editor_log_path())
     deadline = time.time() + timeout_seconds
     last_health_error = None
     last_payload = None
@@ -607,9 +678,11 @@ def ensure_session_ready(
     ready_timeout_seconds=DEFAULT_READY_TIMEOUT_SECONDS,
     activity_timeout_seconds=DEFAULT_ACTIVITY_TIMEOUT_SECONDS,
     health_timeout_seconds=DEFAULT_HEALTH_TIMEOUT_SECONDS,
+    unity_log_path=None,
 ):
     project_path = resolve_project_path(project_path)
-    log_path = _default_editor_log_path()
+    session_data = read_session_artifact(project_path)
+    log_path = _resolve_effective_log_path(project_path, unity_log_path=unity_log_path, session_data=session_data)
 
     initial_pids = _list_unity_pids()
     payload, error = _probe_health(base_url, health_timeout_seconds)
@@ -620,6 +693,7 @@ def ensure_session_ready(
             project_path=project_path,
             unity_pid=initial_pids[0] if initial_pids else None,
             launched=False,
+            effective_log_path=log_path,
         )
         activity_state = {
             "last_log_size": _read_editor_log_size(log_path),
@@ -628,6 +702,7 @@ def ensure_session_ready(
         }
         session.diagnostics = _collect_diagnostics(base_url, log_path, None, activity_state)
         session.diagnostics["last_health_payload"] = payload
+        _persist_ready_session_artifact(session, log_path, payload=payload)
         return session
 
     if initial_pids:
@@ -637,18 +712,21 @@ def ensure_session_ready(
             project_path=project_path,
             unity_pid=initial_pids[0],
             launched=False,
+            effective_log_path=log_path,
         )
         session.diagnostics = _collect_diagnostics(base_url, log_path, error)
-        return wait_ready_with_activity(
+        session = wait_ready_with_activity(
             session,
             ready_timeout_seconds,
             activity_timeout_seconds=activity_timeout_seconds,
             health_timeout_seconds=health_timeout_seconds,
             log_path=log_path,
         )
+        _persist_ready_session_artifact(session, log_path)
+        return session
 
     resolved_unity_exe_path = _resolve_unity_exe_path(project_path, unity_exe_path)
-    process = _launch_unity(project_path, resolved_unity_exe_path)
+    process = _launch_unity(project_path, resolved_unity_exe_path, unity_log_path=unity_log_path)
     session = UnitySession(
         owner="launched",
         base_url=base_url,
@@ -657,22 +735,31 @@ def ensure_session_ready(
         unity_exe_path=resolved_unity_exe_path,
         launched=True,
         process=process,
+        effective_log_path=log_path,
     )
     session.diagnostics = _collect_diagnostics(base_url, log_path, error)
-    return wait_ready_with_activity(
+    session = wait_ready_with_activity(
         session,
         ready_timeout_seconds,
         activity_timeout_seconds=activity_timeout_seconds,
         health_timeout_seconds=health_timeout_seconds,
         log_path=log_path,
     )
+    _persist_ready_session_artifact(session, log_path)
+    return session
 
 
-def get_log_source(project_path=None, base_url=None):
+def get_log_source(project_path=None, base_url=None, unity_log_path=None):
     resolved_project_path = resolve_project_path(project_path)
-    log_path = _default_editor_log_path()
-    if not log_path.exists():
-        return None
+    if base_url is not None:
+        log_path = _default_editor_log_path()
+        if not log_path.exists():
+            return None
+    else:
+        session_data = read_session_artifact(resolved_project_path)
+        log_path = _resolve_effective_log_path(resolved_project_path, unity_log_path=unity_log_path, session_data=session_data)
+        if not log_path.exists() and unity_log_path is None and _session_artifact_log_path(session_data) is None:
+            return None
 
     session = UnitySession(
         owner="observation",
@@ -680,11 +767,8 @@ def get_log_source(project_path=None, base_url=None):
         project_path=resolved_project_path,
         unity_pid=None,
         launched=False,
+        effective_log_path=log_path,
     )
-    session.diagnostics = {
-        "editor_log_path": str(log_path),
-        "editor_log_exists": True,
-    }
     return session, {"status": "log_source_available", "source": "file", "path": str(log_path)}
 
 
@@ -697,17 +781,19 @@ def create_direct_session(base_url, project_path=None):
     )
 
 
-def create_observation_session(project_path=None, base_url=None):
+def create_observation_session(project_path=None, base_url=None, unity_log_path=None):
     resolved_project_path = resolve_project_path(project_path)
     session_data = read_session_artifact(resolved_project_path)
     unity_pid = None
     effective_base_url = base_url or direct_exec_client.DEFAULT_BASE_URL
     owner = "observation"
+    log_path = _resolve_effective_log_path(resolved_project_path, unity_log_path=unity_log_path, session_data=session_data)
     if session_data is not None:
         effective_base_url = session_data.get("base_url") or effective_base_url
         unity_pid = session_data.get("unity_pid")
-        owner = "session_artifact"
-    elif not _list_unity_pids() and not _default_editor_log_path().exists():
+        if _session_artifact_log_path(session_data) is not None:
+            owner = "session_artifact"
+    elif not _list_unity_pids() and unity_log_path is None and not log_path.exists():
         return None
 
     session = UnitySession(
@@ -716,8 +802,9 @@ def create_observation_session(project_path=None, base_url=None):
         project_path=resolved_project_path,
         unity_pid=unity_pid,
         launched=False,
+        effective_log_path=log_path,
     )
-    session.diagnostics = _collect_diagnostics(session.base_url, _default_editor_log_path(), None)
+    session.diagnostics = _collect_diagnostics(session.base_url, log_path, None)
     return session
 
 
