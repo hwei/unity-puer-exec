@@ -13,7 +13,7 @@
 ## 3. Refactor Python Runtime Structure
 
 - [x] 3.1 Extract shared CLI command metadata and thin the `unity_puer_exec.py` entry module
-- [ ] 3.2 Split session/runtime responsibilities into focused modules while preserving current behavior
+- [x] 3.2 Split session/runtime responsibilities into focused modules while preserving current behavior
 - [ ] 3.3 Update Python unit tests to validate the new module seams and preserved CLI contract
 
 ## 4. Refactor Unity Editor Runtime Structure
