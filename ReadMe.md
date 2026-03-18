@@ -18,6 +18,31 @@
 - active change work: `openspec/changes/`
 - tests: `python -m unittest discover -s tests -p "test_*.py"`
 
+测试分层：
+
+- 常规仓库测试: `python -m unittest discover -s tests -p "test_*.py"`
+- 这组测试默认覆盖 mocked unit / CLI contract / helper 逻辑
+- `tests/test_real_host_integration.py` 默认不会真正执行真实宿主链路；未显式开启时会以 `skip` 结束
+
+真实宿主回归：
+
+- 前提:
+  `UNITY_PROJECT_PATH` 指向验证宿主 Unity `Project` 目录
+- 前提:
+  本机可解析 Unity Editor 路径，且宿主可通过 `tools/prepare_validation_host.py` 完成本地 package 注入
+- 运行:
+  `UNITY_PUER_EXEC_RUN_REAL_HOST_TESTS=1 python -m unittest tests.test_real_host_integration`
+- 当前真实宿主回归覆盖一条主链路:
+  `wait-until-ready -> exec --include-log-offset -> wait-for-result-marker -> wait-for-log-pattern --extract-json-group`
+
+结果判读：
+
+- `skip`:
+  真实宿主回归未开启，或 `UNITY_PROJECT_PATH` / Unity Editor / 宿主 manifest 等前置环境不满足；这不算产品回归失败
+- `fail` / `error`:
+  在前置环境已满足后，CLI 链路、宿主运行时、日志观测或断言失败；这算真实宿主回归失败
+- 常规 mocked 测试通过，不能替代真实宿主回归；它们主要保护解析、payload、状态码和本地 helper 合同
+
 目录概览：
 
 - `AGENTS.md`: repository-local execution rules for agents

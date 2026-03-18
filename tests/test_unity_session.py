@@ -405,6 +405,18 @@ class UnitySessionTests(unittest.TestCase):
         self.assertEqual(session.diagnostics["recovery_observed"], False)
         self.assertEqual(session.diagnostics["recovery_not_needed"], True)
 
+    def test_detach_session_process_clears_live_process_handle(self):
+        session = _make_session()
+        process = mock.Mock()
+        process.returncode = None
+        session.process = process
+
+        result = unity_session._detach_session_process(session)
+
+        self.assertIs(result, session)
+        self.assertIsNone(session.process)
+        self.assertEqual(process.returncode, 0)
+
 
 if __name__ == "__main__":
     unittest.main()

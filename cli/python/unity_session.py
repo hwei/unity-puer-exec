@@ -309,6 +309,16 @@ def _persist_ready_session_artifact(session, effective_log_path, payload=None):
     )
 
 
+def _detach_session_process(session):
+    # After readiness succeeds, the CLI only needs the Unity PID. Dropping the
+    # Popen handle avoids leaking a live process object into later GC.
+    if session is not None:
+        if session.process is not None and session.process.returncode is None:
+            session.process.returncode = 0
+        session.process = None
+    return session
+
+
 def _get_unity_version(project_path):
     project_version_path = Path(project_path) / "ProjectSettings" / "ProjectVersion.txt"
     try:
@@ -723,7 +733,7 @@ def ensure_session_ready(
             log_path=log_path,
         )
         _persist_ready_session_artifact(session, log_path)
-        return session
+        return _detach_session_process(session)
 
     resolved_unity_exe_path = _resolve_unity_exe_path(project_path, unity_exe_path)
     process = _launch_unity(project_path, resolved_unity_exe_path, unity_log_path=unity_log_path)
@@ -746,7 +756,7 @@ def ensure_session_ready(
         log_path=log_path,
     )
     _persist_ready_session_artifact(session, log_path)
-    return session
+    return _detach_session_process(session)
 
 
 def get_log_source(project_path=None, base_url=None, unity_log_path=None):
