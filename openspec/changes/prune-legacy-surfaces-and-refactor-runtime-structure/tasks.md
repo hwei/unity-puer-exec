@@ -18,7 +18,7 @@
 
 ## 4. Refactor Unity Editor Runtime Structure
 
-- [ ] 4.1 Split server lifecycle, job state, script wrapping, and bridge code out of `UnityPuerExecServer.cs`
+- [x] 4.1 Split server lifecycle, job state, script wrapping, and bridge code out of `UnityPuerExecServer.cs`
 - [ ] 4.2 Keep transitional compatibility code either deleted or confined to explicit compatibility files
 - [ ] 4.3 Update package-layout and runtime-focused tests for the new Editor file structure
 

@@ -26,12 +26,14 @@ class PackageLayoutTests(unittest.TestCase):
 
     def test_migrated_server_namespace_drops_validation_identity(self):
         server_path = PACKAGE_ROOT / "Editor" / "UnityPuerExecServer.cs"
+        protocol_path = PACKAGE_ROOT / "Editor" / "UnityPuerExecProtocol.cs"
         content = server_path.read_text(encoding="utf-8")
+        protocol_content = protocol_path.read_text(encoding="utf-8")
 
         self.assertIn("namespace UnityPuerExec", content)
-        self.assertIn("CS.UnityPuerExec.UnityPuerExecBridge", content)
+        self.assertIn("CS.UnityPuerExec.UnityPuerExecBridge", protocol_content)
         self.assertNotIn("namespace C3.UnityPuerExecValidation", content)
-        self.assertNotIn("CS.C3.UnityPuerExecValidation.UnityPuerExecBridge", content)
+        self.assertNotIn("CS.C3.UnityPuerExecValidation.UnityPuerExecBridge", protocol_content)
 
     def test_server_file_drops_dead_transitional_helpers(self):
         server_path = PACKAGE_ROOT / "Editor" / "UnityPuerExecServer.cs"
@@ -50,6 +52,26 @@ class PackageLayoutTests(unittest.TestCase):
         self.assertNotIn("private const string CompileTriggerDirectory", server_content)
         self.assertIn("internal static class UnityPuerExecCompileCompat", compat_content)
         self.assertIn("TriggerValidationCompile", compat_content)
+
+    def test_editor_runtime_split_moves_job_protocol_and_bridge_out_of_server_file(self):
+        server_path = PACKAGE_ROOT / "Editor" / "UnityPuerExecServer.cs"
+        job_state_path = PACKAGE_ROOT / "Editor" / "UnityPuerExecJobState.cs"
+        protocol_path = PACKAGE_ROOT / "Editor" / "UnityPuerExecProtocol.cs"
+        bridge_path = PACKAGE_ROOT / "Editor" / "UnityPuerExecBridge.cs"
+        server_content = server_path.read_text(encoding="utf-8")
+        job_state_content = job_state_path.read_text(encoding="utf-8")
+        protocol_content = protocol_path.read_text(encoding="utf-8")
+        bridge_content = bridge_path.read_text(encoding="utf-8")
+
+        self.assertTrue(job_state_path.exists())
+        self.assertTrue(protocol_path.exists())
+        self.assertTrue(bridge_path.exists())
+        self.assertNotIn("internal sealed class UnityPuerExecJob", server_content)
+        self.assertNotIn("internal readonly struct UnityPuerExecJobSnapshot", server_content)
+        self.assertNotIn("public static class UnityPuerExecBridge", server_content)
+        self.assertIn("internal sealed class UnityPuerExecJob", job_state_content)
+        self.assertIn("internal static class UnityPuerExecProtocol", protocol_content)
+        self.assertIn("public static class UnityPuerExecBridge", bridge_content)
 
 
 if __name__ == "__main__":

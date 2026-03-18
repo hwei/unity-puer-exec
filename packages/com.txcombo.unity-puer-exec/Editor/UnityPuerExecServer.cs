@@ -11,126 +11,6 @@ using UnityEngine;
 
 namespace UnityPuerExec
 {
-    [Serializable]
-    internal class ExecRequest
-    {
-        public string id = "";
-        public string code = "";
-        public int wait_timeout_ms = 1000;
-        public bool include_log_offset = false;
-    }
-
-    internal enum UnityPuerExecJobStatus
-    {
-        Running,
-        Completed,
-        Failed,
-    }
-
-    internal sealed class UnityPuerExecJob
-    {
-        private readonly object syncRoot = new object();
-        private readonly TaskCompletionSource<bool> completionSource = new TaskCompletionSource<bool>();
-
-        public UnityPuerExecJob(string jobId, string name)
-        {
-            JobId = jobId;
-            Name = name;
-            UpdatedAtUtc = DateTime.UtcNow;
-        }
-
-        public string JobId { get; }
-        public string Name { get; }
-        public DateTime UpdatedAtUtc { get; private set; }
-        public Task Completion => completionSource.Task;
-
-        private UnityPuerExecJobStatus status = UnityPuerExecJobStatus.Running;
-        private string resultJson = "null";
-        private string error = "";
-        private string stack = "";
-        private readonly List<string> spawnedJobIds = new List<string>();
-
-        public UnityPuerExecJobSnapshot Snapshot()
-        {
-            lock (syncRoot)
-            {
-                return new UnityPuerExecJobSnapshot(
-                    JobId,
-                    Name,
-                    status,
-                    resultJson,
-                    error,
-                    stack,
-                    spawnedJobIds.ToArray()
-                );
-            }
-        }
-
-        public void AddSpawnedJob(string jobId)
-        {
-            lock (syncRoot)
-            {
-                spawnedJobIds.Add(jobId);
-                UpdatedAtUtc = DateTime.UtcNow;
-            }
-        }
-
-        public void Complete(string result)
-        {
-            lock (syncRoot)
-            {
-                status = UnityPuerExecJobStatus.Completed;
-                resultJson = string.IsNullOrWhiteSpace(result) ? "null" : result;
-                UpdatedAtUtc = DateTime.UtcNow;
-            }
-
-            completionSource.TrySetResult(true);
-        }
-
-        public void Fail(string failure, string failureStack)
-        {
-            lock (syncRoot)
-            {
-                status = UnityPuerExecJobStatus.Failed;
-                error = failure ?? "";
-                stack = failureStack ?? "";
-                UpdatedAtUtc = DateTime.UtcNow;
-            }
-
-            completionSource.TrySetResult(true);
-        }
-    }
-
-    internal readonly struct UnityPuerExecJobSnapshot
-    {
-        public UnityPuerExecJobSnapshot(
-            string jobId,
-            string name,
-            UnityPuerExecJobStatus status,
-            string resultJson,
-            string error,
-            string stack,
-            string[] spawnedJobIds
-        )
-        {
-            JobId = jobId;
-            Name = name;
-            Status = status;
-            ResultJson = resultJson;
-            Error = error;
-            Stack = stack;
-            SpawnedJobIds = spawnedJobIds;
-        }
-
-        public string JobId { get; }
-        public string Name { get; }
-        public UnityPuerExecJobStatus Status { get; }
-        public string ResultJson { get; }
-        public string Error { get; }
-        public string Stack { get; }
-        public string[] SpawnedJobIds { get; }
-    }
-
     [InitializeOnLoad]
     internal static class UnityPuerExecServer
     {
@@ -278,7 +158,15 @@ namespace UnityPuerExec
 
                 if (path.Equals("/health", StringComparison.OrdinalIgnoreCase))
                 {
-                    await WriteJsonAsync(context, BuildHealthResponseJson());
+                    await WriteJsonAsync(
+                        context,
+                        UnityPuerExecProtocol.BuildHealthResponseJson(
+                            IsCompilingOrReloading(),
+                            jsEnv == null ? envInitError : "",
+                            sessionMarker,
+                            Port
+                        )
+                    );
                     return;
                 }
 
@@ -338,7 +226,7 @@ namespace UnityPuerExec
             await enqueueCompletion.Task;
             Debug.Log($"[UnityPuerExec] Exec waiting job={job.JobId}");
             await WaitForTerminalOrTimeoutAsync(job, request.wait_timeout_ms);
-            var payload = BuildExecResponseJson(job.Snapshot(), logOffset);
+            var payload = UnityPuerExecProtocol.BuildExecResponseJson(job.Snapshot(), sessionMarker, logOffset);
             Debug.Log($"[UnityPuerExec] Exec responding job={job.JobId} payload={payload}");
             await WriteJsonAsync(context, payload);
         }
@@ -387,7 +275,7 @@ namespace UnityPuerExec
                 return;
             }
 
-            jsEnv.Eval(BuildWrappedScript(job.JobId, code), $"unity-puer-exec/{job.JobId}.js");
+            jsEnv.Eval(UnityPuerExecProtocol.BuildWrappedScript(job.JobId, code), $"unity-puer-exec/{job.JobId}.js");
         }
 
         private static void EnsureJsEnv()
@@ -459,83 +347,6 @@ namespace UnityPuerExec
             return isCompiling || isUpdating;
         }
 
-        private static string BuildWrappedScript(string jobId, string code)
-        {
-            var builder = new StringBuilder();
-            builder.AppendLine("(async () => {");
-            builder.Append("const __jobId = \"").Append(JsonEscape(jobId)).AppendLine("\";");
-            builder.AppendLine("const __bridge = CS.UnityPuerExec.UnityPuerExecBridge;");
-            builder.AppendLine("const host = {");
-            builder.AppendLine("  startJob: (name, code) => __bridge.StartSpawnedJob(__jobId, name ? String(name) : '', String(code)),");
-            builder.AppendLine("  log: (message) => __bridge.Log(__jobId, String(message)),");
-            builder.AppendLine("  triggerValidationCompile: (marker) => __bridge.TriggerValidationCompile(__jobId, marker ? String(marker) : ''),");
-            builder.AppendLine("  port: () => __bridge.Port()");
-            builder.AppendLine("};");
-            builder.AppendLine("try {");
-            builder.AppendLine("  const __result = await (async (host) => {");
-            builder.AppendLine(code);
-            builder.AppendLine("  })(host);");
-            builder.AppendLine("  const __resultJson = JSON.stringify(__result === undefined ? null : __result);");
-            builder.AppendLine("  __bridge.CompleteJob(__jobId, __resultJson);");
-            builder.AppendLine("} catch (__error) {");
-            builder.AppendLine("  const __errorText = String(__error);");
-            builder.AppendLine("  const __stackText = __error && __error.stack ? String(__error.stack) : '';");
-            builder.AppendLine("  __bridge.FailJob(__jobId, __errorText, __stackText);");
-            builder.AppendLine("}");
-            builder.AppendLine("})();");
-            return builder.ToString();
-        }
-
-        private static string BuildExecResponseJson(UnityPuerExecJobSnapshot snapshot, long? logOffset)
-        {
-            var logOffsetJson = logOffset.HasValue ? "\"log_offset\":" + logOffset.Value + "," : "";
-            switch (snapshot.Status)
-            {
-                case UnityPuerExecJobStatus.Completed:
-                    return "{" +
-                           "\"ok\":true," +
-                           "\"status\":\"completed\"," +
-                           logOffsetJson +
-                           "\"session_marker\":\"" + JsonEscape(sessionMarker) + "\"," +
-                           "\"result\":" + (snapshot.ResultJson ?? "null") +
-                           "}";
-                case UnityPuerExecJobStatus.Failed:
-                    return "{" +
-                           "\"ok\":false," +
-                           "\"status\":\"failed\"," +
-                           logOffsetJson +
-                           "\"session_marker\":\"" + JsonEscape(sessionMarker) + "\"," +
-                           "\"error\":\"" + JsonEscape(snapshot.Error) + "\"," +
-                           "\"stack\":\"" + JsonEscape(snapshot.Stack) + "\"" +
-                           "}";
-                default:
-                    return "{" +
-                           "\"ok\":true," +
-                           "\"status\":\"running\"," +
-                           logOffsetJson +
-                           "\"session_marker\":\"" + JsonEscape(sessionMarker) + "\"," +
-                           "\"result\":null" +
-                           "}";
-            }
-        }
-
-        private static string BuildHealthResponseJson()
-        {
-            if (IsCompilingOrReloading())
-            {
-                return "{\"ok\":false,\"status\":\"compiling\",\"session_marker\":\"" + JsonEscape(sessionMarker) + "\"}";
-            }
-
-            if (jsEnv == null && !string.IsNullOrEmpty(envInitError))
-            {
-                return "{\"ok\":false,\"status\":\"not_available\",\"session_marker\":\"" + JsonEscape(sessionMarker) +
-                       "\",\"error\":\"" + JsonEscape(envInitError) + "\"}";
-            }
-
-            return "{\"ok\":true,\"status\":\"ready\",\"port\":" + Port +
-                   ",\"session_marker\":\"" + JsonEscape(sessionMarker) + "\"}";
-        }
-
         private static void RefreshConsoleLogPathCache()
         {
             try
@@ -569,55 +380,5 @@ namespace UnityPuerExec
             }
         }
 
-        private static string JsonEscape(string value)
-        {
-            if (string.IsNullOrEmpty(value))
-            {
-                return string.Empty;
-            }
-
-            return value
-                .Replace("\\", "\\\\")
-                .Replace("\"", "\\\"")
-                .Replace("\r", "\\r")
-                .Replace("\n", "\\n")
-                .Replace("\t", "\\t");
-        }
-
-    }
-
-    public static class UnityPuerExecBridge
-    {
-        public static string StartSpawnedJob(string parentJobId, string name, string code)
-        {
-            return UnityPuerExecServer.CreateSpawnedJob(parentJobId, name, code);
-        }
-
-        public static void CompleteJob(string jobId, string resultJson)
-        {
-            UnityPuerExecServer.CompleteJob(jobId, resultJson);
-        }
-
-        public static void FailJob(string jobId, string error, string stack)
-        {
-            UnityPuerExecServer.FailJob(jobId, error, stack);
-        }
-
-        public static void Log(string jobId, string message)
-        {
-            Debug.Log($"[UnityPuerExec][{jobId}] {message}");
-        }
-
-        // Transitional bridge entry retained during T1.2.1 migration.
-        public static void TriggerValidationCompile(string jobId, string marker)
-        {
-            var effectiveMarker = string.IsNullOrEmpty(marker) ? jobId : marker;
-            UnityPuerExecCompileCompat.TriggerValidationCompile(effectiveMarker);
-        }
-
-        public static int Port()
-        {
-            return UnityPuerExecServer.Port;
-        }
     }
 }
