@@ -104,6 +104,15 @@ def run_command(args):
             include_diagnostics=getattr(args, "include_diagnostics", False),
         )
         return EXIT_UNITY_START_FAILED, emit_payload(payload), ""
+    except unity_session.UnityLaunchConflictError as exc:
+        payload = expected_failure_payload(
+            args.command,
+            "launch_conflict",
+            exc,
+            session=exc.session,
+            include_diagnostics=getattr(args, "include_diagnostics", False),
+        )
+        return EXIT_UNITY_START_FAILED, emit_payload(payload), ""
     except (unity_session.UnityStalledError, unity_session.UnityNotReadyError) as exc:
         status = "unity_stalled" if isinstance(exc, unity_session.UnityStalledError) else "unity_not_ready"
         payload = expected_failure_payload(

@@ -113,6 +113,27 @@ class RealHostIntegrationTests(unittest.TestCase):
         self.assertEqual(ready_exit_code, 0, ready_payload)
         self.assertEqual(ready_payload["result"]["status"], "recovered")
 
+        repeat_ready_exit_code, repeat_ready_payload, _, _ = _run_cli(
+            [
+                "wait-until-ready",
+                "--project-path",
+                str(self.project_path),
+                "--unity-exe-path",
+                str(self.unity_exe_path),
+                "--ready-timeout-seconds",
+                str(READY_TIMEOUT_SECONDS),
+                "--activity-timeout-seconds",
+                str(ACTIVITY_TIMEOUT_SECONDS),
+                "--include-diagnostics",
+            ]
+        )
+        self.assertEqual(repeat_ready_exit_code, 0, repeat_ready_payload)
+        self.assertEqual(repeat_ready_payload["result"]["status"], "recovered")
+        self.assertIn(
+            repeat_ready_payload["diagnostics"].get("launch_coordination_stage"),
+            {"initial_ready", "prelaunch_recovery", "post_claim_ready", "post_claim_recovery"},
+        )
+
         exec_exit_code, exec_payload, _, _ = _run_cli(
             [
                 "exec",

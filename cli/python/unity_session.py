@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import os
 import time
 
 import direct_exec_client
@@ -10,6 +11,7 @@ from unity_session_common import (
     DEFAULT_ACTIVITY_TIMEOUT_SECONDS,
     DEFAULT_EDITOR_LOG_MAX_LINES,
     DEFAULT_HEALTH_TIMEOUT_SECONDS,
+    PROJECT_RECOVERY_WINDOW_SECONDS,
     DEFAULT_READY_TIMEOUT_SECONDS,
     DEFAULT_STOP_TIMEOUT_SECONDS,
     ENV_FILE_NAME,
@@ -17,6 +19,7 @@ from unity_session_common import (
     RECOVERABLE_HEALTH_STATUSES,
     SESSION_RELATIVE_PATH,
     UNITY_PROJECT_PATH_ENV,
+    UnityLaunchConflictError,
     UnityLaunchError,
     UnityNotReadyError,
     UnitySession,
@@ -88,16 +91,40 @@ def _session_artifact_path(project_path):
     return unity_session_logs.session_artifact_path(project_path)
 
 
+def _launch_claim_path(project_path):
+    return unity_session_logs.launch_claim_path(project_path)
+
+
+def _unity_lockfile_path(project_path):
+    return unity_session_logs.unity_lockfile_path(project_path)
+
+
 def read_session_artifact(project_path):
     return unity_session_logs.read_session_artifact(project_path)
+
+
+def read_launch_claim(project_path):
+    return unity_session_logs.read_launch_claim(project_path)
 
 
 def write_session_artifact(project_path, payload):
     return unity_session_logs.write_session_artifact(project_path, payload)
 
 
+def write_launch_claim(project_path, payload):
+    return unity_session_logs.write_launch_claim(project_path, payload)
+
+
+def clear_launch_claim(project_path):
+    return unity_session_logs.clear_launch_claim(project_path)
+
+
 def _session_artifact_log_path(session_data):
     return unity_session_logs.session_artifact_log_path(session_data, is_pid_running_fn=_is_pid_running)
+
+
+def _project_lock_details(project_path):
+    return unity_session_logs.build_project_lock_details(project_path, time_ref=time)
 
 
 def _resolve_effective_log_path(project_path, unity_log_path=None, session_data=None):
@@ -197,6 +224,94 @@ def _finalize_session_diagnostics(session, log_path, health_error, activity_trac
 
 def _build_health_snapshot(payload, error):
     return unity_session_wait.build_health_snapshot(payload, error)
+
+
+def _artifact_pid_running(session_data):
+    artifact_pid = None if not isinstance(session_data, dict) else session_data.get("unity_pid")
+    if artifact_pid is None:
+        return None, False
+    return artifact_pid, _is_pid_running(artifact_pid)
+
+
+def _build_launch_coordination_diagnostics(
+    project_path,
+    session_data,
+    project_lock,
+    launch_claim,
+    unity_pids,
+    artifact_pid,
+    artifact_pid_running,
+    stage,
+):
+    diagnostics = {
+        "launch_coordination_stage": stage,
+        "session_artifact_exists": session_data is not None,
+        "project_lock_path": project_lock.get("path"),
+        "project_lock_exists": project_lock.get("exists", False),
+        "project_lock_fresh": project_lock.get("fresh", False),
+        "launch_claim_path": str(_launch_claim_path(project_path)),
+    }
+    if artifact_pid is not None:
+        diagnostics["session_artifact_pid"] = artifact_pid
+        diagnostics["session_artifact_pid_running"] = artifact_pid_running
+    if "age_seconds" in project_lock:
+        diagnostics["project_lock_age_seconds"] = project_lock["age_seconds"]
+    if isinstance(launch_claim, dict):
+        diagnostics["launch_claim"] = dict(launch_claim)
+    if unity_pids is not None:
+        diagnostics["unity_pids"] = unity_pids
+    return diagnostics
+
+
+def _build_recovery_session(project_path, base_url, log_path, session_data, unity_pids, owner):
+    artifact_pid, artifact_pid_running = _artifact_pid_running(session_data)
+    unity_pid = artifact_pid if artifact_pid_running else (unity_pids[0] if unity_pids else None)
+    return UnitySession(
+        owner=owner,
+        base_url=base_url,
+        project_path=project_path,
+        unity_pid=unity_pid,
+        launched=False,
+        effective_log_path=log_path,
+    )
+
+
+def _build_ready_service_session(project_path, base_url, log_path, unity_pids, owner="existing_service"):
+    return UnitySession(
+        owner=owner,
+        base_url=base_url,
+        project_path=project_path,
+        unity_pid=unity_pids[0] if unity_pids else None,
+        launched=False,
+        effective_log_path=log_path,
+    )
+
+
+def _raise_launch_conflict(project_path, base_url, log_path, error, session_data, project_lock, launch_claim, unity_pids, reason):
+    artifact_pid, artifact_pid_running = _artifact_pid_running(session_data)
+    session = UnitySession(
+        owner="launch_conflict",
+        base_url=base_url,
+        project_path=project_path,
+        unity_pid=artifact_pid if artifact_pid_running else None,
+        launched=False,
+        effective_log_path=log_path,
+    )
+    session.diagnostics = _collect_diagnostics(base_url, log_path, error)
+    session.diagnostics.update(
+        _build_launch_coordination_diagnostics(
+            project_path,
+            session_data,
+            project_lock,
+            launch_claim,
+            unity_pids,
+            artifact_pid,
+            artifact_pid_running,
+            "conflict",
+        )
+    )
+    session.diagnostics["launch_conflict_reason"] = reason
+    raise UnityLaunchConflictError("launch ownership for the target project is not safely available", session=session)
 
 
 def _wait_for_session(
@@ -329,6 +444,9 @@ def ensure_session_ready(
     initial_pids = _list_unity_pids()
     payload, error = _probe_health(base_url, health_timeout_seconds)
     if payload is not None and payload.get("ok") and payload.get("status") == "ready":
+        project_lock = _project_lock_details(project_path)
+        launch_claim = read_launch_claim(project_path)
+        artifact_pid, artifact_pid_running = _artifact_pid_running(session_data)
         session = UnitySession(
             owner="existing_service",
             base_url=base_url,
@@ -344,19 +462,56 @@ def ensure_session_ready(
         }
         session.diagnostics = _collect_diagnostics(base_url, log_path, None, activity_state)
         session.diagnostics["last_health_payload"] = payload
+        session.diagnostics.update(
+            _build_launch_coordination_diagnostics(
+                project_path,
+                session_data,
+                project_lock,
+                launch_claim,
+                initial_pids,
+                artifact_pid,
+                artifact_pid_running,
+                "initial_ready",
+            )
+        )
         _persist_ready_session_artifact(session, log_path, payload=payload)
         return session
 
-    if initial_pids:
-        session = UnitySession(
-            owner="existing_process",
-            base_url=base_url,
-            project_path=project_path,
-            unity_pid=initial_pids[0],
-            launched=False,
-            effective_log_path=log_path,
+    project_lock = _project_lock_details(project_path)
+    launch_claim = read_launch_claim(project_path)
+    artifact_pid, artifact_pid_running = _artifact_pid_running(session_data)
+    claim_owner_pid = None if not isinstance(launch_claim, dict) else launch_claim.get("owner_pid")
+    claim_active = claim_owner_pid not in (None, os.getpid()) and _is_pid_running(claim_owner_pid)
+
+    if claim_active:
+        _raise_launch_conflict(
+            project_path,
+            base_url,
+            log_path,
+            error,
+            session_data,
+            project_lock,
+            launch_claim,
+            initial_pids,
+            "project_launch_claim_active",
         )
+
+    if artifact_pid_running or project_lock.get("fresh"):
+        owner = "session_artifact" if artifact_pid_running else "project_recovery"
+        session = _build_recovery_session(project_path, base_url, log_path, session_data, initial_pids, owner)
         session.diagnostics = _collect_diagnostics(base_url, log_path, error)
+        session.diagnostics.update(
+            _build_launch_coordination_diagnostics(
+                project_path,
+                session_data,
+                project_lock,
+                launch_claim,
+                initial_pids,
+                artifact_pid,
+                artifact_pid_running,
+                "prelaunch_recovery",
+            )
+        )
         session = wait_ready_with_activity(
             session,
             ready_timeout_seconds,
@@ -367,28 +522,172 @@ def ensure_session_ready(
         _persist_ready_session_artifact(session, log_path)
         return _detach_session_process(session)
 
-    resolved_unity_exe_path = _resolve_unity_exe_path(project_path, unity_exe_path)
-    process = _launch_unity(project_path, resolved_unity_exe_path, unity_log_path=unity_log_path)
-    session = UnitySession(
-        owner="launched",
-        base_url=base_url,
-        project_path=project_path,
-        unity_pid=process.pid,
-        unity_exe_path=resolved_unity_exe_path,
-        launched=True,
-        process=process,
-        effective_log_path=log_path,
-    )
-    session.diagnostics = _collect_diagnostics(base_url, log_path, error)
-    session = wait_ready_with_activity(
-        session,
-        ready_timeout_seconds,
-        activity_timeout_seconds=activity_timeout_seconds,
-        health_timeout_seconds=health_timeout_seconds,
-        log_path=log_path,
-    )
-    _persist_ready_session_artifact(session, log_path)
-    return _detach_session_process(session)
+    claim_payload = {
+        "owner_pid": os.getpid(),
+        "created_at": time.time(),
+        "recovery_window_seconds": PROJECT_RECOVERY_WINDOW_SECONDS,
+    }
+    write_launch_claim(project_path, claim_payload)
+    try:
+        followup_pids = _list_unity_pids()
+        followup_payload, followup_error = _probe_health(base_url, health_timeout_seconds)
+        followup_lock = _project_lock_details(project_path)
+        artifact_pid, artifact_pid_running = _artifact_pid_running(session_data)
+
+        if followup_payload is not None and followup_payload.get("ok") and followup_payload.get("status") == "ready":
+            session = _build_ready_service_session(project_path, base_url, log_path, followup_pids)
+            if artifact_pid_running:
+                session.unity_pid = artifact_pid
+            activity_state = {
+                "last_log_size": _read_editor_log_size(log_path),
+                "last_activity_time": _format_wall_time(time.time()),
+                "idle_seconds": 0.0,
+            }
+            session.diagnostics = _collect_diagnostics(base_url, log_path, None, activity_state)
+            session.diagnostics["last_health_payload"] = followup_payload
+            session.diagnostics.update(
+                _build_launch_coordination_diagnostics(
+                    project_path,
+                    session_data,
+                    followup_lock,
+                    claim_payload,
+                    followup_pids,
+                    artifact_pid,
+                    artifact_pid_running,
+                    "post_claim_ready",
+                )
+            )
+            _persist_ready_session_artifact(session, log_path, payload=followup_payload)
+            return session
+
+        if artifact_pid_running or followup_lock.get("fresh"):
+            owner = "session_artifact" if artifact_pid_running else "project_recovery"
+            session = _build_recovery_session(project_path, base_url, log_path, session_data, followup_pids, owner)
+            session.diagnostics = _collect_diagnostics(base_url, log_path, followup_error)
+            session.diagnostics.update(
+                _build_launch_coordination_diagnostics(
+                    project_path,
+                    session_data,
+                    followup_lock,
+                    claim_payload,
+                    followup_pids,
+                    artifact_pid,
+                    artifact_pid_running,
+                    "post_claim_recovery",
+                )
+            )
+            session = wait_ready_with_activity(
+                session,
+                ready_timeout_seconds,
+                activity_timeout_seconds=activity_timeout_seconds,
+                health_timeout_seconds=health_timeout_seconds,
+                log_path=log_path,
+            )
+            _persist_ready_session_artifact(session, log_path)
+            return _detach_session_process(session)
+
+        resolved_unity_exe_path = _resolve_unity_exe_path(project_path, unity_exe_path)
+        process = _launch_unity(project_path, resolved_unity_exe_path, unity_log_path=unity_log_path)
+        session = UnitySession(
+            owner="launched",
+            base_url=base_url,
+            project_path=project_path,
+            unity_pid=process.pid,
+            unity_exe_path=resolved_unity_exe_path,
+            launched=True,
+            process=process,
+            effective_log_path=log_path,
+        )
+        session.diagnostics = _collect_diagnostics(base_url, log_path, followup_error or error)
+        session.diagnostics.update(
+            _build_launch_coordination_diagnostics(
+                project_path,
+                session_data,
+                followup_lock,
+                claim_payload,
+                followup_pids,
+                artifact_pid,
+                artifact_pid_running,
+                "launch_attempted",
+            )
+        )
+        try:
+            session = wait_ready_with_activity(
+                session,
+                ready_timeout_seconds,
+                activity_timeout_seconds=activity_timeout_seconds,
+                health_timeout_seconds=health_timeout_seconds,
+                log_path=log_path,
+            )
+        except UnityLaunchError as exc:
+            if exc.session is session and session.process is not None and session.process.returncode == 0:
+                recovery_pids = _list_unity_pids()
+                recovery_payload, recovery_error = _probe_health(base_url, health_timeout_seconds)
+                recovery_lock = _project_lock_details(project_path)
+                artifact_pid, artifact_pid_running = _artifact_pid_running(session_data)
+                if recovery_payload is not None and recovery_payload.get("ok") and recovery_payload.get("status") == "ready":
+                    session = _build_ready_service_session(project_path, base_url, log_path, recovery_pids, owner="recovered_service")
+                    if artifact_pid_running:
+                        session.unity_pid = artifact_pid
+                    activity_state = {
+                        "last_log_size": _read_editor_log_size(log_path),
+                        "last_activity_time": _format_wall_time(time.time()),
+                        "idle_seconds": 0.0,
+                    }
+                    session.diagnostics = _collect_diagnostics(base_url, log_path, None, activity_state)
+                    session.diagnostics["last_health_payload"] = recovery_payload
+                    session.diagnostics.update(
+                        _build_launch_coordination_diagnostics(
+                            project_path,
+                            session_data,
+                            recovery_lock,
+                            claim_payload,
+                            recovery_pids,
+                            artifact_pid,
+                            artifact_pid_running,
+                            "post_launch_exit_ready",
+                        )
+                    )
+                    _persist_ready_session_artifact(session, log_path, payload=recovery_payload)
+                    return session
+                if artifact_pid_running or recovery_lock.get("fresh"):
+                    recovery_session = _build_recovery_session(
+                        project_path,
+                        base_url,
+                        log_path,
+                        session_data,
+                        recovery_pids,
+                        "project_recovery",
+                    )
+                    recovery_session.diagnostics = _collect_diagnostics(base_url, log_path, recovery_error)
+                    recovery_session.diagnostics.update(
+                        _build_launch_coordination_diagnostics(
+                            project_path,
+                            session_data,
+                            recovery_lock,
+                            claim_payload,
+                            recovery_pids,
+                            artifact_pid,
+                            artifact_pid_running,
+                            "post_launch_exit_recovery",
+                        )
+                    )
+                    recovery_session = wait_ready_with_activity(
+                        recovery_session,
+                        ready_timeout_seconds,
+                        activity_timeout_seconds=activity_timeout_seconds,
+                        health_timeout_seconds=health_timeout_seconds,
+                        log_path=log_path,
+                    )
+                    _persist_ready_session_artifact(recovery_session, log_path)
+                    return _detach_session_process(recovery_session)
+            raise
+        _persist_ready_session_artifact(session, log_path)
+        return _detach_session_process(session)
+    finally:
+        current_claim = read_launch_claim(project_path)
+        if isinstance(current_claim, dict) and current_claim.get("owner_pid") == os.getpid():
+            clear_launch_claim(project_path)
 
 
 def get_log_source(project_path=None, base_url=None, unity_log_path=None):
@@ -483,4 +782,3 @@ def ensure_stopped(project_path=None, base_url=None, mode="inspect", timeout_sec
 
 def close_session(session, keep_unity=False):
     return unity_session_process.close_session(session, keep_unity=keep_unity, is_pid_running_fn=_is_pid_running)
-

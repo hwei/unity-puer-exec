@@ -2,7 +2,12 @@
 import json
 from pathlib import Path
 
-from unity_session_common import SESSION_RELATIVE_PATH
+from unity_session_common import (
+    LAUNCH_CLAIM_RELATIVE_PATH,
+    PROJECT_RECOVERY_WINDOW_SECONDS,
+    SESSION_RELATIVE_PATH,
+    UNITY_LOCKFILE_RELATIVE_PATH,
+)
 
 
 def default_editor_log_path():
@@ -59,19 +64,70 @@ def session_artifact_path(project_path):
     return Path(project_path) / SESSION_RELATIVE_PATH
 
 
-def read_session_artifact(project_path):
-    session_path = session_artifact_path(project_path)
-    if not session_path.exists():
+def launch_claim_path(project_path):
+    return Path(project_path) / LAUNCH_CLAIM_RELATIVE_PATH
+
+
+def unity_lockfile_path(project_path):
+    return Path(project_path) / UNITY_LOCKFILE_RELATIVE_PATH
+
+
+def _read_json_file(path):
+    if not path.exists():
         return None
-    with session_path.open("r", encoding="utf-8") as handle:
-        return json.load(handle)
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            return json.load(handle)
+    except (OSError, ValueError, json.JSONDecodeError):
+        return None
+
+
+def _write_json_file(path, payload):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as handle:
+        json.dump(payload, handle, ensure_ascii=True, indent=2)
+
+
+def read_session_artifact(project_path):
+    return _read_json_file(session_artifact_path(project_path))
 
 
 def write_session_artifact(project_path, payload):
-    session_path = session_artifact_path(project_path)
-    session_path.parent.mkdir(parents=True, exist_ok=True)
-    with session_path.open("w", encoding="utf-8") as handle:
-        json.dump(payload, handle, ensure_ascii=True, indent=2)
+    _write_json_file(session_artifact_path(project_path), payload)
+
+
+def read_launch_claim(project_path):
+    return _read_json_file(launch_claim_path(project_path))
+
+
+def write_launch_claim(project_path, payload):
+    _write_json_file(launch_claim_path(project_path), payload)
+
+
+def clear_launch_claim(project_path):
+    try:
+        launch_claim_path(project_path).unlink()
+    except FileNotFoundError:
+        return
+
+
+def build_project_lock_details(project_path, time_ref):
+    path = unity_lockfile_path(project_path)
+    details = {
+        "path": str(path),
+        "exists": path.exists(),
+        "fresh": False,
+    }
+    if not details["exists"]:
+        return details
+    try:
+        mtime = path.stat().st_mtime
+    except OSError:
+        return details
+    age_seconds = round(max(0.0, time_ref.time() - mtime), 3)
+    details["age_seconds"] = age_seconds
+    details["fresh"] = age_seconds <= PROJECT_RECOVERY_WINDOW_SECONDS
+    return details
 
 
 def session_artifact_log_path(session_data, is_pid_running_fn):

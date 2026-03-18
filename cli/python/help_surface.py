@@ -81,6 +81,7 @@ COMMAND_HELP = {
             ],
             "failure": [
                 ("address_conflict", 2, "both selectors were provided; choose exactly one."),
+                ("launch_conflict", EXIT_UNITY_START_FAILED, "project-scoped launch ownership could not be established safely, so the CLI refused a competing launch."),
                 ("unity_start_failed", EXIT_UNITY_START_FAILED, "Unity could not be launched for the selected project."),
                 ("unity_stalled", EXIT_UNITY_NOT_READY, "readiness stopped making progress before becoming usable."),
                 ("unity_not_ready", EXIT_UNITY_NOT_READY, "Unity did not become ready before the readiness budget expired."),
@@ -209,6 +210,7 @@ COMMAND_HELP = {
             "failure": [
                 ("address_conflict", 2, "both selectors were provided; choose exactly one."),
                 ("not_available", direct_exec_client.EXIT_NOT_AVAILABLE, "the direct execution target could not be reached."),
+                ("launch_conflict", EXIT_UNITY_START_FAILED, "project-scoped launch ownership could not be established safely, so execution did not start a competing Unity launch."),
                 ("unity_start_failed", EXIT_UNITY_START_FAILED, "Unity could not be launched for the selected project."),
                 ("unity_stalled", EXIT_UNITY_NOT_READY, "readiness stopped making progress before execution could proceed."),
                 ("unity_not_ready", EXIT_UNITY_NOT_READY, "Unity did not become ready before execution could proceed."),

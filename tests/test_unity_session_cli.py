@@ -93,6 +93,13 @@ class UnityPuerExecCliTests(unittest.TestCase):
         self.assertIn("`session_stale` -> exit 14", stdout)
         self.assertIn("`no_observation_target` -> exit 15", stdout)
 
+    def test_wait_until_ready_help_status_mentions_launch_conflict(self):
+        exit_code, stdout, stderr = unity_puer_exec.run_cli(["wait-until-ready", "--help-status"])
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(stderr, "")
+        self.assertIn("`launch_conflict` -> exit 20", stdout)
+
     def test_help_example_renders_known_workflow(self):
         exit_code, stdout, stderr = unity_puer_exec.run_cli(["--help-example", "exec-and-wait-for-result-marker"])
 
@@ -564,6 +571,19 @@ class UnityPuerExecCliTests(unittest.TestCase):
         self.assertEqual(stderr, "")
         payload = json.loads(stdout)
         self.assertEqual(payload["status"], "unity_start_failed")
+        self.assertEqual(payload["session"]["unity_pid"], 1234)
+
+    def test_launch_conflict_maps_to_exit_code_20(self):
+        session = _make_session()
+        error = unity_session.UnityLaunchConflictError("launch ownership conflict", session=session)
+
+        with mock.patch.object(unity_session, "ensure_session_ready", side_effect=error):
+            exit_code, stdout, stderr = unity_puer_exec.run_cli(["wait-until-ready"])
+
+        self.assertEqual(exit_code, unity_puer_exec.EXIT_UNITY_START_FAILED)
+        self.assertEqual(stderr, "")
+        payload = json.loads(stdout)
+        self.assertEqual(payload["status"], "launch_conflict")
         self.assertEqual(payload["session"]["unity_pid"], 1234)
 
     def test_not_ready_error_maps_to_exit_code_21(self):

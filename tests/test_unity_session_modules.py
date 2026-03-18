@@ -152,6 +152,19 @@ class UnitySessionModuleTests(unittest.TestCase):
 
         self.assertEqual(restored, payload)
 
+    def test_logs_write_and_clear_launch_claim_round_trip(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_path = Path(temp_dir)
+            payload = {"owner_pid": 321, "created_at": 12.5}
+
+            unity_session_logs.write_launch_claim(project_path, payload)
+            restored = unity_session_logs.read_launch_claim(project_path)
+            unity_session_logs.clear_launch_claim(project_path)
+            cleared = unity_session_logs.read_launch_claim(project_path)
+
+        self.assertEqual(restored, payload)
+        self.assertIsNone(cleared)
+
 
 if __name__ == "__main__":
     unittest.main()
