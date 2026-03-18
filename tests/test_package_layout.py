@@ -44,13 +44,17 @@ class PackageLayoutTests(unittest.TestCase):
 
     def test_compile_trigger_compatibility_moves_to_dedicated_file(self):
         server_path = PACKAGE_ROOT / "Editor" / "UnityPuerExecServer.cs"
+        bridge_path = PACKAGE_ROOT / "Editor" / "UnityPuerExecBridge.cs"
         compat_path = PACKAGE_ROOT / "Editor" / "UnityPuerExecCompileCompat.cs"
         server_content = server_path.read_text(encoding="utf-8")
+        bridge_content = bridge_path.read_text(encoding="utf-8")
         compat_content = compat_path.read_text(encoding="utf-8")
 
         self.assertTrue(compat_path.exists())
         self.assertNotIn("private const string CompileTriggerDirectory", server_content)
+        self.assertNotIn("TriggerValidationCompile", bridge_content)
         self.assertIn("internal static class UnityPuerExecCompileCompat", compat_content)
+        self.assertIn("public static class UnityPuerExecCompileCompatBridge", compat_content)
         self.assertIn("TriggerValidationCompile", compat_content)
 
     def test_editor_runtime_split_moves_job_protocol_and_bridge_out_of_server_file(self):
@@ -72,6 +76,7 @@ class PackageLayoutTests(unittest.TestCase):
         self.assertIn("internal sealed class UnityPuerExecJob", job_state_content)
         self.assertIn("internal static class UnityPuerExecProtocol", protocol_content)
         self.assertIn("public static class UnityPuerExecBridge", bridge_content)
+        self.assertIn("UnityPuerExecCompileCompatBridge.TriggerValidationCompile", protocol_content)
 
 
 if __name__ == "__main__":

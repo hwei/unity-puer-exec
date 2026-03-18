@@ -6,6 +6,16 @@ using UnityEngine;
 
 namespace UnityPuerExec
 {
+    public static class UnityPuerExecCompileCompatBridge
+    {
+        // Transitional bridge entry retained during T1.2.1 migration.
+        public static void TriggerValidationCompile(string jobId, string marker)
+        {
+            var effectiveMarker = string.IsNullOrEmpty(marker) ? jobId : marker;
+            UnityPuerExecCompileCompat.TriggerValidationCompile(effectiveMarker);
+        }
+    }
+
     internal static class UnityPuerExecCompileCompat
     {
         private const string CompileTriggerDirectory = "__UnityPuerExec__";

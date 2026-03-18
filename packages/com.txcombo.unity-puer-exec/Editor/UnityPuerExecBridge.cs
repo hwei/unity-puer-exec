@@ -24,13 +24,6 @@ namespace UnityPuerExec
             Debug.Log($"[UnityPuerExec][{jobId}] {message}");
         }
 
-        // Transitional bridge entry retained during T1.2.1 migration.
-        public static void TriggerValidationCompile(string jobId, string marker)
-        {
-            var effectiveMarker = string.IsNullOrEmpty(marker) ? jobId : marker;
-            UnityPuerExecCompileCompat.TriggerValidationCompile(effectiveMarker);
-        }
-
         public static int Port()
         {
             return UnityPuerExecServer.Port;

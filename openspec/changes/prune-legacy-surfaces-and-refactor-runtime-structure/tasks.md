@@ -19,11 +19,11 @@
 ## 4. Refactor Unity Editor Runtime Structure
 
 - [x] 4.1 Split server lifecycle, job state, script wrapping, and bridge code out of `UnityPuerExecServer.cs`
-- [ ] 4.2 Keep transitional compatibility code either deleted or confined to explicit compatibility files
-- [ ] 4.3 Update package-layout and runtime-focused tests for the new Editor file structure
+- [x] 4.2 Keep transitional compatibility code either deleted or confined to explicit compatibility files
+- [x] 4.3 Update package-layout and runtime-focused tests for the new Editor file structure
 
 ## 5. Validate and Close Out
 
-- [ ] 5.1 Run repository test suites covering CLI contract, session runtime, and package layout
-- [ ] 5.2 Run any targeted host-validation evidence needed to confirm no regression in the critical real-host CLI workflow
-- [ ] 5.3 Review the change for archive readiness and summarize whether any follow-up compatibility cleanup remains
+- [x] 5.1 Run repository test suites covering CLI contract, session runtime, and package layout
+- [x] 5.2 Run any targeted host-validation evidence needed to confirm no regression in the critical real-host CLI workflow
+- [x] 5.3 Review the change for archive readiness and summarize whether any follow-up compatibility cleanup remains

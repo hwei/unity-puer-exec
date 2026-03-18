@@ -22,7 +22,7 @@ namespace UnityPuerExec
             builder.AppendLine("const host = {");
             builder.AppendLine("  startJob: (name, code) => __bridge.StartSpawnedJob(__jobId, name ? String(name) : '', String(code)),");
             builder.AppendLine("  log: (message) => __bridge.Log(__jobId, String(message)),");
-            builder.AppendLine("  triggerValidationCompile: (marker) => __bridge.TriggerValidationCompile(__jobId, marker ? String(marker) : ''),");
+            builder.AppendLine("  triggerValidationCompile: (marker) => CS.UnityPuerExec.UnityPuerExecCompileCompatBridge.TriggerValidationCompile(__jobId, marker ? String(marker) : ''),");
             builder.AppendLine("  port: () => __bridge.Port()");
             builder.AppendLine("};");
             builder.AppendLine("try {");
