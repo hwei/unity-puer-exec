@@ -27,6 +27,7 @@
 - Treat temporary execution context as ephemeral. Distill stable conclusions into `openspec/specs/`, source, tests, or concise repository guidance rather than keeping long-lived plan prose.
 - The working tree does not keep a parallel legacy `docs/` workflow entry path.
 - When a follow-up change depends on earlier validation or archived findings, proposal and design artifacts should name the upstream change and summarize the inherited finding that justifies the new scope.
+- For propose/apply/archive work, prefer the installed OpenSpec skills first and the official `openspec` CLI as the direct fallback path.
 
 ## Agent Conventions
 
@@ -39,6 +40,7 @@
 - When apply work ends, always produce an explicit closeout finding summary stating whether new follow-up candidates were discovered.
 - If follow-up candidates are discovered during closeout, classify them as `product-improvement`, `workflow-improvement`, `tooling-improvement`, or `validation-gap`, and discuss them with the human before promoting them into further work.
 - When a change is ready to close, recommend whether to run `git commit`, `openspec archive`, and the final `git commit`, but leave execution to the human unless explicitly asked.
+- Do not manually move or recreate `openspec/changes/` directory entries during normal propose/apply/archive workflow. Reserve manual directory edits for explicit repair of abnormal repository state.
 - Once a change is archived, clean up stale active-directory placeholders so archived work does not continue to appear as an active planning entry.
 - Keep product behavior in code and tests, and keep durable contract statements in OpenSpec specs. Do not use stale prose as authoritative when code and tests disagree.
 - Prefer `.tmp/` over the repository root for local validation probes and other short-lived scratch artifacts.

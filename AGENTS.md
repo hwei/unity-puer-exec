@@ -14,6 +14,7 @@
 - `tests/` is the canonical repository-level test location.
 - `.tmp/` is the preferred local-only location for transient validation probes and scratch scripts.
 - Use OpenSpec artifacts directly; there is no parallel `docs/` workflow surface in the working tree.
+- For propose/apply/archive operations, prefer the installed OpenSpec skills first. Use the official `openspec` CLI when a direct command path is needed.
 
 ## Change metadata
 
@@ -28,6 +29,7 @@
 - `updated_at` uses `YYYY-MM-DD`.
 - `status=queued` is the backlog definition. `active` means in progress. `blocked` means not currently actionable. `superseded` means replaced and awaiting archive.
 - Prefer `python tools/new_openspec_change.py <change-name>` when creating a new change so `meta.yaml` is seeded automatically.
+- Prefer `openspec archive <change-name>` when archiving a completed change. Do not manually move `openspec/changes/` directories during normal workflow.
 - Before selecting fresh work from a clean tree, consult the backlog tooling instead of guessing from prose alone.
 - Use `python tools/openspec_backlog.py next` for the default ranked recommendation, or `python tools/openspec_backlog.py list --status queued` to inspect backlog explicitly.
 
