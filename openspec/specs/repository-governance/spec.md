@@ -68,6 +68,24 @@ Work discovered during execution SHALL be classified before implementation conti
 - **AND** the current change is marked blocked when the prerequisite prevents correct continuation
 - **AND** execution does not proceed on the stale assumption that the prerequisite is already satisfied
 
+### Requirement: Follow-up changes preserve prerequisite evidence context
+
+When a change depends on prior validation, retrospective findings, or archived change conclusions to make its scope understandable, the change SHALL identify the upstream change names and summarize the inherited findings in its proposal or design artifacts. Contributors MUST NOT rely on unstated team memory or metadata-only dependency references as the sole way to reconstruct that context.
+
+#### Scenario: Follow-up optimization change builds on prior validation
+
+- **WHEN** a contributor proposes a follow-up change whose rationale depends on what an earlier validation change already proved
+- **THEN** the proposal or design names the upstream validation change
+- **AND** the current change summarizes the finding that remains true and the gap that still needs work
+- **AND** a fresh reader can understand why the new change exists without separately guessing the evidence chain from oral background alone
+
+#### Scenario: Current change references archived findings
+
+- **WHEN** a non-archived change depends on findings that live in archived change artifacts
+- **THEN** the current change cites the archived change by name
+- **AND** the current change explains which archived finding is being carried forward into current scope
+- **AND** the reader does not need to inspect backlog metadata alone to infer the narrative dependency
+
 ### Requirement: Artifact weight follows change type
 
 The repository SHALL define artifact expectations by change type so feature, harness, validation, refactor, and spike work are documented with appropriate weight. Contributors MUST satisfy the repository's minimum artifact policy for the selected change type before implementation is treated as normal workflow.
@@ -88,6 +106,12 @@ Changes that are no longer the recommended execution path SHALL be marked supers
 - **THEN** the older change is marked superseded
 - **AND** the older change is archived once its disposition is stable
 - **AND** the repository keeps the archived record instead of deleting the change from history
+
+#### Scenario: Archived change lifecycle is cleaned up
+
+- **WHEN** a change has been archived and is no longer intended to appear in active planning scans
+- **THEN** the repository does not keep a stale active-directory placeholder that makes the archived change appear simultaneously active and archived
+- **AND** contributors can identify the archived record without ambiguity about which change entry is authoritative
 
 ### Requirement: Repository-local scratch artifacts stay out of normal working paths
 

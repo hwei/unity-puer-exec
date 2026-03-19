@@ -4,5 +4,5 @@ priority: P1
 blocked_by:
   - capture-agent-cli-validation-transcripts
 assumption_state: valid
-evidence: manual-check
+evidence: cli-transcript
 updated_at: 2026-03-19

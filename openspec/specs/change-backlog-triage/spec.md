@@ -46,6 +46,17 @@ Changes that depend on other changes SHALL record those prerequisites in a `bloc
 - **THEN** the dependent change records the prerequisite in `blocked_by`
 - **AND** tooling and agents can identify that the change is not ready to be preferred over unblocked candidates
 
+### Requirement: Change metadata does not replace narrative context
+
+`meta.yaml` SHALL remain machine-readable planning metadata for non-archived changes. Dependency metadata such as `blocked_by` MAY identify prerequisite changes, but it MUST NOT be treated as sufficient by itself to explain the evidence chain, rationale, or inherited findings for follow-up work.
+
+#### Scenario: Maintainer inspects a dependent change
+
+- **WHEN** a maintainer or agent reads `meta.yaml` for a change that depends on earlier work
+- **THEN** the metadata exposes machine-readable prerequisite references for tooling
+- **AND** repository workflow still expects proposal or design artifacts to explain the human-readable background when that context is necessary
+- **AND** the maintainer does not treat dependency metadata alone as the complete explanation of why the change exists
+
 ### Requirement: Next-change tooling is deterministic and advisory
 
 The repository SHALL provide a local tool that filters and sorts non-archived changes using only computable metadata and derived dependency counts. The tool SHALL report the reasons for its ordering and SHALL remain advisory rather than directly starting execution.

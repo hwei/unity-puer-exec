@@ -15,9 +15,11 @@ context: |
 rules:
   proposal:
     - Keep proposals concise and state the capability split explicitly.
+    - For follow-up changes, cite upstream change names and summarize the inherited findings when prior evidence is necessary to understand scope.
     - When migrating governance, distinguish project-wide guidance from durable testable requirements.
     - Do not recreate the legacy global roadmap tree inside a proposal.
   design:
+    - For follow-up changes, explain which upstream findings remain true and which gap the current design is addressing.
     - Explain why content belongs in project.md versus openspec/specs/.
     - Call out migration risks when replacing legacy governance paths.
   specs:

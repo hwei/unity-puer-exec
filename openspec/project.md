@@ -26,17 +26,20 @@
 - Treat backlog specifically as changes whose `meta.yaml` status is `queued`.
 - Treat temporary execution context as ephemeral. Distill stable conclusions into `openspec/specs/`, source, tests, or concise repository guidance rather than keeping long-lived plan prose.
 - The working tree does not keep a parallel legacy `docs/` workflow entry path.
+- When a follow-up change depends on earlier validation or archived findings, proposal and design artifacts should name the upstream change and summarize the inherited finding that justifies the new scope.
 
 ## Agent Conventions
 
 - Prefer reading only the minimal OpenSpec artifacts needed for the current task.
 - When a change affects behavior or workflow materially, create or continue an OpenSpec change instead of editing long-lived truth directly without change context.
 - Maintain repository-owned change metadata in `meta.yaml` for every non-archived change. The current convention is `status`, `change_type`, `priority`, `blocked_by`, `assumption_state`, `evidence`, and `updated_at`.
+- Treat `meta.yaml` as machine-readable planning metadata only. Use proposal and design artifacts, not dependency metadata alone, to carry human-readable evidence chains and rationale.
 - When new work is discovered during execution, classify it as in-scope, prerequisite, or adjacent before continuing implementation.
 - When starting work from a clean tree, consult the backlog tooling rather than guessing from prose alone.
 - When apply work ends, always produce an explicit closeout finding summary stating whether new follow-up candidates were discovered.
 - If follow-up candidates are discovered during closeout, classify them as `product-improvement`, `workflow-improvement`, `tooling-improvement`, or `validation-gap`, and discuss them with the human before promoting them into further work.
 - When a change is ready to close, recommend whether to run `git commit`, `openspec archive`, and the final `git commit`, but leave execution to the human unless explicitly asked.
+- Once a change is archived, clean up stale active-directory placeholders so archived work does not continue to appear as an active planning entry.
 - Keep product behavior in code and tests, and keep durable contract statements in OpenSpec specs. Do not use stale prose as authoritative when code and tests disagree.
 - Prefer `.tmp/` over the repository root for local validation probes and other short-lived scratch artifacts.
 
