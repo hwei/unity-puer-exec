@@ -1,0 +1,32 @@
+task_id: prompt-b
+task_name: add menu command and verify selection guid logging
+model_or_agent: gpt-5.4-mini subagent
+date: 2026-03-19
+project_path: F:\C3\unity-puer-exec-workspace\c3-client-tree2\Project
+cli_entry_path: F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py
+
+task_success: pass
+autonomy: pass
+efficiency: recoverable
+
+discoverability_findings:
+  - The agent again discovered the core workflow from published CLI help without repository-only hints.
+  - The agent correctly inferred that a longer task needed `exec` plus readiness recovery and log observation rather than a single one-shot command.
+  - The `exec-and-wait-for-result-marker` help example appears useful even when the final verification is implemented with direct log-pattern observation instead of a dedicated result-marker script.
+
+runtime_or_environment_notes:
+  - No Unity-native modal blocker occurred during the run.
+  - The first verification attempt lacked a suitable pre-existing asset selection target, so the agent adapted by using the newly created script asset as the selected object.
+
+cleanup_notes:
+  - The temporary validation script `.tmp/validate-selection-guid.js` was removed after the run.
+  - The generated validation-host script `Assets/Editor/SelectionGuidMenu.cs` and its `.meta` file were removed after the run so later trials do not inherit the menu command.
+  - Unity Editor was force-killed after the run to restore a clean baseline.
+
+evidence:
+  - Repository-side verification confirmed `Assets/Editor/SelectionGuidMenu.cs` existed during the run and contained the expected `Tools/Log Selection GUID` menu item plus GUID logging logic.
+  - Subagent reported a successful verification log match: `Selection GUID: c956a25bf4b486240956ca7890d1e0b5`.
+  - Subagent reported a successful menu execution confirmation before log observation.
+
+final_outcome_summary: The help-only subagent successfully completed a multi-step code-write, compile, and verify workflow using only the published CLI help surface. The workflow required some adaptation during verification, but the CLI remained discoverable and usable without repository-only guidance.
+

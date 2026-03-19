@@ -9,10 +9,10 @@
 
 - [x] 2.1 Prepare the real-host validation environment and confirm the publishable CLI help surface is the only required discovery path.
 - [x] 2.2 Run the simple scene-editing help-only agent task and record the outcome using the standard result format.
-- [ ] 2.3 Run the longer compile-and-verify help-only agent task and record the outcome using the standard result format.
+- [x] 2.3 Run the longer compile-and-verify help-only agent task and record the outcome using the standard result format.
 
 ## 3. Findings and Follow-up
 
-- [ ] 3.1 Summarize the first-round discoverability findings, separating CLI help gaps from unrelated runtime or environment issues.
-- [ ] 3.2 Decide whether the findings justify a follow-up product/help improvement change or a later harness-automation change.
-- [ ] 3.3 Update the change artifacts for archive readiness once the first-round validation and findings summary are complete.
+- [x] 3.1 Summarize the first-round discoverability findings, separating CLI help gaps from unrelated runtime or environment issues.
+- [x] 3.2 Decide whether the findings justify a follow-up product/help improvement change or a later harness-automation change.
+- [x] 3.3 Update the change artifacts for archive readiness once the first-round validation and findings summary are complete.
