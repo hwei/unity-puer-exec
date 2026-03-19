@@ -1,23 +1,4 @@
-# agent-cli-discoverability-validation Specification
-
-## Purpose
-TBD - created by archiving change validate-help-only-agent-cli-discoverability. Update Purpose after archive.
-## Requirements
-### Requirement: Help-only agent validation uses published CLI discovery surfaces
-The repository SHALL define a repeatable validation protocol for agent CLI discoverability that restricts the primary discovery surface to the publishable `unity-puer-exec` help interface and normal CLI execution.
-
-#### Scenario: Contributor prepares a help-only agent trial
-- **WHEN** a contributor runs the repository-owned agent discoverability validation
-- **THEN** the protocol allows `unity-puer-exec --help`, command help, `--help-args`, `--help-status`, `--help-example`, and normal CLI execution
-- **AND** the protocol does not rely on repository-only source or repository tests as part of the allowed discovery surface
-
-### Requirement: First-round validation covers both simple and multi-step Unity Editor tasks
-The repository SHALL define an initial task set that exercises both direct Unity Editor action and a longer workflow that includes code change, compile or readiness recovery, and outcome verification.
-
-#### Scenario: Contributor reviews the first-round task set
-- **WHEN** the first-round help-only validation tasks are defined
-- **THEN** the task set includes at least one simple Unity Editor action task
-- **AND** the task set includes at least one longer workflow task that requires the agent to complete a code change and verify the result in the real editor context
+## MODIFIED Requirements
 
 ### Requirement: Validation records success, autonomy, and efficiency separately
 
@@ -30,13 +11,7 @@ The repository SHALL record task outcome, allowed-surface compliance, and conver
 - **AND** the recorded result includes an efficiency assessment that distinguishes clean convergence from recoverable or poor trial-and-error
 - **AND** the recorded result retains durable transcript evidence for later review
 
-### Requirement: Validation findings isolate discoverability gaps
-The repository SHALL capture concrete discoverability findings from each help-only trial in a form that can drive later product, workflow, or harness follow-up work.
-
-#### Scenario: Contributor summarizes a help-only trial
-- **WHEN** a help-only agent validation run is reviewed
-- **THEN** the summary identifies the help or workflow gaps that materially slowed or blocked the task
-- **AND** the summary distinguishes those discoverability findings from unrelated runtime or environment failures
+## ADDED Requirements
 
 ### Requirement: Validation transcript records preserve key agent behavior
 The repository SHALL define a minimum transcript record for each help-only agent validation run so later reviewers can reconstruct how the agent discovered and used the CLI.
@@ -68,4 +43,3 @@ The repository SHALL allow long raw transcript logs to live outside OpenSpec whi
 - **THEN** the durable change or spec-owned record preserves the minimum structured transcript fields
 - **AND** long raw logs may be stored under `.tmp/agent-validation-transcripts/`
 - **AND** the durable record points to any retained raw transcript location when such evidence exists
-
