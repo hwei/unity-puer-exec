@@ -1,13 +1,14 @@
 ## 1. Validation Protocol
 
-- [ ] 1.1 Write the first-round help-only validation protocol, including allowed and disallowed discovery surfaces.
-- [ ] 1.2 Define the standard task prompts for the simple scene-editing task and the longer code-change-plus-verification task.
-- [ ] 1.3 Define the result-recording format for `task_success`, `autonomy`, `efficiency`, and `discoverability_findings`.
+- [x] 1.1 Write the first-round help-only validation protocol, including allowed and disallowed discovery surfaces.
+- [x] 1.2 Define the standard task prompts for the simple scene-editing task and the longer code-change-plus-verification task.
+- [x] 1.3 Define the result-recording format for `task_success`, `autonomy`, `efficiency`, and `discoverability_findings`.
+- [x] 1.4 Define a baseline reset and cleanup procedure so repeated trials do not inherit prior editor state.
 
 ## 2. First-Round Execution
 
-- [ ] 2.1 Prepare the real-host validation environment and confirm the publishable CLI help surface is the only required discovery path.
-- [ ] 2.2 Run the simple scene-editing help-only agent task and record the outcome using the standard result format.
+- [x] 2.1 Prepare the real-host validation environment and confirm the publishable CLI help surface is the only required discovery path.
+- [x] 2.2 Run the simple scene-editing help-only agent task and record the outcome using the standard result format.
 - [ ] 2.3 Run the longer compile-and-verify help-only agent task and record the outcome using the standard result format.
 
 ## 3. Findings and Follow-up

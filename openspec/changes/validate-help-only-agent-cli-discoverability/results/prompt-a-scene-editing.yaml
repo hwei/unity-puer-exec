@@ -1,0 +1,31 @@
+task_id: prompt-a
+task_name: create sphere in current scene
+model_or_agent: gpt-5.4-mini subagent
+date: 2026-03-19
+project_path: F:\C3\unity-puer-exec-workspace\c3-client-tree2\Project
+cli_entry_path: F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py
+
+task_success: pass
+autonomy: pass
+efficiency: recoverable
+
+discoverability_findings:
+  - The agent discovered the primary execution path from published help without repository-only guidance.
+  - The agent naturally used `wait-until-ready`, `exec`, and `wait-for-log-pattern` together, which suggests the help surface is strong enough for a simple end-to-end workflow.
+  - The agent also explored `ensure-stopped` and `get-log-source`, which was not harmful but indicates some extra probing before settling on the execution flow.
+  - The original prompt wording around the "current scene" allowed the agent to touch an unnamed scene, which exposed a validation design gap rather than a CLI discoverability gap.
+
+runtime_or_environment_notes:
+  - The active scene was unnamed, so the agent chose to save a temporary scene copy at `Assets/_codex_temp_sphere.unity` in order to create durable verification evidence.
+  - During observation, Unity displayed a native save-scene modal dialog. The operator cancelled it. Future Prompt A runs should target an explicit temporary scene path to avoid this blocker.
+
+cleanup_notes:
+  - Unity Editor was force-killed after the run to clear the blocked modal state.
+  - `Assets/_codex_temp_sphere.unity` and its `.meta` file were removed so the next trial can start from a clean baseline.
+
+evidence:
+  - Subagent reported help usage: `--help`, `exec --help`, `exec --help-args`, `exec --help-status`, `wait-until-ready --help`, `wait-for-log-pattern --help`, `wait-for-log-pattern --help-args`, `wait-for-log-pattern --help-status`.
+  - Repository-side verification confirmed `Assets/_codex_temp_sphere.unity` exists.
+  - Repository-side verification confirmed the scene file contains `m_Name: Sphere` and `SphereCollider`.
+
+final_outcome_summary: The help-only subagent successfully created and verified a sphere in the validation host. It required a small amount of extra probing, but the published CLI help surface was sufficient to discover the core workflow without repository-only hints.
