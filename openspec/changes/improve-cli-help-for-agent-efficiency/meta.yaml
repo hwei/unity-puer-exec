@@ -1,0 +1,8 @@
+status: queued
+change_type: feature
+priority: P1
+blocked_by:
+  - capture-agent-cli-validation-transcripts
+assumption_state: valid
+evidence: manual-check
+updated_at: 2026-03-19
