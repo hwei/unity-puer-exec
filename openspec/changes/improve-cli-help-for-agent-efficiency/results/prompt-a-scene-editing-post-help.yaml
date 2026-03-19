@@ -1,0 +1,122 @@
+prompt_id: prompt-a
+prompt_source: openspec/changes/archive/2026-03-19-validate-help-only-agent-cli-discoverability/task-prompts.md
+record_kind: retrospective-summary
+date: 2026-03-20
+
+model: gpt-5.4-mini subagent
+project_path: F:\C3\unity-puer-exec-workspace\c3-client-tree2\Project
+cli_entry_path: F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py
+
+constraints:
+  allowed:
+    - published unity-puer-exec help surface
+    - normal CLI execution against the target Unity project
+  disallowed:
+    - repository source in this product workspace
+    - repository tests
+    - command-level maintainer hints
+
+help_queries:
+  - order: 1
+    command: python F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py --help
+    retained_exact_argv: true
+    purpose: orient around the top-level help surface and recommended path
+  - order: 2
+    command: python F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py exec --help
+    retained_exact_argv: true
+    purpose: confirm the primary project-scoped execution entry
+  - order: 3
+    command: python F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py exec --help-args
+    retained_exact_argv: true
+    purpose: inspect execution arguments before writing the scene-editing script
+  - order: 4
+    command: python F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py exec --help-status
+    retained_exact_argv: true
+    purpose: understand execution status handling
+  - order: 5
+    command: python F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py --help-example
+    retained_exact_argv: true
+    purpose: inspect the available published workflow examples
+  - order: 6
+    command: python F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py --help-example exec-and-wait-for-result-marker
+    retained_exact_argv: true
+    purpose: inspect the longer-running workflow example before writing the task script
+  - order: 7
+    command: python F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py wait-until-ready --help
+    retained_exact_argv: true
+    purpose: inspect the published recovery path after the first exec attempt timed out
+  - order: 8
+    command: python F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py wait-until-ready --help-args
+    retained_exact_argv: true
+    purpose: inspect readiness arguments before recovery
+
+command_trace:
+  - order: 1
+    command: unity-puer-exec exec --project-path <project> --file .tmp/create_scene_sphere.js --wait-timeout-ms 1000 --include-log-offset
+    retained_exact_argv: false
+    purpose: create the requested scene and sphere directly through the primary exec path
+    outcome: the first attempt returned not_available or timed out before the editor was ready
+  - order: 2
+    command: unity-puer-exec wait-until-ready --project-path <project> --ready-timeout-seconds 120 --activity-timeout-seconds 30 --health-timeout-seconds 10 --include-diagnostics
+    retained_exact_argv: false
+    purpose: recover the Unity session after the initial exec timeout
+    outcome: reported a recovered service at the project-scoped base URL with a live unity_pid
+  - order: 3
+    command: unity-puer-exec exec --project-path <project> --code "return 42;" --wait-timeout-ms 1000
+    retained_exact_argv: false
+    purpose: confirm how explicit return values appear in the exec result payload
+    outcome: returned result 42 and clarified the bridge behavior for later verification scripts
+  - order: 4
+    command: unity-puer-exec exec --project-path <project> --file .tmp/create_scene_sphere.js --wait-timeout-ms 1000
+    retained_exact_argv: false
+    purpose: create the temp scene and persist the sphere once the editor was ready
+    outcome: completed successfully and created the requested scene asset
+  - order: 5
+    command: unity-puer-exec exec --project-path <project> --code "<scene root inspection>" --wait-timeout-ms 1000
+    retained_exact_argv: false
+    purpose: verify the temp scene contents through the same exec surface
+    outcome: revealed duplicate AgentValidationSphere roots in the saved scene
+  - order: 6
+    command: unity-puer-exec exec --project-path <project> --file .tmp/cleanup_scene_sphere.js --wait-timeout-ms 1000
+    retained_exact_argv: false
+    purpose: remove the duplicate root discovered during verification
+    outcome: completed successfully and reduced the temp scene back to one sphere
+  - order: 7
+    command: unity-puer-exec exec --project-path <project> --code "<final verification>" --wait-timeout-ms 1000
+    retained_exact_argv: false
+    purpose: confirm the target scene contains exactly one AgentValidationSphere
+    outcome: completed successfully and verified rootCount 1 with the expected object name
+
+key_outputs:
+  - source: CLI output
+    summary: wait-until-ready recovered the editor session after the first exec attempt timed out.
+  - source: CLI output
+    summary: An explicit return probe showed exec surfaces result values when the script uses return.
+  - source: CLI verification
+    summary: Final verification confirmed the target scene contained exactly one AgentValidationSphere root.
+
+task_success: pass
+autonomy: pass
+efficiency: recoverable
+
+human_intervention:
+  level: observed_only
+  summary: The operator launched the validation agent, then cleaned up the project only after the run finished.
+
+modal_blocker:
+  present: false
+  type: none
+  detected_by: none
+  resolution: none
+
+findings:
+  - The revised help surface kept the simple task on the intended exec-first path and did not send the agent to ensure-stopped or get-log-source.
+  - Efficiency remained recoverable because the first exec attempt hit readiness timing, which then caused additional wait-until-ready help and recovery work.
+  - The agent still used broad help exploration around examples and explicit return semantics before converging on the final script shape.
+
+raw_transcript:
+  status: not-retained
+  location: none
+  note: The durable record is reconstructed from the subagent's final structured report; no separate raw terminal transcript was retained.
+
+final_summary: The sequential post-help simple trial stayed concentrated on the exec-first workflow and avoided the earlier secondary-command detour, but convergence still required a recovery branch after the initial exec timeout. The remaining friction came from readiness timing and script-shape probing rather than top-level command discovery.

@@ -1,14 +1,31 @@
 import direct_exec_client
 
 
-COMMANDS = (
-    "wait-until-ready",
-    "wait-for-log-pattern",
-    "wait-for-result-marker",
-    "get-log-source",
-    "exec",
-    "ensure-stopped",
+COMMAND_GROUPS = (
+    (
+        "Primary Execution",
+        (
+            "exec",
+        ),
+    ),
+    (
+        "Supporting Observation",
+        (
+            "wait-for-result-marker",
+            "wait-for-log-pattern",
+            "wait-until-ready",
+        ),
+    ),
+    (
+        "Secondary / Troubleshooting",
+        (
+            "get-log-source",
+            "ensure-stopped",
+        ),
+    ),
 )
+
+COMMANDS = tuple(command for _, commands in COMMAND_GROUPS for command in commands)
 
 EXIT_NO_OBSERVATION_TARGET = 15
 EXIT_NOT_STOPPED = 16
@@ -38,6 +55,14 @@ TOP_LEVEL_COMMANDS = {
     "ensure-stopped": "check or force a stopped state; not the recommended graceful-exit path. See `ensure-stopped --help`.",
 }
 
+RECOMMENDED_PATH = (
+    "For normal project-scoped work, start with `exec --project-path ...`.",
+    "If `exec` returns `running`, continue with `wait-for-result-marker`.",
+    "If you need log-based verification, continue with `wait-for-log-pattern`.",
+    "Use `wait-until-ready` when you specifically need readiness recovery before or between `exec` steps.",
+    "`get-log-source` and `ensure-stopped` are secondary commands, not the normal first step.",
+)
+
 TOP_LEVEL_WORKFLOWS = {
     "exec-and-wait-for-result-marker": "run a script that returns `correlation_id`, capture `log_offset`, then wait for the terminal result marker.",
     "request-editor-exit-via-exec": "request a normal Unity Editor exit through `exec` instead of using `ensure-stopped`.",
@@ -47,9 +72,9 @@ TOP_LEVEL_WORKFLOWS = {
 COMMAND_HELP = {
     "wait-until-ready": {
         "quick_start": [
-            "Shortcut for the readiness path already covered by project-scoped `exec`.",
+            "Supporting readiness command for cases where you explicitly need Unity ready before or between `exec` steps.",
             "`unity-puer-exec wait-until-ready --project-path X:/project`",
-            "Equivalent readiness path: `unity-puer-exec exec --project-path X:/project --file X:/script.js`",
+            "For normal project-scoped work, start with `unity-puer-exec exec --project-path X:/project --file X:/script.js` instead of using this as the default first step.",
         ],
         "related_workflows": (),
         "args": {
@@ -91,9 +116,9 @@ COMMAND_HELP = {
     },
     "wait-for-log-pattern": {
         "quick_start": [
-            "Wait until the selected Unity log emits a regular-expression pattern from the current observation point.",
+            "Supporting observation command for log-based verification after or alongside `exec`.",
             "`unity-puer-exec wait-for-log-pattern --project-path X:/project --pattern \"\\\\[Build\\\\] done\"`",
-            "The pattern is a regular expression, not a literal string.",
+            "Use this when task success is best verified through Unity log output; the pattern is a regular expression, not a literal string.",
         ],
         "related_workflows": ("exec-and-wait-for-result-marker",),
         "args": {
@@ -139,8 +164,9 @@ COMMAND_HELP = {
     },
     "get-log-source": {
         "quick_start": [
-            "Report the observable Unity log source for the selected target.",
+            "Secondary troubleshooting command for inspecting the observable Unity log source.",
             "`unity-puer-exec get-log-source --project-path X:/project`",
+            "This is not part of the normal project-scoped execution or verification path.",
         ],
         "related_workflows": (),
         "args": {
@@ -169,9 +195,10 @@ COMMAND_HELP = {
     },
     "exec": {
         "quick_start": [
-            "Run JavaScript against a Unity project or direct service; this is the primary script execution entry point.",
+            "Normal first command for project-scoped work and the primary script execution entry point.",
             "`unity-puer-exec exec --project-path X:/project --file X:/script.js`",
             "`unity-puer-exec exec --project-path X:/project --stdin < script.js`",
+            "With `--project-path`, `exec` may launch or recover Unity for the project, so you do not need `wait-until-ready` as the default first step.",
         ],
         "related_workflows": (
             "exec-and-wait-for-result-marker",
@@ -220,8 +247,9 @@ COMMAND_HELP = {
     },
     "wait-for-result-marker": {
         "quick_start": [
-            "Wait for the standard single-line JSON result marker emitted by a long-running script.",
+            "Normal follow-up when `exec` returns `running` for a long-running workflow.",
             "`unity-puer-exec wait-for-result-marker --project-path X:/project --correlation-id ID --start-offset 12345`",
+            "Use the `correlation_id` from the script workflow and the `log_offset` returned by `exec --include-log-offset`.",
         ],
         "related_workflows": ("exec-and-wait-for-result-marker",),
         "args": {
@@ -263,9 +291,9 @@ COMMAND_HELP = {
     },
     "ensure-stopped": {
         "quick_start": [
-            "Check or enforce a stopped state for the selected target; this is not the normal graceful-exit workflow.",
+            "Secondary cleanup or enforcement command for stopped-state control.",
             "`unity-puer-exec ensure-stopped --project-path X:/project --inspect-only`",
-            "Normal exit workflows should prefer a script request such as `unity-puer-exec exec --project-path X:/project --file X:/exit.js`.",
+            "This is not part of the normal execution or verification workflow; graceful exits should prefer a script request such as `unity-puer-exec exec --project-path X:/project --file X:/exit.js`.",
         ],
         "related_workflows": (),
         "args": {
@@ -346,9 +374,15 @@ WORKFLOW_EXAMPLES = {
 
 
 def render_top_level_help():
+    command_group_sections = []
+    for title, commands in COMMAND_GROUPS:
+        command_group_sections.append(
+            "{}\n{}".format(title, _bullet_lines("{}: {}".format(name, TOP_LEVEL_COMMANDS[name]) for name in commands))
+        )
     sections = [
-        "Overview\nunity-puer-exec is the primary CLI surface for preparing Unity, executing JavaScript, observing long-running work, and checking session state.\nLegacy aliases remain compatibility shims and are not authoritative command surfaces.",
-        "Commands\n{}".format(_bullet_lines("{}: {}".format(name, TOP_LEVEL_COMMANDS[name]) for name in COMMANDS)),
+        "Overview\nunity-puer-exec is the primary CLI surface for preparing Unity, executing JavaScript, observing long-running work, and checking session state.\nFor normal project-scoped tasks, start with `exec` and add observation commands only when the workflow needs them.\nLegacy aliases remain compatibility shims and are not authoritative command surfaces.",
+        "Recommended Path\n{}".format(_bullet_lines(RECOMMENDED_PATH)),
+        "Command Groups\n{}".format("\n\n".join(command_group_sections)),
         "Global Selector Rules\n- Use exactly one selector on commands that target a Unity session: `--project-path` or `--base-url`.\n- `--project-path` is the normal choice when the CLI should discover, launch, or recover Unity for a project.\n- `--base-url` is for a direct service you already know how to reach.",
         "Common Workflows\nUse `unity-puer-exec --help-example <example-id>` to view full steps.\n{}".format(
             _bullet_lines("{}: {}".format(workflow_id, TOP_LEVEL_WORKFLOWS[workflow_id]) for workflow_id in WORKFLOW_IDS)

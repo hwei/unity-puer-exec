@@ -1,0 +1,122 @@
+prompt_id: prompt-b
+prompt_source: openspec/changes/archive/2026-03-19-validate-help-only-agent-cli-discoverability/task-prompts.md
+record_kind: retrospective-summary
+date: 2026-03-20
+
+model: gpt-5.4-mini subagent
+project_path: F:\C3\unity-puer-exec-workspace\c3-client-tree2\Project
+cli_entry_path: F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py
+
+constraints:
+  allowed:
+    - published unity-puer-exec help surface
+    - normal CLI execution against the target Unity project
+  disallowed:
+    - repository source in this product workspace
+    - repository tests
+    - command-level maintainer hints
+
+help_queries:
+  - order: 1
+    command: python F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py --help
+    retained_exact_argv: true
+    purpose: orient around the top-level help surface and recommended path
+  - order: 2
+    command: python F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py exec --help
+    retained_exact_argv: true
+    purpose: confirm the primary execution entry for the code-writing task
+  - order: 3
+    command: python F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py --help-example exec-and-wait-for-result-marker
+    retained_exact_argv: true
+    purpose: inspect the published longer-running workflow example
+  - order: 4
+    command: python F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py exec --help-args
+    retained_exact_argv: true
+    purpose: inspect execution argument choices before writing and verifying code
+  - order: 5
+    command: python F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py exec --help-status
+    retained_exact_argv: true
+    purpose: understand exec status handling for delayed verification
+  - order: 6
+    command: python F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py wait-for-log-pattern --help
+    retained_exact_argv: true
+    purpose: inspect the published verification path for log-based confirmation
+  - order: 7
+    command: python F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py wait-for-log-pattern --help-args
+    retained_exact_argv: true
+    purpose: inspect log-observation arguments before final verification
+  - order: 8
+    command: python F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py wait-for-log-pattern --help-status
+    retained_exact_argv: true
+    purpose: understand log-observation statuses after the first stalled wait
+
+command_trace:
+  - order: 1
+    command: unity-puer-exec exec --project-path <project> --code "return typeof CS"
+    retained_exact_argv: false
+    purpose: confirm how Unity bridge types are exposed before writing the editor script
+    outcome: returned object, confirming the CS bridge is available
+  - order: 2
+    command: unity-puer-exec exec --project-path <project> --code "<write SelectionGuidMenu.cs>"
+    retained_exact_argv: false
+    purpose: add the requested editor menu command under Assets/Editor
+    outcome: completed successfully and created SelectionGuidMenu.cs
+  - order: 3
+    command: unity-puer-exec exec --project-path <project> --code "return CS.UnityEditor.AssetDatabase.AssetPathToGUID('Assets/Editor/SelectionGuidMenu.cs')"
+    retained_exact_argv: false
+    purpose: obtain the file GUID needed for a concrete verification target
+    outcome: returned GUID 76ee514a50c1adf4ab52a435926642b3
+  - order: 4
+    command: unity-puer-exec exec --project-path <project> --code "<ExecuteMenuItem immediate verification>"
+    retained_exact_argv: false
+    purpose: verify the menu command can execute in the editor
+    outcome: returned true, showing the menu command registered successfully
+  - order: 5
+    command: unity-puer-exec wait-for-log-pattern --project-path <project> --pattern "76ee514a50c1adf4ab52a435926642b3"
+    retained_exact_argv: false
+    purpose: observe the expected GUID log line after the first immediate verification attempt
+    outcome: stalled on inactivity because the log observation started after the relevant line had already been emitted
+  - order: 6
+    command: unity-puer-exec exec --project-path <project> --code "<delayed ExecuteMenuItem verification>" --wait-timeout-ms 1000 --include-log-offset
+    retained_exact_argv: false
+    purpose: trigger the menu command again in a way that provides a start offset for log-based observation
+    outcome: returned running with log_offset 79236
+  - order: 7
+    command: unity-puer-exec wait-for-log-pattern --project-path <project> --start-offset 79236 --pattern "76ee514a50c1adf4ab52a435926642b3"
+    retained_exact_argv: false
+    purpose: verify the delayed execution through the published log-wait workflow
+    outcome: completed successfully with result.status log_pattern_matched
+
+key_outputs:
+  - source: CLI output
+    summary: The menu verification command returned true, showing the new editor command registered and executed.
+  - source: CLI output
+    summary: AssetDatabase.AssetPathToGUID returned GUID 76ee514a50c1adf4ab52a435926642b3 for SelectionGuidMenu.cs.
+  - source: CLI verification
+    summary: wait-for-log-pattern matched the emitted GUID after the delayed exec run provided a safe log_offset.
+
+task_success: pass
+autonomy: pass
+efficiency: recoverable
+
+human_intervention:
+  level: observed_only
+  summary: The operator launched the validation agent, then cleaned up the project after the run completed.
+
+modal_blocker:
+  present: false
+  type: none
+  detected_by: none
+  resolution: none
+
+findings:
+  - The sequential long task stayed on the intended exec plus wait-for-log-pattern path and did not probe ensure-stopped or get-log-source.
+  - The exec-and-wait-for-result-marker example still served as useful orientation even though the final verification used log-pattern observation rather than result markers.
+  - Efficiency remained recoverable because the first log-observation attempt started too late, forcing a second execution with include-log-offset before the wait could succeed cleanly.
+
+raw_transcript:
+  status: not-retained
+  location: none
+  note: The durable record is reconstructed from the subagent's final structured report; no separate raw terminal transcript was retained.
+
+final_summary: The sequential post-help long trial converged through the intended exec and wait-for-log-pattern workflow without scanning secondary troubleshooting commands. The remaining inefficiency came from timing the observation window rather than from top-level command discovery, so the run improved in command focus while still falling short of a clearly clean convergence.

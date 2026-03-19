@@ -32,6 +32,19 @@ The help surface should emphasize the first correct workflow an agent should try
 Alternative considered:
 - Add more comprehensive help without reprioritizing what appears first. Rejected because more help can still leave weaker agents exploring too broadly.
 
+### Decision: Express command role hierarchy directly in help
+The revised help surface should state command role hierarchy explicitly instead of leaving agents to infer priority from a flat command list. `exec` should be presented as the normal first command for project-scoped work, `wait-for-result-marker` and `wait-for-log-pattern` should appear as normal follow-up observation paths, `wait-until-ready` should be positioned as supporting readiness recovery, and `get-log-source` plus `ensure-stopped` should be marked as secondary or troubleshooting commands.
+
+Alternative considered:
+- Keep the existing command descriptions and only reorder the command list. Rejected because ordering alone still leaves role ambiguity and does not clearly tell medium-capability agents which commands are primary versus secondary.
+
+## Implementation Notes
+
+- Top-level help should add a short `Recommended Path` section before the broader command reference.
+- Top-level command presentation should group commands by role so the primary project-scoped path is visible before secondary inspection or cleanup commands.
+- Per-command quick-start text should use role-oriented language such as `normal first command`, `normal follow-up`, `supporting readiness`, or `secondary troubleshooting` so the preferred path remains visible in both top-level and deep help.
+- Deep argument and status help should remain intact so the refinement shortens discovery time without weakening the formal CLI contract.
+
 ## Risks / Trade-offs
 
 - [Efficiency gains may conflict with completeness] → Preserve deep help sections while making the top-level path more direct.

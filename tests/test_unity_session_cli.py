@@ -43,11 +43,17 @@ class UnityPuerExecCliTests(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         self.assertEqual(stderr, "")
         self.assertIn("Overview", stdout)
-        self.assertIn("Commands", stdout)
+        self.assertIn("Recommended Path", stdout)
+        self.assertIn("Command Groups", stdout)
+        self.assertIn("Primary Execution", stdout)
+        self.assertIn("Supporting Observation", stdout)
+        self.assertIn("Secondary / Troubleshooting", stdout)
         self.assertIn("Global Selector Rules", stdout)
         self.assertIn("Common Workflows", stdout)
         self.assertIn("exec-and-wait-for-result-marker", stdout)
         self.assertIn("See `exec --help`.", stdout)
+        self.assertIn("start with `exec --project-path ...`", stdout)
+        self.assertIn("not the normal first step", stdout)
 
     def test_empty_invocation_matches_top_level_help_contract(self):
         empty_exit_code, empty_stdout, empty_stderr = unity_puer_exec.run_cli([])
@@ -70,6 +76,8 @@ class UnityPuerExecCliTests(unittest.TestCase):
         self.assertIn("`--help-args`", stdout)
         self.assertIn("`--help-status`", stdout)
         self.assertIn("exec-and-wait-for-result-marker", stdout)
+        self.assertIn("Normal first command for project-scoped work", stdout)
+        self.assertIn("do not need `wait-until-ready` as the default first step", stdout)
 
     def test_exec_help_args_renders_argument_template(self):
         exit_code, stdout, stderr = unity_puer_exec.run_cli(["exec", "--help-args"])
