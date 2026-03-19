@@ -1,0 +1,108 @@
+prompt_id: prompt-a
+prompt_source: openspec/changes/archive/2026-03-19-validate-help-only-agent-cli-discoverability/task-prompts.md
+record_kind: retrospective-summary
+date: 2026-03-19
+
+model: gpt-5.4-mini subagent
+project_path: F:\C3\unity-puer-exec-workspace\c3-client-tree2\Project
+cli_entry_path: F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py
+
+constraints:
+  allowed:
+    - published unity-puer-exec help surface
+    - normal CLI execution against the target Unity project
+  disallowed:
+    - repository source in this product workspace
+    - repository tests
+    - command-level maintainer hints
+
+help_queries:
+  - order: 1
+    command: unity-puer-exec --help
+    retained_exact_argv: true
+    purpose: orient around the available command surface
+  - order: 2
+    command: unity-puer-exec exec --help
+    retained_exact_argv: true
+    purpose: understand the primary execution entry point
+  - order: 3
+    command: unity-puer-exec exec --help-args
+    retained_exact_argv: true
+    purpose: inspect execution arguments before running a script
+  - order: 4
+    command: unity-puer-exec exec --help-status
+    retained_exact_argv: true
+    purpose: understand machine-readable outcomes
+  - order: 5
+    command: unity-puer-exec wait-until-ready --help
+    retained_exact_argv: true
+    purpose: confirm how to bring the editor to a ready state
+  - order: 6
+    command: unity-puer-exec wait-for-log-pattern --help
+    retained_exact_argv: true
+    purpose: find a verification path that does not depend on repository internals
+  - order: 7
+    command: unity-puer-exec wait-for-log-pattern --help-args
+    retained_exact_argv: true
+    purpose: inspect log observation arguments
+  - order: 8
+    command: unity-puer-exec wait-for-log-pattern --help-status
+    retained_exact_argv: true
+    purpose: understand log wait status handling
+
+command_trace:
+  - order: 1
+    command: unity-puer-exec wait-until-ready --project-path <project>
+    retained_exact_argv: false
+    purpose: start or attach to the Unity editor for the target project
+    outcome: the agent reached a ready editor state before issuing scene edits
+  - order: 2
+    command: unity-puer-exec exec --project-path <project> <scene edit script>
+    retained_exact_argv: false
+    purpose: create a sphere through the CLI-managed script execution path
+    outcome: the Unity-side scene edit completed and a sphere existed in the targeted scene evidence
+  - order: 3
+    command: unity-puer-exec wait-for-log-pattern --project-path <project> <pattern>
+    retained_exact_argv: false
+    purpose: confirm the requested change through CLI-visible output
+    outcome: the run produced enough evidence to verify the scene edit
+  - order: 4
+    command: unity-puer-exec ensure-stopped --project-path <project>
+    retained_exact_argv: false
+    purpose: exploratory cleanup attempt after the run
+    outcome: this was not part of the shortest successful path
+
+key_outputs:
+  - source: archived result summary
+    summary: The run created a temporary scene artifact at `Assets/_codex_temp_sphere.unity`.
+  - source: archived result summary
+    summary: Repository-side verification confirmed the scene file contained `m_Name: Sphere`.
+  - source: archived result summary
+    summary: Repository-side verification confirmed the scene file contained `SphereCollider`.
+
+task_success: pass
+autonomy: pass
+efficiency: recoverable
+
+human_intervention:
+  level: non_decisive
+  summary: The operator cancelled a Unity native save-scene modal so the editor could return to a controllable state.
+
+modal_blocker:
+  present: true
+  type: save_scene
+  detected_by: human_observation
+  resolution: human_cancel
+
+findings:
+  - The primary execution workflow was discoverable from help-only surfaces.
+  - The agent still probed `ensure-stopped` and `get-log-source`, which indicates some extra exploration before settling on the shortest path.
+  - This transcript was reconstructed from archived summaries, so exact exec argv and exact output lines were not durably retained.
+  - The original prompt wording allowed unnamed-scene behavior that later validation protocol revisions removed.
+
+raw_transcript:
+  status: not-retained
+  location: none
+  note: The first-round validation preserved only result summaries, not a full raw transcript.
+
+final_summary: The simple help-only task succeeded and the main CLI workflow was discoverable, but the durable evidence only preserves command families rather than a full live transcript. The run also showed why modal blockers and baseline reset need to be recorded separately from discoverability findings.
