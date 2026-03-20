@@ -49,9 +49,7 @@ Selector-driven commands SHALL accept exactly one of `--project-path` or `--base
 
 ### Requirement: `exec` is the primary work command
 
-`exec` SHALL send JavaScript to the Unity-side execution service. It SHALL accept exactly one selector and exactly one script input source. In project-path mode it MAY implicitly prepare Unity enough to satisfy the request. In base-url mode it SHALL target an already chosen service without owning Unity launch. When project-path mode needs to prepare Unity, it SHALL follow the same duplicate-launch avoidance and project-scoped recovery rules as `wait-until-ready`.
-
-For accepted script input, `exec` SHALL treat the provided source as module-shaped entry source rather than as an injected async function-body fragment. The source SHALL provide a default-exported entry function used as the exec entrypoint.
+`exec` SHALL send JavaScript to the Unity-side execution service. It SHALL accept exactly one selector and exactly one script input source. In project-path mode it MAY implicitly prepare Unity enough to satisfy the request. In base-url mode it SHALL target an already chosen service without owning Unity launch. When project-path mode needs to prepare Unity, it SHALL follow the same duplicate-launch avoidance and project-scoped recovery rules as `wait-until-ready`. If project-scoped execution is blocked by a Unity-native modal dialog, the CLI SHALL surface a machine-usable blocking result or blocker diagnostics instead of failing only as an unexplained timeout.
 
 #### Scenario: Project-scoped execution is requested
 
@@ -65,11 +63,25 @@ For accepted script input, `exec` SHALL treat the provided source as module-shap
 - **THEN** the CLI applies the same project-scoped reuse or conflict behavior as `wait-until-ready`
 - **AND** it does not initiate a blind second launch for the same project
 
-#### Scenario: Caller submits a legacy fragment-style script
+#### Scenario: Project-scoped exec is blocked by a modal dialog
 
-- **WHEN** `exec` receives script content that does not satisfy the required module-shaped default-export entry contract
-- **THEN** the command fails explicitly instead of treating the content as an implicit async function body fragment
-- **AND** the published contract does not describe fragment-style scripts as supported input
+- **WHEN** `exec --project-path ...` cannot proceed because Unity Editor is blocked by a native modal dialog
+- **THEN** the CLI surfaces a machine-usable blocking result or explicit blocker diagnostics
+- **AND** the caller does not need to guess whether the failure was caused by script logic or editor UI state
+
+#### Scenario: Caller queries blocker state after an exec-side stall
+
+- **WHEN** a caller invokes the explicit blocker-query command for a project-scoped Unity Editor instance after an exec-side timeout or stall symptom
+- **THEN** the command reports whether a supported modal blocker is currently detected
+- **AND** the command does not require the caller to resubmit the blocked exec request
+
+#### Scenario: Supported save-scene blockers are reported with stable types
+
+- **WHEN** project-scoped exec or blocker-query detection observes the supported Windows save-scene dialogs
+- **THEN** the machine-readable payload uses `status = "modal_blocked"`
+- **AND** `blocker.type` is `save_modified_scenes_prompt` for the `Scene(s) Have Been Modified` dialog
+- **AND** `blocker.type` is `save_scene_dialog` for the `Save Scene` file-save dialog
+- **AND** `blocker.scope` is `exec`
 
 ### Requirement: Exec responses expose a recoverable request identity
 
