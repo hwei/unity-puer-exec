@@ -72,7 +72,7 @@ class DirectExecClientTests(unittest.TestCase):
             "exec",
             "http://127.0.0.1:55231",
             {
-                "id": "req-1",
+                "request_id": "req-1",
                 "code": "return 1 + 1;",
                 "wait_timeout_ms": 1500,
             },
@@ -88,7 +88,7 @@ class DirectExecClientTests(unittest.TestCase):
                 (
                     "http://127.0.0.1:55231/exec",
                     {
-                        "id": "req-1",
+                        "request_id": "req-1",
                         "code": "return 1 + 1;",
                         "wait_timeout_ms": 1500,
                     },
@@ -114,7 +114,7 @@ class DirectExecClientTests(unittest.TestCase):
             "exec",
             "http://127.0.0.1:55231",
             {
-                "id": "req-2",
+                "request_id": "req-2",
                 "code": "await host.delayMs(5000); return 42;",
                 "wait_timeout_ms": 1000,
             },
@@ -186,7 +186,7 @@ class DirectExecClientTests(unittest.TestCase):
             "exec",
             "http://127.0.0.1:55231",
             {
-                "id": "req-3",
+                "request_id": "req-3",
                 "code": "throw new Error('boom')",
                 "wait_timeout_ms": 1000,
             },
@@ -205,7 +205,7 @@ class DirectExecClientTests(unittest.TestCase):
             "exec",
             "http://127.0.0.1:55231",
             {
-                "id": "req-4",
+                "request_id": "req-4",
                 "code": "return 1;",
                 "wait_timeout_ms": 1000,
             },
@@ -218,6 +218,53 @@ class DirectExecClientTests(unittest.TestCase):
         body = json.loads(stdout)
         self.assertEqual(body["status"], "not_available")
         self.assertEqual(body["error"], "timed out")
+        self.assertEqual(body["request_id"], "req-4")
+
+    def test_busy_payload_is_non_zero_on_stdout(self):
+        transport = FakeTransport([
+            {
+                "ok": False,
+                "status": "busy",
+                "request_id": "req-5",
+            }
+        ])
+
+        exit_code, stdout, stderr = direct_exec_client.invoke_command(
+            "exec",
+            "http://127.0.0.1:55231",
+            {"request_id": "req-5", "code": "return 1;", "wait_timeout_ms": 500},
+            500,
+            transport=transport,
+        )
+
+        self.assertEqual(exit_code, direct_exec_client.EXIT_BUSY)
+        self.assertEqual(stderr, "")
+        body = json.loads(stdout)
+        self.assertEqual(body["status"], "busy")
+        self.assertEqual(body["request_id"], "req-5")
+
+    def test_request_id_conflict_payload_is_non_zero_on_stdout(self):
+        transport = FakeTransport([
+            {
+                "ok": False,
+                "status": "request_id_conflict",
+                "request_id": "req-6",
+            }
+        ])
+
+        exit_code, stdout, stderr = direct_exec_client.invoke_command(
+            "exec",
+            "http://127.0.0.1:55231",
+            {"request_id": "req-6", "code": "return 1;", "wait_timeout_ms": 500},
+            500,
+            transport=transport,
+        )
+
+        self.assertEqual(exit_code, direct_exec_client.EXIT_REQUEST_ID_CONFLICT)
+        self.assertEqual(stderr, "")
+        body = json.loads(stdout)
+        self.assertEqual(body["status"], "request_id_conflict")
+        self.assertEqual(body["request_id"], "req-6")
 
 
 if __name__ == "__main__":

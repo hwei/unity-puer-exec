@@ -17,9 +17,9 @@ namespace UnityPuerExec
         internal const int Port = 55231;
         private const string ReadyLogPrefix = "[UnityPuerExec] Ready on port";
 
-        private static readonly ConcurrentDictionary<string, UnityPuerExecJob> Jobs =
+        private static readonly ConcurrentDictionary<string, UnityPuerExecJob> Requests =
             new ConcurrentDictionary<string, UnityPuerExecJob>();
-
+        private static readonly object RequestGate = new object();
         private static readonly ConcurrentQueue<Action> MainThreadActions = new ConcurrentQueue<Action>();
         private static readonly string ListenerPrefix = $"http://127.0.0.1:{Port}/";
 
@@ -29,6 +29,7 @@ namespace UnityPuerExec
         private static string envInitError = "";
         private static string sessionMarker = Guid.NewGuid().ToString("N");
         private static string cachedConsoleLogPath = "";
+        private static string activeRequestId = "";
         private static int mainThreadId;
         private static volatile bool isCompiling;
         private static volatile bool isUpdating;
@@ -44,33 +45,23 @@ namespace UnityPuerExec
 
         internal static bool IsMainThread => Thread.CurrentThread.ManagedThreadId == mainThreadId;
 
-        internal static string CreateSpawnedJob(string parentJobId, string name, string code)
-        {
-            var childJob = CreateJob("spawn", string.IsNullOrEmpty(name) ? "spawn" : name);
-            if (Jobs.TryGetValue(parentJobId, out var parentJob))
-            {
-                parentJob.AddSpawnedJob(childJob.JobId);
-            }
-
-            StartJobEvaluation(childJob, code);
-            return childJob.JobId;
-        }
-
         internal static void CompleteJob(string jobId, string resultJson)
         {
-            if (Jobs.TryGetValue(jobId, out var job))
+            if (Requests.TryGetValue(jobId, out var job))
             {
-                Debug.Log($"[UnityPuerExec] Complete job={jobId} result={resultJson}");
+                Debug.Log($"[UnityPuerExec] Complete request={jobId} result={resultJson}");
                 job.Complete(resultJson);
+                ReleaseActiveRequest(jobId);
             }
         }
 
         internal static void FailJob(string jobId, string error, string stack)
         {
-            if (Jobs.TryGetValue(jobId, out var job))
+            if (Requests.TryGetValue(jobId, out var job))
             {
-                Debug.LogError($"[UnityPuerExec] Fail job={jobId} error={error}\n{stack}");
+                Debug.LogError($"[UnityPuerExec] Fail request={jobId} error={error}\n{stack}");
                 job.Fail(error, stack);
+                ReleaseActiveRequest(jobId);
             }
         }
 
@@ -156,6 +147,12 @@ namespace UnityPuerExec
                     return;
                 }
 
+                if (path.Equals("/wait-for-exec", StringComparison.OrdinalIgnoreCase))
+                {
+                    await HandleWaitForExecAsync(context);
+                    return;
+                }
+
                 if (path.Equals("/health", StringComparison.OrdinalIgnoreCase))
                 {
                     await WriteJsonAsync(
@@ -194,7 +191,7 @@ namespace UnityPuerExec
 
             var requestJson = await ReadRequestBodyAsync(context.Request);
             var request = JsonUtility.FromJson<ExecRequest>(requestJson);
-            if (request == null || string.IsNullOrEmpty(request.code))
+            if (request == null || string.IsNullOrEmpty(request.request_id) || string.IsNullOrEmpty(request.code))
             {
                 context.Response.StatusCode = 400;
                 await WriteJsonAsync(
@@ -204,30 +201,95 @@ namespace UnityPuerExec
                 return;
             }
 
-            var job = CreateJob("exec", request.id);
-            Debug.Log($"[UnityPuerExec] Exec request accepted job={job.JobId}");
-            var logOffset = request.include_log_offset ? ReadEditorLogOffset() : (long?)null;
-            var enqueueCompletion = new TaskCompletionSource<bool>();
-            MainThreadActions.Enqueue(() =>
+            var normalizedCode = NormalizeCode(request.code);
+            var acceptStatus = TryAcceptExecRequest(request.request_id, normalizedCode, out var execJob, out var isNewRequest);
+            if (acceptStatus == "busy")
             {
-                try
-                {
-                    Debug.Log($"[UnityPuerExec] Exec starting job={job.JobId}");
-                    StartJobEvaluation(job, request.code);
-                    enqueueCompletion.TrySetResult(true);
-                }
-                catch (Exception ex)
-                {
-                    job.Fail(ex.Message, ex.ToString());
-                    enqueueCompletion.TrySetResult(false);
-                }
-            });
+                await WriteJsonAsync(
+                    context,
+                    UnityPuerExecProtocol.BuildSimpleErrorJson(
+                        "busy",
+                        "a different exec request is already active",
+                        request.request_id
+                    )
+                );
+                return;
+            }
 
-            await enqueueCompletion.Task;
-            Debug.Log($"[UnityPuerExec] Exec waiting job={job.JobId}");
-            await WaitForTerminalOrTimeoutAsync(job, request.wait_timeout_ms);
-            var payload = UnityPuerExecProtocol.BuildExecResponseJson(job.Snapshot(), sessionMarker, logOffset);
-            Debug.Log($"[UnityPuerExec] Exec responding job={job.JobId} payload={payload}");
+            if (acceptStatus == "request_id_conflict")
+            {
+                await WriteJsonAsync(
+                    context,
+                    UnityPuerExecProtocol.BuildSimpleErrorJson(
+                        "request_id_conflict",
+                        "request_id was already used for different execution content",
+                        request.request_id
+                    )
+                );
+                return;
+            }
+
+            Debug.Log($"[UnityPuerExec] Exec request accepted request={execJob.RequestId} new={isNewRequest}");
+            var logOffset = request.include_log_offset ? ReadEditorLogOffset() : (long?)null;
+            if (isNewRequest)
+            {
+                var enqueueCompletion = new TaskCompletionSource<bool>();
+                MainThreadActions.Enqueue(() =>
+                {
+                    try
+                    {
+                        Debug.Log($"[UnityPuerExec] Exec starting request={execJob.RequestId}");
+                        StartJobEvaluation(execJob, request.code);
+                        enqueueCompletion.TrySetResult(true);
+                    }
+                    catch (Exception ex)
+                    {
+                        execJob.Fail(ex.Message, ex.ToString());
+                        ReleaseActiveRequest(execJob.RequestId);
+                        enqueueCompletion.TrySetResult(false);
+                    }
+                });
+
+                await enqueueCompletion.Task;
+            }
+
+            Debug.Log($"[UnityPuerExec] Exec waiting request={execJob.RequestId}");
+            await WaitForTerminalOrTimeoutAsync(execJob, request.wait_timeout_ms);
+            var payload = UnityPuerExecProtocol.BuildExecResponseJson(execJob.Snapshot(), sessionMarker, logOffset);
+            Debug.Log($"[UnityPuerExec] Exec responding request={execJob.RequestId} payload={payload}");
+            await WriteJsonAsync(context, payload);
+        }
+
+        private static async Task HandleWaitForExecAsync(HttpListenerContext context)
+        {
+            var requestJson = await ReadRequestBodyAsync(context.Request);
+            var request = JsonUtility.FromJson<WaitForExecRequest>(requestJson);
+            if (request == null || string.IsNullOrEmpty(request.request_id))
+            {
+                context.Response.StatusCode = 400;
+                await WriteJsonAsync(
+                    context,
+                    "{\"ok\":false,\"status\":\"failed\",\"error\":\"invalid_wait_for_exec_request\"}"
+                );
+                return;
+            }
+
+            if (!Requests.TryGetValue(request.request_id, out var execJob))
+            {
+                await WriteJsonAsync(
+                    context,
+                    UnityPuerExecProtocol.BuildSimpleErrorJson(
+                        "missing",
+                        "no recoverable record exists for request_id",
+                        request.request_id
+                    )
+                );
+                return;
+            }
+
+            var logOffset = request.include_log_offset ? ReadEditorLogOffset() : (long?)null;
+            await WaitForTerminalOrTimeoutAsync(execJob, request.wait_timeout_ms);
+            var payload = UnityPuerExecProtocol.BuildExecResponseJson(execJob.Snapshot(), sessionMarker, logOffset);
             await WriteJsonAsync(context, payload);
         }
 
@@ -258,12 +320,37 @@ namespace UnityPuerExec
             await Task.WhenAny(job.Completion, Task.Delay(timeout));
         }
 
-        private static UnityPuerExecJob CreateJob(string prefix, string name)
+        private static string TryAcceptExecRequest(
+            string requestId,
+            string normalizedCode,
+            out UnityPuerExecJob job,
+            out bool isNewRequest
+        )
         {
-            var id = $"{prefix}-{Guid.NewGuid():N}";
-            var job = new UnityPuerExecJob(id, name);
-            Jobs[id] = job;
-            return job;
+            lock (RequestGate)
+            {
+                if (Requests.TryGetValue(requestId, out job))
+                {
+                    isNewRequest = false;
+                    return job.NormalizedCode == normalizedCode ? "accepted" : "request_id_conflict";
+                }
+
+                if (
+                    !string.IsNullOrEmpty(activeRequestId)
+                    && Requests.TryGetValue(activeRequestId, out var activeJob)
+                    && activeJob.Snapshot().Status == UnityPuerExecJobStatus.Running
+                )
+                {
+                    isNewRequest = false;
+                    return "busy";
+                }
+
+                job = new UnityPuerExecJob(requestId, normalizedCode);
+                Requests[requestId] = job;
+                activeRequestId = requestId;
+                isNewRequest = true;
+                return "accepted";
+            }
         }
 
         private static void StartJobEvaluation(UnityPuerExecJob job, string code)
@@ -272,10 +359,14 @@ namespace UnityPuerExec
             if (jsEnv == null)
             {
                 job.Fail("js_env_not_available", envInitError);
+                ReleaseActiveRequest(job.RequestId);
                 return;
             }
 
-            jsEnv.Eval(UnityPuerExecProtocol.BuildWrappedScript(job.JobId, code), $"unity-puer-exec/{job.JobId}.js");
+            jsEnv.Eval(
+                UnityPuerExecProtocol.BuildWrappedScript(job.RequestId, code),
+                $"unity-puer-exec/{job.RequestId}.js"
+            );
         }
 
         private static void EnsureJsEnv()
@@ -378,6 +469,27 @@ namespace UnityPuerExec
             {
                 return 0;
             }
+        }
+
+        private static void ReleaseActiveRequest(string requestId)
+        {
+            lock (RequestGate)
+            {
+                if (activeRequestId == requestId)
+                {
+                    activeRequestId = "";
+                }
+            }
+        }
+
+        private static string NormalizeCode(string code)
+        {
+            if (string.IsNullOrEmpty(code))
+            {
+                return string.Empty;
+            }
+
+            return code.Replace("\r\n", "\n").Replace('\r', '\n');
         }
 
     }

@@ -11,6 +11,7 @@ COMMAND_GROUPS = (
     (
         "Supporting Observation",
         (
+            "wait-for-exec",
             "wait-for-result-marker",
             "wait-for-log-pattern",
             "wait-until-ready",
@@ -34,6 +35,7 @@ EXIT_UNITY_NOT_READY = 21
 
 WORKFLOW_IDS = (
     "exec-and-wait-for-result-marker",
+    "recover-exec-by-request-id",
     "request-editor-exit-via-exec",
 )
 
@@ -49,6 +51,7 @@ def _bullet_lines(items):
 TOP_LEVEL_COMMANDS = {
     "wait-until-ready": "prepare a project or direct service until Unity is ready. See `wait-until-ready --help`.",
     "wait-for-log-pattern": "observe logs until a regular-expression pattern appears. See `wait-for-log-pattern --help`.",
+    "wait-for-exec": "continue waiting on an accepted exec request by `request_id`. See `wait-for-exec --help`.",
     "wait-for-result-marker": "wait for the standard single-line JSON result marker emitted by a long-running script. See `wait-for-result-marker --help`.",
     "get-log-source": "report the observable Unity log source for the selected target. See `get-log-source --help`.",
     "exec": "run JavaScript against a project or direct service; primary entry for script execution. See `exec --help`.",
@@ -57,7 +60,8 @@ TOP_LEVEL_COMMANDS = {
 
 RECOMMENDED_PATH = (
     "For normal project-scoped work, start with `exec --project-path ...`.",
-    "If `exec` returns `running`, continue with `wait-for-result-marker`.",
+    "If `exec` returns `running`, continue with `wait-for-exec --request-id ...` or the script-specific observation path you designed.",
+    "Use `wait-for-result-marker` after `exec` only when the script deliberately exposes a `correlation_id` workflow.",
     "If you need log-based verification, continue with `wait-for-log-pattern`.",
     "Use `wait-until-ready` when you specifically need readiness recovery before or between `exec` steps.",
     "`get-log-source` and `ensure-stopped` are secondary commands, not the normal first step.",
@@ -65,6 +69,7 @@ RECOMMENDED_PATH = (
 
 TOP_LEVEL_WORKFLOWS = {
     "exec-and-wait-for-result-marker": "run a script that returns `correlation_id`, capture `log_offset`, then wait for the terminal result marker.",
+    "recover-exec-by-request-id": "recover an accepted exec request by reusing or waiting on the same `request_id` after `running` or ambiguity.",
     "request-editor-exit-via-exec": "request a normal Unity Editor exit through `exec` instead of using `ensure-stopped`.",
 }
 
@@ -197,10 +202,12 @@ COMMAND_HELP = {
         "quick_start": [
             "Normal first command for project-scoped work and the primary script execution entry point.",
             "`unity-puer-exec exec --project-path X:/project --file X:/script.js`",
+            "`unity-puer-exec exec --project-path X:/project --file X:/script.js --request-id RID`",
             "`unity-puer-exec exec --project-path X:/project --stdin < script.js`",
             "With `--project-path`, `exec` may launch or recover Unity for the project, so you do not need `wait-until-ready` as the default first step.",
         ],
         "related_workflows": (
+            "recover-exec-by-request-id",
             "exec-and-wait-for-result-marker",
             "request-editor-exit-via-exec",
         ),
@@ -211,6 +218,7 @@ COMMAND_HELP = {
                 "`--unity-exe-path <path>`: override the Unity executable for project-scoped startup only.",
                 "`--unity-log-path <path>`: explicit non-default Unity Editor log path for project-scoped startup before `session_marker` exists.",
                 "`--wait-timeout-ms <ms>`: how long to wait before returning the current execution state.",
+                "`--request-id <id>`: optional caller-owned exec identity for recovery or idempotent replay; omitted values are generated automatically.",
                 "`--include-log-offset`: include top-level observation `log_offset` in the response for later result-marker waiting.",
                 "`--include-diagnostics`: include top-level debug diagnostics in the machine-readable response.",
                 "`--file <path>`: preferred script input for multi-line or AI-generated scripts.",
@@ -226,17 +234,20 @@ COMMAND_HELP = {
             ],
             "Timeout Rules": [
                 "`--wait-timeout-ms` must be a positive integer.",
-                "The command may return `running` when the wait budget ends before the job finishes.",
+                "The command may return `running` when the wait budget ends before the request finishes.",
+                "Reusing the same `--request-id` with equivalent execution content is recovery, not a duplicate execution attempt.",
             ],
         },
         "status": {
             "success": [
-                "`completed`: the script finished and any host return value is in `result`.",
-                "`running`: the script is still running; if early observation needs a `correlation_id`, the script must make that id available through its own workflow before completion.",
+                "`completed`: the script finished; the accepted response includes `request_id`, and any host return value is in `result`.",
+                "`running`: the request is still active; continue with `wait-for-exec --request-id ...` or the script's own observation workflow.",
             ],
             "failure": [
                 ("address_conflict", 2, "both selectors were provided; choose exactly one."),
+                ("busy", direct_exec_client.EXIT_BUSY, "a different top-level exec request is already active, so the service refused to queue a new one."),
                 ("not_available", direct_exec_client.EXIT_NOT_AVAILABLE, "the direct execution target could not be reached."),
+                ("request_id_conflict", direct_exec_client.EXIT_REQUEST_ID_CONFLICT, "the provided `request_id` was already associated with different execution content."),
                 ("launch_conflict", EXIT_UNITY_START_FAILED, "project-scoped launch ownership could not be established safely, so execution did not start a competing Unity launch."),
                 ("unity_start_failed", EXIT_UNITY_START_FAILED, "Unity could not be launched for the selected project."),
                 ("unity_stalled", EXIT_UNITY_NOT_READY, "readiness stopped making progress before execution could proceed."),
@@ -245,11 +256,57 @@ COMMAND_HELP = {
             ],
         },
     },
+    "wait-for-exec": {
+        "quick_start": [
+            "Preferred follow-up when you already know an accepted exec `request_id` and want to continue waiting without resubmitting script content.",
+            "`unity-puer-exec wait-for-exec --project-path X:/project --request-id RID`",
+            "Use this after `exec` returns `running`, or after an ambiguous timeout when you intentionally want recovery with the same `request_id`.",
+        ],
+        "related_workflows": ("recover-exec-by-request-id",),
+        "args": {
+            "Arguments": [
+                "`--project-path <path>`: select a Unity project and allow Unity launch when needed.",
+                "`--base-url <url>`: target an already-known direct service instead of a project.",
+                "`--unity-exe-path <path>`: override the Unity executable for project-scoped startup only.",
+                "`--unity-log-path <path>`: explicit non-default Unity Editor log path for project-scoped startup before `session_marker` exists.",
+                "`--request-id <id>`: required accepted exec identity to continue waiting on.",
+                "`--wait-timeout-ms <ms>`: how long to wait before returning the current request state again.",
+                "`--include-log-offset`: include top-level observation `log_offset` in the response.",
+                "`--include-diagnostics`: include top-level debug diagnostics in the machine-readable response.",
+            ],
+            "Selector Rules": [
+                "Use exactly one selector: `--project-path` or `--base-url`.",
+                "`--project-path` is the normal choice when the CLI should prepare Unity for the project before waiting.",
+                "`--base-url` is for a direct service that is already known.",
+                "`--unity-exe-path` is only valid with `--project-path`.",
+            ],
+            "Timeout Rules": [
+                "`--wait-timeout-ms` must be a positive integer.",
+                "`missing` means the addressed service currently has no recoverable record for that `request_id`.",
+            ],
+        },
+        "status": {
+            "success": [
+                "`completed`: the request finished and any host return value is in `result`.",
+                "`running`: the request is still active and can be waited on again with the same `request_id`.",
+            ],
+            "failure": [
+                ("address_conflict", 2, "both selectors were provided; choose exactly one."),
+                ("missing", direct_exec_client.EXIT_MISSING, "the addressed service has no recoverable record for that `request_id`."),
+                ("not_available", direct_exec_client.EXIT_NOT_AVAILABLE, "the direct execution target could not be reached."),
+                ("launch_conflict", EXIT_UNITY_START_FAILED, "project-scoped launch ownership could not be established safely, so the CLI refused a competing launch."),
+                ("unity_start_failed", EXIT_UNITY_START_FAILED, "Unity could not be launched for the selected project."),
+                ("unity_stalled", EXIT_UNITY_NOT_READY, "readiness stopped making progress before waiting could proceed."),
+                ("unity_not_ready", EXIT_UNITY_NOT_READY, "Unity did not become ready before waiting could proceed."),
+                ("failed", 1, "an unexpected wait-for-exec failure occurred."),
+            ],
+        },
+    },
     "wait-for-result-marker": {
         "quick_start": [
             "Normal follow-up when `exec` returns `running` for a long-running workflow.",
             "`unity-puer-exec wait-for-result-marker --project-path X:/project --correlation-id ID --start-offset 12345`",
-            "Use the `correlation_id` from the script workflow and the `log_offset` returned by `exec --include-log-offset`.",
+            "Use the `correlation_id` from the script workflow and the `log_offset` returned by `exec --include-log-offset` or `wait-for-exec --include-log-offset`.",
         ],
         "related_workflows": ("exec-and-wait-for-result-marker",),
         "args": {
@@ -336,7 +393,7 @@ WORKFLOW_EXAMPLES = {
         "steps": [
             (
                 "`unity-puer-exec exec --project-path X:/project --file X:/scripts/do-work.js --wait-timeout-ms 1000 --include-log-offset`",
-                "Expected observation: stdout returns machine-readable JSON. If the script finishes within the wait budget, any host return value is in `result`. If the script is still active, the response may use `status = \"running\"` and still include top-level `log_offset`.",
+                "Expected observation: stdout returns machine-readable JSON with `request_id`. If the script finishes within the wait budget, any host return value is in `result`. If the script is still active, the response may use `status = \"running\"` and still include top-level `log_offset`.",
             ),
             (
                 "`unity-puer-exec wait-for-result-marker --project-path X:/project --correlation-id ID --start-offset OFFSET`",
@@ -350,6 +407,25 @@ WORKFLOW_EXAMPLES = {
             "Do not assume `running` already includes `result.correlation_id`; if you need correlation-aware observation before completion, design the script to expose that id deliberately.",
             "Use `log_offset` plus the script-provided `correlation_id` together so observation begins after the originating `exec` request.",
             "If the session has not yet produced `session_marker` and you intentionally use a non-default Unity log file, keep passing the same `--unity-log-path` on the log-related commands in that workflow.",
+        ],
+    },
+    "recover-exec-by-request-id": {
+        "goal": "Recover an accepted exec request safely after `running` or an ambiguous timeout without creating a fresh execution attempt.",
+        "steps": [
+            (
+                "`unity-puer-exec exec --project-path X:/project --file X:/scripts/do-work.js --request-id RID --wait-timeout-ms 1000`",
+                "Expected observation: stdout may return `completed` immediately, or `running` with the same `request_id`. If transport fails ambiguously, keep the same `request_id` for recovery.",
+            ),
+            (
+                "`unity-puer-exec wait-for-exec --project-path X:/project --request-id RID --wait-timeout-ms 1000`",
+                "Expected observation: stdout returns `running`, `completed`, or `failed` for that accepted request without resubmitting the script.",
+            ),
+        ],
+        "notice": [
+            "Let the CLI generate `request_id` automatically for normal first attempts; pass `--request-id` explicitly only when you need stable recovery or idempotent replay.",
+            "Reusing the same `request_id` with equivalent execution content is recovery. Using a fresh `request_id` starts a new execution attempt.",
+            "For side-effecting scripts, do not blindly retry with a fresh `request_id` after an ambiguous timeout.",
+            "`request_id` tracks the exec request itself. `correlation_id` remains script-defined metadata for log or marker observation.",
         ],
     },
     "request-editor-exit-via-exec": {

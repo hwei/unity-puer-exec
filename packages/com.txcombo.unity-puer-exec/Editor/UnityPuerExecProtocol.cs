@@ -5,10 +5,20 @@ namespace UnityPuerExec
     [System.Serializable]
     internal class ExecRequest
     {
-        public string id = "";
+        public string request_id = "";
         public string code = "";
         public int wait_timeout_ms = 1000;
         public bool include_log_offset = false;
+        public bool include_diagnostics = false;
+    }
+
+    [System.Serializable]
+    internal class WaitForExecRequest
+    {
+        public string request_id = "";
+        public int wait_timeout_ms = 1000;
+        public bool include_log_offset = false;
+        public bool include_diagnostics = false;
     }
 
     internal static class UnityPuerExecProtocol
@@ -20,7 +30,6 @@ namespace UnityPuerExec
             builder.Append("const __jobId = \"").Append(JsonEscape(jobId)).AppendLine("\";");
             builder.AppendLine("const __bridge = CS.UnityPuerExec.UnityPuerExecBridge;");
             builder.AppendLine("const host = {");
-            builder.AppendLine("  startJob: (name, code) => __bridge.StartSpawnedJob(__jobId, name ? String(name) : '', String(code)),");
             builder.AppendLine("  log: (message) => __bridge.Log(__jobId, String(message)),");
             builder.AppendLine("  triggerValidationCompile: (marker) => CS.UnityPuerExec.UnityPuerExecCompileCompatBridge.TriggerValidationCompile(__jobId, marker ? String(marker) : ''),");
             builder.AppendLine("  port: () => __bridge.Port()");
@@ -49,6 +58,7 @@ namespace UnityPuerExec
                     return "{" +
                            "\"ok\":true," +
                            "\"status\":\"completed\"," +
+                           "\"request_id\":\"" + JsonEscape(snapshot.RequestId) + "\"," +
                            logOffsetJson +
                            "\"session_marker\":\"" + JsonEscape(sessionMarker) + "\"," +
                            "\"result\":" + (snapshot.ResultJson ?? "null") +
@@ -57,6 +67,7 @@ namespace UnityPuerExec
                     return "{" +
                            "\"ok\":false," +
                            "\"status\":\"failed\"," +
+                           "\"request_id\":\"" + JsonEscape(snapshot.RequestId) + "\"," +
                            logOffsetJson +
                            "\"session_marker\":\"" + JsonEscape(sessionMarker) + "\"," +
                            "\"error\":\"" + JsonEscape(snapshot.Error) + "\"," +
@@ -66,11 +77,28 @@ namespace UnityPuerExec
                     return "{" +
                            "\"ok\":true," +
                            "\"status\":\"running\"," +
+                           "\"request_id\":\"" + JsonEscape(snapshot.RequestId) + "\"," +
                            logOffsetJson +
                            "\"session_marker\":\"" + JsonEscape(sessionMarker) + "\"," +
                            "\"result\":null" +
                            "}";
             }
+        }
+
+        internal static string BuildSimpleErrorJson(string status, string error, string requestId = "")
+        {
+            var requestIdJson = string.IsNullOrEmpty(requestId)
+                ? string.Empty
+                : ",\"request_id\":\"" + JsonEscape(requestId) + "\"";
+            var errorJson = string.IsNullOrEmpty(error)
+                ? string.Empty
+                : ",\"error\":\"" + JsonEscape(error) + "\"";
+            return "{" +
+                   "\"ok\":false," +
+                   "\"status\":\"" + JsonEscape(status) + "\"" +
+                   requestIdJson +
+                   errorJson +
+                   "}";
         }
 
         internal static string BuildHealthResponseJson(bool isCompilingOrReloading, string envInitError, string sessionMarker, int port)

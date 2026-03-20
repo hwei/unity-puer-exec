@@ -1,5 +1,4 @@
 using System;
-using System.Collections.Generic;
 using System.Threading.Tasks;
 
 namespace UnityPuerExec
@@ -19,17 +18,16 @@ namespace UnityPuerExec
         private string resultJson = "null";
         private string error = "";
         private string stack = "";
-        private readonly List<string> spawnedJobIds = new List<string>();
 
-        public UnityPuerExecJob(string jobId, string name)
+        public UnityPuerExecJob(string requestId, string normalizedCode)
         {
-            JobId = jobId;
-            Name = name;
+            RequestId = requestId;
+            NormalizedCode = normalizedCode;
             UpdatedAtUtc = DateTime.UtcNow;
         }
 
-        public string JobId { get; }
-        public string Name { get; }
+        public string RequestId { get; }
+        public string NormalizedCode { get; }
         public DateTime UpdatedAtUtc { get; private set; }
         public Task Completion => completionSource.Task;
 
@@ -38,23 +36,12 @@ namespace UnityPuerExec
             lock (syncRoot)
             {
                 return new UnityPuerExecJobSnapshot(
-                    JobId,
-                    Name,
+                    RequestId,
                     status,
                     resultJson,
                     error,
-                    stack,
-                    spawnedJobIds.ToArray()
+                    stack
                 );
-            }
-        }
-
-        public void AddSpawnedJob(string jobId)
-        {
-            lock (syncRoot)
-            {
-                spawnedJobIds.Add(jobId);
-                UpdatedAtUtc = DateTime.UtcNow;
             }
         }
 
@@ -87,30 +74,24 @@ namespace UnityPuerExec
     internal readonly struct UnityPuerExecJobSnapshot
     {
         public UnityPuerExecJobSnapshot(
-            string jobId,
-            string name,
+            string requestId,
             UnityPuerExecJobStatus status,
             string resultJson,
             string error,
-            string stack,
-            string[] spawnedJobIds
+            string stack
         )
         {
-            JobId = jobId;
-            Name = name;
+            RequestId = requestId;
             Status = status;
             ResultJson = resultJson;
             Error = error;
             Stack = stack;
-            SpawnedJobIds = spawnedJobIds;
         }
 
-        public string JobId { get; }
-        public string Name { get; }
+        public string RequestId { get; }
         public UnityPuerExecJobStatus Status { get; }
         public string ResultJson { get; }
         public string Error { get; }
         public string Stack { get; }
-        public string[] SpawnedJobIds { get; }
     }
 }

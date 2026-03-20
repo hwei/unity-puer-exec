@@ -51,6 +51,7 @@ class UnityPuerExecCliTests(unittest.TestCase):
         self.assertIn("Global Selector Rules", stdout)
         self.assertIn("Common Workflows", stdout)
         self.assertIn("exec-and-wait-for-result-marker", stdout)
+        self.assertIn("recover-exec-by-request-id", stdout)
         self.assertIn("See `exec --help`.", stdout)
         self.assertIn("start with `exec --project-path ...`", stdout)
         self.assertIn("not the normal first step", stdout)
@@ -89,7 +90,23 @@ class UnityPuerExecCliTests(unittest.TestCase):
         self.assertIn("Timeout Rules", stdout)
         self.assertIn("`--file <path>`", stdout)
         self.assertIn("`--code <inline-js>`", stdout)
+        self.assertIn("`--request-id <id>`", stdout)
         self.assertIn("`--include-diagnostics`", stdout)
+
+    def test_wait_for_exec_help_renders_recovery_guidance(self):
+        exit_code, stdout, stderr = unity_puer_exec.run_cli(["wait-for-exec", "--help"])
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(stderr, "")
+        self.assertIn("Preferred follow-up", stdout)
+        self.assertIn("accepted exec `request_id`", stdout)
+
+    def test_wait_for_exec_help_status_mentions_missing(self):
+        exit_code, stdout, stderr = unity_puer_exec.run_cli(["wait-for-exec", "--help-status"])
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(stderr, "")
+        self.assertIn("`missing` -> exit 13", stdout)
 
     def test_wait_for_result_marker_help_status_renders_exit_guidance(self):
         exit_code, stdout, stderr = unity_puer_exec.run_cli(["wait-for-result-marker", "--help-status"])
@@ -120,13 +137,22 @@ class UnityPuerExecCliTests(unittest.TestCase):
         self.assertIn("log_offset", stdout)
         self.assertIn("Do not assume `running` already includes `result.correlation_id`", stdout)
 
+    def test_recovery_help_example_renders_request_id_workflow(self):
+        exit_code, stdout, stderr = unity_puer_exec.run_cli(["--help-example", "recover-exec-by-request-id"])
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(stderr, "")
+        self.assertIn("request_id", stdout)
+        self.assertIn("wait-for-exec", stdout)
+        self.assertIn("do not blindly retry with a fresh `request_id`", stdout)
+
     def test_exec_help_describes_running_without_immediate_correlation_id_guarantee(self):
         exit_code, stdout, stderr = unity_puer_exec.run_cli(["exec", "--help-status"])
 
         self.assertEqual(exit_code, 0)
         self.assertEqual(stderr, "")
-        self.assertIn("`running`: the script is still running", stdout)
-        self.assertIn("the script must make that id available through its own workflow", stdout)
+        self.assertIn("`running`: the request is still active", stdout)
+        self.assertIn("wait-for-exec --request-id", stdout)
 
     def test_exit_help_example_renders_inline_request_exit_script(self):
         exit_code, stdout, stderr = unity_puer_exec.run_cli(["--help-example", "request-editor-exit-via-exec"])
@@ -288,7 +314,7 @@ class UnityPuerExecCliTests(unittest.TestCase):
                 "invoke_command",
                 return_value=(
                     unity_puer_exec.EXIT_RUNNING,
-                    json.dumps({"ok": True, "status": "running", "log_offset": 12345, "result": {"correlation_id": "id-7"}}),
+                    json.dumps({"ok": True, "status": "running", "request_id": "req-running", "log_offset": 12345, "result": {"correlation_id": "id-7"}}),
                     "",
                 ),
             ) as invoke_command:
@@ -298,11 +324,31 @@ class UnityPuerExecCliTests(unittest.TestCase):
         self.assertEqual(stderr, "")
         payload = invoke_command.call_args.args[2]
         self.assertEqual(payload["code"], "return 7;")
+        self.assertTrue(payload["request_id"])
         self.assertTrue(payload["include_log_offset"])
         body = json.loads(stdout)
         self.assertEqual(body["status"], "running")
+        self.assertEqual(body["request_id"], "req-running")
         self.assertEqual(body["log_offset"], 12345)
         self.assertEqual(body["result"]["correlation_id"], "id-7")
+
+    def test_exec_forwards_explicit_request_id(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            script_path = Path(temp_dir) / "script.js"
+            script_path.write_text("return 7;", encoding="utf-8")
+            with mock.patch.object(
+                unity_session,
+                "ensure_session_ready",
+                return_value=_make_session(),
+            ), mock.patch.object(
+                unity_puer_exec.direct_exec_client,
+                "invoke_command",
+                return_value=(0, json.dumps({"ok": True, "status": "completed", "request_id": "req-explicit"}), ""),
+            ) as invoke_command:
+                unity_puer_exec.run_cli(["exec", "--file", str(script_path), "--request-id", "req-explicit"])
+
+        payload = invoke_command.call_args.args[2]
+        self.assertEqual(payload["request_id"], "req-explicit")
 
     def test_exec_include_diagnostics_is_forwarded_and_preserved_top_level(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -317,7 +363,7 @@ class UnityPuerExecCliTests(unittest.TestCase):
                 "invoke_command",
                 return_value=(
                     0,
-                    json.dumps({"ok": True, "status": "completed", "diagnostics": {"transport": "debug"}}),
+                    json.dumps({"ok": True, "status": "completed", "request_id": "req-7", "diagnostics": {"transport": "debug"}}),
                     "",
                 ),
             ) as invoke_command:
@@ -366,6 +412,7 @@ class UnityPuerExecCliTests(unittest.TestCase):
                         {
                             "ok": True,
                             "status": "completed",
+                            "request_id": "req-8",
                             "log_offset": 67890,
                             "result": {"correlation_id": "id-8"},
                         }
@@ -379,6 +426,7 @@ class UnityPuerExecCliTests(unittest.TestCase):
         self.assertEqual(stderr, "")
         body = json.loads(stdout)
         self.assertEqual(body["status"], "completed")
+        self.assertEqual(body["request_id"], "req-8")
         self.assertEqual(body["log_offset"], 67890)
         self.assertEqual(body["result"]["correlation_id"], "id-8")
 
@@ -395,7 +443,7 @@ class UnityPuerExecCliTests(unittest.TestCase):
                 "invoke_command",
                 return_value=(
                     0,
-                    json.dumps({"ok": True, "status": "completed", "diagnostics": {"transport": "debug"}}),
+                    json.dumps({"ok": True, "status": "completed", "request_id": "req-9", "diagnostics": {"transport": "debug"}}),
                     "",
                 ),
             ):
@@ -405,6 +453,51 @@ class UnityPuerExecCliTests(unittest.TestCase):
         self.assertEqual(stderr, "")
         body = json.loads(stdout)
         self.assertNotIn("diagnostics", body)
+        self.assertEqual(body["request_id"], "req-9")
+
+    def test_exec_timeout_payload_preserves_request_id(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            script_path = Path(temp_dir) / "script.js"
+            script_path.write_text("return 7;", encoding="utf-8")
+            with mock.patch.object(
+                unity_session,
+                "ensure_session_ready",
+                return_value=_make_session(),
+            ), mock.patch.object(
+                unity_puer_exec.direct_exec_client,
+                "invoke_command",
+                return_value=(
+                    unity_puer_exec.EXIT_NOT_AVAILABLE,
+                    json.dumps({"ok": False, "status": "not_available", "request_id": "req-timeout", "error": "timed out"}),
+                    "",
+                ),
+            ):
+                exit_code, stdout, stderr = unity_puer_exec.run_cli(["exec", "--file", str(script_path), "--request-id", "req-timeout"])
+
+        self.assertEqual(exit_code, unity_puer_exec.EXIT_NOT_AVAILABLE)
+        self.assertEqual(stderr, "")
+        body = json.loads(stdout)
+        self.assertEqual(body["request_id"], "req-timeout")
+        self.assertEqual(body["status"], "not_available")
+
+    def test_wait_for_exec_invokes_follow_up_surface(self):
+        with mock.patch.object(
+            unity_session,
+            "ensure_session_ready",
+            return_value=_make_session(),
+        ), mock.patch.object(
+            unity_puer_exec.direct_exec_client,
+            "invoke_command",
+            return_value=(unity_puer_exec.EXIT_RUNNING, json.dumps({"ok": True, "status": "running", "request_id": "req-follow"}), ""),
+        ) as invoke_command:
+            exit_code, stdout, stderr = unity_puer_exec.run_cli(["wait-for-exec", "--request-id", "req-follow"])
+
+        self.assertEqual(exit_code, unity_puer_exec.EXIT_RUNNING)
+        self.assertEqual(stderr, "")
+        self.assertEqual(invoke_command.call_args.args[0], "wait-for-exec")
+        self.assertEqual(invoke_command.call_args.args[2]["request_id"], "req-follow")
+        body = json.loads(stdout)
+        self.assertEqual(body["request_id"], "req-follow")
 
     def test_get_log_source_returns_success_payload(self):
         session = _make_session()

@@ -13,6 +13,8 @@ EXIT_RUNNING = direct_exec_client.EXIT_RUNNING
 EXIT_COMPILING = direct_exec_client.EXIT_COMPILING
 EXIT_NOT_AVAILABLE = direct_exec_client.EXIT_NOT_AVAILABLE
 EXIT_MISSING = direct_exec_client.EXIT_MISSING
+EXIT_BUSY = direct_exec_client.EXIT_BUSY
+EXIT_REQUEST_ID_CONFLICT = direct_exec_client.EXIT_REQUEST_ID_CONFLICT
 EXIT_SESSION_STATE = 14
 EXIT_NO_OBSERVATION_TARGET = 15
 EXIT_NOT_STOPPED = 16
@@ -85,6 +87,8 @@ def run_command(args):
             return run_exec(args)
         if args.command == "wait-until-ready":
             return run_wait_until_ready(args)
+        if args.command == "wait-for-exec":
+            return run_wait_for_exec(args)
         if args.command == "wait-for-log-pattern":
             return run_wait_for_log_pattern(args)
         if args.command == "wait-for-result-marker":
@@ -163,6 +167,7 @@ def read_exec_code(args):
 
 
 def run_exec(args):
+    request_id = args.request_id or uuid.uuid4().hex
     selector = resolve_selector(args)
     validate_positive(args.wait_timeout_ms, "wait-timeout-ms")
     validate_project_mode_only(selector, "unity-exe-path", args.unity_exe_path)
@@ -179,7 +184,7 @@ def run_exec(args):
         base_url = args.base_url
 
     payload = {
-        "id": uuid.uuid4().hex,
+        "request_id": request_id,
         "code": read_exec_code(args),
         "wait_timeout_ms": args.wait_timeout_ms,
         "include_log_offset": args.include_log_offset,
@@ -187,6 +192,47 @@ def run_exec(args):
     }
     exit_code, stdout_text, stderr_text = direct_exec_client.invoke_command(
         "exec",
+        base_url,
+        payload,
+        args.wait_timeout_ms,
+    )
+    if stdout_text:
+        body = json.loads(stdout_text)
+        if not args.include_diagnostics:
+            body.pop("diagnostics", None)
+        stdout_text = emit_payload(body)
+    if stderr_text:
+        body = json.loads(stderr_text)
+        if not args.include_diagnostics:
+            body.pop("diagnostics", None)
+        stderr_text = emit_payload(body)
+    return exit_code, stdout_text, stderr_text
+
+
+def run_wait_for_exec(args):
+    selector = resolve_selector(args)
+    validate_positive(args.wait_timeout_ms, "wait-timeout-ms")
+    validate_project_mode_only(selector, "unity-exe-path", args.unity_exe_path)
+    validate_project_mode_only(selector, "unity-log-path", args.unity_log_path)
+
+    if selector == "project_path":
+        session = unity_session.ensure_session_ready(
+            project_path=args.project_path,
+            unity_exe_path=args.unity_exe_path,
+            unity_log_path=args.unity_log_path,
+        )
+        base_url = session.base_url
+    else:
+        base_url = args.base_url
+
+    payload = {
+        "request_id": args.request_id,
+        "wait_timeout_ms": args.wait_timeout_ms,
+        "include_log_offset": args.include_log_offset,
+        "include_diagnostics": args.include_diagnostics,
+    }
+    exit_code, stdout_text, stderr_text = direct_exec_client.invoke_command(
+        "wait-for-exec",
         base_url,
         payload,
         args.wait_timeout_ms,

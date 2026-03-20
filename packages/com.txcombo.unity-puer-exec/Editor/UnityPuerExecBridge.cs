@@ -4,11 +4,6 @@ namespace UnityPuerExec
 {
     public static class UnityPuerExecBridge
     {
-        public static string StartSpawnedJob(string parentJobId, string name, string code)
-        {
-            return UnityPuerExecServer.CreateSpawnedJob(parentJobId, name, code);
-        }
-
         public static void CompleteJob(string jobId, string resultJson)
         {
             UnityPuerExecServer.CompleteJob(jobId, resultJson);
