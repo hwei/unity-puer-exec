@@ -266,6 +266,30 @@ class DirectExecClientTests(unittest.TestCase):
         self.assertEqual(body["status"], "request_id_conflict")
         self.assertEqual(body["request_id"], "req-6")
 
+    def test_modal_blocked_payload_is_non_zero_on_stdout(self):
+        transport = FakeTransport([
+            {
+                "ok": False,
+                "status": "modal_blocked",
+                "request_id": "req-7",
+                "blocker": {"type": "save_scene_dialog", "scope": "exec"},
+            }
+        ])
+
+        exit_code, stdout, stderr = direct_exec_client.invoke_command(
+            "wait-for-exec",
+            "http://127.0.0.1:55231",
+            {"request_id": "req-7"},
+            500,
+            transport=transport,
+        )
+
+        self.assertEqual(exit_code, direct_exec_client.EXIT_MODAL_BLOCKED)
+        self.assertEqual(stderr, "")
+        body = json.loads(stdout)
+        self.assertEqual(body["status"], "modal_blocked")
+        self.assertEqual(body["blocker"]["type"], "save_scene_dialog")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -41,6 +41,10 @@ def build_parser():
     get_log_source_parser.add_argument("--unity-log-path", default=None)
     _add_diagnostics_arg(get_log_source_parser)
 
+    get_blocker_state_parser = subparsers.add_parser("get-blocker-state", add_help=False)
+    get_blocker_state_parser.add_argument("--project-path", default=None)
+    _add_diagnostics_arg(get_blocker_state_parser)
+
     exec_parser = subparsers.add_parser("exec", add_help=False)
     _add_selector_args(exec_parser)
     exec_parser.add_argument("--unity-exe-path", default=None)

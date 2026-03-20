@@ -21,6 +21,7 @@ COMMAND_GROUPS = (
         "Secondary / Troubleshooting",
         (
             "get-log-source",
+            "get-blocker-state",
             "ensure-stopped",
         ),
     ),
@@ -54,6 +55,7 @@ TOP_LEVEL_COMMANDS = {
     "wait-for-exec": "continue waiting on an accepted exec request by `request_id`. See `wait-for-exec --help`.",
     "wait-for-result-marker": "wait for the standard single-line JSON result marker emitted by a long-running script. See `wait-for-result-marker --help`.",
     "get-log-source": "report the observable Unity log source for the selected target. See `get-log-source --help`.",
+    "get-blocker-state": "report whether a supported Unity modal blocker is currently detected for the target project. See `get-blocker-state --help`.",
     "exec": "run JavaScript against a project or direct service; primary entry for script execution. See `exec --help`.",
     "ensure-stopped": "check or force a stopped state; not the recommended graceful-exit path. See `ensure-stopped --help`.",
 }
@@ -64,6 +66,7 @@ RECOMMENDED_PATH = (
     "Use `wait-for-result-marker` after `exec` only when the script deliberately exposes a `correlation_id` workflow.",
     "If you need log-based verification, continue with `wait-for-log-pattern`.",
     "Use `wait-until-ready` when you specifically need readiness recovery before or between `exec` steps.",
+    "Use `get-blocker-state` when an exec-side timeout or stall might be caused by a supported Unity modal dialog.",
     "`get-log-source` and `ensure-stopped` are secondary commands, not the normal first step.",
 )
 
@@ -198,6 +201,32 @@ COMMAND_HELP = {
             ],
         },
     },
+    "get-blocker-state": {
+        "quick_start": [
+            "Secondary troubleshooting command for confirming whether a supported Unity modal blocker is currently open for the selected project.",
+            "`unity-puer-exec get-blocker-state --project-path X:/project`",
+            "Use this after an exec-side timeout or stall when you need to distinguish a supported save-scene modal dialog from a generic timeout.",
+        ],
+        "related_workflows": ("recover-exec-by-request-id",),
+        "args": {
+            "Arguments": [
+                "`--project-path <path>`: inspect the Unity Editor associated with a project for a supported modal blocker.",
+                "`--include-diagnostics`: include top-level debug diagnostics in the machine-readable response.",
+            ],
+            "Selector Rules": [
+                "`--project-path` is the only supported selector for this command.",
+                "The command is intended for project-scoped Editor troubleshooting, not direct-service or packaged-app targets.",
+            ],
+        },
+        "status": {
+            "success": [
+                "`completed`: blocker inspection finished; `result.status` is either `no_blocker` or `modal_blocked`.",
+            ],
+            "failure": [
+                ("failed", 1, "an unexpected blocker-query failure occurred."),
+            ],
+        },
+    },
     "exec": {
         "quick_start": [
             "Normal first command for project-scoped work and the primary script execution entry point.",
@@ -248,6 +277,7 @@ COMMAND_HELP = {
             "failure": [
                 ("address_conflict", 2, "both selectors were provided; choose exactly one."),
                 ("busy", direct_exec_client.EXIT_BUSY, "a different top-level exec request is already active, so the service refused to queue a new one."),
+                ("modal_blocked", direct_exec_client.EXIT_MODAL_BLOCKED, "a supported Unity modal dialog is blocking exec progress; inspect `blocker.type` and keep the same `request_id` for follow-up."),
                 ("not_available", direct_exec_client.EXIT_NOT_AVAILABLE, "the direct execution target could not be reached."),
                 ("request_id_conflict", direct_exec_client.EXIT_REQUEST_ID_CONFLICT, "the provided `request_id` was already associated with different execution content."),
                 ("launch_conflict", EXIT_UNITY_START_FAILED, "project-scoped launch ownership could not be established safely, so execution did not start a competing Unity launch."),
@@ -294,6 +324,7 @@ COMMAND_HELP = {
             ],
             "failure": [
                 ("address_conflict", 2, "both selectors were provided; choose exactly one."),
+                ("modal_blocked", direct_exec_client.EXIT_MODAL_BLOCKED, "a supported Unity modal dialog is blocking the accepted exec request; inspect `blocker.type` and avoid starting a fresh request."),
                 ("missing", direct_exec_client.EXIT_MISSING, "the addressed service has no recoverable record for that `request_id`."),
                 ("not_available", direct_exec_client.EXIT_NOT_AVAILABLE, "the direct execution target could not be reached."),
                 ("launch_conflict", EXIT_UNITY_START_FAILED, "project-scoped launch ownership could not be established safely, so the CLI refused a competing launch."),

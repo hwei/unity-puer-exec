@@ -12,6 +12,7 @@ EXIT_MISSING = 13
 EXIT_SESSION_STATE = 14
 EXIT_BUSY = 17
 EXIT_REQUEST_ID_CONFLICT = 18
+EXIT_MODAL_BLOCKED = 19
 
 DEFAULT_BASE_URL = "http://127.0.0.1:55231"
 DEFAULT_WAIT_TIMEOUT_MS = 1000
@@ -51,6 +52,8 @@ def _status_to_exit_code(payload):
         return EXIT_BUSY
     if status == "request_id_conflict":
         return EXIT_REQUEST_ID_CONFLICT
+    if status == "modal_blocked":
+        return EXIT_MODAL_BLOCKED
     if status in ("session_missing", "session_stale"):
         return EXIT_SESSION_STATE
     return 1
@@ -105,6 +108,7 @@ def invoke_command(command, base_url, payload, wait_timeout_ms, transport=None):
         EXIT_SESSION_STATE,
         EXIT_BUSY,
         EXIT_REQUEST_ID_CONFLICT,
+        EXIT_MODAL_BLOCKED,
     ):
         return exit_code, json.dumps(response, ensure_ascii=True), ""
     return exit_code, "", json.dumps(response, ensure_ascii=True)

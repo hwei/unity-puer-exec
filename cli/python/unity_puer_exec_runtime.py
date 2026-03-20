@@ -6,6 +6,7 @@ import time
 import uuid
 
 import direct_exec_client
+import unity_modal_blockers
 import unity_session
 
 
@@ -15,6 +16,7 @@ EXIT_NOT_AVAILABLE = direct_exec_client.EXIT_NOT_AVAILABLE
 EXIT_MISSING = direct_exec_client.EXIT_MISSING
 EXIT_BUSY = direct_exec_client.EXIT_BUSY
 EXIT_REQUEST_ID_CONFLICT = direct_exec_client.EXIT_REQUEST_ID_CONFLICT
+EXIT_MODAL_BLOCKED = direct_exec_client.EXIT_MODAL_BLOCKED
 EXIT_SESSION_STATE = 14
 EXIT_NO_OBSERVATION_TARGET = 15
 EXIT_NOT_STOPPED = 16
@@ -95,6 +97,8 @@ def run_command(args):
             return run_wait_for_result_marker(args)
         if args.command == "get-log-source":
             return run_get_log_source(args)
+        if args.command == "get-blocker-state":
+            return run_get_blocker_state(args)
         return run_ensure_stopped(args)
     except ValueError as exc:
         status = "address_conflict" if str(exc) == "address_conflict" else "failed"
@@ -196,6 +200,12 @@ def run_exec(args):
         payload,
         args.wait_timeout_ms,
     )
+    exit_code, stdout_text, stderr_text = _normalize_exec_blocker_result(
+        exit_code,
+        stdout_text,
+        stderr_text,
+        session if selector == "project_path" else None,
+    )
     if stdout_text:
         body = json.loads(stdout_text)
         if not args.include_diagnostics:
@@ -236,6 +246,12 @@ def run_wait_for_exec(args):
         base_url,
         payload,
         args.wait_timeout_ms,
+    )
+    exit_code, stdout_text, stderr_text = _normalize_exec_blocker_result(
+        exit_code,
+        stdout_text,
+        stderr_text,
+        session if selector == "project_path" else None,
     )
     if stdout_text:
         body = json.loads(stdout_text)
@@ -420,6 +436,27 @@ def run_get_log_source(args):
     return 0, emit_payload(payload), ""
 
 
+def run_get_blocker_state(args):
+    session = unity_session.get_blocker_state(project_path=args.project_path)
+    blocker = _detect_exec_modal_blocker(session)
+    if blocker is None:
+        payload = success_payload(
+            "get-blocker-state",
+            session=session,
+            result={"status": "no_blocker"},
+            include_diagnostics=args.include_diagnostics,
+        )
+        return 0, emit_payload(payload), ""
+
+    payload = success_payload(
+        "get-blocker-state",
+        session=session,
+        result={"status": "modal_blocked", "blocker": blocker},
+        include_diagnostics=args.include_diagnostics,
+    )
+    return 0, emit_payload(payload), ""
+
+
 def run_ensure_stopped(args):
     selector = resolve_selector(args)
     validate_positive(args.timeout_seconds, "timeout-seconds")
@@ -469,3 +506,38 @@ def attach_diagnostics(payload, include_diagnostics=False, session=None, diagnos
     if merged:
         payload["diagnostics"] = merged
     return payload
+
+
+def _normalize_exec_blocker_result(exit_code, stdout_text, stderr_text, session):
+    if session is None or not stdout_text:
+        return exit_code, stdout_text, stderr_text
+    body = json.loads(stdout_text)
+    if not _should_check_exec_blocker(exit_code, body):
+        return exit_code, stdout_text, stderr_text
+    blocker = _detect_exec_modal_blocker(session)
+    if blocker is None:
+        return exit_code, stdout_text, stderr_text
+    normalized = {
+        "ok": False,
+        "status": "modal_blocked",
+        "request_id": body.get("request_id"),
+        "blocker": blocker,
+    }
+    if "diagnostics" in body:
+        normalized["diagnostics"] = body["diagnostics"]
+    return EXIT_MODAL_BLOCKED, emit_payload(normalized), ""
+
+
+def _should_check_exec_blocker(exit_code, body):
+    status = body.get("status")
+    if exit_code == EXIT_NOT_AVAILABLE and status == "not_available" and body.get("error") == "timed out":
+        return True
+    if status == "running":
+        return True
+    return False
+
+
+def _detect_exec_modal_blocker(session):
+    if session is None or session.unity_pid is None:
+        return None
+    return unity_modal_blockers.detect_modal_blocker(session.unity_pid, scope="exec")

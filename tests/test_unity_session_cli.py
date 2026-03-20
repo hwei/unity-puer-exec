@@ -13,6 +13,7 @@ if str(CLI_DIR) not in sys.path:
     sys.path.insert(0, str(CLI_DIR))
 
 import unity_puer_exec  # type: ignore
+import unity_puer_exec_runtime  # type: ignore
 import unity_session  # type: ignore
 
 
@@ -50,6 +51,7 @@ class UnityPuerExecCliTests(unittest.TestCase):
         self.assertIn("Secondary / Troubleshooting", stdout)
         self.assertIn("Global Selector Rules", stdout)
         self.assertIn("Common Workflows", stdout)
+        self.assertIn("get-blocker-state", stdout)
         self.assertIn("exec-and-wait-for-result-marker", stdout)
         self.assertIn("recover-exec-by-request-id", stdout)
         self.assertIn("See `exec --help`.", stdout)
@@ -109,6 +111,22 @@ class UnityPuerExecCliTests(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         self.assertEqual(stderr, "")
         self.assertIn("`missing` -> exit 13", stdout)
+        self.assertIn("`modal_blocked` -> exit 19", stdout)
+
+    def test_get_blocker_state_help_renders_query_guidance(self):
+        exit_code, stdout, stderr = unity_puer_exec.run_cli(["get-blocker-state", "--help"])
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(stderr, "")
+        self.assertIn("Secondary troubleshooting command", stdout)
+        self.assertIn("supported Unity modal blocker", stdout)
+
+    def test_get_blocker_state_help_status_mentions_modal_result(self):
+        exit_code, stdout, stderr = unity_puer_exec.run_cli(["get-blocker-state", "--help-status"])
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(stderr, "")
+        self.assertIn("`completed`: blocker inspection finished", stdout)
 
     def test_wait_for_result_marker_help_status_renders_exit_guidance(self):
         exit_code, stdout, stderr = unity_puer_exec.run_cli(["wait-for-result-marker", "--help-status"])
@@ -156,6 +174,7 @@ class UnityPuerExecCliTests(unittest.TestCase):
         self.assertIn("`running`: the request is still active", stdout)
         self.assertIn("wait-for-exec --request-id", stdout)
         self.assertIn("Promise return values are rejected", stdout)
+        self.assertIn("`modal_blocked` -> exit 19", stdout)
 
     def test_exit_help_example_renders_inline_request_exit_script(self):
         exit_code, stdout, stderr = unity_puer_exec.run_cli(["--help-example", "request-editor-exit-via-exec"])
@@ -501,6 +520,86 @@ class UnityPuerExecCliTests(unittest.TestCase):
         self.assertEqual(invoke_command.call_args.args[2]["request_id"], "req-follow")
         body = json.loads(stdout)
         self.assertEqual(body["request_id"], "req-follow")
+
+    def test_exec_timeout_normalizes_supported_modal_blocker(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            script_path = Path(temp_dir) / "script.js"
+            script_path.write_text("export default function run(ctx) { return 7; }", encoding="utf-8")
+            with mock.patch.object(
+                unity_session,
+                "ensure_session_ready",
+                return_value=_make_session(),
+            ), mock.patch.object(
+                unity_puer_exec.direct_exec_client,
+                "invoke_command",
+                return_value=(
+                    unity_puer_exec.EXIT_NOT_AVAILABLE,
+                    json.dumps({"ok": False, "status": "not_available", "request_id": "req-timeout", "error": "timed out"}),
+                    "",
+                ),
+            ), mock.patch.object(
+                unity_puer_exec_runtime.unity_modal_blockers,
+                "detect_modal_blocker",
+                return_value={"type": "save_scene_dialog", "scope": "exec"},
+            ):
+                exit_code, stdout, stderr = unity_puer_exec.run_cli(["exec", "--file", str(script_path), "--request-id", "req-timeout"])
+
+        self.assertEqual(exit_code, unity_puer_exec.EXIT_MODAL_BLOCKED)
+        self.assertEqual(stderr, "")
+        body = json.loads(stdout)
+        self.assertEqual(body["status"], "modal_blocked")
+        self.assertEqual(body["request_id"], "req-timeout")
+        self.assertEqual(body["blocker"]["type"], "save_scene_dialog")
+
+    def test_wait_for_exec_running_normalizes_supported_modal_blocker(self):
+        with mock.patch.object(
+            unity_session,
+            "ensure_session_ready",
+            return_value=_make_session(),
+        ), mock.patch.object(
+            unity_puer_exec.direct_exec_client,
+            "invoke_command",
+            return_value=(unity_puer_exec.EXIT_RUNNING, json.dumps({"ok": True, "status": "running", "request_id": "req-follow"}), ""),
+        ), mock.patch.object(
+            unity_puer_exec_runtime.unity_modal_blockers,
+            "detect_modal_blocker",
+            return_value={"type": "save_modified_scenes_prompt", "scope": "exec"},
+        ):
+            exit_code, stdout, stderr = unity_puer_exec.run_cli(["wait-for-exec", "--request-id", "req-follow"])
+
+        self.assertEqual(exit_code, unity_puer_exec.EXIT_MODAL_BLOCKED)
+        self.assertEqual(stderr, "")
+        body = json.loads(stdout)
+        self.assertEqual(body["status"], "modal_blocked")
+        self.assertEqual(body["blocker"]["type"], "save_modified_scenes_prompt")
+
+    def test_get_blocker_state_reports_no_blocker(self):
+        with mock.patch.object(unity_session, "get_blocker_state", return_value=_make_session()), mock.patch.object(
+            unity_puer_exec_runtime.unity_modal_blockers,
+            "detect_modal_blocker",
+            return_value=None,
+        ):
+            exit_code, stdout, stderr = unity_puer_exec.run_cli(["get-blocker-state"])
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(stderr, "")
+        body = json.loads(stdout)
+        self.assertEqual(body["operation"], "get-blocker-state")
+        self.assertEqual(body["result"]["status"], "no_blocker")
+
+    def test_get_blocker_state_reports_supported_modal_blocker(self):
+        with mock.patch.object(unity_session, "get_blocker_state", return_value=_make_session()), mock.patch.object(
+            unity_puer_exec_runtime.unity_modal_blockers,
+            "detect_modal_blocker",
+            return_value={"type": "save_scene_dialog", "scope": "exec"},
+        ):
+            exit_code, stdout, stderr = unity_puer_exec.run_cli(["get-blocker-state"])
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(stderr, "")
+        body = json.loads(stdout)
+        self.assertEqual(body["result"]["status"], "modal_blocked")
+        self.assertEqual(body["result"]["blocker"]["type"], "save_scene_dialog")
 
     def test_get_log_source_returns_success_payload(self):
         session = _make_session()

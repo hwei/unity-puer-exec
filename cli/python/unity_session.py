@@ -749,6 +749,27 @@ def create_observation_session(project_path=None, base_url=None, unity_log_path=
     return session
 
 
+def get_blocker_state(project_path=None):
+    resolved_project_path = resolve_project_path(project_path)
+    session_data = read_session_artifact(resolved_project_path)
+    unity_pid = None
+    owner = "blocker_observation"
+    if session_data is not None:
+        owner = "session_artifact"
+        unity_pid = session_data.get("unity_pid")
+        if unity_pid is not None and not _is_pid_running(unity_pid):
+            unity_pid = None
+
+    session = UnitySession(
+        owner=owner,
+        base_url=direct_exec_client.DEFAULT_BASE_URL,
+        project_path=resolved_project_path,
+        unity_pid=unity_pid,
+        launched=False,
+    )
+    return session
+
+
 def inspect_direct_service(base_url, health_timeout_seconds=DEFAULT_HEALTH_TIMEOUT_SECONDS):
     payload, error = _probe_health(base_url, health_timeout_seconds)
     if payload is not None:
