@@ -223,7 +223,7 @@ COMMAND_HELP = {
                 "`--include-diagnostics`: include top-level debug diagnostics in the machine-readable response.",
                 "`--file <path>`: preferred script input for multi-line or AI-generated scripts.",
                 "`--stdin`: read script content from standard input.",
-                "`--code <inline-js>`: inline script source; compatibility path with quoting and multiline drawbacks.",
+                "`--code <inline-js>`: inline module-shaped source; compatibility path with quoting and multiline drawbacks.",
             ],
             "Selector Rules": [
                 "Use exactly one selector: `--project-path` or `--base-url`.",
@@ -231,16 +231,18 @@ COMMAND_HELP = {
                 "`--base-url` is for a direct service that is already known.",
                 "`--unity-exe-path` is only valid with `--project-path`.",
                 "Use exactly one script source: `--file`, `--stdin`, or `--code`.",
+                "Script input must provide `export default function (ctx) { ... }` as the entry shape.",
             ],
             "Timeout Rules": [
                 "`--wait-timeout-ms` must be a positive integer.",
                 "The command may return `running` when the wait budget ends before the request finishes.",
                 "Reusing the same `--request-id` with equivalent execution content is recovery, not a duplicate execution attempt.",
+                "The default-exported entry function must return an immediate JSON-serializable value; Promise return values are rejected.",
             ],
         },
         "status": {
             "success": [
-                "`completed`: the script finished; the accepted response includes `request_id`, and any host return value is in `result`.",
+                "`completed`: the script finished; the accepted response includes `request_id`, and the default-exported entry function's immediate return value is in `result`.",
                 "`running`: the request is still active; continue with `wait-for-exec --request-id ...` or the script's own observation workflow.",
             ],
             "failure": [
@@ -252,7 +254,7 @@ COMMAND_HELP = {
                 ("unity_start_failed", EXIT_UNITY_START_FAILED, "Unity could not be launched for the selected project."),
                 ("unity_stalled", EXIT_UNITY_NOT_READY, "readiness stopped making progress before execution could proceed."),
                 ("unity_not_ready", EXIT_UNITY_NOT_READY, "Unity did not become ready before execution could proceed."),
-                ("failed", 1, "execution failed unexpectedly or the CLI rejected invalid execution input."),
+                ("failed", 1, "execution failed unexpectedly, the module entry shape was invalid, or Promise return values are rejected because only immediate JSON-serializable results are supported."),
             ],
         },
     },
@@ -287,7 +289,7 @@ COMMAND_HELP = {
         },
         "status": {
             "success": [
-                "`completed`: the request finished and any host return value is in `result`.",
+                "`completed`: the request finished and any immediate entry return value is in `result`.",
                 "`running`: the request is still active and can be waited on again with the same `request_id`.",
             ],
             "failure": [
@@ -391,10 +393,17 @@ WORKFLOW_EXAMPLES = {
     "exec-and-wait-for-result-marker": {
         "goal": "Run a long-running script, capture `log_offset`, and wait for the terminal result marker once the script has made the intended `correlation_id` available.",
         "steps": [
-            (
-                "`unity-puer-exec exec --project-path X:/project --file X:/scripts/do-work.js --wait-timeout-ms 1000 --include-log-offset`",
-                "Expected observation: stdout returns machine-readable JSON with `request_id`. If the script finishes within the wait budget, any host return value is in `result`. If the script is still active, the response may use `status = \"running\"` and still include top-level `log_offset`.",
-            ),
+            {
+                "command": "`unity-puer-exec exec --project-path X:/project --file X:/scripts/do-work.js --wait-timeout-ms 1000 --include-log-offset`",
+                "script_body": [
+                    "export default function run(ctx) {",
+                    "  const correlation_id = ctx.request_id;",
+                    "  console.log('[UnityPuerExecResult] ' + JSON.stringify({ correlation_id, status: 'started' }));",
+                    "  return { correlation_id };",
+                    "}",
+                ],
+                "observation": "Expected observation: stdout returns machine-readable JSON with `request_id`. If the script finishes within the wait budget, the immediate entry return value is in `result`. If the script is still active, the response may use `status = \"running\"` and still include top-level `log_offset`.",
+            },
             (
                 "`unity-puer-exec wait-for-result-marker --project-path X:/project --correlation-id ID --start-offset OFFSET`",
                 "Expected observation: stdout stays machine-readable and eventually reaches `status = \"completed\"` with `result.status = \"result_marker_matched\"`.",
@@ -405,6 +414,7 @@ WORKFLOW_EXAMPLES = {
             "`--file` is the preferred script input for multi-line or AI-generated scripts.",
             "`running` is an expected machine state, not an error; branch on it and keep observing via result markers.",
             "Do not assume `running` already includes `result.correlation_id`; if you need correlation-aware observation before completion, design the script to expose that id deliberately.",
+            "The default-exported entry function returns the immediate `result`; it is not an implicit async completion channel.",
             "Use `log_offset` plus the script-provided `correlation_id` together so observation begins after the originating `exec` request.",
             "If the session has not yet produced `session_marker` and you intentionally use a non-default Unity log file, keep passing the same `--unity-log-path` on the log-related commands in that workflow.",
         ],
@@ -434,8 +444,11 @@ WORKFLOW_EXAMPLES = {
             {
                 "command": "`unity-puer-exec exec --project-path X:/project --file X:/scripts/request-exit.js --wait-timeout-ms 1000`",
                 "script_body": [
-                    "const EditorApplication = puer.loadType('UnityEditor.EditorApplication');",
-                    "EditorApplication.Exit(0);",
+                    "export default function run(ctx) {",
+                    "  const EditorApplication = puer.loadType('UnityEditor.EditorApplication');",
+                    "  EditorApplication.Exit(0);",
+                    "  return { requested: true, request_id: ctx.request_id };",
+                    "}",
                 ],
                 "observation": "Expected observation: stdout reports the execution result for the exit-request script or returns `running` if the request is still in progress.",
             },

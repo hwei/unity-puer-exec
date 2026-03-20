@@ -1,4 +1,5 @@
 using System.Text;
+using System.Text.RegularExpressions;
 
 namespace UnityPuerExec
 {
@@ -23,22 +24,46 @@ namespace UnityPuerExec
 
     internal static class UnityPuerExecProtocol
     {
-        internal static string BuildWrappedScript(string jobId, string code)
+        private static readonly Regex DefaultExportFunctionPattern = new Regex(
+            @"\bexport\s+default\s+(async\s+)?function\b",
+            RegexOptions.Compiled
+        );
+
+        internal static bool TryBuildWrappedScript(string jobId, string code, out string wrappedScript, out string error)
         {
+            wrappedScript = string.Empty;
+            error = string.Empty;
+            if (!TryRewriteModuleEntry(code, out var rewrittenCode, out error))
+            {
+                return false;
+            }
+
             var builder = new StringBuilder();
             builder.AppendLine("(async () => {");
             builder.Append("const __jobId = \"").Append(JsonEscape(jobId)).AppendLine("\";");
             builder.AppendLine("const __bridge = CS.UnityPuerExec.UnityPuerExecBridge;");
-            builder.AppendLine("const host = {");
-            builder.AppendLine("  log: (message) => __bridge.Log(__jobId, String(message)),");
-            builder.AppendLine("  triggerValidationCompile: (marker) => CS.UnityPuerExec.UnityPuerExecCompileCompatBridge.TriggerValidationCompile(__jobId, marker ? String(marker) : ''),");
-            builder.AppendLine("  port: () => __bridge.Port()");
-            builder.AppendLine("};");
             builder.AppendLine("try {");
-            builder.AppendLine("  const __result = await (async (host) => {");
-            builder.AppendLine(code);
-            builder.AppendLine("  })(host);");
-            builder.AppendLine("  const __resultJson = JSON.stringify(__result === undefined ? null : __result);");
+            builder.AppendLine("  const __globals = globalThis.__unityPuerExecGlobals || (globalThis.__unityPuerExecGlobals = {});");
+            builder.AppendLine("  let __unityPuerExecEntry = null;");
+            builder.AppendLine(rewrittenCode);
+            builder.AppendLine("  if (typeof __unityPuerExecEntry !== 'function') {");
+            builder.AppendLine("    throw new Error('default_export_must_be_function');");
+            builder.AppendLine("  }");
+            builder.AppendLine("  const __ctx = Object.freeze({ request_id: __jobId, globals: __globals });");
+            builder.AppendLine("  const __result = __unityPuerExecEntry(__ctx);");
+            builder.AppendLine("  const __isThenable = __result !== null && (typeof __result === 'object' || typeof __result === 'function') && typeof __result.then === 'function';");
+            builder.AppendLine("  if (__isThenable) {");
+            builder.AppendLine("    throw new Error('async_result_not_supported');");
+            builder.AppendLine("  }");
+            builder.AppendLine("  let __resultJson;");
+            builder.AppendLine("  try {");
+            builder.AppendLine("    __resultJson = JSON.stringify(__result === undefined ? null : __result);");
+            builder.AppendLine("  } catch (__jsonError) {");
+            builder.AppendLine("    throw new Error('result_not_json_serializable');");
+            builder.AppendLine("  }");
+            builder.AppendLine("  if (__resultJson === undefined) {");
+            builder.AppendLine("    throw new Error('result_not_json_serializable');");
+            builder.AppendLine("  }");
             builder.AppendLine("  __bridge.CompleteJob(__jobId, __resultJson);");
             builder.AppendLine("} catch (__error) {");
             builder.AppendLine("  const __errorText = String(__error);");
@@ -46,7 +71,55 @@ namespace UnityPuerExec
             builder.AppendLine("  __bridge.FailJob(__jobId, __errorText, __stackText);");
             builder.AppendLine("}");
             builder.AppendLine("})();");
-            return builder.ToString();
+            wrappedScript = builder.ToString();
+            return true;
+        }
+
+        private static bool TryRewriteModuleEntry(string code, out string rewrittenCode, out string error)
+        {
+            rewrittenCode = string.Empty;
+            error = string.Empty;
+
+            var normalizedCode = string.IsNullOrEmpty(code)
+                ? string.Empty
+                : code.Replace("\r\n", "\n").Replace('\r', '\n');
+            if (string.IsNullOrWhiteSpace(normalizedCode))
+            {
+                error = "invalid_exec_module";
+                return false;
+            }
+
+            if (!Regex.IsMatch(normalizedCode, @"\bexport\s+default\b"))
+            {
+                error = "missing_default_export";
+                return false;
+            }
+
+            if (!DefaultExportFunctionPattern.IsMatch(normalizedCode))
+            {
+                error = "default_export_must_be_function";
+                return false;
+            }
+
+            if (Regex.IsMatch(normalizedCode, @"(^|\n)\s*import\b"))
+            {
+                error = "invalid_exec_module";
+                return false;
+            }
+
+            rewrittenCode = DefaultExportFunctionPattern.Replace(
+                normalizedCode,
+                "__unityPuerExecEntry = ${1}function",
+                1
+            );
+            if (Regex.IsMatch(rewrittenCode, @"(^|\n)\s*export\b"))
+            {
+                error = "invalid_exec_module";
+                rewrittenCode = string.Empty;
+                return false;
+            }
+
+            return true;
         }
 
         internal static string BuildExecResponseJson(UnityPuerExecJobSnapshot snapshot, string sessionMarker, long? logOffset)

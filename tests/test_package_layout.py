@@ -76,7 +76,20 @@ class PackageLayoutTests(unittest.TestCase):
         self.assertIn("internal sealed class UnityPuerExecJob", job_state_content)
         self.assertIn("internal static class UnityPuerExecProtocol", protocol_content)
         self.assertIn("public static class UnityPuerExecBridge", bridge_content)
-        self.assertIn("UnityPuerExecCompileCompatBridge.TriggerValidationCompile", protocol_content)
+        self.assertNotIn("UnityPuerExecCompileCompatBridge.TriggerValidationCompile", protocol_content)
+        self.assertNotIn("public static void Log", bridge_content)
+        self.assertNotIn("public static int Port", bridge_content)
+
+    def test_exec_protocol_guards_module_entry_contract_and_shared_globals(self):
+        protocol_path = PACKAGE_ROOT / "Editor" / "UnityPuerExecProtocol.cs"
+        protocol_content = protocol_path.read_text(encoding="utf-8")
+
+        self.assertIn("globalThis.__unityPuerExecGlobals", protocol_content)
+        self.assertIn("missing_default_export", protocol_content)
+        self.assertIn("default_export_must_be_function", protocol_content)
+        self.assertIn("async_result_not_supported", protocol_content)
+        self.assertIn("result_not_json_serializable", protocol_content)
+        self.assertIn("__unityPuerExecEntry", protocol_content)
 
 
 if __name__ == "__main__":

@@ -92,6 +92,8 @@ class UnityPuerExecCliTests(unittest.TestCase):
         self.assertIn("`--code <inline-js>`", stdout)
         self.assertIn("`--request-id <id>`", stdout)
         self.assertIn("`--include-diagnostics`", stdout)
+        self.assertIn("`export default function", stdout)
+        self.assertIn("Promise", stdout)
 
     def test_wait_for_exec_help_renders_recovery_guidance(self):
         exit_code, stdout, stderr = unity_puer_exec.run_cli(["wait-for-exec", "--help"])
@@ -153,6 +155,7 @@ class UnityPuerExecCliTests(unittest.TestCase):
         self.assertEqual(stderr, "")
         self.assertIn("`running`: the request is still active", stdout)
         self.assertIn("wait-for-exec --request-id", stdout)
+        self.assertIn("Promise return values are rejected", stdout)
 
     def test_exit_help_example_renders_inline_request_exit_script(self):
         exit_code, stdout, stderr = unity_puer_exec.run_cli(["--help-example", "request-editor-exit-via-exec"])
@@ -304,7 +307,7 @@ class UnityPuerExecCliTests(unittest.TestCase):
     def test_exec_reads_file_input(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             script_path = Path(temp_dir) / "script.js"
-            script_path.write_text("return 7;", encoding="utf-8")
+            script_path.write_text("export default function run(ctx) { return 7; }", encoding="utf-8")
             with mock.patch.object(
                 unity_session,
                 "ensure_session_ready",
@@ -323,7 +326,7 @@ class UnityPuerExecCliTests(unittest.TestCase):
         self.assertEqual(exit_code, unity_puer_exec.EXIT_RUNNING)
         self.assertEqual(stderr, "")
         payload = invoke_command.call_args.args[2]
-        self.assertEqual(payload["code"], "return 7;")
+        self.assertEqual(payload["code"], "export default function run(ctx) { return 7; }")
         self.assertTrue(payload["request_id"])
         self.assertTrue(payload["include_log_offset"])
         body = json.loads(stdout)
@@ -335,7 +338,7 @@ class UnityPuerExecCliTests(unittest.TestCase):
     def test_exec_forwards_explicit_request_id(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             script_path = Path(temp_dir) / "script.js"
-            script_path.write_text("return 7;", encoding="utf-8")
+            script_path.write_text("export default function run(ctx) { return 7; }", encoding="utf-8")
             with mock.patch.object(
                 unity_session,
                 "ensure_session_ready",
@@ -353,7 +356,7 @@ class UnityPuerExecCliTests(unittest.TestCase):
     def test_exec_include_diagnostics_is_forwarded_and_preserved_top_level(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             script_path = Path(temp_dir) / "script.js"
-            script_path.write_text("return 7;", encoding="utf-8")
+            script_path.write_text("export default function run(ctx) { return 7; }", encoding="utf-8")
             with mock.patch.object(
                 unity_session,
                 "ensure_session_ready",
@@ -381,7 +384,7 @@ class UnityPuerExecCliTests(unittest.TestCase):
     def test_exec_forwards_unity_log_path(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             script_path = Path(temp_dir) / "script.js"
-            script_path.write_text("return 7;", encoding="utf-8")
+            script_path.write_text("export default function run(ctx) { return 7; }", encoding="utf-8")
             with mock.patch.object(
                 unity_session,
                 "ensure_session_ready",
@@ -398,7 +401,7 @@ class UnityPuerExecCliTests(unittest.TestCase):
     def test_exec_completed_response_preserves_top_level_log_offset(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             script_path = Path(temp_dir) / "script.js"
-            script_path.write_text("return { correlation_id: 'id-8' };", encoding="utf-8")
+            script_path.write_text("export default function run(ctx) { return { correlation_id: 'id-8' }; }", encoding="utf-8")
             with mock.patch.object(
                 unity_session,
                 "ensure_session_ready",
@@ -433,7 +436,7 @@ class UnityPuerExecCliTests(unittest.TestCase):
     def test_exec_hides_diagnostics_by_default(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             script_path = Path(temp_dir) / "script.js"
-            script_path.write_text("return { correlation_id: 'id-8' };", encoding="utf-8")
+            script_path.write_text("export default function run(ctx) { return { correlation_id: 'id-8' }; }", encoding="utf-8")
             with mock.patch.object(
                 unity_session,
                 "ensure_session_ready",
@@ -458,7 +461,7 @@ class UnityPuerExecCliTests(unittest.TestCase):
     def test_exec_timeout_payload_preserves_request_id(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             script_path = Path(temp_dir) / "script.js"
-            script_path.write_text("return 7;", encoding="utf-8")
+            script_path.write_text("export default function run(ctx) { return 7; }", encoding="utf-8")
             with mock.patch.object(
                 unity_session,
                 "ensure_session_ready",

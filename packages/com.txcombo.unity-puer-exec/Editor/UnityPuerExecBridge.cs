@@ -1,5 +1,3 @@
-using UnityEngine;
-
 namespace UnityPuerExec
 {
     public static class UnityPuerExecBridge
@@ -12,16 +10,6 @@ namespace UnityPuerExec
         public static void FailJob(string jobId, string error, string stack)
         {
             UnityPuerExecServer.FailJob(jobId, error, stack);
-        }
-
-        public static void Log(string jobId, string message)
-        {
-            Debug.Log($"[UnityPuerExec][{jobId}] {message}");
-        }
-
-        public static int Port()
-        {
-            return UnityPuerExecServer.Port;
         }
     }
 }

@@ -73,7 +73,7 @@ class DirectExecClientTests(unittest.TestCase):
             "http://127.0.0.1:55231",
             {
                 "request_id": "req-1",
-                "code": "return 1 + 1;",
+                "code": "export default function run(ctx) { return 1 + 1; }",
                 "wait_timeout_ms": 1500,
             },
             1500,
@@ -89,7 +89,7 @@ class DirectExecClientTests(unittest.TestCase):
                     "http://127.0.0.1:55231/exec",
                     {
                         "request_id": "req-1",
-                        "code": "return 1 + 1;",
+                        "code": "export default function run(ctx) { return 1 + 1; }",
                         "wait_timeout_ms": 1500,
                     },
                     6.5,
@@ -115,7 +115,7 @@ class DirectExecClientTests(unittest.TestCase):
             "http://127.0.0.1:55231",
             {
                 "request_id": "req-2",
-                "code": "await host.delayMs(5000); return 42;",
+                "code": "export default function run(ctx) { return { phase: 'started' }; }",
                 "wait_timeout_ms": 1000,
             },
             1000,
@@ -206,7 +206,7 @@ class DirectExecClientTests(unittest.TestCase):
             "http://127.0.0.1:55231",
             {
                 "request_id": "req-4",
-                "code": "return 1;",
+                "code": "export default function run(ctx) { return 1; }",
                 "wait_timeout_ms": 1000,
             },
             1000,
@@ -232,7 +232,7 @@ class DirectExecClientTests(unittest.TestCase):
         exit_code, stdout, stderr = direct_exec_client.invoke_command(
             "exec",
             "http://127.0.0.1:55231",
-            {"request_id": "req-5", "code": "return 1;", "wait_timeout_ms": 500},
+            {"request_id": "req-5", "code": "export default function run(ctx) { return 1; }", "wait_timeout_ms": 500},
             500,
             transport=transport,
         )
@@ -255,7 +255,7 @@ class DirectExecClientTests(unittest.TestCase):
         exit_code, stdout, stderr = direct_exec_client.invoke_command(
             "exec",
             "http://127.0.0.1:55231",
-            {"request_id": "req-6", "code": "return 1;", "wait_timeout_ms": 500},
+            {"request_id": "req-6", "code": "export default function run(ctx) { return 1; }", "wait_timeout_ms": 500},
             500,
             transport=transport,
         )

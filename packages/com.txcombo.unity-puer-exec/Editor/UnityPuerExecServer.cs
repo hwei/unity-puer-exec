@@ -363,8 +363,15 @@ namespace UnityPuerExec
                 return;
             }
 
+            if (!UnityPuerExecProtocol.TryBuildWrappedScript(job.RequestId, code, out var wrappedScript, out var error))
+            {
+                job.Fail(error, string.Empty);
+                ReleaseActiveRequest(job.RequestId);
+                return;
+            }
+
             jsEnv.Eval(
-                UnityPuerExecProtocol.BuildWrappedScript(job.RequestId, code),
+                wrappedScript,
                 $"unity-puer-exec/{job.RequestId}.js"
             );
         }

@@ -57,6 +57,23 @@ def _run_cli(argv):
     return exit_code, payload, stdout, stderr
 
 
+def _wait_until_ready(project_path, unity_exe_path, include_diagnostics=False):
+    argv = [
+        "wait-until-ready",
+        "--project-path",
+        str(project_path),
+        "--unity-exe-path",
+        str(unity_exe_path),
+        "--ready-timeout-seconds",
+        str(READY_TIMEOUT_SECONDS),
+        "--activity-timeout-seconds",
+        str(ACTIVITY_TIMEOUT_SECONDS),
+    ]
+    if include_diagnostics:
+        argv.append("--include-diagnostics")
+    return _run_cli(argv)
+
+
 class RealHostIntegrationTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -91,41 +108,22 @@ class RealHostIntegrationTests(unittest.TestCase):
         correlation_id = "sync-{}".format(os.getpid())
         script = "\n".join(
             [
+                "export default function run(ctx) {",
                 "const correlation_id = {!r};".format(correlation_id),
                 "console.log('[UnityPuerExecResult] ' + JSON.stringify({ correlation_id, probe: 'integration', ok: true }));",
                 "return { correlation_id, probe: 'integration' };",
+                "}",
             ]
         )
 
-        ready_exit_code, ready_payload, _, _ = _run_cli(
-            [
-                "wait-until-ready",
-                "--project-path",
-                str(self.project_path),
-                "--unity-exe-path",
-                str(self.unity_exe_path),
-                "--ready-timeout-seconds",
-                str(READY_TIMEOUT_SECONDS),
-                "--activity-timeout-seconds",
-                str(ACTIVITY_TIMEOUT_SECONDS),
-            ]
-        )
+        ready_exit_code, ready_payload, _, _ = _wait_until_ready(self.project_path, self.unity_exe_path)
         self.assertEqual(ready_exit_code, 0, ready_payload)
         self.assertEqual(ready_payload["result"]["status"], "recovered")
 
-        repeat_ready_exit_code, repeat_ready_payload, _, _ = _run_cli(
-            [
-                "wait-until-ready",
-                "--project-path",
-                str(self.project_path),
-                "--unity-exe-path",
-                str(self.unity_exe_path),
-                "--ready-timeout-seconds",
-                str(READY_TIMEOUT_SECONDS),
-                "--activity-timeout-seconds",
-                str(ACTIVITY_TIMEOUT_SECONDS),
-                "--include-diagnostics",
-            ]
+        repeat_ready_exit_code, repeat_ready_payload, _, _ = _wait_until_ready(
+            self.project_path,
+            self.unity_exe_path,
+            include_diagnostics=True,
         )
         self.assertEqual(repeat_ready_exit_code, 0, repeat_ready_payload)
         self.assertEqual(repeat_ready_payload["result"]["status"], "recovered")
@@ -195,6 +193,88 @@ class RealHostIntegrationTests(unittest.TestCase):
         self.assertEqual(wait_pattern_payload["result"]["status"], "log_pattern_matched")
         self.assertEqual(wait_pattern_payload["result"]["extracted_json"]["correlation_id"], correlation_id)
         self.assertEqual(wait_pattern_payload["result"]["extracted_json"]["probe"], "integration")
+
+    def test_exec_rejects_legacy_fragment_script_against_real_host(self):
+        ready_exit_code, ready_payload, _, _ = _wait_until_ready(self.project_path, self.unity_exe_path)
+        self.assertEqual(ready_exit_code, 0, ready_payload)
+
+        exec_exit_code, exec_payload, _, _ = _run_cli(
+            [
+                "exec",
+                "--project-path",
+                str(self.project_path),
+                "--unity-exe-path",
+                str(self.unity_exe_path),
+                "--wait-timeout-ms",
+                str(WAIT_TIMEOUT_MS),
+                "--code",
+                "return 1;",
+            ]
+        )
+
+        self.assertEqual(exec_exit_code, 1, exec_payload)
+        self.assertEqual(exec_payload["status"], "failed")
+        self.assertEqual(exec_payload["error"], "missing_default_export")
+
+    def test_exec_rejects_promise_return_against_real_host(self):
+        ready_exit_code, ready_payload, _, _ = _wait_until_ready(self.project_path, self.unity_exe_path)
+        self.assertEqual(ready_exit_code, 0, ready_payload)
+
+        exec_exit_code, exec_payload, _, _ = _run_cli(
+            [
+                "exec",
+                "--project-path",
+                str(self.project_path),
+                "--unity-exe-path",
+                str(self.unity_exe_path),
+                "--wait-timeout-ms",
+                str(WAIT_TIMEOUT_MS),
+                "--code",
+                "export default async function run(ctx) { return 1; }",
+            ]
+        )
+
+        self.assertEqual(exec_exit_code, 1, exec_payload)
+        self.assertEqual(exec_payload["status"], "failed")
+        self.assertEqual(exec_payload["error"], "async_result_not_supported")
+
+    def test_exec_globals_are_visible_across_requests_against_real_host(self):
+        ready_exit_code, ready_payload, _, _ = _wait_until_ready(self.project_path, self.unity_exe_path)
+        self.assertEqual(ready_exit_code, 0, ready_payload)
+
+        first_exit_code, first_payload, _, _ = _run_cli(
+            [
+                "exec",
+                "--project-path",
+                str(self.project_path),
+                "--unity-exe-path",
+                str(self.unity_exe_path),
+                "--wait-timeout-ms",
+                str(WAIT_TIMEOUT_MS),
+                "--code",
+                "export default function run(ctx) { ctx.globals.counter = (ctx.globals.counter || 0) + 1; return { counter: ctx.globals.counter }; }",
+            ]
+        )
+        self.assertEqual(first_exit_code, 0, first_payload)
+        self.assertEqual(first_payload["status"], "completed")
+        self.assertEqual(first_payload["result"]["counter"], 1)
+
+        second_exit_code, second_payload, _, _ = _run_cli(
+            [
+                "exec",
+                "--project-path",
+                str(self.project_path),
+                "--unity-exe-path",
+                str(self.unity_exe_path),
+                "--wait-timeout-ms",
+                str(WAIT_TIMEOUT_MS),
+                "--code",
+                "export default function run(ctx) { ctx.globals.counter = (ctx.globals.counter || 0) + 1; return { counter: ctx.globals.counter }; }",
+            ]
+        )
+        self.assertEqual(second_exit_code, 0, second_payload)
+        self.assertEqual(second_payload["status"], "completed")
+        self.assertEqual(second_payload["result"]["counter"], 2)
 
 
 if __name__ == "__main__":
