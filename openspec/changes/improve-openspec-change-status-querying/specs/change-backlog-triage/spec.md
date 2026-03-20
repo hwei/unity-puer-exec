@@ -8,6 +8,14 @@ Repository query tooling SHALL preserve access to a change's raw `meta.yaml` pla
 - **THEN** the query surface reports enough information to distinguish raw metadata from the interpreted operator-facing state
 - **AND** the output does not silently force contributors to infer which source of truth to trust
 
+### Requirement: Backlog tooling remains a raw metadata surface
+Repository backlog tooling SHALL continue to present backlog state from repository-owned `meta.yaml` values rather than silently replacing backlog classification with interpreted OpenSpec workflow state.
+
+#### Scenario: Backlog query sees a queued change that OpenSpec reports as in progress
+- **WHEN** a maintainer or agent requests the backlog for a non-archived change whose `meta.yaml` status is `queued`
+- **THEN** the backlog surface still treats the change as queued backlog work
+- **AND** any interpreted workflow-state comparison is provided by a separate query or diagnostic surface rather than by changing the backlog definition
+
 ### Requirement: Change-query output stays trustworthy under inconsistent repository state
 Repository query tooling SHALL handle stale placeholders, resolved blockers, or other repository-state inconsistencies in a way that reduces misleading planning output and makes the inconsistency visible for follow-up correction.
 
