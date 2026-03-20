@@ -601,6 +601,123 @@ class UnityPuerExecCliTests(unittest.TestCase):
         self.assertEqual(body["result"]["status"], "modal_blocked")
         self.assertEqual(body["result"]["blocker"]["type"], "save_scene_dialog")
 
+    def test_resolve_blocker_help_renders_cancel_guidance(self):
+        exit_code, stdout, stderr = unity_puer_exec.run_cli(["resolve-blocker", "--help"])
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(stderr, "")
+        self.assertIn("dismissing a supported Unity modal blocker", stdout)
+        self.assertIn("resolve-blocker --project-path X:/project --action cancel", stdout)
+
+    def test_resolve_blocker_help_status_mentions_resolution_states(self):
+        exit_code, stdout, stderr = unity_puer_exec.run_cli(["resolve-blocker", "--help-status"])
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(stderr, "")
+        self.assertIn("`no_supported_blocker` -> exit 1", stdout)
+        self.assertIn("`resolution_failed` -> exit 1", stdout)
+
+    def test_resolve_blocker_requires_windows_project_path_surface(self):
+        with mock.patch.object(unity_puer_exec_runtime.sys, "platform", "linux"):
+            exit_code, stdout, stderr = unity_puer_exec.run_cli(["resolve-blocker", "--action", "cancel"])
+
+        self.assertEqual(exit_code, 1)
+        self.assertEqual(stderr, "")
+        body = json.loads(stdout)
+        self.assertEqual(body["status"], "unsupported_operation")
+        self.assertEqual(body["error"], "windows_project_path_required")
+
+    def test_resolve_blocker_reports_no_supported_blocker(self):
+        with mock.patch.object(unity_puer_exec_runtime.sys, "platform", "win32"), mock.patch.object(
+            unity_session, "get_blocker_state", return_value=_make_session()
+        ), mock.patch.object(
+            unity_puer_exec_runtime.unity_modal_blockers,
+            "resolve_modal_blocker",
+            return_value={"ok": False, "status": "no_supported_blocker"},
+        ):
+            exit_code, stdout, stderr = unity_puer_exec.run_cli(
+                ["resolve-blocker", "--project-path", SAMPLE_PROJECT_PATH, "--action", "cancel"]
+            )
+
+        self.assertEqual(exit_code, 1)
+        self.assertEqual(stderr, "")
+        body = json.loads(stdout)
+        self.assertEqual(body["status"], "no_supported_blocker")
+        self.assertEqual(body["operation"], "resolve-blocker")
+
+    def test_resolve_blocker_reports_multiple_supported_blockers(self):
+        with mock.patch.object(unity_puer_exec_runtime.sys, "platform", "win32"), mock.patch.object(
+            unity_session, "get_blocker_state", return_value=_make_session()
+        ), mock.patch.object(
+            unity_puer_exec_runtime.unity_modal_blockers,
+            "resolve_modal_blocker",
+            return_value={"ok": False, "status": "resolution_failed", "error": "multiple_supported_blockers"},
+        ):
+            exit_code, stdout, stderr = unity_puer_exec.run_cli(
+                ["resolve-blocker", "--project-path", SAMPLE_PROJECT_PATH, "--action", "cancel"]
+            )
+
+        self.assertEqual(exit_code, 1)
+        self.assertEqual(stderr, "")
+        body = json.loads(stdout)
+        self.assertEqual(body["status"], "resolution_failed")
+        self.assertEqual(body["error"], "multiple_supported_blockers")
+
+    def test_resolve_blocker_reports_click_not_confirmed(self):
+        with mock.patch.object(unity_puer_exec_runtime.sys, "platform", "win32"), mock.patch.object(
+            unity_session, "get_blocker_state", return_value=_make_session()
+        ), mock.patch.object(
+            unity_puer_exec_runtime.unity_modal_blockers,
+            "resolve_modal_blocker",
+            return_value={
+                "ok": False,
+                "status": "resolution_failed",
+                "action": "cancel",
+                "blocker": {"type": "save_scene_dialog"},
+                "error": "click_not_confirmed",
+            },
+        ):
+            exit_code, stdout, stderr = unity_puer_exec.run_cli(
+                ["resolve-blocker", "--project-path", SAMPLE_PROJECT_PATH, "--action", "cancel"]
+            )
+
+        self.assertEqual(exit_code, 1)
+        self.assertEqual(stderr, "")
+        body = json.loads(stdout)
+        self.assertEqual(body["status"], "resolution_failed")
+        self.assertEqual(body["action"], "cancel")
+        self.assertEqual(body["blocker"]["type"], "save_scene_dialog")
+        self.assertEqual(body["error"], "click_not_confirmed")
+
+    def test_resolve_blocker_returns_resolved_payload(self):
+        with mock.patch.object(unity_puer_exec_runtime.sys, "platform", "win32"), mock.patch.object(
+            unity_session, "get_blocker_state", return_value=_make_session()
+        ), mock.patch.object(
+            unity_puer_exec_runtime.unity_modal_blockers,
+            "resolve_modal_blocker",
+            return_value={
+                "ok": True,
+                "status": "completed",
+                "result": {
+                    "status": "resolved",
+                    "action": "cancel",
+                    "blocker": {"type": "save_scene_dialog"},
+                },
+            },
+        ):
+            exit_code, stdout, stderr = unity_puer_exec.run_cli(
+                ["resolve-blocker", "--project-path", SAMPLE_PROJECT_PATH, "--action", "cancel"]
+            )
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(stderr, "")
+        body = json.loads(stdout)
+        self.assertEqual(body["status"], "completed")
+        self.assertEqual(body["operation"], "resolve-blocker")
+        self.assertEqual(body["result"]["status"], "resolved")
+        self.assertEqual(body["result"]["action"], "cancel")
+        self.assertEqual(body["result"]["blocker"]["type"], "save_scene_dialog")
+
     def test_get_log_source_returns_success_payload(self):
         session = _make_session()
         result = {"status": "log_source_available", "source": "file", "path": "X:/Editor.log"}

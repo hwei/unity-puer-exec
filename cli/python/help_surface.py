@@ -17,14 +17,15 @@ COMMAND_GROUPS = (
             "wait-until-ready",
         ),
     ),
-    (
-        "Secondary / Troubleshooting",
         (
-            "get-log-source",
-            "get-blocker-state",
-            "ensure-stopped",
+            "Secondary / Troubleshooting",
+            (
+                "get-log-source",
+                "get-blocker-state",
+                "resolve-blocker",
+                "ensure-stopped",
+            ),
         ),
-    ),
 )
 
 COMMANDS = tuple(command for _, commands in COMMAND_GROUPS for command in commands)
@@ -56,6 +57,7 @@ TOP_LEVEL_COMMANDS = {
     "wait-for-result-marker": "wait for the standard single-line JSON result marker emitted by a long-running script. See `wait-for-result-marker --help`.",
     "get-log-source": "report the observable Unity log source for the selected target. See `get-log-source --help`.",
     "get-blocker-state": "report whether a supported Unity modal blocker is currently detected for the target project. See `get-blocker-state --help`.",
+    "resolve-blocker": "dismiss a supported Unity modal blocker for the target project with an explicit action. See `resolve-blocker --help`.",
     "exec": "run JavaScript against a project or direct service; primary entry for script execution. See `exec --help`.",
     "ensure-stopped": "check or force a stopped state; not the recommended graceful-exit path. See `ensure-stopped --help`.",
 }
@@ -67,6 +69,7 @@ RECOMMENDED_PATH = (
     "If you need log-based verification, continue with `wait-for-log-pattern`.",
     "Use `wait-until-ready` when you specifically need readiness recovery before or between `exec` steps.",
     "Use `get-blocker-state` when an exec-side timeout or stall might be caused by a supported Unity modal dialog.",
+    "Use `resolve-blocker` only when you intentionally want the CLI to dismiss a supported modal blocker; then continue with the original `request_id` if needed.",
     "`get-log-source` and `ensure-stopped` are secondary commands, not the normal first step.",
 )
 
@@ -224,6 +227,40 @@ COMMAND_HELP = {
             ],
             "failure": [
                 ("failed", 1, "an unexpected blocker-query failure occurred."),
+            ],
+        },
+    },
+    "resolve-blocker": {
+        "quick_start": [
+            "Secondary troubleshooting command for explicitly dismissing a supported Unity modal blocker.",
+            "`unity-puer-exec resolve-blocker --project-path X:/project --action cancel`",
+            "Use this only after you have determined that a supported save-scene blocker is present and machine-issued cancel is acceptable.",
+        ],
+        "related_workflows": ("recover-exec-by-request-id",),
+        "args": {
+            "Arguments": [
+                "`--project-path <path>`: select the Unity project whose current supported modal blocker should be resolved.",
+                "`--action cancel`: dismiss the supported blocker with the dialog's cancel path.",
+                "`--include-diagnostics`: include top-level debug diagnostics in the machine-readable response.",
+            ],
+            "Selector Rules": [
+                "`--project-path` is required for this command.",
+                "`--base-url` is intentionally unsupported in the first version.",
+                "The command is Windows-only and only applies to the supported save-scene blocker types.",
+            ],
+            "Timeout Rules": [
+                "Resolution uses an internal fixed confirmation timeout after clicking cancel; callers do not configure it.",
+            ],
+        },
+        "status": {
+            "success": [
+                "`completed`: blocker resolution succeeded and `result.status` is `resolved`.",
+            ],
+            "failure": [
+                ("no_supported_blocker", 1, "no supported blocker was currently detected, so the CLI did not interact with any window."),
+                ("resolution_failed", 1, "a supported blocker was detected but the cancel interaction could not be completed safely or confirmed."),
+                ("unsupported_operation", 1, "the command requires Windows plus `--project-path` in the first version."),
+                ("failed", 1, "an unexpected resolution failure occurred."),
             ],
         },
     },

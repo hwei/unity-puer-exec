@@ -99,6 +99,8 @@ def run_command(args):
             return run_get_log_source(args)
         if args.command == "get-blocker-state":
             return run_get_blocker_state(args)
+        if args.command == "resolve-blocker":
+            return run_resolve_blocker(args)
         return run_ensure_stopped(args)
     except ValueError as exc:
         status = "address_conflict" if str(exc) == "address_conflict" else "failed"
@@ -455,6 +457,40 @@ def run_get_blocker_state(args):
         include_diagnostics=args.include_diagnostics,
     )
     return 0, emit_payload(payload), ""
+
+
+def run_resolve_blocker(args):
+    if sys.platform != "win32" or not args.project_path:
+        payload = {
+            "ok": False,
+            "status": "unsupported_operation",
+            "operation": "resolve-blocker",
+            "error": "windows_project_path_required",
+        }
+        return 1, emit_payload(payload), ""
+
+    session = unity_session.get_blocker_state(project_path=args.project_path)
+    result = unity_modal_blockers.resolve_modal_blocker(session.unity_pid, action=args.action)
+    if result.get("ok"):
+        payload = success_payload(
+            "resolve-blocker",
+            session=session,
+            result=result["result"],
+            include_diagnostics=args.include_diagnostics,
+        )
+        return 0, emit_payload(payload), ""
+
+    payload = {"ok": False, "status": result["status"], "operation": "resolve-blocker"}
+    if session is not None:
+        payload["session"] = session.to_payload()
+    if "action" in result:
+        payload["action"] = result["action"]
+    if "blocker" in result:
+        payload["blocker"] = result["blocker"]
+    if "error" in result:
+        payload["error"] = result["error"]
+    payload = attach_diagnostics(payload, include_diagnostics=args.include_diagnostics, session=session)
+    return 1, emit_payload(payload), ""
 
 
 def run_ensure_stopped(args):

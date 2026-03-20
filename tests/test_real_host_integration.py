@@ -375,6 +375,135 @@ class RealHostIntegrationTests(unittest.TestCase):
         self.assertEqual(blocker_payload["result"]["blocker"]["type"], "save_scene_dialog")
         self.assertEqual(blocker_payload["result"]["blocker"]["scope"], "exec")
 
+    def test_resolve_blocker_cancels_modified_scene_prompt_against_real_host(self):
+        ready_exit_code, ready_payload, _, _ = _wait_until_ready(self.project_path, self.unity_exe_path)
+        self.assertEqual(ready_exit_code, 0, ready_payload)
+
+        request_id = "resolve-modified-{}".format(os.getpid())
+        _run_cli(
+            [
+                "exec",
+                "--project-path",
+                str(self.project_path),
+                "--unity-exe-path",
+                str(self.unity_exe_path),
+                "--request-id",
+                request_id,
+                "--wait-timeout-ms",
+                str(WAIT_TIMEOUT_MS),
+                "--code",
+                "\n".join(
+                    [
+                        "export default function run(ctx) {",
+                        "  const SceneManager = puer.loadType('UnityEngine.SceneManagement.SceneManager');",
+                        "  const EditorSceneManager = puer.loadType('UnityEditor.SceneManagement.EditorSceneManager');",
+                        "  const scene = SceneManager.GetActiveScene();",
+                        "  EditorSceneManager.MarkSceneDirty(scene);",
+                        "  EditorSceneManager.SaveCurrentModifiedScenesIfUserWantsTo();",
+                        "  return { request_id: ctx.request_id };",
+                        "}",
+                    ]
+                ),
+            ]
+        )
+
+        resolve_exit_code, resolve_payload, _, _ = _run_cli(
+            [
+                "resolve-blocker",
+                "--project-path",
+                str(self.project_path),
+                "--action",
+                "cancel",
+            ]
+        )
+
+        self.assertEqual(resolve_exit_code, 0, resolve_payload)
+        self.assertEqual(resolve_payload["result"]["status"], "resolved")
+        self.assertEqual(resolve_payload["result"]["blocker"]["type"], "save_modified_scenes_prompt")
+
+        wait_exit_code, wait_payload, _, _ = _run_cli(
+            [
+                "wait-for-exec",
+                "--project-path",
+                str(self.project_path),
+                "--unity-exe-path",
+                str(self.unity_exe_path),
+                "--request-id",
+                request_id,
+                "--wait-timeout-ms",
+                str(WAIT_TIMEOUT_MS),
+            ]
+        )
+
+        self.assertEqual(wait_exit_code, 0, wait_payload)
+        self.assertEqual(wait_payload["status"], "completed")
+        self.assertEqual(wait_payload["result"]["request_id"], request_id)
+
+    def test_resolve_blocker_cancels_save_scene_dialog_against_real_host(self):
+        ready_exit_code, ready_payload, _, _ = _wait_until_ready(self.project_path, self.unity_exe_path)
+        self.assertEqual(ready_exit_code, 0, ready_payload)
+
+        request_id = "resolve-save-scene-{}".format(os.getpid())
+        _run_cli(
+            [
+                "exec",
+                "--project-path",
+                str(self.project_path),
+                "--unity-exe-path",
+                str(self.unity_exe_path),
+                "--request-id",
+                request_id,
+                "--wait-timeout-ms",
+                str(WAIT_TIMEOUT_MS),
+                "--code",
+                "\n".join(
+                    [
+                        "export default function run(ctx) {",
+                        "  const EditorSceneManager = puer.loadType('UnityEditor.SceneManagement.EditorSceneManager');",
+                        "  const NewSceneSetup = puer.loadType('UnityEditor.SceneManagement.NewSceneSetup');",
+                        "  const NewSceneMode = puer.loadType('UnityEditor.SceneManagement.NewSceneMode');",
+                        "  const scene = EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);",
+                        "  EditorSceneManager.MarkSceneDirty(scene);",
+                        "  EditorSceneManager.SaveOpenScenes();",
+                        "  return { request_id: ctx.request_id };",
+                        "}",
+                    ]
+                ),
+            ]
+        )
+
+        resolve_exit_code, resolve_payload, _, _ = _run_cli(
+            [
+                "resolve-blocker",
+                "--project-path",
+                str(self.project_path),
+                "--action",
+                "cancel",
+            ]
+        )
+
+        self.assertEqual(resolve_exit_code, 0, resolve_payload)
+        self.assertEqual(resolve_payload["result"]["status"], "resolved")
+        self.assertEqual(resolve_payload["result"]["blocker"]["type"], "save_scene_dialog")
+
+        wait_exit_code, wait_payload, _, _ = _run_cli(
+            [
+                "wait-for-exec",
+                "--project-path",
+                str(self.project_path),
+                "--unity-exe-path",
+                str(self.unity_exe_path),
+                "--request-id",
+                request_id,
+                "--wait-timeout-ms",
+                str(WAIT_TIMEOUT_MS),
+            ]
+        )
+
+        self.assertEqual(wait_exit_code, 0, wait_payload)
+        self.assertEqual(wait_payload["status"], "completed")
+        self.assertEqual(wait_payload["result"]["request_id"], request_id)
+
 
 if __name__ == "__main__":
     unittest.main()
