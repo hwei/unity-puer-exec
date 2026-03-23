@@ -172,44 +172,87 @@ def read_exec_code(args):
     return args.code
 
 
-def run_exec(args):
-    request_id = args.request_id or uuid.uuid4().hex
-    selector = resolve_selector(args)
-    validate_positive(args.wait_timeout_ms, "wait-timeout-ms")
-    validate_project_mode_only(selector, "unity-exe-path", args.unity_exe_path)
-    validate_project_mode_only(selector, "unity-log-path", args.unity_log_path)
+def _project_path_arg(args):
+    return str(unity_session.resolve_project_path(getattr(args, "project_path", None)))
 
-    if selector == "project_path":
-        session = unity_session.ensure_session_ready(
-            project_path=args.project_path,
-            unity_exe_path=args.unity_exe_path,
-            unity_log_path=args.unity_log_path,
-        )
-        base_url = session.base_url
-    else:
-        base_url = args.base_url
 
+def _next_step_payload(args, request_id):
+    project_path = _project_path_arg(args)
+    argv = [
+        "unity-puer-exec",
+        "wait-for-exec",
+        "--project-path",
+        project_path,
+        "--request-id",
+        request_id,
+        "--wait-timeout-ms",
+        str(args.wait_timeout_ms),
+    ]
+    if getattr(args, "unity_exe_path", None):
+        argv.extend(["--unity-exe-path", args.unity_exe_path])
+    if getattr(args, "unity_log_path", None):
+        argv.extend(["--unity-log-path", args.unity_log_path])
+    if getattr(args, "include_log_offset", False):
+        argv.append("--include-log-offset")
+    if getattr(args, "include_diagnostics", False):
+        argv.append("--include-diagnostics")
+    return {"command": "wait-for-exec", "argv": argv}
+
+
+def _pending_exec_payload(request_id, code):
+    return {"request_id": request_id, "code": code}
+
+
+def _write_pending_exec(args, request_id, code):
+    unity_session.write_pending_exec_artifact(
+        _project_path_arg(args),
+        request_id,
+        _pending_exec_payload(request_id, code),
+    )
+
+
+def _read_pending_exec(args, request_id):
+    return unity_session.read_pending_exec_artifact(_project_path_arg(args), request_id)
+
+
+def _clear_pending_exec(args, request_id):
+    unity_session.clear_pending_exec_artifact(_project_path_arg(args), request_id)
+
+
+def _emit_running_startup_payload(operation, session, request_id, args):
+    payload = {
+        "ok": True,
+        "status": "running",
+        "operation": operation,
+        "request_id": request_id,
+        "next_step": _next_step_payload(args, request_id),
+    }
+    if session is not None:
+        payload["session"] = session.to_payload()
+    return attach_diagnostics(payload, include_diagnostics=args.include_diagnostics, session=session)
+
+
+def _invoke_exec(base_url, request_id, code, args):
     payload = {
         "request_id": request_id,
-        "code": read_exec_code(args),
+        "code": code,
         "wait_timeout_ms": args.wait_timeout_ms,
         "include_log_offset": args.include_log_offset,
         "include_diagnostics": args.include_diagnostics,
     }
-    exit_code, stdout_text, stderr_text = direct_exec_client.invoke_command(
+    return direct_exec_client.invoke_command(
         "exec",
         base_url,
         payload,
         args.wait_timeout_ms,
     )
-    exit_code, stdout_text, stderr_text = _normalize_exec_blocker_result(
-        exit_code,
-        stdout_text,
-        stderr_text,
-        session if selector == "project_path" else None,
-    )
+
+
+def _normalize_exec_response(stdout_text, stderr_text, args):
     if stdout_text:
         body = json.loads(stdout_text)
+        if body.get("status") == "running" and getattr(args, "project_path", None):
+            body["next_step"] = _next_step_payload(args, body.get("request_id"))
         if not args.include_diagnostics:
             body.pop("diagnostics", None)
         stdout_text = emit_payload(body)
@@ -218,6 +261,51 @@ def run_exec(args):
         if not args.include_diagnostics:
             body.pop("diagnostics", None)
         stderr_text = emit_payload(body)
+    return stdout_text, stderr_text
+
+
+def _should_keep_pending_after_submit(exit_code, stdout_text):
+    if not stdout_text:
+        return False
+    body = json.loads(stdout_text)
+    status = body.get("status")
+    return exit_code == EXIT_NOT_AVAILABLE and status == "not_available"
+
+
+def run_exec(args):
+    request_id = args.request_id or uuid.uuid4().hex
+    code = read_exec_code(args)
+    selector = resolve_selector(args)
+    validate_positive(args.wait_timeout_ms, "wait-timeout-ms")
+    validate_project_mode_only(selector, "unity-exe-path", args.unity_exe_path)
+    validate_project_mode_only(selector, "unity-log-path", args.unity_log_path)
+
+    if selector == "project_path":
+        try:
+            session = unity_session.ensure_session_ready(
+                project_path=args.project_path,
+                unity_exe_path=args.unity_exe_path,
+                unity_log_path=args.unity_log_path,
+            )
+        except (unity_session.UnityStalledError, unity_session.UnityNotReadyError) as exc:
+            _write_pending_exec(args, request_id, code)
+            payload = _emit_running_startup_payload("exec", exc.session, request_id, args)
+            return EXIT_RUNNING, emit_payload(payload), ""
+        base_url = session.base_url
+    else:
+        session = None
+        base_url = args.base_url
+
+    exit_code, stdout_text, stderr_text = _invoke_exec(base_url, request_id, code, args)
+    exit_code, stdout_text, stderr_text = _normalize_exec_blocker_result(
+        exit_code,
+        stdout_text,
+        stderr_text,
+        session if selector == "project_path" else None,
+    )
+    if selector == "project_path" and not _should_keep_pending_after_submit(exit_code, stdout_text):
+        _clear_pending_exec(args, request_id)
+    stdout_text, stderr_text = _normalize_exec_response(stdout_text, stderr_text, args)
     return exit_code, stdout_text, stderr_text
 
 
@@ -228,43 +316,47 @@ def run_wait_for_exec(args):
     validate_project_mode_only(selector, "unity-log-path", args.unity_log_path)
 
     if selector == "project_path":
-        session = unity_session.ensure_session_ready(
-            project_path=args.project_path,
-            unity_exe_path=args.unity_exe_path,
-            unity_log_path=args.unity_log_path,
-        )
+        try:
+            session = unity_session.ensure_session_ready(
+                project_path=args.project_path,
+                unity_exe_path=args.unity_exe_path,
+                unity_log_path=args.unity_log_path,
+            )
+        except (unity_session.UnityStalledError, unity_session.UnityNotReadyError) as exc:
+            if _read_pending_exec(args, args.request_id) is not None:
+                payload = _emit_running_startup_payload("wait-for-exec", exc.session, args.request_id, args)
+                return EXIT_RUNNING, emit_payload(payload), ""
+            raise
         base_url = session.base_url
     else:
+        session = None
         base_url = args.base_url
 
-    payload = {
-        "request_id": args.request_id,
-        "wait_timeout_ms": args.wait_timeout_ms,
-        "include_log_offset": args.include_log_offset,
-        "include_diagnostics": args.include_diagnostics,
-    }
-    exit_code, stdout_text, stderr_text = direct_exec_client.invoke_command(
-        "wait-for-exec",
-        base_url,
-        payload,
-        args.wait_timeout_ms,
-    )
+    pending = _read_pending_exec(args, args.request_id) if selector == "project_path" else None
+    if pending is not None:
+        exit_code, stdout_text, stderr_text = _invoke_exec(base_url, args.request_id, pending["code"], args)
+    else:
+        payload = {
+            "request_id": args.request_id,
+            "wait_timeout_ms": args.wait_timeout_ms,
+            "include_log_offset": args.include_log_offset,
+            "include_diagnostics": args.include_diagnostics,
+        }
+        exit_code, stdout_text, stderr_text = direct_exec_client.invoke_command(
+            "wait-for-exec",
+            base_url,
+            payload,
+            args.wait_timeout_ms,
+        )
     exit_code, stdout_text, stderr_text = _normalize_exec_blocker_result(
         exit_code,
         stdout_text,
         stderr_text,
         session if selector == "project_path" else None,
     )
-    if stdout_text:
-        body = json.loads(stdout_text)
-        if not args.include_diagnostics:
-            body.pop("diagnostics", None)
-        stdout_text = emit_payload(body)
-    if stderr_text:
-        body = json.loads(stderr_text)
-        if not args.include_diagnostics:
-            body.pop("diagnostics", None)
-        stderr_text = emit_payload(body)
+    if selector == "project_path" and pending is not None and not _should_keep_pending_after_submit(exit_code, stdout_text):
+        _clear_pending_exec(args, args.request_id)
+    stdout_text, stderr_text = _normalize_exec_response(stdout_text, stderr_text, args)
     return exit_code, stdout_text, stderr_text
 
 

@@ -99,6 +99,10 @@ def _unity_lockfile_path(project_path):
     return unity_session_logs.unity_lockfile_path(project_path)
 
 
+def _pending_exec_artifact_path(project_path, request_id):
+    return unity_session_logs.pending_exec_artifact_path(project_path, request_id)
+
+
 def read_session_artifact(project_path):
     return unity_session_logs.read_session_artifact(project_path)
 
@@ -117,6 +121,18 @@ def write_launch_claim(project_path, payload):
 
 def clear_launch_claim(project_path):
     return unity_session_logs.clear_launch_claim(project_path)
+
+
+def read_pending_exec_artifact(project_path, request_id):
+    return unity_session_logs.read_pending_exec_artifact(project_path, request_id)
+
+
+def write_pending_exec_artifact(project_path, request_id, payload):
+    return unity_session_logs.write_pending_exec_artifact(project_path, request_id, payload)
+
+
+def clear_pending_exec_artifact(project_path, request_id):
+    return unity_session_logs.clear_pending_exec_artifact(project_path, request_id)
 
 
 def _session_artifact_log_path(session_data):

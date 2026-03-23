@@ -4,6 +4,7 @@ from pathlib import Path
 
 from unity_session_common import (
     LAUNCH_CLAIM_RELATIVE_PATH,
+    PENDING_EXEC_DIR_RELATIVE_PATH,
     PROJECT_RECOVERY_WINDOW_SECONDS,
     SESSION_RELATIVE_PATH,
     UNITY_LOCKFILE_RELATIVE_PATH,
@@ -72,6 +73,10 @@ def unity_lockfile_path(project_path):
     return Path(project_path) / UNITY_LOCKFILE_RELATIVE_PATH
 
 
+def pending_exec_artifact_path(project_path, request_id):
+    return Path(project_path) / PENDING_EXEC_DIR_RELATIVE_PATH / ("{}.json".format(request_id))
+
+
 def _read_json_file(path):
     if not path.exists():
         return None
@@ -107,6 +112,21 @@ def write_launch_claim(project_path, payload):
 def clear_launch_claim(project_path):
     try:
         launch_claim_path(project_path).unlink()
+    except FileNotFoundError:
+        return
+
+
+def read_pending_exec_artifact(project_path, request_id):
+    return _read_json_file(pending_exec_artifact_path(project_path, request_id))
+
+
+def write_pending_exec_artifact(project_path, request_id, payload):
+    _write_json_file(pending_exec_artifact_path(project_path, request_id), payload)
+
+
+def clear_pending_exec_artifact(project_path, request_id):
+    try:
+        pending_exec_artifact_path(project_path, request_id).unlink()
     except FileNotFoundError:
         return
 

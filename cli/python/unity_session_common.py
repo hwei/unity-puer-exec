@@ -13,6 +13,7 @@ POLL_INTERVAL_SECONDS = 1.0
 RECOVERABLE_HEALTH_STATUSES = ("compiling", "not_available")
 SESSION_RELATIVE_PATH = Path("Temp") / "UnityPuerExec" / "session.json"
 LAUNCH_CLAIM_RELATIVE_PATH = Path("Temp") / "UnityPuerExec" / "launch_claim.json"
+PENDING_EXEC_DIR_RELATIVE_PATH = Path("Temp") / "UnityPuerExec" / "pending_exec"
 UNITY_LOCKFILE_RELATIVE_PATH = Path("Temp") / "UnityLockfile"
 PROJECT_RECOVERY_WINDOW_SECONDS = 30.0
 

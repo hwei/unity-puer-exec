@@ -20,11 +20,11 @@ import unity_session  # type: ignore
 SAMPLE_PROJECT_PATH = "X:/unity-project"
 
 
-def _make_session():
+def _make_session(project_path=SAMPLE_PROJECT_PATH):
     session = unity_session.UnitySession(
         owner="launched",
         base_url="http://127.0.0.1:55231",
-        project_path=SAMPLE_PROJECT_PATH,
+        project_path=project_path,
         unity_pid=1234,
         launched=True,
     )
@@ -502,6 +502,36 @@ class UnityPuerExecCliTests(unittest.TestCase):
         self.assertEqual(body["request_id"], "req-timeout")
         self.assertEqual(body["status"], "not_available")
 
+    def test_exec_startup_not_ready_returns_running_with_next_step_and_persists_pending_request(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_path = Path(temp_dir) / "Project"
+            project_path.mkdir()
+            script_path = Path(temp_dir) / "script.js"
+            script_path.write_text("export default function run(ctx) { return 7; }", encoding="utf-8")
+            session = _make_session(project_path=str(project_path))
+            not_ready = unity_session.UnityNotReadyError("still starting", session=session)
+
+            with mock.patch.object(
+                unity_session,
+                "ensure_session_ready",
+                side_effect=not_ready,
+            ):
+                exit_code, stdout, stderr = unity_puer_exec.run_cli(
+                    ["exec", "--project-path", str(project_path), "--file", str(script_path), "--request-id", "req-start"]
+                )
+
+            self.assertEqual(exit_code, unity_puer_exec.EXIT_RUNNING)
+            self.assertEqual(stderr, "")
+            body = json.loads(stdout)
+            self.assertEqual(body["status"], "running")
+            self.assertEqual(body["request_id"], "req-start")
+            self.assertEqual(body["next_step"]["command"], "wait-for-exec")
+            self.assertIn("wait-for-exec", body["next_step"]["argv"])
+            self.assertIn("req-start", body["next_step"]["argv"])
+            pending = unity_session.read_pending_exec_artifact(str(project_path), "req-start")
+            self.assertEqual(pending["request_id"], "req-start")
+            self.assertIn("return 7", pending["code"])
+
     def test_wait_for_exec_invokes_follow_up_surface(self):
         with mock.patch.object(
             unity_session,
@@ -520,6 +550,66 @@ class UnityPuerExecCliTests(unittest.TestCase):
         self.assertEqual(invoke_command.call_args.args[2]["request_id"], "req-follow")
         body = json.loads(stdout)
         self.assertEqual(body["request_id"], "req-follow")
+
+    def test_wait_for_exec_replays_pending_exec_after_project_becomes_ready(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_path = Path(temp_dir) / "Project"
+            project_path.mkdir()
+            unity_session.write_pending_exec_artifact(
+                str(project_path),
+                "req-pending",
+                {"request_id": "req-pending", "code": "export default function run(ctx) { return 11; }"},
+            )
+            with mock.patch.object(
+                unity_session,
+                "ensure_session_ready",
+                return_value=_make_session(project_path=str(project_path)),
+            ), mock.patch.object(
+                unity_puer_exec.direct_exec_client,
+                "invoke_command",
+                return_value=(0, json.dumps({"ok": True, "status": "completed", "request_id": "req-pending", "result": {"value": 11}}), ""),
+            ) as invoke_command:
+                exit_code, stdout, stderr = unity_puer_exec.run_cli(
+                    ["wait-for-exec", "--project-path", str(project_path), "--request-id", "req-pending"]
+                )
+
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(stderr, "")
+            self.assertEqual(invoke_command.call_args.args[0], "exec")
+            payload = invoke_command.call_args.args[2]
+            self.assertEqual(payload["request_id"], "req-pending")
+            self.assertIn("return 11", payload["code"])
+            body = json.loads(stdout)
+            self.assertEqual(body["status"], "completed")
+            self.assertIsNone(unity_session.read_pending_exec_artifact(str(project_path), "req-pending"))
+
+    def test_wait_for_exec_keeps_running_while_pending_startup_is_still_not_ready(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_path = Path(temp_dir) / "Project"
+            project_path.mkdir()
+            unity_session.write_pending_exec_artifact(
+                str(project_path),
+                "req-pending",
+                {"request_id": "req-pending", "code": "export default function run(ctx) { return 11; }"},
+            )
+            session = _make_session(project_path=str(project_path))
+            stalled = unity_session.UnityStalledError("starting", session=session)
+
+            with mock.patch.object(
+                unity_session,
+                "ensure_session_ready",
+                side_effect=stalled,
+            ):
+                exit_code, stdout, stderr = unity_puer_exec.run_cli(
+                    ["wait-for-exec", "--project-path", str(project_path), "--request-id", "req-pending"]
+                )
+
+            self.assertEqual(exit_code, unity_puer_exec.EXIT_RUNNING)
+            self.assertEqual(stderr, "")
+            body = json.loads(stdout)
+            self.assertEqual(body["status"], "running")
+            self.assertEqual(body["request_id"], "req-pending")
+            self.assertEqual(body["next_step"]["command"], "wait-for-exec")
 
     def test_exec_timeout_normalizes_supported_modal_blocker(self):
         with tempfile.TemporaryDirectory() as temp_dir:

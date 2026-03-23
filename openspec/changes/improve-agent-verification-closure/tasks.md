@@ -15,6 +15,6 @@
 
 ## 4. Implementation Preparation
 
-- [ ] 4.1 Refine the first implementation slice for Prompt A so project-scoped `exec` can enter an accepted `running` lifecycle before slow startup is treated as terminal failure
+- [x] 4.1 Refine the first implementation slice for Prompt A so project-scoped `exec` can enter an accepted `running` lifecycle before slow startup is treated as terminal failure
 - [x] 4.2 Define the accepted-response continuation payload shape for Prompt A, including the default `wait-for-exec` hint and any optional quieting control
 - [x] 4.3 Plan the first rerun protocol against Prompt A and Standard Prompt C after the Prompt A slice lands
