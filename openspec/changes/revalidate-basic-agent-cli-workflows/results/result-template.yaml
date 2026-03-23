@@ -1,0 +1,58 @@
+prompt_id: <prompt-id>
+prompt_source: openspec/changes/revalidate-basic-agent-cli-workflows/task-prompts.md
+record_kind: retrospective-summary
+date: YYYY-MM-DD
+
+model: gpt-5.4-mini subagent
+project_path: <project-path>
+cli_entry_path: <cli-entry-path>
+
+constraints:
+  allowed:
+    - published unity-puer-exec help surface
+    - normal CLI execution against the target Unity project
+  disallowed:
+    - repository source in this product workspace
+    - repository tests
+    - command-level maintainer hints
+
+help_queries:
+  - order: 1
+    command: <command>
+    retained_exact_argv: true
+    purpose: <why this help query mattered>
+
+command_trace:
+  - order: 1
+    command: <command>
+    retained_exact_argv: false
+    purpose: <why this command was used>
+    outcome: <what happened>
+
+key_outputs:
+  - source: <source>
+    summary: <important evidence>
+
+task_success: <pass|fail>
+autonomy: <pass|fail>
+efficiency: <clean|recoverable|poor>
+
+human_intervention:
+  level: <observed_only|non_decisive|decisive>
+  summary: <operator observation or intervention>
+
+modal_blocker:
+  present: <true|false>
+  type: <none|type>
+  detected_by: <none|cli|human_observation>
+  resolution: <none|resolution>
+
+findings:
+  - <discoverability or friction finding>
+
+raw_transcript:
+  status: <not-retained|temporary|retained>
+  location: <none|path>
+  note: <short note>
+
+final_summary: <short run summary>

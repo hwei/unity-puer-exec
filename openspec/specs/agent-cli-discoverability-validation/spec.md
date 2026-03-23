@@ -1,7 +1,7 @@
 # agent-cli-discoverability-validation Specification
 
 ## Purpose
-TBD - created by archiving change validate-help-only-agent-cli-discoverability. Update Purpose after archive.
+Define the repository-owned validation protocol and evidence expectations for measuring whether AI agents can discover, recover, and complete representative Unity workflows through the published `unity-puer-exec` CLI surface without repository-only guidance.
 ## Requirements
 ### Requirement: Help-only agent validation uses published CLI discovery surfaces
 The repository SHALL define a repeatable validation protocol for agent CLI discoverability that restricts the primary discovery surface to the publishable `unity-puer-exec` help interface and normal CLI execution.
@@ -76,4 +76,3 @@ The repository SHALL treat agent-efficiency validation as a comparison problem, 
 - **WHEN** a contributor reruns representative help-only agent validation tasks after a help-surface change
 - **THEN** the evaluation compares convergence quality against earlier transcript-backed runs
 - **AND** the evaluation does not rely only on final task success as the measure of improvement
-

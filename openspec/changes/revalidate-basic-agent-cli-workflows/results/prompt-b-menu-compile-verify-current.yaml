@@ -1,0 +1,135 @@
+prompt_id: prompt-b
+prompt_source: openspec/changes/revalidate-basic-agent-cli-workflows/task-prompts.md
+record_kind: retrospective-summary
+date: 2026-03-23
+
+model: gpt-5.4-mini subagent
+project_path: F:\C3\unity-puer-exec-workspace\c3-client-tree2\Project
+cli_entry_path: F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py
+
+constraints:
+  allowed:
+    - published unity-puer-exec help surface
+    - normal CLI execution against the target Unity project
+  disallowed:
+    - repository source in this product workspace
+    - repository tests
+    - command-level maintainer hints
+
+help_queries:
+  - order: 1
+    command: python F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py --help
+    retained_exact_argv: true
+    purpose: orient around the command surface
+  - order: 2
+    command: python F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py exec --help
+    retained_exact_argv: true
+    purpose: inspect the primary code-write and execution path
+  - order: 3
+    command: python F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py exec --help-args
+    retained_exact_argv: true
+    purpose: inspect the module-entry argument shape
+  - order: 4
+    command: python F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py exec --help-status
+    retained_exact_argv: true
+    purpose: understand machine-readable exec outcomes
+  - order: 5
+    command: python F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py --help-example exec-and-wait-for-result-marker
+    retained_exact_argv: true
+    purpose: inspect the published longer-running workflow example
+  - order: 6
+    command: python F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py --help-example request-editor-exit-via-exec
+    retained_exact_argv: true
+    purpose: inspect another published exec example while planning script shape
+  - order: 7
+    command: python F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py wait-until-ready --help
+    retained_exact_argv: true
+    purpose: inspect readiness recovery around compile timing
+  - order: 8
+    command: python F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py wait-until-ready --help-args
+    retained_exact_argv: true
+    purpose: inspect readiness timeout arguments
+  - order: 9
+    command: python F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py wait-for-log-pattern --help
+    retained_exact_argv: true
+    purpose: inspect the recommended log-observation path for verification
+  - order: 10
+    command: python F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py wait-for-log-pattern --help-args
+    retained_exact_argv: true
+    purpose: inspect log-observation arguments after verification friction
+
+command_trace:
+  - order: 1
+    command: python F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py exec --project-path F:\C3\unity-puer-exec-workspace\c3-client-tree2\Project --file .tmp\write_selection_guid_menu.js --wait-timeout-ms 30000
+    retained_exact_argv: true
+    purpose: create the Unity Editor menu command in the host project
+    outcome: wrote `Assets\Editor\SelectionGuidMenu.cs` and triggered the normal compile cycle
+  - order: 2
+    command: python F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py wait-until-ready --project-path F:\C3\unity-puer-exec-workspace\c3-client-tree2\Project --ready-timeout-seconds 180 --activity-timeout-seconds 20 --health-timeout-seconds 10
+    retained_exact_argv: true
+    purpose: wait for Unity to recover after compilation
+    outcome: completed successfully and kept the session usable
+  - order: 3
+    command: python F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py exec --project-path F:\C3\unity-puer-exec-workspace\c3-client-tree2\Project --file .tmp\verify_scene_selection_guid_menu.js --wait-timeout-ms 30000
+    retained_exact_argv: true
+    purpose: perform the initial menu verification path
+    outcome: direct verification remained incomplete
+  - order: 4
+    command: python F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py exec --project-path F:\C3\unity-puer-exec-workspace\c3-client-tree2\Project --file .tmp\run_validation_menu.js --wait-timeout-ms 30000
+    retained_exact_argv: true
+    purpose: invoke the menu command in the editor
+    outcome: the direct invocation path initially logged an empty GUID
+  - order: 5
+    command: python F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py exec --project-path F:\C3\unity-puer-exec-workspace\c3-client-tree2\Project --file .tmp\inspect_selection_state.js --wait-timeout-ms 30000
+    retained_exact_argv: true
+    purpose: inspect selection state while diagnosing the empty-GUID result
+    outcome: prompted the agent to change validation strategy
+  - order: 6
+    command: python F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py exec --project-path F:\C3\unity-puer-exec-workspace\c3-client-tree2\Project --file .tmp\refresh_scripts.js --wait-timeout-ms 30000
+    retained_exact_argv: true
+    purpose: apply the adjusted validation helper path
+    outcome: enabled the final successful validation flow
+  - order: 7
+    command: python F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py wait-until-ready --project-path F:\C3\unity-puer-exec-workspace\c3-client-tree2\Project --ready-timeout-seconds 180 --activity-timeout-seconds 20 --health-timeout-seconds 10
+    retained_exact_argv: true
+    purpose: wait again after the adjusted helper path changed editor state
+    outcome: completed successfully
+
+key_outputs:
+  - source: Host project file
+    summary: `Assets\Editor\SelectionGuidMenu.cs` exists and contains the `Tools/Log Selection GUID` menu command.
+  - source: CLI output
+    summary: Unity recovered cleanly after compilation and retained a usable project-scoped session.
+  - source: Host log
+    summary: `Editor.log` contained `[SelectionGuidMenu] Current Selection GUID: 4c7123f928ebdff429687d9260e959c0`.
+  - source: CLI output
+    summary: The target menu command eventually returned `executed: true`.
+  - source: Subagent report
+    summary: Temporary validation scaffolding was removed after the successful verification.
+
+task_success: pass
+autonomy: pass
+efficiency: recoverable
+
+human_intervention:
+  level: observed_only
+  summary: No human intervention was reported during the run.
+
+modal_blocker:
+  present: false
+  type: none
+  detected_by: none
+  resolution: none
+
+findings:
+  - The agent stayed on the intended `exec`, `wait-until-ready`, and verification-help path and did not detour into `ensure-stopped` or `get-log-source`.
+  - Environment friction remained material because compile recovery and selection-timing behavior prevented a clean first-pass verification.
+  - Verification escaped the intended CLI observation surface when `wait-for-log-pattern` did not provide the final confirmation path and the agent fell back to direct `Editor.log` inspection.
+  - The workflow still succeeded autonomously, but not with a clearly clean or minimal convergence path.
+
+raw_transcript:
+  status: not-retained
+  location: none
+  note: The durable record is reconstructed from the subagent's final structured report; no separate raw transcript is being retained.
+
+final_summary: The current CLI still supports autonomous completion of the longer code-write, compile, and verification workflow, but this round remained `recoverable` because compile recovery, selection-state debugging, and a final fallback to direct host-log inspection were all needed before the menu command could be confirmed.

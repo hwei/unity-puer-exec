@@ -1,0 +1,143 @@
+prompt_id: prompt-a
+prompt_source: openspec/changes/revalidate-basic-agent-cli-workflows/task-prompts.md
+record_kind: retrospective-summary
+date: 2026-03-23
+
+model: gpt-5.4-mini subagent
+project_path: F:\C3\unity-puer-exec-workspace\c3-client-tree2\Project
+cli_entry_path: F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py
+
+constraints:
+  allowed:
+    - published unity-puer-exec help surface
+    - normal CLI execution against the target Unity project
+  disallowed:
+    - repository source in this product workspace
+    - repository tests
+    - command-level maintainer hints
+
+help_queries:
+  - order: 1
+    command: python F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py --help
+    retained_exact_argv: true
+    purpose: orient around the top-level command surface
+  - order: 2
+    command: python F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py exec --help
+    retained_exact_argv: true
+    purpose: confirm the primary project-scoped execution entry
+  - order: 3
+    command: python F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py exec --help-args
+    retained_exact_argv: true
+    purpose: inspect the module entry shape before writing scripts
+  - order: 4
+    command: python F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py --help-example exec-and-wait-for-result-marker
+    retained_exact_argv: true
+    purpose: inspect the published example workflow
+  - order: 5
+    command: python F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py wait-until-ready --help
+    retained_exact_argv: true
+    purpose: understand the readiness recovery path after the first exec failed
+  - order: 6
+    command: python F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py wait-until-ready --help-args
+    retained_exact_argv: true
+    purpose: inspect readiness timeout and diagnostics options
+  - order: 7
+    command: python F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py get-blocker-state --help
+    retained_exact_argv: true
+    purpose: inspect blocker diagnostics after startup friction
+
+command_trace:
+  - order: 1
+    command: python F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py exec --project-path F:\C3\unity-puer-exec-workspace\c3-client-tree2\Project --file F:\C3\unity-puer-exec-workspace\unity-puer-exec\.tmp\probe_ctx.js --wait-timeout-ms 15000 --include-log-offset --include-diagnostics
+    retained_exact_argv: true
+    purpose: probe the execution environment and implicitly start Unity
+    outcome: failed with `unity_start_failed` because Unity exited before ready with code 0
+  - order: 2
+    command: python F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py wait-until-ready --project-path F:\C3\unity-puer-exec-workspace\c3-client-tree2\Project --ready-timeout-seconds 120 --activity-timeout-seconds 30 --health-timeout-seconds 10 --include-diagnostics
+    retained_exact_argv: true
+    purpose: recover the Unity session after the failed startup attempt
+    outcome: completed successfully with `result.status = "recovered"`
+  - order: 3
+    command: python F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py exec --project-path F:\C3\unity-puer-exec-workspace\c3-client-tree2\Project --file F:\C3\unity-puer-exec-workspace\unity-puer-exec\.tmp\probe_globals.js --wait-timeout-ms 15000 --include-log-offset
+    retained_exact_argv: true
+    purpose: inspect the execution context after recovery
+    outcome: not enough for final task execution
+  - order: 4
+    command: python F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py exec --project-path F:\C3\unity-puer-exec-workspace\c3-client-tree2\Project --file F:\C3\unity-puer-exec-workspace\unity-puer-exec\.tmp\probe_globalThis.js --wait-timeout-ms 15000 --include-log-offset
+    retained_exact_argv: true
+    purpose: confirm where Unity bridge globals are exposed
+    outcome: showed `globalThis.CS` is available
+  - order: 5
+    command: python F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py exec --project-path F:\C3\unity-puer-exec-workspace\c3-client-tree2\Project --file F:\C3\unity-puer-exec-workspace\unity-puer-exec\.tmp\probe_cs.js --wait-timeout-ms 15000 --include-log-offset
+    retained_exact_argv: true
+    purpose: confirm UnityEditor access through the bridge
+    outcome: confirmed bridge access
+  - order: 6
+    command: python F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py exec --project-path F:\C3\unity-puer-exec-workspace\c3-client-tree2\Project --file F:\C3\unity-puer-exec-workspace\unity-puer-exec\.tmp\probe_scene_methods.js --wait-timeout-ms 15000 --include-log-offset
+    retained_exact_argv: true
+    purpose: probe scene-creation APIs before writing the final edit script
+    outcome: confirmed the needed scene APIs were available
+  - order: 7
+    command: python F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py exec --project-path F:\C3\unity-puer-exec-workspace\c3-client-tree2\Project --file F:\C3\unity-puer-exec-workspace\unity-puer-exec\.tmp\probe_enums.js --wait-timeout-ms 15000 --include-log-offset
+    retained_exact_argv: true
+    purpose: probe enum values needed for scene setup
+    outcome: confirmed the required enum values
+  - order: 8
+    command: python F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py exec --project-path F:\C3\unity-puer-exec-workspace\c3-client-tree2\Project --file F:\C3\unity-puer-exec-workspace\unity-puer-exec\.tmp\create_sphere.js --wait-timeout-ms 15000 --include-log-offset --include-diagnostics
+    retained_exact_argv: true
+    purpose: create the target scene asset and add the sphere
+    outcome: completed successfully with `saved: true`
+  - order: 9
+    command: python F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py exec --project-path F:\C3\unity-puer-exec-workspace\c3-client-tree2\Project --file F:\C3\unity-puer-exec-workspace\unity-puer-exec\.tmp\verify_sphere.js --wait-timeout-ms 15000 --include-log-offset --include-diagnostics
+    retained_exact_argv: true
+    purpose: verify the edited scene through the exec surface
+    outcome: verification remained awkward, leading to an additional host-asset check
+  - order: 10
+    command: python F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py exec --project-path F:\C3\unity-puer-exec-workspace\c3-client-tree2\Project --file F:\C3\unity-puer-exec-workspace\unity-puer-exec\.tmp\probe_roots.js --wait-timeout-ms 15000 --include-log-offset
+    retained_exact_argv: true
+    purpose: further inspect the scene root state
+    outcome: did not replace the later direct asset confirmation
+  - order: 11
+    command: python F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py get-blocker-state --project-path F:\C3\unity-puer-exec-workspace\c3-client-tree2\Project
+    retained_exact_argv: true
+    purpose: confirm no modal blocker remained after the run
+    outcome: completed with `result.status = "no_blocker"`
+
+key_outputs:
+  - source: CLI output
+    summary: The first `exec` attempt failed with `unity_start_failed` because Unity exited before ready with code 0.
+  - source: CLI output
+    summary: `wait-until-ready` recovered the session and returned a successful completion result.
+  - source: CLI output
+    summary: The final scene-creation script completed successfully and reported `saved: true`.
+  - source: Host asset check
+    summary: `Assets\__AgentValidation\scene-editing-test.unity` contained `m_Name: ValidationSphere`.
+  - source: CLI output
+    summary: Final blocker diagnostics returned `status = "no_blocker"`.
+
+task_success: pass
+autonomy: pass
+efficiency: recoverable
+
+human_intervention:
+  level: observed_only
+  summary: No human intervention was reported during the run.
+
+modal_blocker:
+  present: false
+  type: none
+  detected_by: none
+  resolution: none
+
+findings:
+  - The agent stayed on the intended `exec` plus `wait-until-ready` path and did not probe `ensure-stopped` or `get-log-source`.
+  - Environment friction remained material because the first project-scoped `exec` could not start Unity cleanly and required explicit readiness recovery.
+  - The agent spent several extra probing steps discovering the current module-entry bridge shape before performing the actual edit.
+  - Final confirmation relied on directly inspecting the host scene asset rather than completing verification entirely through a CLI observation command, so the run was autonomous but not purely CLI-observed end to end.
+
+raw_transcript:
+  status: not-retained
+  location: none
+  note: The durable record is reconstructed from the subagent's final structured report; no separate raw transcript is being retained.
+
+final_summary: The current CLI still supports autonomous completion of the simple scene-editing workflow, but this round remained `recoverable` rather than `clean` because Unity startup recovery and bridge-shape probing were both needed before the sphere could be created and confirmed.
