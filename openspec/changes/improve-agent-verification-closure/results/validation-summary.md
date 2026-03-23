@@ -32,6 +32,12 @@ Model: `gpt-5.4-mini subagent`
 - The mainline change therefore preserved the startup-side gain for Prompt A and reached the intended compile-continuation closure for Standard Prompt C.
 - The remaining gap after the third slice is now concentrated in Prompt A's bridge-discoverability friction, which is already tracked in the linked follow-up change.
 
+## Cleanup
+
+- Harness-owned cleanup ran after the rerun batch with `python tools/cleanup_validation_host.py --project-path <PROJECT_PATH>`.
+- Cleanup removed the repository-owned validation temp roots under `Assets/__AgentValidation`, `Assets/__codex_validation_temp`, and `Assets/CodexValidation`.
+- Cleanup completed with no remaining residue in the declared temp inventory.
+
 ## Follow-Up Readout
 
 - No new follow-up candidates identified beyond the already active linked changes.

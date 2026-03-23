@@ -14,6 +14,7 @@ if str(TOOLS_DIR) not in sys.path:
     sys.path.insert(0, str(TOOLS_DIR))
 
 import prepare_validation_host  # type: ignore
+import cleanup_validation_host  # type: ignore
 import unity_puer_exec  # type: ignore
 import unity_session  # type: ignore
 
@@ -89,6 +90,7 @@ class RealHostIntegrationTests(unittest.TestCase):
 
     def setUp(self):
         prepare_validation_host.main(["--project-path", str(self.project_path)])
+        cleanup_validation_host.cleanup_validation_temp_assets(self.project_path)
 
     def tearDown(self):
         try:
@@ -101,6 +103,10 @@ class RealHostIntegrationTests(unittest.TestCase):
                     "5",
                 ]
             )
+        except Exception:
+            pass
+        try:
+            cleanup_validation_host.cleanup_validation_temp_assets(self.project_path)
         except Exception:
             pass
 

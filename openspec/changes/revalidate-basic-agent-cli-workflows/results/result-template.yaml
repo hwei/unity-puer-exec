@@ -37,6 +37,13 @@ task_success: <pass|fail>
 autonomy: <pass|fail>
 efficiency: <clean|recoverable|poor>
 
+cleanup:
+  status: <cleaned|already_clean|partial|residue_present|skipped>
+  removed:
+    - <removed-path>
+  residue:
+    - <remaining-path>
+
 human_intervention:
   level: <observed_only|non_decisive|decisive>
   summary: <operator observation or intervention>

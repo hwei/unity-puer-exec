@@ -117,6 +117,17 @@ task_success: pass
 autonomy: pass
 efficiency: recoverable
 
+cleanup:
+  status: cleaned
+  removed:
+    - F:\C3\unity-puer-exec-workspace\c3-client-tree2\Project\Assets\__AgentValidation
+    - F:\C3\unity-puer-exec-workspace\c3-client-tree2\Project\Assets\__AgentValidation.meta
+    - F:\C3\unity-puer-exec-workspace\c3-client-tree2\Project\Assets\__codex_validation_temp
+    - F:\C3\unity-puer-exec-workspace\c3-client-tree2\Project\Assets\__codex_validation_temp.meta
+    - F:\C3\unity-puer-exec-workspace\c3-client-tree2\Project\Assets\CodexValidation
+    - F:\C3\unity-puer-exec-workspace\c3-client-tree2\Project\Assets\CodexValidation.meta
+  residue: []
+
 findings:
   - Prompt A preserved the earlier startup-continuity gain and did not regress to the old explicit `wait-until-ready` recovery branch before the main work began.
   - The run stayed inside CLI execution and used the normal `wait-for-exec` continuation path after the initial accepted response.

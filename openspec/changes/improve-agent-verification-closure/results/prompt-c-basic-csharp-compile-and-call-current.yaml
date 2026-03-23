@@ -106,6 +106,17 @@ task_success: pass
 autonomy: pass
 efficiency: clean
 
+cleanup:
+  status: cleaned
+  removed:
+    - F:\C3\unity-puer-exec-workspace\c3-client-tree2\Project\Assets\__AgentValidation
+    - F:\C3\unity-puer-exec-workspace\c3-client-tree2\Project\Assets\__AgentValidation.meta
+    - F:\C3\unity-puer-exec-workspace\c3-client-tree2\Project\Assets\__codex_validation_temp
+    - F:\C3\unity-puer-exec-workspace\c3-client-tree2\Project\Assets\__codex_validation_temp.meta
+    - F:\C3\unity-puer-exec-workspace\c3-client-tree2\Project\Assets\CodexValidation
+    - F:\C3\unity-puer-exec-workspace\c3-client-tree2\Project\Assets\CodexValidation.meta
+  residue: []
+
 findings:
   - The agent discovered `--refresh-before-exec` from CLI help and used it without maintainer hints.
   - The third slice normalized compile recovery onto the intended `running + phase=compiling + wait-for-exec` path.

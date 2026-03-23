@@ -64,6 +64,13 @@ The rerun should answer two questions:
 - Structured per-track record of help queries, key command trace, key outputs, and final classification
 - Summary comparison against the latest committed baseline
 - Raw transcript retention remains optional and temporary only
+- Cleanup status for repository-owned temporary host assets, including any remaining residue after the rerun batch
+
+## Cleanup Step
+
+- After the sequential rerun batch completes, run `python tools/cleanup_validation_host.py --project-path <PROJECT_PATH>`.
+- Treat the cleanup tool as harness-owned workflow, not as part of the subagent task prompt.
+- Record the cleanup result in the durable validation summary and per-track evidence.
 
 ## Second Slice Addendum
 
