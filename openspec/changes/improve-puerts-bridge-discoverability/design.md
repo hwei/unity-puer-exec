@@ -77,3 +77,165 @@ Alternative considered:
 - [External links may drift or add token cost] -> Treat external references as optional supplements, not the only explanation.
 - [Bridge discoverability may still overlap with compile workflow friction] -> Keep linked changes separate and only merge later if new evidence shows they are inseparable.
 - [Collection-specific guidance may become too detailed for top-level help] -> Keep the main warning short and use an external PuerTS reference for the deeper explanation.
+
+## Evidence Review
+
+### Prompt A evidence: the remaining friction is bridge-shape probing, not startup continuity
+
+The latest Prompt A durable record shows that the validating agent stayed on the intended CLI path:
+
+- it started from published help plus normal CLI execution only
+- it used `exec` as the primary project-scoped command
+- it completed the run through the accepted `running -> wait-for-exec` lifecycle
+- it did not branch back to the old explicit `wait-until-ready` startup recovery path
+
+The same record also shows why the run remained only `recoverable`: before the final scene-editing verification converged, the agent first executed a context-inspection probe and then a Unity-type probe to infer the bridge shape. The durable record explicitly notes that the remaining friction was "verification-side bridge and reflection discovery rather than startup continuity."
+
+This means Prompt A is now valid evidence for a bridge-focused follow-up change. The current slowdown is no longer primarily about startup, persistence confirmation, or compile recovery.
+
+### Standard Prompt C evidence: compile recovery is clean, but bridge usage is still only indirectly discoverable
+
+The latest Standard Prompt C durable record shows that the agent now reaches a clean compile-and-call flow:
+
+- it discovered `--refresh-before-exec` from help without maintainer hints
+- it accepted `running` with `phase = compiling`
+- it continued the same request through `wait-for-exec`
+- it completed verification with `result.value = 12`
+
+That record is still relevant to this change because its help-query sequence includes one explicit bridge-oriented discovery step: the agent consulted `--help-example request-editor-exit-via-exec` to confirm that `puer.loadType(...)` is the expected JavaScript-to-C# bridge shape.
+
+The Prompt C evidence therefore supports a narrower conclusion than Prompt A:
+
+- bridge discoverability is not currently severe enough to prevent eventual success on the cleaner compile-and-call workflow
+- but the help surface still exposes bridge usage mostly through incidental examples rather than through an explicit bridge mental model
+
+### Recorded collection-specific confusion
+
+Prompt A already provides enough durable evidence to treat collection semantics as a first-class sub-problem. The validating agent needed to correct verification logic after initially treating a bridged Unity-side collection too much like an ordinary JavaScript array. This is the concrete reason the change should evaluate a short collection warning instead of discussing bridge discoverability only in abstract terms.
+
+The product implication is narrow but important:
+
+- callers need to understand that bridged C# arrays and `List<T>` values are .NET-backed bridge objects
+- callers should not assume native JS-array methods, construction patterns, or mutation expectations apply unchanged
+- when array or generic-list behavior matters, help should point callers toward a PuerTS-specific JS-to-C# reference rather than leaving them to infer semantics through trial and error
+
+## Current Help Surface Inventory
+
+### What the current help surface already communicates
+
+The published help already gives agents several useful signals:
+
+- top-level help makes `exec` the primary project-scoped workflow
+- `exec --help-args` explains selector rules, script-source flags, and the required module-shaped entry function
+- `exec --help-status` explains the accepted `running` continuation path
+- `--help-example request-editor-exit-via-exec` contains a concrete `puer.loadType('UnityEditor.EditorApplication')` example
+
+These signals are sufficient for an agent that already recognizes the PuerTS pattern or is willing to probe for it.
+
+### What remains too implicit
+
+The same help surface still leaves the bridge model under-specified:
+
+- top-level help does not explicitly name PuerTS
+- `exec` help explains script shape and lifecycle but not how JavaScript is expected to access Unity or C# APIs
+- bridge access is shown only inside a single workflow example rather than in a dedicated bridge-oriented section
+- help does not mention `globalThis.CS`, `puer.$generic(...)`, or any concise mental model for bridged .NET types
+- help does not warn that bridged C# arrays and generic lists are not plain JS arrays
+
+This explains the observed probing behavior: agents can find a valid bridge example, but they must first infer whether it is merely an example-specific idiom or the actual intended product model.
+
+## Guidance Direction
+
+### Candidate guidance improvements
+
+The current evidence supports comparing four additive guidance layers:
+
+1. Explicit terminology
+   State directly that `unity-puer-exec` scripts use a PuerTS-style JavaScript-to-C# bridge.
+2. Short bridge mental model
+   Add a compact explanation that Unity and C# APIs are accessed as bridged .NET types rather than as ordinary JS modules or plain JSON-like objects.
+3. Stronger examples
+   Add or revise help examples so bridge usage appears in a purpose-built bridge section, not only in a workflow-specific exit example.
+4. Official reference link
+   Keep a short repository-owned explanation, then optionally link to the official PuerTS JS-to-C# guide for callers who need exact bridge rules.
+
+### Decision: put the minimum mental model in CLI help
+
+The minimum bridge model belongs in CLI help, not only in external references or user-authored skills. Agents currently restrict themselves to the published CLI help surface during validation, so a help-only run should not require external ecosystem recall before the caller can form the right model.
+
+The CLI-owned minimum should cover:
+
+- this is a PuerTS-style bridge
+- `puer.loadType(...)` is a normal way to load Unity/C# types
+- bridged .NET values are not always interchangeable with ordinary JS values
+
+### Decision: keep deeper bridge detail outside top-level help
+
+Detailed bridge catalog material does not belong in top-level `--help`. The richer details should remain in one of these lower-cost surfaces:
+
+- a dedicated `exec` help/example section
+- an official external PuerTS reference link
+- optional repository-owned skills for richer task-specific authoring patterns
+
+This keeps top-level help short while still giving agents a discoverable path to bridge-specific details.
+
+### Decision: include a short collection warning plus the official reference link
+
+The collection-specific confusion is concrete enough that the help surface should include a short warning. The recommended shape is intentionally concise:
+
+- bridged C# arrays and `List<T>` values are not plain JS arrays
+- prefer PuerTS-aware access and construction patterns when working with those values
+- consult the official JS-to-C# reference when behavior is not obvious
+
+That warning should live near the bridge mental-model guidance, not be buried only in a long example.
+
+## Validation Framing
+
+### Measure faster bridge recognition directly
+
+Future validation for this change should ask whether the agent recognized and applied the intended bridge model quickly, not merely whether it eventually finished the business task.
+
+The comparison should therefore record:
+
+- whether the agent needed extra bridge-probing exec calls before the main task converged
+- whether the agent consulted a bridge-specific help/example surface directly instead of inferring from unrelated examples
+- whether the first serious verification script already used the intended bridge model
+- whether any remaining retries were caused by bridge semantics rather than compile recovery, startup continuity, or persistence checks
+
+### Keep bridge validation separate from other workflow questions
+
+Bridge-discoverability validation should not be scored by:
+
+- whether `--refresh-before-exec` was needed or discovered
+- whether Unity startup continuity stayed on the accepted primary path
+- whether the agent performed extra host-side file checks after a scene save
+
+Those behaviors belong to other changes and would make this change's evidence harder to interpret.
+
+## Follow-up Implementation Targets
+
+If the exploration conclusions above hold, the most likely implementation targets are:
+
+- add a bridge-oriented help section to the `exec` surface or top-level workflow help
+- add one bridge-focused example that demonstrates loading and calling a Unity/C# type for a non-exit workflow
+- add a short warning about bridged C# array and `List<T>` semantics
+- attach the official PuerTS JS-to-C# reference link as a supplement, not as the sole explanation
+- extend help-surface validation artifacts so future reruns can score bridge recognition separately from compile recovery and persistence confirmation
+
+This change does not yet justify a new runtime command, bridge-specific API wrapper, or larger execution-surface redesign.
+
+## Implementation Scope
+
+### Decision: implement the bridge guidance in the existing help surface
+
+The next slice should update the existing CLI help surface rather than inventing a new command family. The minimum implementation scope is:
+
+- top-level or `exec` help explicitly names the PuerTS-style bridge model
+- the help surface includes a short bridge mental model near script authoring guidance
+- the help surface warns that bridged C# arrays and `List<T>` values are not plain JS arrays
+- the help surface includes one purpose-built bridge example or bridge-oriented example notice
+- the help surface links to the official JS-to-C# reference as a supplement
+
+### Decision: keep the implementation anchored to help-only validation
+
+This implementation should remain justifiable through the same help-only validation protocol already used elsewhere in the repository. That means the implementation should prefer small, publishable help changes that are easy to validate against Prompt A and Standard Prompt C, rather than a broad documentation expansion that only humans will read outside the CLI.

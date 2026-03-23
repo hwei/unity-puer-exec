@@ -44,6 +44,7 @@ class UnityPuerExecCliTests(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         self.assertEqual(stderr, "")
         self.assertIn("Overview", stdout)
+        self.assertIn("Bridge Model", stdout)
         self.assertIn("Recommended Path", stdout)
         self.assertIn("Command Groups", stdout)
         self.assertIn("Primary Execution", stdout)
@@ -53,10 +54,13 @@ class UnityPuerExecCliTests(unittest.TestCase):
         self.assertIn("Common Workflows", stdout)
         self.assertIn("get-blocker-state", stdout)
         self.assertIn("exec-and-wait-for-result-marker", stdout)
+        self.assertIn("load-and-call-csharp-type", stdout)
         self.assertIn("recover-exec-by-request-id", stdout)
         self.assertIn("See `exec --help`.", stdout)
         self.assertIn("start with `exec --project-path ...`", stdout)
         self.assertIn("not the normal first step", stdout)
+        self.assertIn("PuerTS-style JavaScript-to-C# bridge", stdout)
+        self.assertIn("do not assume bridged C# arrays or `List<T>` values behave exactly like native JS arrays", stdout)
 
     def test_empty_invocation_matches_top_level_help_contract(self):
         empty_exit_code, empty_stdout, empty_stderr = unity_puer_exec.run_cli([])
@@ -79,8 +83,10 @@ class UnityPuerExecCliTests(unittest.TestCase):
         self.assertIn("`--help-args`", stdout)
         self.assertIn("`--help-status`", stdout)
         self.assertIn("exec-and-wait-for-result-marker", stdout)
+        self.assertIn("load-and-call-csharp-type", stdout)
         self.assertIn("Normal first command for project-scoped work", stdout)
         self.assertIn("do not need `wait-until-ready` as the default first step", stdout)
+        self.assertIn("PuerTS-style JavaScript-to-C# bridge", stdout)
 
     def test_exec_help_args_renders_argument_template(self):
         exit_code, stdout, stderr = unity_puer_exec.run_cli(["exec", "--help-args"])
@@ -89,6 +95,7 @@ class UnityPuerExecCliTests(unittest.TestCase):
         self.assertEqual(stderr, "")
         self.assertIn("Arguments", stdout)
         self.assertIn("Selector Rules", stdout)
+        self.assertIn("Bridge Model", stdout)
         self.assertIn("Timeout Rules", stdout)
         self.assertIn("`--file <path>`", stdout)
         self.assertIn("`--code <inline-js>`", stdout)
@@ -97,6 +104,9 @@ class UnityPuerExecCliTests(unittest.TestCase):
         self.assertIn("`--include-diagnostics`", stdout)
         self.assertIn("`export default function", stdout)
         self.assertIn("Promise", stdout)
+        self.assertIn("`puer.loadType(...)`", stdout)
+        self.assertIn("Bridged C# arrays and `List<T>` values are not plain JS arrays", stdout)
+        self.assertIn("https://puerts.github.io/docs/puerts/unity/tutorial/js2cs", stdout)
 
     def test_wait_for_exec_help_renders_recovery_guidance(self):
         exit_code, stdout, stderr = unity_puer_exec.run_cli(["wait-for-exec", "--help"])
@@ -167,6 +177,18 @@ class UnityPuerExecCliTests(unittest.TestCase):
         self.assertIn("request_id", stdout)
         self.assertIn("wait-for-exec", stdout)
         self.assertIn("do not blindly retry with a fresh `request_id`", stdout)
+
+    def test_bridge_help_example_renders_canonical_bridge_workflow(self):
+        exit_code, stdout, stderr = unity_puer_exec.run_cli(["--help-example", "load-and-call-csharp-type"])
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(stderr, "")
+        self.assertIn("Use the normal PuerTS-style bridge path", stdout)
+        self.assertIn("const Math = puer.loadType('System.Math');", stdout)
+        self.assertIn("const EditorApplication = puer.loadType('UnityEditor.EditorApplication');", stdout)
+        self.assertIn("maxValue", stdout)
+        self.assertIn("bridged C# arrays and `List<T>` values", stdout)
+        self.assertIn("https://puerts.github.io/docs/puerts/unity/tutorial/js2cs", stdout)
 
     def test_exec_help_describes_running_without_immediate_correlation_id_guarantee(self):
         exit_code, stdout, stderr = unity_puer_exec.run_cli(["exec", "--help-status"])

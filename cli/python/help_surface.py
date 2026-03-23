@@ -38,6 +38,7 @@ EXIT_UNITY_NOT_READY = 21
 WORKFLOW_IDS = (
     "exec-and-wait-for-result-marker",
     "recover-exec-by-request-id",
+    "load-and-call-csharp-type",
     "request-editor-exit-via-exec",
 )
 
@@ -76,6 +77,7 @@ RECOMMENDED_PATH = (
 TOP_LEVEL_WORKFLOWS = {
     "exec-and-wait-for-result-marker": "run a script that returns `correlation_id`, capture `log_offset`, then wait for the terminal result marker.",
     "recover-exec-by-request-id": "recover an accepted exec request by reusing or waiting on the same `request_id` after `running` or ambiguity.",
+    "load-and-call-csharp-type": "learn the normal PuerTS-style bridge path for loading and calling Unity or C# types from JavaScript.",
     "request-editor-exit-via-exec": "request a normal Unity Editor exit through `exec` instead of using `ensure-stopped`.",
 }
 
@@ -271,10 +273,12 @@ COMMAND_HELP = {
             "`unity-puer-exec exec --project-path X:/project --file X:/script.js --request-id RID`",
             "`unity-puer-exec exec --project-path X:/project --stdin < script.js`",
             "With `--project-path`, `exec` may launch or recover Unity for the project, so you do not need `wait-until-ready` as the default first step.",
+            "Scripts use a PuerTS-style JavaScript-to-C# bridge; `puer.loadType(...)` is the normal way to load Unity or C# types inside `exec` scripts.",
         ],
         "related_workflows": (
             "recover-exec-by-request-id",
             "exec-and-wait-for-result-marker",
+            "load-and-call-csharp-type",
             "request-editor-exit-via-exec",
         ),
         "args": {
@@ -300,6 +304,12 @@ COMMAND_HELP = {
                 "`--unity-exe-path` is only valid with `--project-path`.",
                 "Use exactly one script source: `--file`, `--stdin`, or `--code`.",
                 "Script input must provide `export default function (ctx) { ... }` as the entry shape.",
+            ],
+            "Bridge Model": [
+                "`unity-puer-exec` scripts use a PuerTS-style JavaScript-to-C# bridge rather than ordinary JS imports for Unity/.NET APIs.",
+                "`puer.loadType(...)` is the normal bridge entry for loading Unity or C# types inside the script.",
+                "Bridged C# arrays and `List<T>` values are not plain JS arrays; prefer PuerTS-aware access patterns when collection behavior matters.",
+                "Official JS-to-C# bridge reference: https://puerts.github.io/docs/puerts/unity/tutorial/js2cs",
             ],
             "Timeout Rules": [
                 "`--wait-timeout-ms` must be a positive integer.",
@@ -531,6 +541,31 @@ WORKFLOW_EXAMPLES = {
             "`ensure-stopped` is for stopped-state inspection or enforcement, not the recommended graceful-exit path.",
         ],
     },
+    "load-and-call-csharp-type": {
+        "goal": "Use the normal PuerTS-style bridge path to load Unity or C# types from JavaScript before building a larger task-specific script.",
+        "steps": [
+            {
+                "command": "`unity-puer-exec exec --project-path X:/project --file X:/scripts/bridge-probe.js --wait-timeout-ms 1000`",
+                "script_body": [
+                    "export default function run(ctx) {",
+                    "  const Math = puer.loadType('System.Math');",
+                    "  const EditorApplication = puer.loadType('UnityEditor.EditorApplication');",
+                    "  return {",
+                    "    request_id: ctx.request_id,",
+                    "    maxValue: Math.Max(7, 5),",
+                    "    isCompiling: EditorApplication.isCompiling,",
+                    "  };",
+                    "}",
+                ],
+                "observation": "Expected observation: stdout returns machine-readable JSON with the immediate `result`; `maxValue` confirms a C# static call and `isCompiling` shows a bridged Unity Editor property read.",
+            },
+        ],
+        "notice": [
+            "This is the intended bridge model for Unity and .NET access inside `exec` scripts: use `puer.loadType(...)` to load types before calling members.",
+            "Treat bridged C# arrays and `List<T>` values as bridged .NET objects, not plain JS arrays with identical semantics.",
+            "For deeper bridge rules such as generics, `CS.*`, or collection behavior, consult the official JS-to-C# reference: https://puerts.github.io/docs/puerts/unity/tutorial/js2cs",
+        ],
+    },
 }
 
 
@@ -542,6 +577,7 @@ def render_top_level_help():
         )
     sections = [
         "Overview\nunity-puer-exec is the primary CLI surface for preparing Unity, executing JavaScript, observing long-running work, and checking session state.\nFor normal project-scoped tasks, start with `exec` and add observation commands only when the workflow needs them.\nLegacy aliases remain compatibility shims and are not authoritative command surfaces.",
+        "Bridge Model\n`unity-puer-exec` script authoring uses a PuerTS-style JavaScript-to-C# bridge. Use `puer.loadType(...)` to load Unity or C# types, and do not assume bridged C# arrays or `List<T>` values behave exactly like native JS arrays.",
         "Recommended Path\n{}".format(_bullet_lines(RECOMMENDED_PATH)),
         "Command Groups\n{}".format("\n\n".join(command_group_sections)),
         "Global Selector Rules\n- Use exactly one selector on commands that target a Unity session: `--project-path` or `--base-url`.\n- `--project-path` is the normal choice when the CLI should discover, launch, or recover Unity for a project.\n- `--base-url` is for a direct service you already know how to reach.",
@@ -567,7 +603,7 @@ def render_command_help(command):
 def render_command_args_help(command):
     info = COMMAND_HELP[command]["args"]
     sections = []
-    for title in ("Arguments", "Selector Rules", "Timeout Rules"):
+    for title in ("Arguments", "Selector Rules", "Bridge Model", "Timeout Rules"):
         items = info.get(title)
         if items:
             sections.append("{}\n{}".format(title, _bullet_lines(items)))

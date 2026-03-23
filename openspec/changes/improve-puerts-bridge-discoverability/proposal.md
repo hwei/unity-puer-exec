@@ -6,9 +6,12 @@ This should be tracked independently from compile-recovery and log-observation i
 
 ## What Changes
 
-- Explore how the current CLI help surface communicates the JavaScript-to-C# bridge model and where agents are still forced into bridge-shape probing.
-- Define the high-level improvement goal for making the PuerTS-style bridge discoverable faster to agent callers.
-- Capture candidate guidance improvements such as terminology, dedicated help sections, examples, an official reference link, and concise warnings about bridged C# collection semantics, without committing to a specific implementation yet.
+- Update the published CLI help surface so it explicitly frames `unity-puer-exec` script authoring as a PuerTS-style JavaScript-to-C# bridge workflow.
+- Add a concise bridge mental-model explanation to the help surface so callers can recognize `puer.loadType(...)` and related bridged-type usage without first inferring the model from incidental examples.
+- Add a short warning that bridged C# arrays and `List<T>` values are not plain JavaScript arrays.
+- Add or revise a help example so bridge usage is discoverable through a purpose-built help path instead of only through the editor-exit example.
+- Attach an official PuerTS JS-to-C# reference link as a supplement to repository-owned help text.
+- Update validation expectations so future reruns can measure whether the revised help surface reduces bridge-shape probing.
 
 ## Capabilities
 
@@ -23,4 +26,4 @@ This should be tracked independently from compile-recovery and log-observation i
 
 - Affects CLI help, examples, and bridge-oriented guidance rather than runtime execution behavior.
 - Helps separate bridge discoverability issues from compile workflow and log-observation workflow issues.
-- This change is intentionally exploration-first and does not yet commit to code changes.
+- Intentionally limits scope to help and validation guidance; it does not add a new runtime command or bridge wrapper API.

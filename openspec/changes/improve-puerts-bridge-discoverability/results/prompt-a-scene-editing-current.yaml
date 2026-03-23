@@ -1,0 +1,90 @@
+prompt_id: prompt-a
+prompt_source: openspec/changes/archive/2026-03-19-validate-help-only-agent-cli-discoverability/task-prompts.md
+record_kind: retrospective-summary
+date: 2026-03-23
+
+model: gpt-5.4-mini subagent
+project_path: F:\C3\unity-puer-exec-workspace\c3-client-tree2\Project
+cli_entry_path: F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py
+
+constraints:
+  allowed:
+    - published unity-puer-exec help surface
+    - normal CLI execution against the target Unity project
+    - publishable runtime artifacts produced during the task
+  disallowed:
+    - product repository source
+    - product repository tests
+    - OpenSpec artifacts as task hints
+    - maintainer command-level hints
+
+help_queries:
+  - order: 1
+    command: unity-puer-exec --help
+    purpose: confirm the primary workflow and inspect whether bridge guidance is explicit
+  - order: 2
+    command: unity-puer-exec exec --help
+    purpose: confirm `exec` usage and task entry behavior
+  - order: 3
+    command: unity-puer-exec exec --help-args
+    purpose: inspect script-shape rules plus the new bridge model section
+  - order: 4
+    command: unity-puer-exec --help-example load-and-call-csharp-type
+    purpose: inspect the purpose-built bridge example before authoring the scene-editing script
+  - order: 5
+    command: unity-puer-exec --help-example request-editor-exit-via-exec
+    purpose: cross-check another concrete bridge usage example
+
+command_trace:
+  - order: 1
+    command: exec with `.tmp/create_scene_sphere.js`
+    purpose: create and save the temporary validation scene with a sphere
+    outcome: first attempt failed because of a script-side scene API mismatch
+  - order: 2
+    command: exec with revised `.tmp/create_scene_sphere.js`
+    purpose: correct the scene-editing script and retry the create/save workflow
+    outcome: completed successfully with `saved = true`
+  - order: 3
+    command: exec with `.tmp/verify_scene_sphere.js`
+    purpose: reopen the target scene and confirm the sphere exists
+    outcome: completed successfully with `sphereFound = true` and `sphereName = ValidationSphere`
+
+task_success: pass
+autonomy: pass
+efficiency: recoverable
+
+bridge_discoverability:
+  used_bridge_help_path: true
+  bridge_help_paths:
+    - unity-puer-exec --help
+    - unity-puer-exec exec --help-args
+    - unity-puer-exec --help-example load-and-call-csharp-type
+  required_extra_bridge_probing: false
+  first_pass_bridge_recognition: true
+  notes:
+    - The rerun used the new bridge-oriented help path up front.
+    - The remaining retry was not bridge-shape probing; it was a task-specific scene API correction.
+
+remaining_friction:
+  type: scene-editing-script-correction
+  summary: The first create attempt hit a script-side scene API mismatch before the final scene-editing script converged.
+  details:
+    - The run needed one implementation retry during scene creation.
+    - The correction involved removing the bad overload use and ensuring `Assets/__AgentValidation` existed.
+    - Final verification stayed inside the CLI surface after that correction.
+
+confirmation:
+  stayed_inside_cli_surface: true
+  notes:
+    - Final confirmation came from CLI execution output and a follow-up CLI verification script.
+    - No host-side source inspection, tests, or manual file checks were used for confirmation.
+
+comparison_to_previous:
+  summary: Compared with the previous durable Prompt A result, bridge recognition improved because the bridge model was explicit in help instead of being inferred indirectly from task-specific examples. The remaining friction shifted to scene-editing script correctness rather than bridge-shape discovery.
+
+raw_transcript:
+  status: not-retained
+  location: none
+  note: Durable evidence is based on the subagent's structured final report only.
+
+final_summary: Prompt A remained `recoverable`, but the remaining retry was a scene-editing implementation correction rather than bridge-shape probing. Bridge recognition itself was first-pass through the new help path.
