@@ -30,7 +30,7 @@ Changes that are no longer the recommended execution path SHALL remain explicitl
 - **AND** the disposition is treated as temporary rather than as a normal long-lived planning bucket
 
 ### Requirement: Recent activity ranking may use Git commit distance
-Repository backlog recommendation MAY rank otherwise eligible changes using Git-history proximity such as commit distance from the most recent commit touching the change directory, rather than relying only on wall-clock timestamps.
+Repository backlog recommendation SHALL be allowed to rank otherwise eligible changes using Git-history proximity such as commit distance from the most recent commit touching the change directory, rather than relying only on wall-clock timestamps.
 
 #### Scenario: Two eligible changes differ in Git-history proximity
 - **WHEN** a maintainer or agent compares two eligible non-archived changes with similar metadata priority
