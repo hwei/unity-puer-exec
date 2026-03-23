@@ -30,4 +30,4 @@
 - [x] 6.1 Add the project-scoped `exec --refresh-before-exec` path so the CLI can perform refresh-oriented pre-execution work inside one caller-facing request lifecycle
 - [x] 6.2 Expose machine-readable refresh/executing phase reporting while preserving top-level `status = "running"`
 - [x] 6.3 Extend CLI unit coverage for refresh-before-exec help, request lifecycle, and wait-for-exec continuation behavior
-- [ ] 6.4 Run the second-slice rerun protocol against Prompt A and Standard Prompt C
+- [x] 6.4 Run the second-slice rerun protocol against Prompt A and Standard Prompt C

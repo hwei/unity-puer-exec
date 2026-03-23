@@ -22,92 +22,95 @@ help_queries:
   - order: 1
     command: python F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py --help
     retained_exact_argv: true
-    purpose: confirm the primary command groups and recommended workflow
+    purpose: confirm the authoritative top-level command surface and recommended project-scoped workflow
   - order: 2
     command: python F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py exec --help
     retained_exact_argv: true
-    purpose: confirm the execution entry point and script input modes
+    purpose: confirm `exec` is the normal entry point and inspect supported execution forms
   - order: 3
     command: python F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py exec --help-args
     retained_exact_argv: true
-    purpose: confirm required selectors, script-source rules, and timeout behavior
+    purpose: confirm selector rules, script-source flags, and the required module entry shape
   - order: 4
+    command: python F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py exec --help-status
+    retained_exact_argv: true
+    purpose: confirm success and failure states for `exec`
+  - order: 5
     command: python F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py --help-example exec-and-wait-for-result-marker
     retained_exact_argv: true
-    purpose: inspect the published long-running execution pattern
-  - order: 5
+    purpose: inspect a valid script pattern and the CLI observation workflow
+  - order: 6
     command: python F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py --help-example request-editor-exit-via-exec
     retained_exact_argv: true
-    purpose: confirm the bridge shape and `puer.loadType(...)` usage
-  - order: 6
-    command: python F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py --help-example recover-exec-by-request-id
-    retained_exact_argv: true
-    purpose: confirm recovery semantics for execution requests
+    purpose: confirm Unity type loading through `puer.loadType(...)`
 
 command_trace:
   - order: 1
     command: python F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py --help
     retained_exact_argv: true
-    purpose: orient around the top-level command surface
-    outcome: succeeded and surfaced `exec` as the normal project-scoped entry point
+    purpose: baseline CLI discovery
+    outcome: succeeded and showed `exec` as the primary surface and `wait-until-ready` as non-default support
   - order: 2
-    command: python F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py help
+    command: python F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py exec --help
     retained_exact_argv: true
-    purpose: probe for a standalone help subcommand
-    outcome: failed with `invalid choice`
+    purpose: confirm the execution entry point
+    outcome: succeeded
   - order: 3
-    command: python F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py exec --project-path F:\C3\unity-puer-exec-workspace\c3-client-tree2\Project --file .tmp\probe_ctx.js --wait-timeout-ms 1000
+    command: python F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py exec --help-args
     retained_exact_argv: true
-    purpose: confirm `ctx.request_id` and the available bridge globals
-    outcome: completed successfully
+    purpose: confirm flags and script shape
+    outcome: succeeded and confirmed `--project-path`, `--file`, and immediate return requirements
   - order: 4
-    command: python F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py exec --project-path F:\C3\unity-puer-exec-workspace\c3-client-tree2\Project --file .tmp\probe_globals.js --wait-timeout-ms 1000
+    command: python F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py exec --help-status
     retained_exact_argv: true
-    purpose: inspect `ctx.globals`
-    outcome: completed successfully and showed no prepopulated keys
+    purpose: confirm exit and status semantics
+    outcome: succeeded
   - order: 5
-    command: python F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py exec --project-path F:\C3\unity-puer-exec-workspace\c3-client-tree2\Project --file .tmp\create_sphere_scene.js --wait-timeout-ms 1000
+    command: python F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py --help-example exec-and-wait-for-result-marker
     retained_exact_argv: true
-    purpose: create and save the target temporary scene
-    outcome: first attempt failed because `EditorSceneManager.GetActiveScene` was not available through this bridge shape
+    purpose: inspect a canonical execution pattern
+    outcome: succeeded
   - order: 6
-    command: python F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py exec --project-path F:\C3\unity-puer-exec-workspace\c3-client-tree2\Project --file .tmp\create_sphere_scene.js --wait-timeout-ms 1000
+    command: python F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py --help-example request-editor-exit-via-exec
     retained_exact_argv: true
-    purpose: rerun the corrected scene-creation script
-    outcome: completed successfully and reported `saved: true` plus `found: true`
+    purpose: confirm `puer.loadType` usage
+    outcome: succeeded
   - order: 7
-    command: Test-Path F:\C3\unity-puer-exec-workspace\c3-client-tree2\Project\Assets\__AgentValidation\scene-editing-test.unity
+    command: python F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py exec --project-path F:\C3\unity-puer-exec-workspace\c3-client-tree2\Project --file .tmp\scene-editing-test.js --wait-timeout-ms 120000
     retained_exact_argv: true
-    purpose: verify the scene file exists on disk
-    outcome: succeeded
+    purpose: create `Assets/__AgentValidation/scene-editing-test.unity` and add a sphere
+    outcome: completed successfully with `saved: true` and `sphereName: ValidationSphere`
   - order: 8
-    command: Select-String -Path F:\C3\unity-puer-exec-workspace\c3-client-tree2\Project\Assets\__AgentValidation\scene-editing-test.unity -Pattern AgentSphere
+    command: python F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py exec --project-path F:\C3\unity-puer-exec-workspace\c3-client-tree2\Project --file .tmp\scene-editing-verify.js --wait-timeout-ms 120000
     retained_exact_argv: true
-    purpose: verify the saved scene file contains the created sphere name
-    outcome: succeeded
+    purpose: independently verify the saved scene contains the sphere
+    outcome: first attempt failed because the bridged object array was not enumerated correctly
+  - order: 9
+    command: python F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py exec --project-path F:\C3\unity-puer-exec-workspace\c3-client-tree2\Project --file .tmp\scene-editing-verify.js --wait-timeout-ms 120000
+    retained_exact_argv: true
+    purpose: rerun verification with a more direct existence check
+    outcome: completed successfully with `hasSphere: true` and `sphereName: ValidationSphere`
 
 key_outputs:
   - source: CLI output
-    summary: `exec` remained the primary project-scoped workflow and did not need `wait-until-ready` for startup recovery.
+    summary: `exec` remained the primary project-scoped workflow and no explicit `wait-until-ready` startup recovery branch was needed.
   - source: CLI output
-    summary: The final scene-creation script returned `saved: true`, `reopenedPath: "Assets/__AgentValidation/scene-editing-test.unity"`, and `found: true`.
-  - source: Host asset check
-    summary: `Assets\__AgentValidation\scene-editing-test.unity` existed on disk with a fresh timestamp.
-  - source: Host asset check
-    summary: The saved scene file contained `AgentSphere`.
+    summary: The scene-creation script returned `saved: true` and `sphereName: ValidationSphere`.
+  - source: CLI output
+    summary: Independent verification after reopening the scene returned `hasSphere: true` and `sphereName: ValidationSphere`.
 
 task_success: pass
 autonomy: pass
 efficiency: recoverable
 
 findings:
-  - Prompt A no longer needed the old `wait-until-ready` startup recovery branch, which indicates the project-scoped startup continuity slice materially improved the primary request path.
-  - The run still spent extra effort probing bridge shape and correcting one scene API assumption before the final edit succeeded.
-  - Final confirmation still depended on host scene-file inspection, so the run did not reach clean CLI-native verification.
+  - Prompt A preserved the earlier startup-continuity gain and did not regress to the old explicit `wait-until-ready` recovery branch before the main work began.
+  - `puer.loadType(...)` remained the working mechanism for Unity and Editor API access in task scripts.
+  - The run still needed one verification retry because the bridged object array shape was not standard JS array-shaped on the first attempt.
 
 raw_transcript:
   status: not-retained
   location: none
   note: Durable evidence is based on the subagent's structured final report only.
 
-final_summary: After the startup continuity change, Prompt A stayed on the `exec`-centered path and no longer needed an explicit `wait-until-ready` recovery step for the initial task attempt. The task still remained `recoverable` rather than `clean` because bridge-shape probing and final host-scene-file confirmation were both still required.
+final_summary: Prompt A remained `recoverable` rather than `clean`, but it preserved the key startup-continuity gain: the task stayed on the `exec`-centered path and did not fall back to the old explicit `wait-until-ready` recovery step before work could begin. Verification stayed inside CLI execution, though one bridge-shape correction was still needed.

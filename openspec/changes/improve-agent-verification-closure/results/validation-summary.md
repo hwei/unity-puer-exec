@@ -13,23 +13,24 @@ Model: `gpt-5.4-mini subagent`
 ## Prompt A
 
 - Result: task success passed, autonomy passed, efficiency remained `recoverable`.
-- Improvement relative to the pre-implementation baseline: the run no longer needed the old `wait-until-ready` startup recovery branch after the first task attempt.
-- Remaining gap: the agent still spent extra effort probing bridge shape and still used host-scene-file inspection for final confirmation.
-- Interpretation: the new startup continuity slice improved the primary request path, but Prompt A has not yet reached clean CLI-native verification.
+- Guardrail result: the run preserved the earlier startup-continuity gain and did not fall back to the old explicit `wait-until-ready` startup recovery branch before the main work began.
+- Remaining gap: the agent still needed one bridge-shape correction during verification, so the run did not reach first-pass clean convergence.
+- Interpretation: the second slice did not regress Prompt A, but Prompt A is still not a clean CLI-native verification path.
 
 ## Standard Prompt C
 
 - Result: task success passed, autonomy passed, efficiency remained `recoverable`.
-- Positive signal: the workflow stayed inside the CLI surface for final verification and did not need host-file or host-log fallback.
-- Remaining gap: the agent still had to force `AssetDatabase.Refresh()` plus `CompilationPipeline.RequestScriptCompilation()` and then wait through readiness recovery before the type became callable.
-- Interpretation: the cleaner compile-and-call baseline is viable and already stronger than the old menu-and-selection baseline for judging verification closure.
+- Positive signal: the agent discovered and used `--refresh-before-exec` from CLI help as the intended compile-recovery path.
+- Improvement relative to the previous Prompt C baseline: the agent no longer authored a manual `AssetDatabase.Refresh()` plus `CompilationPipeline.RequestScriptCompilation()` helper script outside the target verification exec.
+- Remaining gap: the first refreshed verification attempt still surfaced a compile-phase response, so the agent performed one follow-up `wait-until-ready` before rerunning the final verification call.
+- Interpretation: the second slice materially improved the compile-and-call workflow and made the intended refreshed-exec path discoverable, but it has not yet reached clean one-pass convergence.
 
 ## Overall Assessment
 
-- The Prompt A startup continuity slice materially improved one specific product-facing problem: the initial project-scoped task no longer fell straight into explicit readiness recovery before work could begin.
-- Prompt A is still `recoverable` because clean verification closure has not yet been achieved; host-side asset inspection remains part of the final confirmation path.
-- Standard Prompt C confirms that a cleaner code-write, compile, and invoke workflow can now stay inside the CLI surface for final verification, but the compile/import path still requires recoverable extra work.
-- The mainline change therefore improved the startup side of Prompt A and validated Standard Prompt C as the right cleaner baseline, but it did not yet deliver fully clean convergence on either track.
+- Prompt A held its earlier gain: project-scoped `exec` still stayed on the intended primary path and did not regress to the old explicit startup-recovery dance.
+- Standard Prompt C now points agents toward the right product surface: `--refresh-before-exec` was discovered from help and used naturally as the verification-step compile-recovery tool.
+- The mainline change therefore improved both the startup side of Prompt A and the intended compile-recovery path for Prompt C, but neither track is clean yet.
+- The remaining gap after the second slice is narrower: Prompt A still has bridge/persistence-verification friction, while Prompt C still needs one recoverable follow-up readiness wait after the first refreshed verification attempt.
 
 ## Follow-Up Readout
 
