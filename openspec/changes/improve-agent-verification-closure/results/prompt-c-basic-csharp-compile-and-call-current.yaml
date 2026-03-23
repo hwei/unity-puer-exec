@@ -1,0 +1,133 @@
+prompt_id: prompt-c
+prompt_source: openspec/changes/improve-agent-verification-closure/task-prompts.md
+record_kind: retrospective-summary
+date: 2026-03-23
+
+model: gpt-5.4-mini subagent
+project_path: F:\C3\unity-puer-exec-workspace\c3-client-tree2\Project
+cli_entry_path: F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py
+
+constraints:
+  allowed:
+    - published unity-puer-exec help surface
+    - normal CLI execution against the target Unity project
+    - publishable runtime artifacts produced during the task
+  disallowed:
+    - product repository source
+    - product repository tests
+    - OpenSpec artifacts as task hints
+    - maintainer command-level hints
+
+help_queries:
+  - order: 1
+    command: python F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py --help
+    retained_exact_argv: true
+    purpose: learn the authoritative top-level workflow and command groups
+  - order: 2
+    command: python F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py exec --help
+    retained_exact_argv: true
+    purpose: confirm project-scoped execution syntax and script input shape
+  - order: 3
+    command: python F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py --help-example exec-and-wait-for-result-marker
+    retained_exact_argv: true
+    purpose: inspect the standard long-running execution pattern
+  - order: 4
+    command: python F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py exec --help-args
+    retained_exact_argv: true
+    purpose: inspect selectors, script source flags, and timeout behavior
+  - order: 5
+    command: python F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py exec --help-status
+    retained_exact_argv: true
+    purpose: inspect success and failure status mapping
+  - order: 6
+    command: python F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py --help-example request-editor-exit-via-exec
+    retained_exact_argv: true
+    purpose: confirm `puer.loadType(...)` usage against Unity editor APIs
+  - order: 7
+    command: python F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py --help-example recover-exec-by-request-id
+    retained_exact_argv: true
+    purpose: confirm `request_id` recovery semantics
+  - order: 8
+    command: python F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py wait-until-ready --help
+    retained_exact_argv: true
+    purpose: verify readiness waiting behavior
+  - order: 9
+    command: python F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py wait-for-exec --help
+    retained_exact_argv: true
+    purpose: inspect follow-up waiting on an accepted request
+
+command_trace:
+  - order: 1
+    command: Get-ChildItem F:\C3\unity-puer-exec-workspace\c3-client-tree2\Project
+    retained_exact_argv: true
+    purpose: confirm the target Unity project layout
+    outcome: succeeded
+  - order: 2
+    command: Get-ChildItem F:\C3\unity-puer-exec-workspace\c3-client-tree2\Project\Assets
+    retained_exact_argv: true
+    purpose: locate an isolated asset folder for the temporary C# file
+    outcome: succeeded and found `__AgentValidation`
+  - order: 3
+    command: apply_patch adding F:\C3\unity-puer-exec-workspace\c3-client-tree2\Project\Assets\__AgentValidation\CodexMath.cs
+    retained_exact_argv: true
+    purpose: create the minimal static `Add(int, int)` helper
+    outcome: succeeded
+  - order: 4
+    command: python F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py wait-until-ready --project-path F:\C3\unity-puer-exec-workspace\c3-client-tree2\Project
+    retained_exact_argv: true
+    purpose: recover the existing Unity session before verification
+    outcome: completed successfully with `result.status = "recovered"`
+  - order: 5
+    command: python F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py exec --project-path F:\C3\unity-puer-exec-workspace\c3-client-tree2\Project --code export default function run(ctx) { const CodexMath = puer.loadType('CodexValidation.CodexMath'); return { request_id: ctx.request_id, sum: CodexMath.Add(2, 3) }; } --wait-timeout-ms 30000
+    retained_exact_argv: true
+    purpose: perform the first direct invocation of the new C# type
+    outcome: failed because the type was not yet resolvable
+  - order: 6
+    command: python F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py exec --project-path F:\C3\unity-puer-exec-workspace\c3-client-tree2\Project --code export default function run(ctx) { const AppDomain = puer.loadType('System.AppDomain'); const domain = AppDomain.CurrentDomain; const assemblies = domain.GetAssemblies(); const hits = []; for (let i = 0; i < assemblies.Length; i++) { const asm = assemblies.GetValue(i); const t = asm.GetType('CodexValidation.CodexMath', false); if (t) hits.push(asm.FullName); } return { hits, count: hits.length }; } --wait-timeout-ms 30000
+    retained_exact_argv: true
+    purpose: inspect whether the new type was loaded into any assembly
+    outcome: completed successfully and confirmed the type was not yet present
+  - order: 7
+    command: python F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py exec --project-path F:\C3\unity-puer-exec-workspace\c3-client-tree2\Project --code export default function run(ctx) { const AssetDatabase = puer.loadType('UnityEditor.AssetDatabase'); const CompilationPipeline = puer.loadType('UnityEditor.Compilation.CompilationPipeline'); AssetDatabase.Refresh(); CompilationPipeline.RequestScriptCompilation(); return { requested: true, request_id: ctx.request_id }; } --wait-timeout-ms 10000
+    retained_exact_argv: true
+    purpose: force import and script compilation
+    outcome: completed successfully with `requested: true`
+  - order: 8
+    command: python F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py wait-until-ready --project-path F:\C3\unity-puer-exec-workspace\c3-client-tree2\Project
+    retained_exact_argv: true
+    purpose: wait through the refresh and compile window
+    outcome: completed successfully with `result.status = "recovered"`
+  - order: 9
+    command: python F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py exec --project-path F:\C3\unity-puer-exec-workspace\c3-client-tree2\Project --code export default function run(ctx) { const AppDomain = puer.loadType('System.AppDomain'); const domain = AppDomain.CurrentDomain; const assemblies = domain.GetAssemblies(); const hits = []; for (let i = 0; i < assemblies.Length; i++) { const asm = assemblies.GetValue(i); const t = asm.GetType('CodexValidation.CodexMath', false); if (t) hits.push(asm.FullName); } return { hits, count: hits.length }; } --wait-timeout-ms 30000
+    retained_exact_argv: true
+    purpose: confirm the type is now loaded after compilation
+    outcome: completed successfully and found the type in `Assembly-CSharp`
+  - order: 10
+    command: python F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py exec --project-path F:\C3\unity-puer-exec-workspace\c3-client-tree2\Project --code export default function run(ctx) { const CodexMath = puer.loadType('CodexValidation.CodexMath'); return { request_id: ctx.request_id, sum: CodexMath.Add(2, 3) }; } --wait-timeout-ms 30000
+    retained_exact_argv: true
+    purpose: perform the final direct functional verification
+    outcome: completed successfully with `sum: 5`
+
+key_outputs:
+  - source: CLI output
+    summary: `wait-until-ready` returned `result.status = "recovered"` before and after the forced compile cycle.
+  - source: CLI output
+    summary: Reflection confirmed `CodexValidation.CodexMath` was loaded from `Assembly-CSharp`.
+  - source: CLI output
+    summary: The final direct JS invocation returned `sum: 5` from `CodexValidation.CodexMath.Add(2, 3)`.
+
+task_success: pass
+autonomy: pass
+efficiency: recoverable
+
+findings:
+  - The new basic compile-and-call workflow stayed entirely inside CLI-driven verification and did not need host-file or host-log fallback.
+  - The first direct type lookup still failed until the agent explicitly forced `AssetDatabase.Refresh()` and `CompilationPipeline.RequestScriptCompilation()`, then waited for readiness recovery.
+  - Residual bridge and compile-cycle probing still prevented clean first-pass convergence.
+
+raw_transcript:
+  status: not-retained
+  location: none
+  note: Durable evidence is based on the subagent's structured final report only.
+
+final_summary: Standard Prompt C succeeded end to end through the CLI surface and proved that a newly added static C# helper could be compiled and then invoked from a later JS exec call. The run still remained `recoverable` because the agent had to force an asset refresh and script compilation before the type became callable, but final verification stayed inside the CLI path.
