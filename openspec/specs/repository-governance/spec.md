@@ -3,9 +3,7 @@
 ## Purpose
 
 Define the repository's canonical OpenSpec-first workflow, including change gating, durable-truth distillation, and retrospective handling.
-
 ## Requirements
-
 ### Requirement: OpenSpec is the canonical repository workflow
 
 The repository SHALL use OpenSpec as the canonical system for project context, durable governance rules, and active change planning. Legacy governance documents MUST NOT remain authoritative once their content has been migrated into OpenSpec artifacts, and the working tree SHALL NOT keep a parallel legacy `docs/` workflow entry path.
@@ -114,21 +112,18 @@ The repository SHALL define artifact expectations by change type so feature, har
 - **AND** durable product specs are only introduced when the change creates durable validation requirements
 
 ### Requirement: Superseded changes are archived rather than deleted
-
-Changes that are no longer the recommended execution path SHALL be marked superseded rather than silently deleted. Once their disposition is clear, superseded changes SHALL be archived so they no longer appear in active planning scans, typically without updating main specs when no durable requirement change is being merged.
+Changes that are no longer the recommended execution path SHALL be marked superseded only as a temporary pre-archive disposition rather than as a normal long-lived planning state. Once their disposition is clear, superseded changes SHALL be archived so they no longer appear in active planning scans, typically without updating main specs when no durable requirement change is being merged.
 
 #### Scenario: Older change is replaced by newer direction
-
 - **WHEN** a maintainer decides that an existing non-archived change has been replaced by a newer change or conclusion
-- **THEN** the older change is marked superseded
+- **THEN** the older change may be marked superseded as a temporary disposition
 - **AND** the older change is archived once its disposition is stable
 - **AND** the repository keeps the archived record instead of deleting the change from history
 
-#### Scenario: Archived change lifecycle is cleaned up
-
-- **WHEN** a change has been archived and is no longer intended to appear in active planning scans
-- **THEN** the repository does not keep a stale active-directory placeholder that makes the archived change appear simultaneously active and archived
-- **AND** contributors can identify the archived record without ambiguity about which change entry is authoritative
+#### Scenario: Superseded change lingers in active scans
+- **WHEN** a non-archived change remains marked superseded instead of being archived promptly
+- **THEN** repository workflow treats that state as archive hygiene debt rather than as a normal steady-state planning bucket
+- **AND** maintainers can identify the change as requiring cleanup
 
 ### Requirement: Repository-local scratch artifacts stay out of normal working paths
 
@@ -139,3 +134,4 @@ The repository SHALL provide a local-only place for transient validation probes 
 - **WHEN** an agent creates a short-lived probe or scratch script for local validation
 - **THEN** the artifact is placed under `.tmp/`
 - **AND** that directory does not create normal git tracking noise
+

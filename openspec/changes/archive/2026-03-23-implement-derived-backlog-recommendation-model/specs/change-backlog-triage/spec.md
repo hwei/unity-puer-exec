@@ -8,7 +8,7 @@ The repository SHALL keep machine-readable change metadata for non-archived chan
 - **THEN** the repository can classify explicit manual disposition such as superseded from machine-readable metadata
 - **AND** backlog recommendation is derived from repository facts and diagnostics rather than from queued, active, or blocked labels alone
 
-### Requirement: Backlog means recommendable non-archived changes
+### Requirement: Backlog means queued changes
 The repository SHALL define backlog recommendation as the subset of non-archived changes that are currently eligible based on repository facts such as prerequisite resolution, explicit superseded disposition, and dependency consistency. Metadata values may still be inspected directly, but they MUST NOT be conflated with the repository's derived recommendation set.
 
 #### Scenario: Maintainer asks for backlog view
@@ -38,6 +38,19 @@ The repository SHALL provide a local tool that filters and sorts non-archived ch
 - **AND** the remaining candidates are ranked deterministically from repository facts, metadata fields, derived unlock counts, and Git-history proximity
 - **AND** the output explains the ranking inputs and diagnostics for each candidate
 
+### Requirement: Backlog tooling supports metadata filters
+The repository SHALL support filtering change views by both derived recommendation status and raw metadata where each is useful for inspection.
+
+#### Scenario: Maintainer filters recommendable harness work
+- **WHEN** a maintainer or agent filters backlog tooling by derived `status=eligible` and `change_type=harness`
+- **THEN** the output contains only recommendable harness changes
+- **AND** the filter does not require ad hoc prose matching
+
+#### Scenario: Maintainer inspects raw superseded metadata
+- **WHEN** a maintainer or agent needs raw metadata inspection rather than recommendable backlog filtering
+- **THEN** the tooling allows an explicit raw metadata filter such as `meta_status=superseded`
+- **AND** the raw inspection path remains distinguishable from the derived recommendation path
+
 ## ADDED Requirements
 
 ### Requirement: Superseded disposition is temporary and archive-bound
@@ -56,3 +69,9 @@ Repository backlog recommendation SHALL be allowed to rank eligible changes usin
 - **WHEN** two eligible changes have similar priority and other metadata signals
 - **THEN** recommendation tooling may prefer the one touched fewer commits ago
 - **AND** that Git-history signal influences ordering without creating a separate active state bucket
+
+## REMOVED Requirements
+
+### Requirement: Backlog tooling remains a raw metadata surface
+**Reason**: Repository backlog recommendation now uses derived eligibility rather than raw metadata status as its primary recommendation surface.
+**Migration**: Use the derived backlog view for recommendation and explicit raw metadata filters when direct metadata inspection is still needed.
