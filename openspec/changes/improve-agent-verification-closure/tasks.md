@@ -31,3 +31,9 @@
 - [x] 6.2 Expose machine-readable refresh/executing phase reporting while preserving top-level `status = "running"`
 - [x] 6.3 Extend CLI unit coverage for refresh-before-exec help, request lifecycle, and wait-for-exec continuation behavior
 - [x] 6.4 Run the second-slice rerun protocol against Prompt A and Standard Prompt C
+
+## 7. Third Slice Preparation
+
+- [ ] 7.1 Define the compile-phase normalization step so caller-facing `compiling` becomes `running + phase=compiling + next_step`
+- [ ] 7.2 Extend `wait-for-exec` expectations so compile recovery after `--refresh-before-exec` stays inside the accepted request lifecycle instead of branching to `wait-until-ready`
+- [ ] 7.3 Define the next rerun focus: Prompt A remains a regression guardrail while Standard Prompt C tests whether compile recovery finally reaches `clean`

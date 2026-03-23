@@ -232,6 +232,25 @@ The first version does not need to promise a distinct `phase = "compiling"` stat
 Alternative considered:
 - Introduce new top-level statuses such as `refreshing` or `compiling`. Rejected because the caller already has a stable continuation model based on `running`, and fragmenting that model would make the API heavier for limited diagnostic gain.
 
+### Decision: Compile-phase responses should join the same `running` continuation model
+The second-slice rerun narrowed the remaining Prompt C gap further. The validating agent naturally discovered and used `--refresh-before-exec`, which means the main product-entry problem is solved. The remaining friction is what happens after the first refreshed verification attempt returns a compile-phase response. Today that response is still surfaced as `status = "compiling"` by the underlying execution service, which leaves the caller without the same continuation affordances that exist for `running`.
+
+The next contract step should therefore normalize this phase into the same outer request model:
+
+- the caller-facing response should remain on `status = "running"`
+- the response should expose `phase = "compiling"`
+- the same top-level `request_id` and `next_step` continuation contract should apply
+- `wait-for-exec` should continue to own this compile-recovery portion of the lifecycle instead of pushing the caller toward a separate `wait-until-ready` branch
+
+This keeps the product model coherent:
+
+- `wait-until-ready` remains a supporting readiness tool
+- `wait-for-exec` remains the canonical continuation path for an already accepted request
+- compile recovery after `--refresh-before-exec` becomes part of that same accepted request lifecycle
+
+Alternative considered:
+- Keep surfacing compile as a separate top-level `compiling` status and let callers branch to `wait-until-ready`. Rejected because the rerun shows this is now the main remaining source of recoverable extra work in Prompt C.
+
 ## Risks / Trade-offs
 
 - [The common root-cause hypothesis may still be wrong] → Keep Prompt A and Standard Prompt C acceptance separate so a later split remains easy if the evidence diverges.

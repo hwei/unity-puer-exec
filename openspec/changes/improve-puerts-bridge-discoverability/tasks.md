@@ -2,11 +2,13 @@
 
 - [ ] 1.1 Record the current evidence showing where agents probe bridge shape in Prompt A and Standard Prompt C
 - [ ] 1.2 Identify which parts of the current help surface already imply PuerTS-style usage and which parts remain too implicit
+- [ ] 1.3 Record the specific bridged collection confusion case, including why C# `Array` / `List<T>` should not be treated as plain JS arrays
 
 ## 2. Guidance Options
 
 - [ ] 2.1 Compare candidate guidance improvements such as explicit PuerTS terminology, a short bridge mental-model section, stronger examples, and an official reference link
 - [ ] 2.2 Decide which guidance changes belong in CLI help versus which should remain external references or user-authored skills
+- [ ] 2.3 Decide whether the help surface should include a short warning about bridged C# array/list semantics plus the official JS-to-C# reference link
 
 ## 3. Validation Framing
 
