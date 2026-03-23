@@ -10,7 +10,7 @@ A direct manual control probe also showed that a simpler workflow already behave
 - Define the product-facing contract for verification-oriented follow-up after project-scoped `exec`, especially for slow startup acceptance and for basic C# write-compile-call verification.
 - Evaluate Prompt A and a new basic C# compile-and-call track as separate acceptance tracks while keeping editor-interaction and log-observation issues out of the mainline baseline.
 - Update validation guidance and representative evidence so future agent-evaluation rounds can distinguish clean CLI verification from host-side fallback confirmation.
-- Sequence the work so Prompt A startup continuity is the first implementation slice, while Standard Prompt C remains the cleaner validation rail for checking that verification closure stays inside the CLI surface.
+- Sequence the work so Prompt A startup continuity is the first implementation slice, then add a second compile-recovery slice for Standard Prompt C so project-scoped `exec` can optionally refresh and wait through script compilation before executing the next verification step.
 
 ## Capabilities
 
@@ -26,4 +26,4 @@ A direct manual control probe also showed that a simpler workflow already behave
 - Affects CLI contract and help around post-`exec` verification workflows.
 - Affects validation interpretation for whether a basic workflow stayed inside the intended CLI observation surface.
 - Defers log-observation guidance and editor-interaction timing cases to linked follow-up changes instead of treating them as the mainline baseline here.
-- Narrows the first implementation target to project-scoped `exec` acceptance and continuation behavior instead of trying to solve every verification pattern at once.
+- Narrows each implementation slice to one concrete workflow problem at a time: first project-scoped startup continuity, then compile recovery before the next `exec`.

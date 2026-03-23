@@ -111,7 +111,7 @@ Alternative considered:
 For the new Standard Prompt C track, the preferred baseline verification path should be:
 
 - write the C# change through `exec`
-- let the normal project-scoped lifecycle absorb any necessary compile wait
+- let the project-scoped lifecycle absorb any necessary refresh and compile wait
 - issue a later `exec` that calls the new C# method
 - confirm success from the returned CLI `result`
 
@@ -127,6 +127,47 @@ The mainline change should therefore keep Standard Prompt C as the cleaner basel
 
 Alternative considered:
 - Reject Standard Prompt C until bridge access is documented more formally. Rejected because the current goal is to isolate the larger verification and editor-timing confounds first, not to wait for a perfect bridge-specific prompt.
+
+### Decision: Standard Prompt C should gain an explicit compile-recovery option on `exec`
+The latest rerun showed that Standard Prompt C can stay inside the CLI surface for final verification, but it still reaches `recoverable` because the agent must manually force `AssetDatabase.Refresh()` and `CompilationPipeline.RequestScriptCompilation()`, then call `wait-until-ready`, before the newly written type becomes callable. That extra sequence is too low-level for a basic validation rail and should be expressible as one project-scoped `exec` option instead of a separate manual dance.
+
+The preferred next slice is to add an explicit flag on project-scoped `exec`, tentatively `--refresh-before-exec`, with this intent:
+
+- refresh the addressed Unity project before running the requested script
+- if the refresh enters a compile or readiness-recovery window, keep that work inside the same request lifecycle
+- once Unity is ready again, execute the requested script content
+- if the whole flow takes longer than the current wait budget, return `running + request_id` and let `wait-for-exec` continue the same request
+
+This keeps the caller's mental model aligned with the existing `exec` primary path:
+
+- the caller still asks to do the next task step through `exec`
+- refresh and compile recovery become an execution precondition, not a separate workflow to orchestrate manually
+- `wait-until-ready` remains a supporting command rather than the default compile-recovery tool between every task step
+
+The first version should stay explicit rather than automatic. Not every `exec` warrants a refresh pass, and making this behavior implicit for all project-scoped execution would add latency and make ordinary script calls heavier than necessary.
+
+Alternative considered:
+- Add a standalone `refresh-project` command first. Rejected for the mainline path because it would create another orchestration step for the caller and weaken the existing `exec -> running -> wait-for-exec` request model.
+
+### Decision: First compile-recovery experiment favors `AssetDatabase.Refresh()` without mandatory `RequestScriptCompilation()`
+A direct control experiment after the rerun narrowed the next contract step further. In that probe:
+
+- a new C# file was added to `Assets/__AgentValidation`
+- the new type was initially absent from loaded assemblies
+- a project-scoped `exec` that only called `AssetDatabase.Refresh()` completed successfully
+- the immediately following `exec` could already resolve and invoke the new type without a manual `CompilationPipeline.RequestScriptCompilation()` step and without an intermediate caller-authored `wait-until-ready`
+
+This means the first contract version for `--refresh-before-exec` should be conservative:
+
+- treat project refresh as the required action
+- do not make explicit `RequestScriptCompilation()` part of the default promised behavior
+- if refresh causes Unity to enter a longer import or compile window, keep that wait inside the same request lifecycle and surface it through the normal `running + request_id -> wait-for-exec` path
+- if refresh does not push Unity into a not-ready window, continue directly into the requested script execution without adding an artificial extra wait
+
+The same experiment also suggests a small diagnostics improvement: when `exec` is still in progress because of this pre-execution refresh step, the machine-readable response should expose that the request is currently in a refresh-related phase. That phase detail is primarily for diagnosis and should not change the top-level `running` contract.
+
+Alternative considered:
+- Bake `CompilationPipeline.RequestScriptCompilation()` into the default first version. Rejected for now because the control probe did not require it, so making it mandatory would over-specify the heavier path before evidence justifies it.
 
 ### Decision: Define validation quality in terms of CLI-native closure, not task success alone
 This change needs explicit acceptance semantics so later reruns do not collapse all successful tasks into one bucket. The working meaning should be:
@@ -164,6 +205,32 @@ That rerun is meant to answer a focused question: did the Prompt A continuity sl
 
 Alternative considered:
 - Try to implement Prompt A and Standard Prompt C improvements together as one broad runtime patch. Rejected because Prompt A already provides a sharply defined first slice, while Standard Prompt C is currently more useful as a regression guardrail than as a separate runtime mechanism.
+
+### Decision: Use compile recovery on `exec` as the second implementation slice
+After the Prompt A continuity slice and rerun, the next implementation target should be the Standard Prompt C compile-recovery path. The immediate objective is not to solve every code-import edge case, but to remove the low-level manual sequence where an agent must explicitly force refresh, request script compilation, and then separately wait for readiness before attempting the real verification call.
+
+The second rerun protocol should therefore focus on:
+
+- whether Standard Prompt C can move from `recoverable` toward `clean` when project-scoped `exec` is allowed to refresh before the verification step
+- whether the extra compile-recovery support preserves the Prompt A gains rather than regressing the accepted request lifecycle
+- whether refresh-phase reporting is informative enough to diagnose slow or abnormal pre-execution import windows without introducing a new top-level status family
+
+Alternative considered:
+- Leave Standard Prompt C as permanently recoverable and handle compile recovery only through user-authored scripts. Rejected because the current manual compile dance is exactly the kind of agent-hostile orchestration the mainline verification-closure change is trying to reduce.
+
+### Decision: Keep refresh-phase reporting small and sibling to the top-level status
+The compile-recovery slice should expose refresh progress in a machine-readable way without introducing a new top-level status family. The smallest useful contract is:
+
+- keep `status = "running"` as the top-level lifecycle signal
+- add a sibling `phase` field when the request is still progressing through a known pre-execution stage
+- require the first version to support at least `phase = "refreshing"` and `phase = "executing"`
+
+The primary reason for the field is diagnosis. A caller that sees `running` should still continue with the same `wait-for-exec` behavior regardless of phase, but the extra field makes it easier to distinguish a slow refresh/import window from actual script execution time.
+
+The first version does not need to promise a distinct `phase = "compiling"` state unless implementation evidence shows that this stage can be surfaced reliably without adding confusion or churn to the contract.
+
+Alternative considered:
+- Introduce new top-level statuses such as `refreshing` or `compiling`. Rejected because the caller already has a stable continuation model based on `running`, and fragmenting that model would make the API heavier for limited diagnostic gain.
 
 ## Risks / Trade-offs
 

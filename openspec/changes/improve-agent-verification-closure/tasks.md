@@ -18,3 +18,9 @@
 - [x] 4.1 Refine the first implementation slice for Prompt A so project-scoped `exec` can enter an accepted `running` lifecycle before slow startup is treated as terminal failure
 - [x] 4.2 Define the accepted-response continuation payload shape for Prompt A, including the default `wait-for-exec` hint and any optional quieting control
 - [x] 4.3 Plan the first rerun protocol against Prompt A and Standard Prompt C after the Prompt A slice lands
+
+## 5. Second Slice Preparation
+
+- [x] 5.1 Define the project-scoped `exec` compile-recovery option for Standard Prompt C, including when refresh/compile should happen and how it stays inside one request lifecycle
+- [x] 5.2 Decide how the second slice rerun should evaluate Prompt A regression risk and whether Standard Prompt C reaches `clean` or remains `recoverable`
+- [x] 5.3 Define the phase-reporting expectation for refresh-driven pre-execution work while keeping top-level `status = "running"`

@@ -64,3 +64,33 @@ The rerun should answer two questions:
 - Structured per-track record of help queries, key command trace, key outputs, and final classification
 - Summary comparison against the latest committed baseline
 - Raw transcript retention remains optional and temporary only
+
+## Second Slice Addendum
+
+When the compile-recovery slice lands, reuse the same sequential rerun order and discovery constraints, but adjust the evaluation focus:
+
+1. Prompt A remains the regression guardrail.
+2. Standard Prompt C becomes the primary acceptance rail for the second slice.
+
+### Second-Slice Evaluation Focus
+
+The rerun should answer these questions:
+
+1. Did Prompt A preserve the existing startup-continuity gains without regressing back to the old explicit readiness-recovery branch?
+2. Did Standard Prompt C stop requiring a caller-authored refresh / compile / ready dance before the real verification exec?
+3. If the compile-recovery path runs long, does the response stay on the normal `running + request_id -> wait-for-exec` path while exposing useful refresh-phase diagnostics?
+
+### Second-Slice Track Expectations
+
+#### Prompt A
+
+- Expected role: regression guardrail only.
+- A successful second-slice outcome preserves the current improved behavior even if Prompt A still remains `recoverable` for unrelated bridge or persistence-confirmation reasons.
+- A regression includes falling back to the old pattern where the first task attempt again needs explicit `wait-until-ready` recovery before the main work can begin.
+
+#### Standard Prompt C
+
+- Preferred path: write the C# change, then use a later `exec --refresh-before-exec ...` style verification step rather than manually scripting refresh, compilation, and explicit readiness recovery as separate caller steps.
+- `clean` means final verification stays inside the CLI surface and does not require the caller to author an extra refresh / compile / ready sequence outside the target verification exec.
+- `recoverable` means final verification still stays inside the CLI surface, but the agent must branch into extra CLI recovery steps beyond the intended refreshed-exec path.
+- `fallback` means final confirmation leaves the CLI surface for host-file or host-log inspection.
