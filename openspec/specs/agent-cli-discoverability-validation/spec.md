@@ -21,7 +21,7 @@ The repository SHALL define an initial task set that exercises both direct Unity
 
 ### Requirement: Validation records success, autonomy, and efficiency separately
 
-The repository SHALL record task outcome, allowed-surface compliance, and convergence quality as distinct findings so discoverability problems can be diagnosed without collapsing all failures into one score. Each recorded task result SHALL also retain durable transcript evidence that includes the task prompt, the help surface consulted, the key command sequence, and the key outputs used to judge the result.
+The repository SHALL record task outcome, allowed-surface compliance, and convergence quality as distinct findings so discoverability problems can be diagnosed without collapsing all failures into one score. Each recorded task result SHALL also retain durable transcript evidence that includes the task prompt, the help surface consulted, the key command sequence, and the key outputs used to judge the result. When a validation task creates repository-owned temporary assets in the external host Unity project, the recorded result SHALL also include cleanup outcome and any remaining residue.
 
 #### Scenario: Contributor records a task result
 - **WHEN** a help-only validation task finishes
@@ -29,6 +29,7 @@ The repository SHALL record task outcome, allowed-surface compliance, and conver
 - **AND** the recorded result includes whether the agent stayed within the allowed discovery boundary
 - **AND** the recorded result includes an efficiency assessment that distinguishes clean convergence from recoverable or poor trial-and-error
 - **AND** the recorded result retains durable transcript evidence for later review
+- **AND** the recorded result includes cleanup status for any repository-owned temporary host assets created by the run
 
 ### Requirement: Validation findings isolate discoverability gaps
 The repository SHALL capture concrete discoverability findings from each help-only trial in a form that can drive later product, workflow, or harness follow-up work.
@@ -48,7 +49,7 @@ The repository SHALL define a minimum transcript record for each help-only agent
 - **AND** the stored evidence includes the discovery constraints that applied to the run
 - **AND** the stored evidence includes the key help commands consulted by the agent
 - **AND** the stored evidence includes the key CLI command sequence and the outputs that justified the recorded outcome
-- **AND** the stored evidence includes distinct result fields for task success, autonomy, and efficiency
+- **AND** the stored evidence includes distinct result fields for task success, autonomy, efficiency, and cleanup status
 - **AND** the stored evidence includes concrete discoverability findings for later follow-up work
 
 ### Requirement: Validation transcript records explicit operator observations
@@ -76,3 +77,4 @@ The repository SHALL treat agent-efficiency validation as a comparison problem, 
 - **WHEN** a contributor reruns representative help-only agent validation tasks after a help-surface change
 - **THEN** the evaluation compares convergence quality against earlier transcript-backed runs
 - **AND** the evaluation does not rely only on final task success as the measure of improvement
+
