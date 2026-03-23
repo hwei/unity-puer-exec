@@ -23,7 +23,7 @@
 - Use `openspec/specs/` for durable requirements that should survive individual changes.
 - Use `openspec/changes/` for scoped change work. Proposal, specs, and tasks are the default minimum before substantial implementation.
 - Treat non-archived OpenSpec changes as the repository planning surface.
-- Treat backlog specifically as changes whose `meta.yaml` status is `queued`.
+- Treat backlog specifically as the subset of non-archived changes that the repository-local backlog tooling currently marks eligible for recommendation.
 - Treat temporary execution context as ephemeral. Distill stable conclusions into `openspec/specs/`, source, tests, or concise repository guidance rather than keeping long-lived plan prose.
 - The working tree does not keep a parallel legacy `docs/` workflow entry path.
 - When a follow-up change depends on earlier validation or archived findings, proposal and design artifacts should name the upstream change and summarize the inherited finding that justifies the new scope.
@@ -34,7 +34,7 @@
 - Prefer reading only the minimal OpenSpec artifacts needed for the current task.
 - When a change affects behavior or workflow materially, create or continue an OpenSpec change instead of editing long-lived truth directly without change context.
 - Maintain repository-owned change metadata in `meta.yaml` for every non-archived change. The current convention is `status`, `change_type`, `priority`, `blocked_by`, `assumption_state`, `evidence`, and `updated_at`.
-- Treat `meta.yaml` as machine-readable planning metadata only. Use proposal and design artifacts, not dependency metadata alone, to carry human-readable evidence chains and rationale.
+- Treat `meta.yaml` as machine-readable planning metadata only. Repository backlog recommendation is derived from repository facts and metadata together rather than from `status` alone.
 - When new work is discovered during execution, classify it as in-scope, prerequisite, or adjacent before continuing implementation.
 - When starting work from a clean tree, consult the backlog tooling rather than guessing from prose alone.
 - When apply work ends, always produce an explicit closeout finding summary stating whether new follow-up candidates were discovered.
