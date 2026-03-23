@@ -285,6 +285,7 @@ COMMAND_HELP = {
                 "`--unity-log-path <path>`: explicit non-default Unity Editor log path for project-scoped startup before `session_marker` exists.",
                 "`--wait-timeout-ms <ms>`: how long to wait before returning the current execution state.",
                 "`--request-id <id>`: optional caller-owned exec identity for recovery or idempotent replay; omitted values are generated automatically.",
+                "`--refresh-before-exec`: for project-scoped execution, refresh the Unity project before running this script and keep any resulting recovery inside the same request lifecycle.",
                 "`--include-log-offset`: include top-level observation `log_offset` in the response for later result-marker waiting.",
                 "`--include-diagnostics`: include top-level debug diagnostics in the machine-readable response.",
                 "`--file <path>`: preferred script input for multi-line or AI-generated scripts.",
@@ -294,6 +295,7 @@ COMMAND_HELP = {
             "Selector Rules": [
                 "Use exactly one selector: `--project-path` or `--base-url`.",
                 "`--project-path` is the normal choice when the CLI should prepare Unity for the project before execution.",
+                "`--refresh-before-exec` is only valid with `--project-path` and is intended for the next step after changing project assets or C# code.",
                 "`--base-url` is for a direct service that is already known.",
                 "`--unity-exe-path` is only valid with `--project-path`.",
                 "Use exactly one script source: `--file`, `--stdin`, or `--code`.",
@@ -310,6 +312,7 @@ COMMAND_HELP = {
             "success": [
                 "`completed`: the script finished; the accepted response includes `request_id`, and the default-exported entry function's immediate return value is in `result`.",
                 "`running`: the request is still active; continue with `wait-for-exec --request-id ...` or the script's own observation workflow.",
+                "When `phase` is present, it names the current request stage without changing the top-level `running` contract; first-version values may include `refreshing` and `executing`.",
             ],
             "failure": [
                 ("address_conflict", 2, "both selectors were provided; choose exactly one."),
@@ -358,6 +361,7 @@ COMMAND_HELP = {
             "success": [
                 "`completed`: the request finished and any immediate entry return value is in `result`.",
                 "`running`: the request is still active and can be waited on again with the same `request_id`.",
+                "When `phase` is present, treat it as diagnostic detail for the current stage, not as a different follow-up command family.",
             ],
             "failure": [
                 ("address_conflict", 2, "both selectors were provided; choose exactly one."),

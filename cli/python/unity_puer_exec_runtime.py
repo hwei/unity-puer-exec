@@ -24,6 +24,14 @@ EXIT_UNITY_START_FAILED = 20
 EXIT_UNITY_NOT_READY = 21
 RESULT_MARKER_PREFIX = "[UnityPuerExecResult]"
 RESULT_MARKER_PATTERN = r"(?m)^\[UnityPuerExecResult\] (.+)$"
+PHASE_REFRESHING = "refreshing"
+PHASE_EXECUTING = "executing"
+REFRESH_BEFORE_EXEC_TEMPLATE = """export default function run(ctx) {
+  const AssetDatabase = puer.loadType('UnityEditor.AssetDatabase');
+  AssetDatabase.Refresh();
+  return { request_id: ctx.request_id, refreshed: true };
+}
+"""
 
 
 def emit_payload(payload):
@@ -199,15 +207,34 @@ def _next_step_payload(args, request_id):
     return {"command": "wait-for-exec", "argv": argv}
 
 
-def _pending_exec_payload(request_id, code):
-    return {"request_id": request_id, "code": code}
+def _refresh_request_id(request_id):
+    return "{}-refresh".format(request_id)
 
 
-def _write_pending_exec(args, request_id, code):
+def _pending_exec_payload(request_id, code, refresh_before_exec=False, phase=None, refresh_request_id=None):
+    payload = {
+        "request_id": request_id,
+        "code": code,
+        "refresh_before_exec": bool(refresh_before_exec),
+    }
+    if phase:
+        payload["phase"] = phase
+    if refresh_request_id:
+        payload["refresh_request_id"] = refresh_request_id
+    return payload
+
+
+def _write_pending_exec(args, request_id, code, refresh_before_exec=False, phase=None, refresh_request_id=None):
     unity_session.write_pending_exec_artifact(
         _project_path_arg(args),
         request_id,
-        _pending_exec_payload(request_id, code),
+        _pending_exec_payload(
+            request_id,
+            code,
+            refresh_before_exec=refresh_before_exec,
+            phase=phase,
+            refresh_request_id=refresh_request_id,
+        ),
     )
 
 
@@ -219,7 +246,7 @@ def _clear_pending_exec(args, request_id):
     unity_session.clear_pending_exec_artifact(_project_path_arg(args), request_id)
 
 
-def _emit_running_startup_payload(operation, session, request_id, args):
+def _emit_running_payload(operation, session, request_id, args, phase=None):
     payload = {
         "ok": True,
         "status": "running",
@@ -227,6 +254,8 @@ def _emit_running_startup_payload(operation, session, request_id, args):
         "request_id": request_id,
         "next_step": _next_step_payload(args, request_id),
     }
+    if phase:
+        payload["phase"] = phase
     if session is not None:
         payload["session"] = session.to_payload()
     return attach_diagnostics(payload, include_diagnostics=args.include_diagnostics, session=session)
@@ -248,11 +277,70 @@ def _invoke_exec(base_url, request_id, code, args):
     )
 
 
+def _post_refresh_ready_timeout_seconds(args):
+    return max(float(args.wait_timeout_ms) / 1000.0, 0.001)
+
+
+def _ensure_project_session_ready_after_refresh(args):
+    return unity_session.ensure_session_ready(
+        project_path=args.project_path,
+        unity_exe_path=args.unity_exe_path,
+        unity_log_path=args.unity_log_path,
+        ready_timeout_seconds=_post_refresh_ready_timeout_seconds(args),
+    )
+
+
+def _refresh_exec_code():
+    return REFRESH_BEFORE_EXEC_TEMPLATE
+
+
+def _invoke_refresh_exec(base_url, request_id, args):
+    return _invoke_exec(base_url, request_id, _refresh_exec_code(), args)
+
+
+def _running_or_timed_out_response(exit_code, stdout_text):
+    if not stdout_text:
+        return False
+    body = json.loads(stdout_text)
+    status = body.get("status")
+    if status == "running":
+        return True
+    return exit_code == EXIT_NOT_AVAILABLE and status == "not_available" and body.get("error") == "timed out"
+
+
+def _remap_request_id_in_response(text, request_id, args, phase=None):
+    if not text:
+        return text
+    body = json.loads(text)
+    body["request_id"] = request_id
+    if body.get("status") == "running" and getattr(args, "project_path", None):
+        body["next_step"] = _next_step_payload(args, request_id)
+        if phase:
+            body["phase"] = phase
+    return emit_payload(body)
+
+
+def _pending_phase(pending):
+    if not isinstance(pending, dict):
+        return None
+    phase = pending.get("phase")
+    return phase if isinstance(phase, str) and phase else None
+
+
+def _set_pending_phase(args, request_id, pending, phase):
+    if pending is None:
+        return
+    updated = dict(pending)
+    updated["phase"] = phase
+    unity_session.write_pending_exec_artifact(_project_path_arg(args), request_id, updated)
+
+
 def _normalize_exec_response(stdout_text, stderr_text, args):
     if stdout_text:
         body = json.loads(stdout_text)
         if body.get("status") == "running" and getattr(args, "project_path", None):
             body["next_step"] = _next_step_payload(args, body.get("request_id"))
+            body.setdefault("phase", PHASE_EXECUTING)
         if not args.include_diagnostics:
             body.pop("diagnostics", None)
         stdout_text = emit_payload(body)
@@ -279,6 +367,7 @@ def run_exec(args):
     validate_positive(args.wait_timeout_ms, "wait-timeout-ms")
     validate_project_mode_only(selector, "unity-exe-path", args.unity_exe_path)
     validate_project_mode_only(selector, "unity-log-path", args.unity_log_path)
+    validate_project_mode_only(selector, "refresh-before-exec", getattr(args, "refresh_before_exec", False))
 
     if selector == "project_path":
         try:
@@ -288,13 +377,47 @@ def run_exec(args):
                 unity_log_path=args.unity_log_path,
             )
         except (unity_session.UnityStalledError, unity_session.UnityNotReadyError) as exc:
-            _write_pending_exec(args, request_id, code)
-            payload = _emit_running_startup_payload("exec", exc.session, request_id, args)
+            _write_pending_exec(args, request_id, code, refresh_before_exec=args.refresh_before_exec)
+            payload = _emit_running_payload("exec", exc.session, request_id, args)
             return EXIT_RUNNING, emit_payload(payload), ""
         base_url = session.base_url
     else:
         session = None
         base_url = args.base_url
+
+    if selector == "project_path" and args.refresh_before_exec:
+        refresh_request_id = _refresh_request_id(request_id)
+        _write_pending_exec(
+            args,
+            request_id,
+            code,
+            refresh_before_exec=True,
+            phase=PHASE_REFRESHING,
+            refresh_request_id=refresh_request_id,
+        )
+        exit_code, stdout_text, stderr_text = _invoke_refresh_exec(base_url, refresh_request_id, args)
+        exit_code, stdout_text, stderr_text = _normalize_exec_blocker_result(
+            exit_code,
+            stdout_text,
+            stderr_text,
+            session,
+        )
+        if _running_or_timed_out_response(exit_code, stdout_text):
+            payload = _emit_running_payload("exec", session, request_id, args, phase=PHASE_REFRESHING)
+            return EXIT_RUNNING, emit_payload(payload), ""
+        if exit_code != 0:
+            _clear_pending_exec(args, request_id)
+            stdout_text = _remap_request_id_in_response(stdout_text, request_id, args, phase=PHASE_REFRESHING)
+            stderr_text = _remap_request_id_in_response(stderr_text, request_id, args, phase=PHASE_REFRESHING)
+            stdout_text, stderr_text = _normalize_exec_response(stdout_text, stderr_text, args)
+            return exit_code, stdout_text, stderr_text
+        try:
+            session = _ensure_project_session_ready_after_refresh(args)
+            base_url = session.base_url
+        except (unity_session.UnityStalledError, unity_session.UnityNotReadyError) as exc:
+            payload = _emit_running_payload("exec", exc.session, request_id, args, phase=PHASE_REFRESHING)
+            return EXIT_RUNNING, emit_payload(payload), ""
+        _set_pending_phase(args, request_id, _read_pending_exec(args, request_id), PHASE_EXECUTING)
 
     exit_code, stdout_text, stderr_text = _invoke_exec(base_url, request_id, code, args)
     exit_code, stdout_text, stderr_text = _normalize_exec_blocker_result(
@@ -324,7 +447,13 @@ def run_wait_for_exec(args):
             )
         except (unity_session.UnityStalledError, unity_session.UnityNotReadyError) as exc:
             if _read_pending_exec(args, args.request_id) is not None:
-                payload = _emit_running_startup_payload("wait-for-exec", exc.session, args.request_id, args)
+                payload = _emit_running_payload(
+                    "wait-for-exec",
+                    exc.session,
+                    args.request_id,
+                    args,
+                    phase=_pending_phase(_read_pending_exec(args, args.request_id)),
+                )
                 return EXIT_RUNNING, emit_payload(payload), ""
             raise
         base_url = session.base_url
@@ -334,6 +463,44 @@ def run_wait_for_exec(args):
 
     pending = _read_pending_exec(args, args.request_id) if selector == "project_path" else None
     if pending is not None:
+        if pending.get("refresh_before_exec") and pending.get("phase") == PHASE_REFRESHING:
+            refresh_request_id = pending.get("refresh_request_id") or _refresh_request_id(args.request_id)
+            payload = {
+                "request_id": refresh_request_id,
+                "wait_timeout_ms": args.wait_timeout_ms,
+                "include_log_offset": args.include_log_offset,
+                "include_diagnostics": args.include_diagnostics,
+            }
+            exit_code, stdout_text, stderr_text = direct_exec_client.invoke_command(
+                "wait-for-exec",
+                base_url,
+                payload,
+                args.wait_timeout_ms,
+            )
+            exit_code, stdout_text, stderr_text = _normalize_exec_blocker_result(
+                exit_code,
+                stdout_text,
+                stderr_text,
+                session if selector == "project_path" else None,
+            )
+            if _running_or_timed_out_response(exit_code, stdout_text):
+                payload = _emit_running_payload("wait-for-exec", session, args.request_id, args, phase=PHASE_REFRESHING)
+                return EXIT_RUNNING, emit_payload(payload), ""
+            if exit_code != 0:
+                _clear_pending_exec(args, args.request_id)
+                stdout_text = _remap_request_id_in_response(stdout_text, args.request_id, args, phase=PHASE_REFRESHING)
+                stderr_text = _remap_request_id_in_response(stderr_text, args.request_id, args, phase=PHASE_REFRESHING)
+                stdout_text, stderr_text = _normalize_exec_response(stdout_text, stderr_text, args)
+                return exit_code, stdout_text, stderr_text
+            try:
+                session = _ensure_project_session_ready_after_refresh(args)
+                base_url = session.base_url
+            except (unity_session.UnityStalledError, unity_session.UnityNotReadyError) as exc:
+                payload = _emit_running_payload("wait-for-exec", exc.session, args.request_id, args, phase=PHASE_REFRESHING)
+                return EXIT_RUNNING, emit_payload(payload), ""
+            pending = dict(pending)
+            pending["phase"] = PHASE_EXECUTING
+            unity_session.write_pending_exec_artifact(_project_path_arg(args), args.request_id, pending)
         exit_code, stdout_text, stderr_text = _invoke_exec(base_url, args.request_id, pending["code"], args)
     else:
         payload = {
