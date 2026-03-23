@@ -44,61 +44,76 @@ help_queries:
     retained_exact_argv: true
     purpose: confirm how `completed`, `running`, and phase-style responses are reported
   - order: 7
-    command: python F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py wait-until-ready --help
+    command: python F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py exec --help-status
     retained_exact_argv: true
-    purpose: confirm the readiness recovery command
+    purpose: confirm how `running` responses and phase-style states should be continued
   - order: 8
-    command: python F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py wait-until-ready --help-args
+    command: python F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py --help-example exec-and-wait-for-result-marker
     retained_exact_argv: true
-    purpose: confirm timeout knobs for readiness recovery
+    purpose: confirm the canonical `exec` plus `wait-for-exec` continuation example
 
 command_trace:
   - order: 1
-    command: Get-ChildItem -Path F:\C3\unity-puer-exec-workspace\c3-client-tree2\Project -Name
+    command: python F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py --help
     retained_exact_argv: true
-    purpose: confirm the Unity project has a standard root layout without reading product source
+    purpose: confirm the top-level workflow and that `exec` is the normal project entry point
     outcome: succeeded
   - order: 2
-    command: python F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py exec --project-path F:\C3\unity-puer-exec-workspace\c3-client-tree2\Project --file F:\C3\unity-puer-exec-workspace\unity-puer-exec\.tmp\write_basic_math.js --wait-timeout-ms 10000
+    command: python F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py exec --help
     retained_exact_argv: true
-    purpose: add the minimal static `Add(int, int)` helper
-    outcome: completed successfully and wrote `Assets/CodexValidation/BasicMath.cs`
+    purpose: confirm `exec` usage and supported script inputs
+    outcome: succeeded
+  - order: 3
+    command: python F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py exec --help-args
+    retained_exact_argv: true
+    purpose: confirm `--refresh-before-exec`, `--request-id`, and script module entry rules
+    outcome: succeeded
   - order: 4
-    command: python F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py exec --project-path F:\C3\unity-puer-exec-workspace\c3-client-tree2\Project --refresh-before-exec --file F:\C3\unity-puer-exec-workspace\unity-puer-exec\.tmp\verify_basic_math.js --wait-timeout-ms 20000
+    command: python F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py exec --help-status
+    retained_exact_argv: true
+    purpose: confirm `running` continuation semantics
+    outcome: succeeded
+  - order: 5
+    command: python F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py --help-example exec-and-wait-for-result-marker
+    retained_exact_argv: true
+    purpose: inspect the canonical continuation example
+    outcome: succeeded
+  - order: 6
+    command: python F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py exec --project-path F:\C3\unity-puer-exec-workspace\c3-client-tree2\Project --stdin --wait-timeout-ms 10000
+    retained_exact_argv: true
+    purpose: write `Assets/CodexValidation/AddIntsValidation.cs` through CLI execution inside Unity
+    outcome: completed successfully and wrote `Assets/CodexValidation/AddIntsValidation.cs`
+  - order: 7
+    command: python F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py exec --project-path F:\C3\unity-puer-exec-workspace\c3-client-tree2\Project --refresh-before-exec --stdin --wait-timeout-ms 20000
     retained_exact_argv: true
     purpose: perform the first compile-and-call verification attempt through the intended refreshed exec path
-    outcome: returned a compile-phase response rather than a completed verification result
-  - order: 5
-    command: python F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py wait-until-ready --project-path F:\C3\unity-puer-exec-workspace\c3-client-tree2\Project --ready-timeout-seconds 120 --activity-timeout-seconds 30 --health-timeout-seconds 10
+    outcome: returned caller-facing `status = running`, `phase = compiling`, and a stable `request_id`
+  - order: 8
+    command: python F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py wait-for-exec --project-path F:\C3\unity-puer-exec-workspace\c3-client-tree2\Project --request-id 05224ce0ff644b62b7984dd85a14a273 --wait-timeout-ms 30000
     retained_exact_argv: true
-    purpose: recover Unity to ready after the compile-phase response
-    outcome: completed successfully with `result.status = "recovered"`
-  - order: 6
-    command: python F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py exec --project-path F:\C3\unity-puer-exec-workspace\c3-client-tree2\Project --refresh-before-exec --request-id codex-basic-math-verify-1 --file F:\C3\unity-puer-exec-workspace\unity-puer-exec\.tmp\verify_basic_math.js --wait-timeout-ms 20000
-    retained_exact_argv: true
-    purpose: perform the final compile-and-call verification with a caller-owned request id
-    outcome: completed successfully with `result: 42`
+    purpose: continue the accepted request lifecycle through compile recovery and final verification
+    outcome: completed successfully with `result.value = 12`
 
 key_outputs:
   - source: CLI output
     summary: `--refresh-before-exec` was discovered from CLI help and used naturally as the intended verification-step compile-recovery flag.
   - source: CLI output
-    summary: The first refreshed verification attempt returned a compile-phase response instead of a finished result.
+    summary: The first refreshed verification attempt returned caller-facing `status = running`, `phase = compiling`, and a stable `request_id`.
   - source: CLI output
-    summary: After one readiness recovery, the final refreshed verification returned `result: 42` from `CodexValidation.BasicMath.Add(12, 30)`.
+    summary: `wait-for-exec` then completed the same request lifecycle and returned `result.value = 12` from `AddIntsValidation.Add(7, 5)`.
 
 task_success: pass
 autonomy: pass
-efficiency: recoverable
+efficiency: clean
 
 findings:
   - The agent discovered `--refresh-before-exec` from CLI help and used it without maintainer hints.
-  - The second slice improved the intended product path by eliminating the earlier caller-authored `AssetDatabase.Refresh()` plus `CompilationPipeline.RequestScriptCompilation()` helper script.
-  - One recoverable extra step remains: after the first compile-phase response, the agent still used `wait-until-ready` before rerunning final verification.
+  - The third slice normalized compile recovery onto the intended `running + phase=compiling + wait-for-exec` path.
+  - The run no longer needed a manual `wait-until-ready` branch after the first refreshed verification attempt.
 
 raw_transcript:
   status: not-retained
   location: none
   note: Durable evidence is based on the subagent's structured final report only.
 
-final_summary: Standard Prompt C succeeded end to end and the agent naturally chose the new `--refresh-before-exec` path for compile-and-call verification. The run remained `recoverable` rather than `clean` because the first refreshed verification attempt still surfaced a compile-phase response, after which one explicit `wait-until-ready` recovery step was needed before the final verification returned `42`.
+final_summary: Standard Prompt C succeeded end to end and reached `clean`. The agent naturally chose `--refresh-before-exec`, received caller-facing `running` with `phase = compiling`, and completed the same request through `wait-for-exec` without branching to `wait-until-ready`.

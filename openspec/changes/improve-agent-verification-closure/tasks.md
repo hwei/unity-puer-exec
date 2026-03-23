@@ -43,4 +43,4 @@
 - [x] 8.1 Normalize project-scoped compile-phase exec responses into caller-facing `running` with `phase=compiling`, preserved `request_id`, and the standard `next_step`
 - [x] 8.2 Preserve pending project-scoped request continuity through compile recovery so `wait-for-exec` can continue without branching to `wait-until-ready`
 - [x] 8.3 Extend CLI help and unit coverage for compile-phase continuation behavior
-- [ ] 8.4 Run the third-slice rerun protocol against Prompt A and Standard Prompt C
+- [x] 8.4 Run the third-slice rerun protocol against Prompt A and Standard Prompt C

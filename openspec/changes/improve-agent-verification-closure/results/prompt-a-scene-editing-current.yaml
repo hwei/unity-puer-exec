@@ -40,9 +40,13 @@ help_queries:
     retained_exact_argv: true
     purpose: inspect a valid script pattern and the CLI observation workflow
   - order: 6
-    command: python F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py --help-example request-editor-exit-via-exec
+    command: python F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py exec --help-status
     retained_exact_argv: true
-    purpose: confirm Unity type loading through `puer.loadType(...)`
+    purpose: confirm success and continuation semantics for `running`
+  - order: 7
+    command: python F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py --help-example exec-and-wait-for-result-marker
+    retained_exact_argv: true
+    purpose: inspect the canonical request continuation example
 
 command_trace:
   - order: 1
@@ -71,33 +75,43 @@ command_trace:
     purpose: inspect a canonical execution pattern
     outcome: succeeded
   - order: 6
-    command: python F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py --help-example request-editor-exit-via-exec
+    command: python F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py exec --help-status
     retained_exact_argv: true
-    purpose: confirm `puer.loadType` usage
+    purpose: confirm status semantics for long-running exec requests
     outcome: succeeded
   - order: 7
-    command: python F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py exec --project-path F:\C3\unity-puer-exec-workspace\c3-client-tree2\Project --file .tmp\scene-editing-test.js --wait-timeout-ms 120000
+    command: python F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py --help-example exec-and-wait-for-result-marker
     retained_exact_argv: true
-    purpose: create `Assets/__AgentValidation/scene-editing-test.unity` and add a sphere
-    outcome: completed successfully with `saved: true` and `sphereName: ValidationSphere`
+    purpose: inspect the canonical exec continuation pattern
+    outcome: succeeded
   - order: 8
-    command: python F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py exec --project-path F:\C3\unity-puer-exec-workspace\c3-client-tree2\Project --file .tmp\scene-editing-verify.js --wait-timeout-ms 120000
+    command: python F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py exec --project-path F:\C3\unity-puer-exec-workspace\c3-client-tree2\Project --file .tmp\inspect_ctx.js --wait-timeout-ms 120000
     retained_exact_argv: true
-    purpose: independently verify the saved scene contains the sphere
-    outcome: first attempt failed because the bridged object array was not enumerated correctly
+    purpose: inspect the exposed script context and available globals
+    outcome: completed successfully and confirmed `globalThis.CS`
   - order: 9
-    command: python F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py exec --project-path F:\C3\unity-puer-exec-workspace\c3-client-tree2\Project --file .tmp\scene-editing-verify.js --wait-timeout-ms 120000
+    command: python F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py exec --project-path F:\C3\unity-puer-exec-workspace\c3-client-tree2\Project --file .tmp\probe_unity_types.js --wait-timeout-ms 120000
     retained_exact_argv: true
-    purpose: rerun verification with a more direct existence check
-    outcome: completed successfully with `hasSphere: true` and `sphereName: ValidationSphere`
+    purpose: probe Unity and Editor type access before running the main validation task
+    outcome: completed successfully
+  - order: 10
+    command: python F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py exec --project-path F:\C3\unity-puer-exec-workspace\c3-client-tree2\Project --refresh-before-exec --file .tmp\run_validation_runner.js --wait-timeout-ms 120000
+    retained_exact_argv: true
+    purpose: run the full scene-editing validation flow
+    outcome: returned `running` with a request id after entering the accepted lifecycle
+  - order: 11
+    command: python F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py wait-for-exec --project-path F:\C3\unity-puer-exec-workspace\c3-client-tree2\Project --request-id d4573470f4b54e32a47d9e61ad29dcc2 --wait-timeout-ms 30000
+    retained_exact_argv: true
+    purpose: continue the accepted request lifecycle through completion
+    outcome: completed successfully with saved-scene and reopened-scene confirmation
 
 key_outputs:
   - source: CLI output
     summary: `exec` remained the primary project-scoped workflow and no explicit `wait-until-ready` startup recovery branch was needed.
   - source: CLI output
-    summary: The scene-creation script returned `saved: true` and `sphereName: ValidationSphere`.
+    summary: The validation runner returned a temporary scene path under `Assets/__codex_validation_temp/...` and entered the normal `running -> wait-for-exec` continuation path.
   - source: CLI output
-    summary: Independent verification after reopening the scene returned `hasSphere: true` and `sphereName: ValidationSphere`.
+    summary: Final verification after request continuation confirmed `saveOk: true`, `savedExists: true`, `sphereFound: true`, and `sphereName: ValidationSphere`.
 
 task_success: pass
 autonomy: pass
@@ -105,12 +119,12 @@ efficiency: recoverable
 
 findings:
   - Prompt A preserved the earlier startup-continuity gain and did not regress to the old explicit `wait-until-ready` recovery branch before the main work began.
-  - `puer.loadType(...)` remained the working mechanism for Unity and Editor API access in task scripts.
-  - The run still needed one verification retry because the bridged object array shape was not standard JS array-shaped on the first attempt.
+  - The run stayed inside CLI execution and used the normal `wait-for-exec` continuation path after the initial accepted response.
+  - Bridge and reflection details still created friction during verification, so the run remained `recoverable` rather than `clean`.
 
 raw_transcript:
   status: not-retained
   location: none
   note: Durable evidence is based on the subagent's structured final report only.
 
-final_summary: Prompt A remained `recoverable` rather than `clean`, but it preserved the key startup-continuity gain: the task stayed on the `exec`-centered path and did not fall back to the old explicit `wait-until-ready` recovery step before work could begin. Verification stayed inside CLI execution, though one bridge-shape correction was still needed.
+final_summary: Prompt A remained `recoverable` rather than `clean`, but it preserved the key startup-continuity gain and stayed on the normal `exec -> running -> wait-for-exec` path. The remaining friction was verification-side bridge and reflection discovery rather than startup continuity.
