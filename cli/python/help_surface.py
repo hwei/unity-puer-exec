@@ -312,7 +312,7 @@ COMMAND_HELP = {
             "success": [
                 "`completed`: the script finished; the accepted response includes `request_id`, and the default-exported entry function's immediate return value is in `result`.",
                 "`running`: the request is still active; continue with `wait-for-exec --request-id ...` or the script's own observation workflow.",
-                "When `phase` is present, it names the current request stage without changing the top-level `running` contract; first-version values may include `refreshing` and `executing`.",
+                "When `phase` is present, it names the current request stage without changing the top-level `running` contract; first-version values may include `refreshing`, `compiling`, and `executing`.",
             ],
             "failure": [
                 ("address_conflict", 2, "both selectors were provided; choose exactly one."),

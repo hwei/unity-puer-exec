@@ -34,6 +34,13 @@
 
 ## 7. Third Slice Preparation
 
-- [ ] 7.1 Define the compile-phase normalization step so caller-facing `compiling` becomes `running + phase=compiling + next_step`
-- [ ] 7.2 Extend `wait-for-exec` expectations so compile recovery after `--refresh-before-exec` stays inside the accepted request lifecycle instead of branching to `wait-until-ready`
-- [ ] 7.3 Define the next rerun focus: Prompt A remains a regression guardrail while Standard Prompt C tests whether compile recovery finally reaches `clean`
+- [x] 7.1 Define the compile-phase normalization step so caller-facing `compiling` becomes `running + phase=compiling + next_step`
+- [x] 7.2 Extend `wait-for-exec` expectations so compile recovery after `--refresh-before-exec` stays inside the accepted request lifecycle instead of branching to `wait-until-ready`
+- [x] 7.3 Define the next rerun focus: Prompt A remains a regression guardrail while Standard Prompt C tests whether compile recovery finally reaches `clean`
+
+## 8. Third Slice Implementation
+
+- [x] 8.1 Normalize project-scoped compile-phase exec responses into caller-facing `running` with `phase=compiling`, preserved `request_id`, and the standard `next_step`
+- [x] 8.2 Preserve pending project-scoped request continuity through compile recovery so `wait-for-exec` can continue without branching to `wait-until-ready`
+- [x] 8.3 Extend CLI help and unit coverage for compile-phase continuation behavior
+- [ ] 8.4 Run the third-slice rerun protocol against Prompt A and Standard Prompt C

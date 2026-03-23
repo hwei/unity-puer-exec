@@ -25,6 +25,7 @@ EXIT_UNITY_NOT_READY = 21
 RESULT_MARKER_PREFIX = "[UnityPuerExecResult]"
 RESULT_MARKER_PATTERN = r"(?m)^\[UnityPuerExecResult\] (.+)$"
 PHASE_REFRESHING = "refreshing"
+PHASE_COMPILING = "compiling"
 PHASE_EXECUTING = "executing"
 REFRESH_BEFORE_EXEC_TEMPLATE = """export default function run(ctx) {
   const AssetDatabase = puer.loadType('UnityEditor.AssetDatabase');
@@ -308,15 +309,50 @@ def _running_or_timed_out_response(exit_code, stdout_text):
     return exit_code == EXIT_NOT_AVAILABLE and status == "not_available" and body.get("error") == "timed out"
 
 
-def _remap_request_id_in_response(text, request_id, args, phase=None):
+def _is_compiling_response(exit_code, stdout_text):
+    if exit_code != EXIT_COMPILING or not stdout_text:
+        return False
+    body = json.loads(stdout_text)
+    return body.get("status") == "compiling"
+
+
+def _normalize_exec_lifecycle_body(body, args, request_id=None, default_phase=None, normalize_compiling=True):
+    if not isinstance(body, dict):
+        return body, None
+    if not getattr(args, "project_path", None):
+        return body, None
+    status = body.get("status")
+    if normalize_compiling and status == "compiling":
+        normalized_request_id = request_id or body.get("request_id")
+        body["ok"] = True
+        body["status"] = "running"
+        if normalized_request_id:
+            body["request_id"] = normalized_request_id
+            body["next_step"] = _next_step_payload(args, normalized_request_id)
+        body["phase"] = PHASE_COMPILING
+        return body, EXIT_RUNNING
+    if status == "running":
+        normalized_request_id = request_id or body.get("request_id")
+        if normalized_request_id:
+            body["request_id"] = normalized_request_id
+            body["next_step"] = _next_step_payload(args, normalized_request_id)
+        body.setdefault("phase", default_phase or PHASE_EXECUTING)
+        return body, EXIT_RUNNING
+    return body, None
+
+
+def _remap_request_id_in_response(text, request_id, args, phase=None, normalize_compiling=True):
     if not text:
         return text
     body = json.loads(text)
     body["request_id"] = request_id
-    if body.get("status") == "running" and getattr(args, "project_path", None):
-        body["next_step"] = _next_step_payload(args, request_id)
-        if phase:
-            body["phase"] = phase
+    body, _ = _normalize_exec_lifecycle_body(
+        body,
+        args,
+        request_id=request_id,
+        default_phase=phase,
+        normalize_compiling=normalize_compiling,
+    )
     return emit_payload(body)
 
 
@@ -335,12 +371,26 @@ def _set_pending_phase(args, request_id, pending, phase):
     unity_session.write_pending_exec_artifact(_project_path_arg(args), request_id, updated)
 
 
-def _normalize_exec_response(stdout_text, stderr_text, args):
+def _normalize_exec_response(
+    exit_code,
+    stdout_text,
+    stderr_text,
+    args,
+    request_id=None,
+    default_phase=None,
+    normalize_compiling=True,
+):
     if stdout_text:
         body = json.loads(stdout_text)
-        if body.get("status") == "running" and getattr(args, "project_path", None):
-            body["next_step"] = _next_step_payload(args, body.get("request_id"))
-            body.setdefault("phase", PHASE_EXECUTING)
+        body, normalized_exit_code = _normalize_exec_lifecycle_body(
+            body,
+            args,
+            request_id=request_id,
+            default_phase=default_phase,
+            normalize_compiling=normalize_compiling,
+        )
+        if normalized_exit_code is not None:
+            exit_code = normalized_exit_code
         if not args.include_diagnostics:
             body.pop("diagnostics", None)
         stdout_text = emit_payload(body)
@@ -349,7 +399,7 @@ def _normalize_exec_response(stdout_text, stderr_text, args):
         if not args.include_diagnostics:
             body.pop("diagnostics", None)
         stderr_text = emit_payload(body)
-    return stdout_text, stderr_text
+    return exit_code, stdout_text, stderr_text
 
 
 def _should_keep_pending_after_submit(exit_code, stdout_text):
@@ -357,6 +407,8 @@ def _should_keep_pending_after_submit(exit_code, stdout_text):
         return False
     body = json.loads(stdout_text)
     status = body.get("status")
+    if exit_code == EXIT_COMPILING and status == "compiling":
+        return True
     return exit_code == EXIT_NOT_AVAILABLE and status == "not_available"
 
 
@@ -407,9 +459,29 @@ def run_exec(args):
             return EXIT_RUNNING, emit_payload(payload), ""
         if exit_code != 0:
             _clear_pending_exec(args, request_id)
-            stdout_text = _remap_request_id_in_response(stdout_text, request_id, args, phase=PHASE_REFRESHING)
-            stderr_text = _remap_request_id_in_response(stderr_text, request_id, args, phase=PHASE_REFRESHING)
-            stdout_text, stderr_text = _normalize_exec_response(stdout_text, stderr_text, args)
+            stdout_text = _remap_request_id_in_response(
+                stdout_text,
+                request_id,
+                args,
+                phase=PHASE_REFRESHING,
+                normalize_compiling=False,
+            )
+            stderr_text = _remap_request_id_in_response(
+                stderr_text,
+                request_id,
+                args,
+                phase=PHASE_REFRESHING,
+                normalize_compiling=False,
+            )
+            exit_code, stdout_text, stderr_text = _normalize_exec_response(
+                exit_code,
+                stdout_text,
+                stderr_text,
+                args,
+                request_id=request_id,
+                default_phase=PHASE_REFRESHING,
+                normalize_compiling=False,
+            )
             return exit_code, stdout_text, stderr_text
         try:
             session = _ensure_project_session_ready_after_refresh(args)
@@ -426,9 +498,21 @@ def run_exec(args):
         stderr_text,
         session if selector == "project_path" else None,
     )
+    if selector == "project_path" and _is_compiling_response(exit_code, stdout_text):
+        pending = _read_pending_exec(args, request_id)
+        if pending is not None:
+            _set_pending_phase(args, request_id, pending, PHASE_COMPILING)
     if selector == "project_path" and not _should_keep_pending_after_submit(exit_code, stdout_text):
         _clear_pending_exec(args, request_id)
-    stdout_text, stderr_text = _normalize_exec_response(stdout_text, stderr_text, args)
+    default_phase = PHASE_COMPILING if _is_compiling_response(exit_code, stdout_text) else None
+    exit_code, stdout_text, stderr_text = _normalize_exec_response(
+        exit_code,
+        stdout_text,
+        stderr_text,
+        args,
+        request_id=request_id,
+        default_phase=default_phase,
+    )
     return exit_code, stdout_text, stderr_text
 
 
@@ -488,9 +572,29 @@ def run_wait_for_exec(args):
                 return EXIT_RUNNING, emit_payload(payload), ""
             if exit_code != 0:
                 _clear_pending_exec(args, args.request_id)
-                stdout_text = _remap_request_id_in_response(stdout_text, args.request_id, args, phase=PHASE_REFRESHING)
-                stderr_text = _remap_request_id_in_response(stderr_text, args.request_id, args, phase=PHASE_REFRESHING)
-                stdout_text, stderr_text = _normalize_exec_response(stdout_text, stderr_text, args)
+                stdout_text = _remap_request_id_in_response(
+                    stdout_text,
+                    args.request_id,
+                    args,
+                    phase=PHASE_REFRESHING,
+                    normalize_compiling=False,
+                )
+                stderr_text = _remap_request_id_in_response(
+                    stderr_text,
+                    args.request_id,
+                    args,
+                    phase=PHASE_REFRESHING,
+                    normalize_compiling=False,
+                )
+                exit_code, stdout_text, stderr_text = _normalize_exec_response(
+                    exit_code,
+                    stdout_text,
+                    stderr_text,
+                    args,
+                    request_id=args.request_id,
+                    default_phase=PHASE_REFRESHING,
+                    normalize_compiling=False,
+                )
                 return exit_code, stdout_text, stderr_text
             try:
                 session = _ensure_project_session_ready_after_refresh(args)
@@ -521,9 +625,21 @@ def run_wait_for_exec(args):
         stderr_text,
         session if selector == "project_path" else None,
     )
+    if selector == "project_path" and pending is not None and _is_compiling_response(exit_code, stdout_text):
+        pending = dict(pending)
+        pending["phase"] = PHASE_COMPILING
+        unity_session.write_pending_exec_artifact(_project_path_arg(args), args.request_id, pending)
     if selector == "project_path" and pending is not None and not _should_keep_pending_after_submit(exit_code, stdout_text):
         _clear_pending_exec(args, args.request_id)
-    stdout_text, stderr_text = _normalize_exec_response(stdout_text, stderr_text, args)
+    default_phase = PHASE_COMPILING if _is_compiling_response(exit_code, stdout_text) else None
+    exit_code, stdout_text, stderr_text = _normalize_exec_response(
+        exit_code,
+        stdout_text,
+        stderr_text,
+        args,
+        request_id=args.request_id,
+        default_phase=default_phase,
+    )
     return exit_code, stdout_text, stderr_text
 
 

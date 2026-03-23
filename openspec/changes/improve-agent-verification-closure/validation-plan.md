@@ -94,3 +94,30 @@ The rerun should answer these questions:
 - `clean` means final verification stays inside the CLI surface and does not require the caller to author an extra refresh / compile / ready sequence outside the target verification exec.
 - `recoverable` means final verification still stays inside the CLI surface, but the agent must branch into extra CLI recovery steps beyond the intended refreshed-exec path.
 - `fallback` means final confirmation leaves the CLI surface for host-file or host-log inspection.
+
+## Third Slice Addendum
+
+When the compile-phase continuation slice lands, rerun the same two tracks sequentially with the same discovery restrictions.
+
+### Third-Slice Evaluation Focus
+
+The rerun should answer these questions:
+
+1. Did Prompt A preserve the current startup-continuity behavior without regressing back to the old explicit readiness-recovery branch?
+2. When Standard Prompt C uses `exec --refresh-before-exec`, does a compile-phase response now stay on the normal `running + request_id -> wait-for-exec` continuation path?
+3. Did Standard Prompt C stop requiring a manual fallback to `wait-until-ready` after the first refreshed verification attempt?
+
+### Third-Slice Track Expectations
+
+#### Prompt A
+
+- Expected role: regression guardrail only.
+- A successful third-slice outcome preserves the current Prompt A behavior even if it remains `recoverable` for bridge-discoverability reasons.
+
+#### Standard Prompt C
+
+- Preferred path: write the C# change, then verify with `exec --refresh-before-exec ...`.
+- If the request hits compile recovery, the caller-facing response should stay on `status = "running"` with `phase = "compiling"` and the normal `next_step`.
+- `clean` means the agent can stay on `exec -> running/wait-for-exec -> completed` without branching to `wait-until-ready` after the refreshed verification attempt.
+- `recoverable` means final verification still stays inside the CLI surface, but the agent must invent extra recovery beyond the intended refreshed-exec plus wait-for-exec path.
+- `fallback` means final confirmation leaves the CLI surface for host-file or host-log inspection.
