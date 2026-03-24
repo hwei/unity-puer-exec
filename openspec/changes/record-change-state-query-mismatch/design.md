@@ -49,6 +49,12 @@ This change should not present itself as fully complete while it is still intent
 Alternative considered:
 - Keep all tasks checked and rely on prose to explain that more work may appear later. Rejected because that makes the task surface look archive-ready and weakens the signal that the investigation intentionally remains open.
 
+### Decision: Adopt a provisional task-shaping convention for backlog/problem-recording changes
+Until a backlog-oriented or problem-recording change either creates its concrete follow-up path or explicitly records that no follow-up will be pursued, its `tasks.md` should retain at least one intentional unresolved task that points at that remaining framing decision. Once the follow-up path is created or intentionally declined, the task surface can be fully checked and the change can move toward archive readiness.
+
+Alternative considered:
+- Treat the unresolved-task pattern as optional author preference. Rejected because optional use recreates the same ambiguity this change is documenting and makes backlog/problem-recording changes look inconsistently complete.
+
 ## Risks / Trade-offs
 
 - [This change could restate requirements the repository already has] -> Keep the scope tied to the concrete mismatch that was reproduced during exploration.
@@ -61,4 +67,3 @@ Alternative considered:
 - Should the future diagnostic surface call `openspec list --json` directly, or compute a narrower workflow interpretation from repository facts?
 - Should mismatch reporting be read-only, or should it eventually suggest repair actions for stale metadata and archive hygiene?
 - Should repository guidance standardize one default operator-facing query command, or continue supporting multiple surfaces with clearer labeling?
-- Should the repository adopt an explicit convention that backlog/problem-recording changes never leave `tasks.md` fully complete until a follow-up path is either created or intentionally declined?

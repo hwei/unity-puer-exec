@@ -11,4 +11,4 @@
 ## 3. Closeout Readiness
 
 - [x] 3.1 Preserve the issue statement without forcing an immediate backlog-tool or workflow-tool rewrite in this change.
-- [ ] 3.2 Decide and record the repository convention for whether backlog/problem-recording changes must keep at least one intentional unresolved task until follow-up framing is complete.
+- [x] 3.2 Decide and record the repository convention for whether backlog/problem-recording changes must keep at least one intentional unresolved task until follow-up framing is complete.
