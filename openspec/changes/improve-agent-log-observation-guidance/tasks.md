@@ -10,5 +10,5 @@
 
 ## 3. Follow-up Direction
 
-- [ ] 3.1 Prepare the follow-up implementation change around an ordinary log-observation workflow example plus any supporting help text needed to teach checkpoint capture and `--start-offset`
-- [ ] 3.2 Revisit whether `exec` should return `log_offset` by default only after the example-first validation results are available
+- [x] 3.1 Prepare the follow-up implementation change around an ordinary log-observation workflow example plus any supporting help text needed to teach checkpoint capture and `--start-offset`
+- [x] 3.2 Revisit whether `exec` should return `log_offset` by default only after the example-first validation results are available
