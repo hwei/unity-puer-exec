@@ -92,6 +92,7 @@ class UnityPuerExecCliTests(unittest.TestCase):
         self.assertIn("Normal first command for project-scoped work", stdout)
         self.assertIn("do not need `wait-until-ready` as the default first step", stdout)
         self.assertIn("PuerTS-style JavaScript-to-C# bridge", stdout)
+        self.assertIn("make the next project-scoped `exec` use `--refresh-before-exec`", stdout)
         self.assertIn("Every script source (`--file`, `--stdin`, `--code`) must use this module entry template", stdout)
 
     def test_exec_help_args_renders_argument_template(self):
@@ -115,6 +116,7 @@ class UnityPuerExecCliTests(unittest.TestCase):
         self.assertIn("Promise", stdout)
         self.assertIn("`puer.loadType(...)`", stdout)
         self.assertIn("Bridged C# arrays and `List<T>` values are not plain JS arrays", stdout)
+        self.assertIn("prefer the next task `exec --refresh-before-exec`", stdout)
         self.assertIn("https://puerts.github.io/docs/puerts/unity/tutorial/js2cs", stdout)
         self.assertIn("`ctx.request_id` and `ctx.globals`", stdout)
         self.assertIn("`ctx.project_path`", stdout)
@@ -224,6 +226,7 @@ class UnityPuerExecCliTests(unittest.TestCase):
         self.assertIn("const EditorApplication = puer.loadType('UnityEditor.EditorApplication');", stdout)
         self.assertIn("maxValue", stdout)
         self.assertIn("bridged C# arrays and `List<T>` values", stdout)
+        self.assertIn("compile recovery stays attached to that request", stdout)
         self.assertIn("https://puerts.github.io/docs/puerts/unity/tutorial/js2cs", stdout)
 
     def test_project_path_derivation_help_example_renders_supported_path_guidance(self):

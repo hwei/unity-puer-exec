@@ -279,6 +279,7 @@ COMMAND_HELP = {
             "Every script source (`--file`, `--stdin`, `--code`) must use this module entry template: `export default function (ctx) { return null; }`",
             "With `--project-path`, `exec` may launch or recover Unity for the project, so you do not need `wait-until-ready` as the default first step.",
             "Scripts use a PuerTS-style JavaScript-to-C# bridge; `puer.loadType(...)` is the normal way to load Unity or C# types inside `exec` scripts.",
+            "If an earlier step wrote C# or other import-triggering project assets, make the next project-scoped `exec` use `--refresh-before-exec` instead of splitting recovery into a separate `wait-until-ready` call.",
         ],
         "related_workflows": (
             "recover-exec-by-request-id",
@@ -295,7 +296,7 @@ COMMAND_HELP = {
                 "`--unity-log-path <path>`: explicit non-default Unity Editor log path for project-scoped startup before `session_marker` exists.",
                 "`--wait-timeout-ms <ms>`: how long to wait before returning the current execution state.",
                 "`--request-id <id>`: optional caller-owned exec identity for recovery or idempotent replay; omitted values are generated automatically.",
-                "`--refresh-before-exec`: for project-scoped execution, refresh the Unity project before running this script and keep any resulting recovery inside the same request lifecycle.",
+                "`--refresh-before-exec`: for project-scoped execution, refresh the Unity project before running this script and keep any resulting recovery inside the same request lifecycle instead of a separate recovery command.",
                 "`--include-log-offset`: include top-level observation `log_offset` in the response for later result-marker waiting.",
                 "`--include-diagnostics`: include top-level debug diagnostics in the machine-readable response.",
                 "`--file <path>`: preferred script input for multi-line or AI-generated scripts; the file must export `default function (ctx) { ... }`.",
@@ -306,6 +307,7 @@ COMMAND_HELP = {
                 "Use exactly one selector: `--project-path` or `--base-url`.",
                 "`--project-path` is the normal choice when the CLI should prepare Unity for the project before execution.",
                 "`--refresh-before-exec` is only valid with `--project-path` and is intended for the next step after changing project assets or C# code.",
+                "After a script writes C# or other import-triggering assets, prefer the next task `exec --refresh-before-exec` over a standalone `wait-until-ready` step.",
                 "`--base-url` is for a direct service that is already known.",
                 "`--unity-exe-path` is only valid with `--project-path`.",
                 "Use exactly one script source: `--file`, `--stdin`, or `--code`.",
@@ -601,6 +603,7 @@ WORKFLOW_EXAMPLES = {
         ],
         "notice": [
             "This is the intended bridge model for Unity and .NET access inside `exec` scripts: use `puer.loadType(...)` to load types before calling members.",
+            "If a script in this bridge workflow writes C# or other import-triggering assets, run the next project-scoped `exec` with `--refresh-before-exec` so compile recovery stays attached to that request.",
             "Treat bridged C# arrays and `List<T>` values as bridged .NET objects, not plain JS arrays with identical semantics.",
             "For deeper bridge rules such as generics, `CS.*`, or collection behavior, consult the official JS-to-C# reference: https://puerts.github.io/docs/puerts/unity/tutorial/js2cs",
         ],

@@ -1,0 +1,183 @@
+prompt_id: prompt-b
+prompt_source: openspec/changes/archive/2026-03-24-rerun-help-only-log-workflow-validation/task-prompt.md
+record_kind: retrospective-summary
+date: 2026-03-24
+
+model: gpt-5.4-mini subagent
+project_path: F:\C3\unity-puer-exec-workspace\c3-client-tree2\Project
+cli_entry_path: F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py
+
+constraints:
+  allowed:
+    - published unity-puer-exec help surface
+    - normal CLI execution against the target Unity project
+    - repository-local scratch scripts under .tmp for task execution
+  disallowed:
+    - repository source in this product workspace
+    - repository tests
+    - command-level maintainer hints
+
+help_queries:
+  - order: 1
+    command: python 'F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py' --help
+    retained_exact_argv: true
+    purpose: confirm the authoritative CLI surface and the normal project-scoped workflow
+  - order: 2
+    command: python 'F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py' exec --help
+    retained_exact_argv: true
+    purpose: confirm exec as the primary entry point and the post-C# recovery hint
+  - order: 3
+    command: python 'F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py' --help-example load-and-call-csharp-type
+    retained_exact_argv: true
+    purpose: confirm the PuerTS bridge pattern for loading Unity and C# types
+  - order: 4
+    command: python 'F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py' --help-example exec-and-wait-for-log-pattern
+    retained_exact_argv: true
+    purpose: confirm the published log-observation workflow and log_offset usage
+  - order: 5
+    command: python 'F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py' exec --help-status
+    retained_exact_argv: true
+    purpose: confirm running versus completed outcomes and compile phase behavior
+  - order: 6
+    command: python 'F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py' exec --help-args
+    retained_exact_argv: true
+    purpose: confirm --refresh-before-exec, --include-log-offset, and script-input constraints
+  - order: 7
+    command: python 'F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py' wait-for-exec --help
+    retained_exact_argv: true
+    purpose: confirm the recovery command after exec returns running
+  - order: 8
+    command: python 'F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py' wait-for-log-pattern --help
+    retained_exact_argv: true
+    purpose: confirm the supported log-based verification entry point
+  - order: 9
+    command: python 'F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py' wait-for-log-pattern --help-args
+    retained_exact_argv: true
+    purpose: confirm --start-offset, timeouts, and optional session and log-path controls
+  - order: 10
+    command: python 'F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py' get-log-source --help
+    retained_exact_argv: true
+    purpose: confirm the troubleshooting path for discovering the observable Unity log source
+  - order: 11
+    command: python 'F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py' get-log-source --help-args
+    retained_exact_argv: true
+    purpose: confirm the log-source selector arguments
+
+command_trace:
+  - order: 1
+    command: python 'F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py' exec --project-path 'F:\C3\unity-puer-exec-workspace\c3-client-tree2\Project' --file '.tmp\write_selection_guid_menu.js' --wait-timeout-ms 2000 --request-id 'menu-guid-write-20260324-1'
+    retained_exact_argv: true
+    purpose: write the temporary Unity Editor menu command
+    outcome: completed and created Assets/Editor/SelectionGuidMenu.cs
+  - order: 2
+    command: python 'F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py' exec --project-path 'F:\C3\unity-puer-exec-workspace\c3-client-tree2\Project' --refresh-before-exec --include-log-offset --file '.tmp\verify_selection_guid_menu.js' --wait-timeout-ms 2000 --request-id 'menu-guid-verify-20260324-1'
+    retained_exact_argv: true
+    purpose: run the first post-C# recovery step and verify the menu command
+    outcome: returned running with phase compiling
+  - order: 3
+    command: python 'F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py' wait-for-exec --project-path 'F:\C3\unity-puer-exec-workspace\c3-client-tree2\Project' --request-id 'menu-guid-verify-20260324-1' --wait-timeout-ms 2000 --include-log-offset
+    retained_exact_argv: true
+    purpose: finish the compile-recovery request
+    outcome: completed with executed true, guid a2576a190a80c3c48adb9ef8b4814dcc, and log_offset 678019
+  - order: 4
+    command: python 'F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py' wait-for-log-pattern --project-path 'F:\C3\unity-puer-exec-workspace\c3-client-tree2\Project' --start-offset 678019 --pattern '\[SelectionGUID\] a2576a190a80c3c48adb9ef8b4814dcc' --timeout-seconds 10 --activity-timeout-seconds 2
+    retained_exact_argv: true
+    purpose: observe the menu log through the CLI log surface
+    outcome: returned unity_stalled
+  - order: 5
+    command: python 'F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py' wait-for-log-pattern --project-path 'F:\C3\unity-puer-exec-workspace\c3-client-tree2\Project' --start-offset 0 --pattern '\[SelectionGUID\] a2576a190a80c3c48adb9ef8b4814dcc' --timeout-seconds 10 --activity-timeout-seconds 2
+    retained_exact_argv: true
+    purpose: retry log observation from the beginning of the log source
+    outcome: returned unity_stalled
+  - order: 6
+    command: python 'F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py' get-log-source --project-path 'F:\C3\unity-puer-exec-workspace\c3-client-tree2\Project'
+    retained_exact_argv: true
+    purpose: identify the actual observable Unity log file
+    outcome: completed and returned C:\Users\willhuang\AppData\Local\Unity\Editor\Editor.log
+  - order: 7
+    command: python 'F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py' exec --project-path 'F:\C3\unity-puer-exec-workspace\c3-client-tree2\Project' --include-log-offset --file '.tmp\schedule_verify_selection_guid_menu.js' --wait-timeout-ms 2000 --request-id 'menu-guid-schedule-verify-20260324-3'
+    retained_exact_argv: true
+    purpose: perform the final selection-and-menu invocation after fixing the selection path
+    outcome: completed with selected true, executed true, and guid a2576a190a80c3c48adb9ef8b4814dcc
+  - order: 8
+    command: Select-String -Path 'C:\Users\willhuang\AppData\Local\Unity\Editor\Editor.log' -Pattern 'menu-guid-schedule-verify-20260324-3|\[SelectionGUID\] a2576a190a80c3c48adb9ef8b4814dcc|\[SelectionGUID\] <none>' | Select-Object -Last 20 | ForEach-Object { $_.Line }
+    retained_exact_argv: true
+    purpose: obtain direct final proof from the Unity Editor log
+    outcome: found [SelectionGUID] a2576a190a80c3c48adb9ef8b4814dcc
+  - order: 9
+    command: Remove-Item -Force 'F:\C3\unity-puer-exec-workspace\c3-client-tree2\Project\Assets\Editor\SelectionGuidMenu.cs','F:\C3\unity-puer-exec-workspace\c3-client-tree2\Project\Assets\Editor\SelectionGuidMenu.cs.meta','F:\C3\unity-puer-exec-workspace\c3-client-tree2\Project\Assets\ValidationSelectionGuidProbe.txt','F:\C3\unity-puer-exec-workspace\c3-client-tree2\Project\Assets\ValidationSelectionGuidProbe.txt.meta','F:\C3\unity-puer-exec-workspace\unity-puer-exec\.tmp\write_selection_guid_menu.js','F:\C3\unity-puer-exec-workspace\unity-puer-exec\.tmp\verify_selection_guid_menu.js','F:\C3\unity-puer-exec-workspace\unity-puer-exec\.tmp\schedule_verify_selection_guid_menu.js' -ErrorAction SilentlyContinue
+    retained_exact_argv: true
+    purpose: clean all host-project and .tmp artifacts created for validation
+    outcome: completed successfully
+
+key_outputs:
+  - source: CLI output
+    summary: The menu command compiled successfully and was added at Tools/Validation/Log Selected GUID.
+  - source: CLI output
+    summary: The first post-write recovery request returned running with phase compiling, then wait-for-exec completed as the updated help surface predicted.
+  - source: CLI output
+    summary: The final successful run produced guid a2576a190a80c3c48adb9ef8b4814dcc for Assets/ValidationSelectionGuidProbe.txt.
+  - source: CLI output
+    summary: get-log-source resolved the active observable log file to C:\Users\willhuang\AppData\Local\Unity\Editor\Editor.log.
+  - source: Direct Editor.log inspection
+    summary: The Unity Editor log contained the exact line [SelectionGUID] a2576a190a80c3c48adb9ef8b4814dcc.
+
+final_verification_path:
+  used_cli_observation_surface: false
+  used_direct_host_log_inspection: true
+  summary: The rerun first tried wait-for-log-pattern from both the returned log_offset and start_offset 0, but both attempts stalled, so final confirmation fell back to direct inspection of the Editor.log path returned by get-log-source.
+
+checkpoint_usage:
+  captured_log_offset: true
+  used_start_offset: true
+  summary: wait-for-exec returned log_offset 678019 and the rerun reused it through wait-for-log-pattern --start-offset before falling back to direct log inspection.
+
+task_success: pass
+autonomy: pass
+efficiency: recoverable
+
+human_intervention:
+  level: observed_only
+  summary: The operator launched the clean subagent and later normalized its structured report into this durable record without giving command-level hints.
+
+modal_blocker:
+  present: false
+  type: none
+  detected_by: none
+  resolution: none
+
+findings:
+  - Prompt B still needed an explicit compile-recovery step after writing the C# script.
+  - The updated help steered that recovery onto the intended next exec --refresh-before-exec plus wait-for-exec path instead of a separate pre-emptive wait-until-ready step.
+  - Compile recovery therefore became more deterministic, but the workflow still remained recoverable rather than clean.
+  - The rerun regressed on final verification because wait-for-log-pattern stalled and the subagent fell back to direct Editor.log inspection.
+
+comparison_against_2026_03_24_records:
+  baseline_help_example_record: openspec/changes/archive/2026-03-24-clarify-help-example-command-boundary/results/prompt-b-help-example-discoverability-rerun.yaml
+  operator_probe_record: openspec/changes/archive/2026-03-24-revalidate-editor-interaction-workflows/results/prompt-b-operator-probe.yaml
+  script_context_record: openspec/changes/archive/2026-03-24-clarify-exec-script-context-contract/results/prompt-b-script-context-rerun.yaml
+  compile_recovery_friction_decreased: true
+  summary: Relative to the operator probe and help-example rerun, the subagent no longer inserted a standalone wait-until-ready step between writing the C# script and invoking the menu command. Instead it followed the newly published next-exec recovery guidance directly. Compared with the script-context rerun, compile recovery stayed on the same intended refresh-before-exec plus wait-for-exec path, which confirms the help change made that path discoverable from the main help surface rather than only from adjacent artifacts.
+
+runtime_or_environment_notes:
+  - The rerun used short 2000 ms wait windows on exec and wait-for-exec, but compile recovery still completed successfully within that envelope.
+  - wait-for-log-pattern returned unity_stalled twice even though the command later proved successful through direct log inspection.
+
+cleanup:
+  status: cleaned
+  removed:
+    - F:\C3\unity-puer-exec-workspace\c3-client-tree2\Project\Assets\Editor\SelectionGuidMenu.cs
+    - F:\C3\unity-puer-exec-workspace\c3-client-tree2\Project\Assets\Editor\SelectionGuidMenu.cs.meta
+    - F:\C3\unity-puer-exec-workspace\c3-client-tree2\Project\Assets\ValidationSelectionGuidProbe.txt
+    - F:\C3\unity-puer-exec-workspace\c3-client-tree2\Project\Assets\ValidationSelectionGuidProbe.txt.meta
+    - F:\C3\unity-puer-exec-workspace\unity-puer-exec\.tmp\write_selection_guid_menu.js
+    - F:\C3\unity-puer-exec-workspace\unity-puer-exec\.tmp\verify_selection_guid_menu.js
+    - F:\C3\unity-puer-exec-workspace\unity-puer-exec\.tmp\schedule_verify_selection_guid_menu.js
+  residue: []
+
+raw_transcript:
+  status: not-retained
+  location: none
+  note: The durable record is reconstructed from the spawned subagent's structured report; no separate raw terminal transcript is being retained.
+
+final_summary: The Prompt B rerun confirmed that compile recovery still exists after writing a generated C# editor script, but the updated published help now steers that recovery through the intended next exec --refresh-before-exec path. That reduced compile-recovery guesswork even though the overall run remained recoverable and final verification fell back to direct Editor.log inspection.
