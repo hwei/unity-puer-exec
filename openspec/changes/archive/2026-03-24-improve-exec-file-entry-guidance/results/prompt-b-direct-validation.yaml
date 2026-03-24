@@ -1,0 +1,93 @@
+prompt_id: prompt-b
+prompt_source: openspec/changes/archive/2026-03-24-revalidate-editor-interaction-workflows/task-prompt.md
+record_kind: subagent-rerun
+date: 2026-03-24
+model: gpt-5.4-mini subagent
+project_path: F:\C3\unity-puer-exec-workspace\c3-client-tree2\Project
+cli_entry_path: F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py
+constraints:
+  allowed:
+    - published unity-puer-exec help surface
+    - normal CLI execution against the target Unity project
+    - repository-local scratch scripts under .tmp
+  disallowed:
+    - repository source
+    - repository tests
+    - direct Editor.log inspection for final verification
+    - command-level maintainer hints beyond published help
+first_pass_missing_default_export_triggered: false
+help_queries:
+  - order: 1
+    command: python cli/python/unity_puer_exec.py --help
+    purpose: orient around the current published command and workflow surface
+  - order: 2
+    command: python cli/python/unity_puer_exec.py exec --help
+    purpose: confirm the primary project-scoped execution entry point
+  - order: 3
+    command: python cli/python/unity_puer_exec.py exec --help-args
+    purpose: inspect exec script-source and selector rules
+  - order: 4
+    command: python cli/python/unity_puer_exec.py wait-until-ready --help
+    purpose: confirm the readiness recovery command
+  - order: 5
+    command: python cli/python/unity_puer_exec.py --help-example load-and-call-csharp-type
+    purpose: inspect the bridge-oriented example while shaping the editor script
+  - order: 6
+    command: python cli/python/unity_puer_exec.py --help-example exec-and-wait-for-log-pattern
+    purpose: inspect the checkpointed log workflow example
+command_trace:
+  - order: 1
+    command: python cli/python/unity_puer_exec.py exec --project-path F:\C3\unity-puer-exec-workspace\c3-client-tree2\Project --file .\.tmp\promptb_create_and_select.js --wait-timeout-ms 120000 --include-log-offset
+    purpose: first write attempt for the menu command script
+    outcome: completed; wrote Assets/Editor/PromptBSelectionGuidMenu.cs and returned log_offset 540373, but the first selection load used an absolute asset path and selected_path came back empty
+  - order: 2
+    command: python cli/python/unity_puer_exec.py wait-until-ready --project-path F:\C3\unity-puer-exec-workspace\c3-client-tree2\Project
+    purpose: wait for Unity to recover after the import and compile cycle
+    outcome: completed successfully with result.status recovered
+  - order: 3
+    command: python cli/python/unity_puer_exec.py exec --project-path F:\C3\unity-puer-exec-workspace\c3-client-tree2\Project --file .\.tmp\promptb_create_and_select.js --wait-timeout-ms 120000 --include-log-offset
+    purpose: rerun the write script after fixing the asset-relative path used for selection
+    outcome: completed successfully with selected_path Assets/Editor/PromptBSelectionGuidMenu.cs and log_offset 598351
+  - order: 4
+    command: python cli/python/unity_puer_exec.py exec --project-path F:\C3\unity-puer-exec-workspace\c3-client-tree2\Project --file .\.tmp\promptb_invoke_menu.js --wait-timeout-ms 120000 --include-log-offset
+    purpose: select the generated asset and invoke the menu command
+    outcome: completed successfully with executed true, selected_path Assets/Editor/PromptBSelectionGuidMenu.cs, and log_offset 609090
+  - order: 5
+    command: python cli/python/unity_puer_exec.py wait-for-log-pattern --project-path F:\C3\unity-puer-exec-workspace\c3-client-tree2\Project --start-offset 609090 --pattern \\[PromptB\\] Selection GUID=([0-9a-f]+) path=Assets/Editor/PromptBSelectionGuidMenu\\.cs --extract-group 1 --timeout-seconds 60
+    purpose: verify the emitted GUID through the CLI observation surface
+    outcome: completed successfully with result.status log_pattern_matched and extracted_group 7c23b922112befd41a4c7d423e49d855
+  - order: 6
+    command: python cli/python/unity_puer_exec.py exec --project-path F:\C3\unity-puer-exec-workspace\c3-client-tree2\Project --file .\.tmp\promptb_cleanup.js --wait-timeout-ms 120000
+    purpose: remove the generated editor script and its meta file from the host project
+    outcome: completed successfully and removed F:\C3\unity-puer-exec-workspace\c3-client-tree2\Project\Assets\Editor\PromptBSelectionGuidMenu.cs and its meta file
+key_outputs:
+  - source: CLI output
+    summary: The first write attempt returned log_offset 540373 and did not surface missing_default_export.
+  - source: CLI output
+    summary: The second write attempt returned selected_path Assets/Editor/PromptBSelectionGuidMenu.cs and log_offset 598351.
+  - source: CLI output
+    summary: The menu invocation returned executed true and log_offset 609090.
+  - source: CLI output
+    summary: wait-for-log-pattern matched the PromptB log line and extracted GUID 7c23b922112befd41a4c7d423e49d855.
+  - source: CLI output
+    summary: Cleanup removed the generated host-side menu script and its .meta file.
+final_verification_path:
+  used_cli_observation_surface: true
+  used_direct_host_log_inspection: false
+  summary: Final confirmation stayed inside the CLI by matching the PromptB log line with wait-for-log-pattern started from the returned log_offset checkpoint.
+cleanup:
+  status: cleaned
+  removed:
+    - F:\C3\unity-puer-exec-workspace\c3-client-tree2\Project\Assets\Editor\PromptBSelectionGuidMenu.cs
+    - F:\C3\unity-puer-exec-workspace\c3-client-tree2\Project\Assets\Editor\PromptBSelectionGuidMenu.cs.meta
+    - F:\C3\unity-puer-exec-workspace\unity-puer-exec\.tmp\promptb_create_and_select.js
+    - F:\C3\unity-puer-exec-workspace\unity-puer-exec\.tmp\promptb_invoke_menu.js
+    - F:\C3\unity-puer-exec-workspace\unity-puer-exec\.tmp\promptb_cleanup.js
+  residue: []
+findings:
+  - First-pass file authoring did not trigger missing_default_export in this rerun.
+  - The current help surface now makes the default-export module template explicit in both `exec --help` and `exec --help-args`.
+  - The generated menu command was invoked successfully and the selection GUID was verified through `wait-for-log-pattern`.
+  - Relative asset paths matter for UnityEditor.AssetDatabase selection loading; absolute file-system paths were not sufficient for the selection step.
+  - Compared with the archived operator probe, the first authoring attempt no longer fails on missing_default_export, so entry-shape discoverability improved.
+final_summary: The Prompt B rerun completed through the published help surface, wrote and invoked a Unity Editor menu command, and verified the logged selection GUID without falling back to direct Editor.log inspection. The first file-authoring attempt no longer tripped missing_default_export, which is an improvement over the archived 2026-03-24 operator probe.

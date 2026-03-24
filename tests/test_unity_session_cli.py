@@ -92,6 +92,7 @@ class UnityPuerExecCliTests(unittest.TestCase):
         self.assertIn("Normal first command for project-scoped work", stdout)
         self.assertIn("do not need `wait-until-ready` as the default first step", stdout)
         self.assertIn("PuerTS-style JavaScript-to-C# bridge", stdout)
+        self.assertIn("Every script source (`--file`, `--stdin`, `--code`) must use this module entry template", stdout)
 
     def test_exec_help_args_renders_argument_template(self):
         exit_code, stdout, stderr = unity_puer_exec.run_cli(["exec", "--help-args"])
@@ -109,6 +110,8 @@ class UnityPuerExecCliTests(unittest.TestCase):
         self.assertIn("`--refresh-before-exec`", stdout)
         self.assertIn("`--include-diagnostics`", stdout)
         self.assertIn("`export default function", stdout)
+        self.assertIn("Every script source must provide a full module entry", stdout)
+        self.assertIn("not a fragment", stdout)
         self.assertIn("Promise", stdout)
         self.assertIn("`puer.loadType(...)`", stdout)
         self.assertIn("Bridged C# arrays and `List<T>` values are not plain JS arrays", stdout)

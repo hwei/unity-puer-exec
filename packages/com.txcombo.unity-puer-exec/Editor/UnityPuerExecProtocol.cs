@@ -137,6 +137,7 @@ namespace UnityPuerExec
                            "\"result\":" + (snapshot.ResultJson ?? "null") +
                            "}";
                 case UnityPuerExecJobStatus.Failed:
+                    var errorDetailJson = BuildErrorDetailJson(snapshot.Error);
                     return "{" +
                            "\"ok\":false," +
                            "\"status\":\"failed\"," +
@@ -144,6 +145,7 @@ namespace UnityPuerExec
                            logOffsetJson +
                            "\"session_marker\":\"" + JsonEscape(sessionMarker) + "\"," +
                            "\"error\":\"" + JsonEscape(snapshot.Error) + "\"," +
+                           errorDetailJson +
                            "\"stack\":\"" + JsonEscape(snapshot.Stack) + "\"" +
                            "}";
                 default:
@@ -172,6 +174,16 @@ namespace UnityPuerExec
                    requestIdJson +
                    errorJson +
                    "}";
+        }
+
+        private static string BuildErrorDetailJson(string error)
+        {
+            if (string.Equals(error, "missing_default_export", System.StringComparison.Ordinal))
+            {
+                return "\"error_detail\":\"Script input must export default function (ctx) { ... }. Minimal template: export default function (ctx) { return null; }\",";
+            }
+
+            return string.Empty;
         }
 
         internal static string BuildHealthResponseJson(bool isCompilingOrReloading, string envInitError, string sessionMarker, int port)

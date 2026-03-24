@@ -221,6 +221,8 @@ class RealHostIntegrationTests(unittest.TestCase):
         self.assertEqual(exec_exit_code, 1, exec_payload)
         self.assertEqual(exec_payload["status"], "failed")
         self.assertEqual(exec_payload["error"], "missing_default_export")
+        self.assertIn("export default function (ctx)", exec_payload["error_detail"])
+        self.assertIn("return null;", exec_payload["error_detail"])
 
     def test_exec_rejects_promise_return_against_real_host(self):
         ready_exit_code, ready_payload, _, _ = _wait_until_ready(self.project_path, self.unity_exe_path)
