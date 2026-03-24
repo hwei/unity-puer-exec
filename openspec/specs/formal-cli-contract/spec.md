@@ -319,6 +319,7 @@ The repository SHALL evaluate CLI help efficiency changes against transcript-bac
 The default-exported exec entry function SHALL receive a single context object. The initial public context SHALL expose `request_id` and `globals`.
 
 `request_id` SHALL match the accepted exec request identity already exposed at the CLI layer. `globals` SHALL be a mutable same-service shared object that remains available across exec requests within the lifetime of the same execution service instance.
+Published help for exec script authoring SHALL identify those fields as the guaranteed initial context surface and SHALL not imply that undocumented fields such as `ctx.project_path` are available. When scripts need project-local file paths, the published guidance SHALL direct callers toward supported Unity or .NET APIs such as `UnityEngine.Application.dataPath` plus `System.IO.Path.GetDirectoryName(...)`.
 
 #### Scenario: Script reads the accepted request identity
 
@@ -331,6 +332,13 @@ The default-exported exec entry function SHALL receive a single context object. 
 - **WHEN** multiple exec requests are handled by the same execution service instance
 - **THEN** the script-visible `ctx.globals` object remains shared across those requests
 - **AND** the contract does not describe that object as durable across service restart or replacement
+
+#### Scenario: Script needs a project-local path
+
+- **WHEN** a contributor reads the published exec authoring help for a script that must write under the Unity project
+- **THEN** the help identifies `ctx.request_id` and `ctx.globals` as the guaranteed initial context fields
+- **AND** the help does not imply that undocumented fields such as `ctx.project_path` are available
+- **AND** the help points the contributor toward supported path derivation through `UnityEngine.Application.dataPath` and normal .NET path APIs
 
 ### Requirement: `resolve-blocker` dismisses supported modal blockers explicitly
 
@@ -493,4 +501,3 @@ For project-scoped accepted `exec` requests that require a local pending artifac
 - **WHEN** project-scoped `exec` or `wait-for-exec` encounters an expired, malformed, or unsupported-schema pending artifact in the addressed project's pending directory
 - **THEN** the CLI removes that local leftover opportunistically
 - **AND** expired or malformed local leftovers are not treated as valid recoverable requests
-

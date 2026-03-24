@@ -99,6 +99,7 @@ class UnityPuerExecCliTests(unittest.TestCase):
         self.assertIn("Arguments", stdout)
         self.assertIn("Selector Rules", stdout)
         self.assertIn("Bridge Model", stdout)
+        self.assertIn("Script Context", stdout)
         self.assertIn("Timeout Rules", stdout)
         self.assertIn("`--file <path>`", stdout)
         self.assertIn("`--code <inline-js>`", stdout)
@@ -110,6 +111,10 @@ class UnityPuerExecCliTests(unittest.TestCase):
         self.assertIn("`puer.loadType(...)`", stdout)
         self.assertIn("Bridged C# arrays and `List<T>` values are not plain JS arrays", stdout)
         self.assertIn("https://puerts.github.io/docs/puerts/unity/tutorial/js2cs", stdout)
+        self.assertIn("`ctx.request_id` and `ctx.globals`", stdout)
+        self.assertIn("`ctx.project_path`", stdout)
+        self.assertIn("`UnityEngine.Application.dataPath`", stdout)
+        self.assertIn("`System.IO.Path.GetDirectoryName(...)`", stdout)
 
     def test_wait_for_exec_help_renders_recovery_guidance(self):
         exit_code, stdout, stderr = unity_puer_exec.run_cli(["wait-for-exec", "--help"])
@@ -213,6 +218,17 @@ class UnityPuerExecCliTests(unittest.TestCase):
         self.assertIn("maxValue", stdout)
         self.assertIn("bridged C# arrays and `List<T>` values", stdout)
         self.assertIn("https://puerts.github.io/docs/puerts/unity/tutorial/js2cs", stdout)
+
+    def test_project_path_derivation_help_example_renders_supported_path_guidance(self):
+        exit_code, stdout, stderr = unity_puer_exec.run_cli(["--help-example", "derive-project-path-from-unity-api"])
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(stderr, "")
+        self.assertIn("supported Unity APIs", stdout)
+        self.assertIn("const Application = puer.loadType('UnityEngine.Application');", stdout)
+        self.assertIn("const Path = puer.loadType('System.IO.Path');", stdout)
+        self.assertIn("Path.GetDirectoryName(Application.dataPath)", stdout)
+        self.assertIn("`ctx.project_path`", stdout)
 
     def test_exec_help_describes_running_without_immediate_correlation_id_guarantee(self):
         exit_code, stdout, stderr = unity_puer_exec.run_cli(["exec", "--help-status"])

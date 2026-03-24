@@ -215,3 +215,11 @@ The repository SHALL allow fragile Unity Editor interaction scenarios to remain 
 - **THEN** the repository may preserve that scenario as a deferred validation track
 - **AND** the record identifies the earlier changes or investigations it depends on before rerun
 
+### Requirement: Script-context guidance validation records unsupported-field assumptions
+The repository SHALL evaluate exec script-context guidance changes partly by whether representative help-only reruns stop assuming unsupported `ctx` fields when authoring project-local scripts.
+
+#### Scenario: Contributor reruns Prompt B after a script-context guidance change
+- **WHEN** a contributor compares a new help-only Prompt B rerun against earlier transcript-backed evidence after updating exec script-context guidance
+- **THEN** the durable record states whether the agent still assumed unsupported fields such as `ctx.project_path`
+- **AND** the durable record states whether the rerun instead derived project-local paths through supported Unity or .NET APIs
+- **AND** final task success alone is not treated as sufficient evidence of improvement

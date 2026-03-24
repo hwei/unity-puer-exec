@@ -40,6 +40,7 @@ WORKFLOW_IDS = (
     "exec-and-wait-for-log-pattern",
     "recover-exec-by-request-id",
     "load-and-call-csharp-type",
+    "derive-project-path-from-unity-api",
     "request-editor-exit-via-exec",
 )
 
@@ -80,6 +81,7 @@ TOP_LEVEL_WORKFLOWS = {
     "exec-and-wait-for-log-pattern": "run a script, capture `log_offset`, then wait for the ordinary Unity log pattern that proves the intended result.",
     "recover-exec-by-request-id": "recover an accepted exec request by reusing or waiting on the same `request_id` after `running` or ambiguity.",
     "load-and-call-csharp-type": "learn the normal PuerTS-style bridge path for loading and calling Unity or C# types from JavaScript.",
+    "derive-project-path-from-unity-api": "derive project-local paths through Unity APIs instead of assuming undocumented `ctx` fields.",
     "request-editor-exit-via-exec": "request a normal Unity Editor exit through `exec` instead of using `ensure-stopped`.",
 }
 
@@ -281,6 +283,7 @@ COMMAND_HELP = {
             "recover-exec-by-request-id",
             "exec-and-wait-for-result-marker",
             "load-and-call-csharp-type",
+            "derive-project-path-from-unity-api",
             "request-editor-exit-via-exec",
         ),
         "args": {
@@ -312,6 +315,13 @@ COMMAND_HELP = {
                 "`puer.loadType(...)` is the normal bridge entry for loading Unity or C# types inside the script.",
                 "Bridged C# arrays and `List<T>` values are not plain JS arrays; prefer PuerTS-aware access patterns when collection behavior matters.",
                 "Official JS-to-C# bridge reference: https://puerts.github.io/docs/puerts/unity/tutorial/js2cs",
+            ],
+            "Script Context": [
+                "Guaranteed `ctx` fields are intentionally narrow: `ctx.request_id` and `ctx.globals`.",
+                "`ctx.request_id` matches the accepted top-level exec `request_id`.",
+                "`ctx.globals` is mutable same-service shared state and is not described as durable across service restart or replacement.",
+                "Do not assume undocumented fields such as `ctx.project_path` are available unless the runtime contract is expanded explicitly.",
+                "When a script needs project-local paths, derive them through supported Unity APIs such as `UnityEngine.Application.dataPath`, then use `System.IO.Path.GetDirectoryName(...)` to reach the project root.",
             ],
             "Timeout Rules": [
                 "`--wait-timeout-ms` must be a positive integer.",
@@ -594,6 +604,28 @@ WORKFLOW_EXAMPLES = {
             "For deeper bridge rules such as generics, `CS.*`, or collection behavior, consult the official JS-to-C# reference: https://puerts.github.io/docs/puerts/unity/tutorial/js2cs",
         ],
     },
+    "derive-project-path-from-unity-api": {
+        "goal": "Derive project-local paths through supported Unity APIs instead of assuming undocumented script-context fields.",
+        "steps": [
+            {
+                "command": "`unity-puer-exec exec --project-path X:/project --file X:/scripts/write-validation-asset.js --wait-timeout-ms 1000`",
+                "script_body": [
+                    "export default function run(ctx) {",
+                    "  const Application = puer.loadType('UnityEngine.Application');",
+                    "  const Path = puer.loadType('System.IO.Path');",
+                    "  const projectRoot = Path.GetDirectoryName(Application.dataPath);",
+                    "  return { request_id: ctx.request_id, projectRoot, assetsPath: Application.dataPath };",
+                    "}",
+                ],
+                "observation": "Expected observation: stdout returns machine-readable JSON with the immediate `result`; `projectRoot` is derived from `Application.dataPath` rather than from an assumed `ctx.project_path` field.",
+            },
+        ],
+        "notice": [
+            "The public `ctx` contract is intentionally narrow: rely on `ctx.request_id` and `ctx.globals`, not undocumented fields.",
+            "`Application.dataPath` points at the project's `Assets` directory; `System.IO.Path.GetDirectoryName(...)` gives the project root when needed.",
+            "Use normal Unity or .NET APIs for file IO after deriving the path you need.",
+        ],
+    },
 }
 
 
@@ -631,7 +663,7 @@ def render_command_help(command):
 def render_command_args_help(command):
     info = COMMAND_HELP[command]["args"]
     sections = []
-    for title in ("Arguments", "Selector Rules", "Bridge Model", "Timeout Rules"):
+    for title in ("Arguments", "Selector Rules", "Bridge Model", "Script Context", "Timeout Rules"):
         items = info.get(title)
         if items:
             sections.append("{}\n{}".format(title, _bullet_lines(items)))
