@@ -6,7 +6,7 @@ Define the repository's machine-readable change metadata, backlog state model, a
 ## Requirements
 ### Requirement: Non-archived changes carry machine-readable backlog metadata
 
-The repository SHALL treat non-archived OpenSpec changes as the canonical planning surface for planned and active work. Each non-archived change SHALL provide a machine-readable `meta.yaml` file that records its ranking inputs, blocker references, and any explicit exception disposition that cannot be derived from repository facts alone.
+The repository SHALL treat non-archived OpenSpec changes as the canonical planning surface for planned and active work. Each non-archived change SHALL provide a machine-readable `meta.yaml` file that records its current ranking inputs, prerequisite references, and any explicit exception disposition that cannot be derived from repository facts alone.
 
 #### Scenario: Maintainer creates a non-archived change
 
@@ -15,7 +15,7 @@ The repository SHALL treat non-archived OpenSpec changes as the canonical planni
 - **AND** the metadata records change type, priority, blocker references, assumption state, evidence target, update date, and any explicit exception disposition that applies
 
 ### Requirement: Backlog states are explicit and finite
-The repository SHALL keep machine-readable change metadata for non-archived changes, but backlog recommendation MUST NOT rely on manual queued or active labels as the primary source of change readiness. Contributors MUST NOT rely on implicit prose alone to communicate whether a change should be started or continued.
+The repository SHALL keep machine-readable change metadata for non-archived changes, but backlog recommendation MUST NOT rely on manual queued or active labels as the primary source of readiness. Contributors MUST NOT rely on implicit prose alone to communicate whether a change should be started or continued.
 
 #### Scenario: Agent inspects candidate work
 - **WHEN** an agent or maintainer inspects non-archived changes
@@ -23,12 +23,12 @@ The repository SHALL keep machine-readable change metadata for non-archived chan
 - **AND** backlog recommendation is derived from repository facts and diagnostics rather than from manual queued or active labels
 
 ### Requirement: Backlog means eligible changes
-The repository SHALL define backlog recommendation as the subset of non-archived changes that are currently eligible based on repository facts such as unfinished tasks, prerequisite resolution, explicit blocked or superseded disposition, and dependency consistency. Metadata values may still be inspected directly, but they MUST NOT be conflated with the repository's derived recommendation set.
+The repository SHALL define backlog recommendation as the subset of non-archived changes that are currently `eligible` based on repository facts such as unfinished tasks, prerequisite resolution, explicit exception disposition, and dependency consistency. Metadata values may still be inspected directly, but they MUST NOT be conflated with the repository's derived recommendation set.
 
 #### Scenario: Maintainer asks for backlog view
 - **WHEN** a maintainer or agent requests the backlog
 - **THEN** the returned set contains only non-archived changes that are currently eligible for recommendation
-- **AND** changes excluded by explicit blocked or superseded disposition, unresolved prerequisites, missing pending tasks, or dependency inconsistencies are omitted from the recommendable backlog view
+- **AND** changes excluded by explicit blocked or superseded disposition, unresolved prerequisites, missing tasks, or dependency inconsistencies are omitted from the recommendable backlog view
 
 ### Requirement: Dependencies are recorded in one direction
 Changes that depend on other changes SHALL record those prerequisites in a `blocked_by` field. Repository recommendation tooling MUST treat missing dependency references as inconsistent state rather than silently interpreting them as resolved.
@@ -77,14 +77,14 @@ The repository SHALL support filtering change views by both derived recommendati
 - **AND** the raw inspection path remains distinguishable from the derived recommendation path
 
 ### Requirement: Change-query output distinguishes raw metadata from interpreted state
-Repository query tooling SHALL preserve access to a change's raw `meta.yaml` planning metadata while also surfacing an interpreted operator-facing state when dependency resolution, task progress, archived prerequisites, or abnormal repository state make raw metadata alone insufficient for trustworthy planning decisions.
+Repository query tooling SHALL preserve access to a change's raw `meta.yaml` planning metadata while also surfacing interpreted operator-facing state when dependency resolution, task progress, archived prerequisites, generic OpenSpec workflow reporting, or abnormal repository state make raw metadata alone insufficient for trustworthy planning decisions.
 
 #### Scenario: Query output detects a state interpretation gap
 - **WHEN** a maintainer or agent queries a non-archived change whose raw metadata does not cleanly match the effective planning situation
 - **THEN** the query surface reports enough information to distinguish raw metadata from the interpreted operator-facing state
 - **AND** the output does not silently force contributors to infer which source of truth to trust
 
-#### Scenario: Derived backlog state does not require raw queued metadata
+#### Scenario: Derived backlog state replaces raw queued metadata
 - **WHEN** a non-archived change has unfinished tasks, no unresolved prerequisites, and no explicit blocked or superseded disposition
 - **THEN** repository recommendation tooling may report the change as derived `eligible`
 - **AND** the query surface does not require raw `meta.yaml.status = queued` in order to recommend the change
@@ -113,3 +113,4 @@ Repository backlog recommendation SHALL be allowed to rank eligible changes usin
 - **WHEN** two eligible changes have similar priority and other metadata signals
 - **THEN** recommendation tooling may prefer the one touched fewer commits ago
 - **AND** that Git-history signal influences ordering without creating a separate active state bucket
+

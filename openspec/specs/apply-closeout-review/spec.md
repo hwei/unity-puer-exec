@@ -3,9 +3,7 @@
 ## Purpose
 
 Define the repository's required apply-closeout review, follow-up candidate reporting, and end-of-change action recommendations.
-
 ## Requirements
-
 ### Requirement: Apply closeout reports whether new follow-up work was found
 
 Every apply session SHALL end with an explicit closeout finding summary stating either that no new follow-up work was identified or that new follow-up candidates were identified.
@@ -46,3 +44,4 @@ Apply closeout SHALL evaluate whether the current change is ready for `git commi
 - **THEN** the closeout recommends whether to create a checkpoint commit
 - **AND** the closeout recommends whether to archive the change
 - **AND** the closeout recommends whether to create the final post-archive commit
+
