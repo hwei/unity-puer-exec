@@ -6,11 +6,12 @@ That behavior is acceptable for the current product step, but the artifact lifec
 
 ## What Changes
 
-- Record a follow-up investigation for tightening pending exec artifact lifecycle behavior.
-- Keep the current Prompt A continuity implementation unchanged until this narrower hygiene question is explored separately.
-- Prepare a future implementation-oriented change that can define retention, cleanup, and stale-record handling without silently expanding the current verification-closure work.
+- Confirm the exact current pending exec artifact behavior in code and tests so future cleanup work starts from observed facts rather than assumptions.
+- Keep the current Prompt A continuity implementation unchanged in this spike, because the remaining work is no longer just a local code cleanup; it needs an explicit caller-facing lifecycle contract.
+- Prepare a future implementation-oriented follow-up that defines retention, cleanup, stale-record handling, and validation coverage without silently expanding the earlier verification-closure work.
 
 ## Impact
 
 - Tracks a bounded follow-up about temporary artifact hygiene in the Unity host project.
 - Depends on `improve-agent-verification-closure`, because that change introduced the pending exec artifact behavior.
+- Establishes that the next step should be a focused implementation change rather than ad hoc cleanup folded into unrelated work.
