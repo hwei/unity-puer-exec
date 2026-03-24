@@ -641,8 +641,15 @@ def render_top_level_help():
         "Recommended Path\n{}".format(_bullet_lines(RECOMMENDED_PATH)),
         "Command Groups\n{}".format("\n\n".join(command_group_sections)),
         "Global Selector Rules\n- Use exactly one selector on commands that target a Unity session: `--project-path` or `--base-url`.\n- `--project-path` is the normal choice when the CLI should discover, launch, or recover Unity for a project.\n- `--base-url` is for a direct service you already know how to reach.",
-        "Common Workflows\nUse `unity-puer-exec --help-example <example-id>` to view full steps.\n{}".format(
-            _bullet_lines("{}: {}".format(workflow_id, TOP_LEVEL_WORKFLOWS[workflow_id]) for workflow_id in WORKFLOW_IDS)
+        "Common Help Examples\nUse `unity-puer-exec --help-example <example-id>` to view full steps.\n{}".format(
+            _bullet_lines(
+                "`{}`: help-example id for `unity-puer-exec --help-example {}`; {}".format(
+                    workflow_id,
+                    workflow_id,
+                    TOP_LEVEL_WORKFLOWS[workflow_id],
+                )
+                for workflow_id in WORKFLOW_IDS
+            )
         ),
     ]
     return _join_sections(sections)
@@ -653,9 +660,13 @@ def render_command_help(command):
     sections = [
         "Quick Start\n{}".format(_bullet_lines(info["quick_start"])),
         "More Help\n{}".format(_bullet_lines(["`--help-args`", "`--help-status`"])),
-        "Related Workflows\n{}".format(_bullet_lines("`{}`".format(item) for item in info["related_workflows"]))
+        "Related Help Examples\n{}".format(
+            _bullet_lines(
+                "`{}`: use `unity-puer-exec --help-example {}`".format(item, item) for item in info["related_workflows"]
+            )
+        )
         if info["related_workflows"]
-        else "Related Workflows\n- none",
+        else "Related Help Examples\n- none",
     ]
     return _join_sections(sections)
 

@@ -1,0 +1,138 @@
+prompt_id: prompt-b
+prompt_source: openspec/changes/archive/2026-03-24-revalidate-editor-interaction-workflows/task-prompt.md
+record_kind: retrospective-summary
+date: 2026-03-24
+
+model: gpt-5.4-mini subagent
+project_path: F:\C3\unity-puer-exec-workspace\c3-client-tree2\Project
+cli_entry_path: F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py
+
+constraints:
+  allowed:
+    - published unity-puer-exec help surface
+    - normal CLI execution against the target Unity project
+    - repository-local scratch scripts under .tmp for task execution
+  disallowed:
+    - repository source in this product workspace
+    - repository tests
+    - command-level maintainer hints
+
+help_queries:
+  - order: 1
+    command: python .\cli\python\unity_puer_exec.py --help
+    retained_exact_argv: true
+    purpose: orient around the published command surface
+  - order: 2
+    command: python .\cli\python\unity_puer_exec.py --help-example load-and-call-csharp-type
+    retained_exact_argv: true
+    purpose: inspect the published bridge-oriented example while shaping the editor script
+  - order: 3
+    command: python .\cli\python\unity_puer_exec.py exec --help
+    retained_exact_argv: true
+    purpose: confirm the primary execution entry point
+  - order: 4
+    command: python .\cli\python\unity_puer_exec.py --help-example exec-and-wait-for-log-pattern
+    retained_exact_argv: true
+    purpose: inspect the published checkpointed log workflow example
+  - order: 5
+    command: python .\cli\python\unity_puer_exec.py wait-until-ready --help
+    retained_exact_argv: true
+    purpose: inspect readiness recovery after import and compile
+  - order: 6
+    command: python .\cli\python\unity_puer_exec.py exec --help-args
+    retained_exact_argv: true
+    purpose: inspect exec arguments before writing host-side code
+
+command_trace:
+  - order: 1
+    command: apply_patch added .tmp/promptb_create_and_select.js
+    retained_exact_argv: false
+    purpose: create the host-side write script for the menu command
+    outcome: completed successfully
+  - order: 2
+    command: python .\cli\python\unity_puer_exec.py wait-until-ready --project-path F:\C3\unity-puer-exec-workspace\c3-client-tree2\Project
+    retained_exact_argv: true
+    purpose: wait for Unity to recover after the imported editor script
+    outcome: completed successfully with result.status recovered
+  - order: 3
+    command: python .\cli\python\unity_puer_exec.py exec --project-path F:\C3\unity-puer-exec-workspace\c3-client-tree2\Project --file .\.tmp\promptb_create_and_select.js --wait-timeout-ms 10000 --include-log-offset
+    retained_exact_argv: true
+    purpose: write the menu command and capture the selection GUID into a scratch asset
+    outcome: completed successfully with guid f8ad7315f2b91f6449fa777078230ab9 and log_offset 429268
+  - order: 4
+    command: python .\cli\python\unity_puer_exec.py exec --project-path F:\C3\unity-puer-exec-workspace\c3-client-tree2\Project --file .\.tmp\promptb_invoke_menu.js --wait-timeout-ms 10000
+    retained_exact_argv: true
+    purpose: trigger the newly added menu command
+    outcome: completed with executed false
+  - order: 5
+    command: apply_patch updated .tmp/promptb_probe_menu.js and the menu script
+    retained_exact_argv: false
+    purpose: probe the selection/menu bridge and make the menu lookup more robust
+    outcome: completed successfully
+  - order: 6
+    command: python .\cli\python\unity_puer_exec.py wait-until-ready --project-path F:\C3\unity-puer-exec-workspace\c3-client-tree2\Project
+    retained_exact_argv: true
+    purpose: wait for the editor to settle after the probe and patch
+    outcome: completed successfully with result.status recovered
+  - order: 7
+    command: python .\cli\python\unity_puer_exec.py exec --project-path F:\C3\unity-puer-exec-workspace\c3-client-tree2\Project --file .\.tmp\promptb_checkpoint.js --wait-timeout-ms 10000 --include-log-offset
+    retained_exact_argv: true
+    purpose: obtain a fresh log checkpoint before final invocation
+    outcome: completed successfully with log_offset 516852
+  - order: 8
+    command: python .\cli\python\unity_puer_exec.py exec --project-path F:\C3\unity-puer-exec-workspace\c3-client-tree2\Project --file .\.tmp\promptb_invoke_menu.js --wait-timeout-ms 10000
+    retained_exact_argv: true
+    purpose: re-trigger the menu command after the fallback patch
+    outcome: completed successfully with executed true
+  - order: 9
+    command: python .\cli\python\unity_puer_exec.py wait-for-log-pattern --project-path F:\C3\unity-puer-exec-workspace\c3-client-tree2\Project --start-offset 516852 --pattern '\[PromptB\] Selection GUID: f8ad7315f2b91f6449fa777078230ab9'
+    retained_exact_argv: true
+    purpose: verify the emitted GUID through the CLI observation surface
+    outcome: completed successfully with result.status log_pattern_matched
+  - order: 10
+    command: apply_patch removed host-project files and .tmp scripts created for the run
+    retained_exact_argv: false
+    purpose: clean up generated artifacts
+    outcome: completed successfully
+  - order: 11
+    command: python .\cli\python\unity_puer_exec.py wait-until-ready --project-path F:\C3\unity-puer-exec-workspace\c3-client-tree2\Project
+    retained_exact_argv: true
+    purpose: confirm the project remained healthy after cleanup
+    outcome: completed successfully with result.status recovered
+
+key_outputs:
+  - source: CLI output
+    summary: The selection-setup exec returned guid f8ad7315f2b91f6449fa777078230ab9 and log_offset 429268.
+  - source: CLI output
+    summary: The first menu trigger returned executed false.
+  - source: CLI output
+    summary: The fallback probe showed the menu bridge needed correction, after which the final invocation returned executed true.
+  - source: CLI output
+    summary: wait-for-log-pattern matched the emitted PromptB selection GUID line and confirmed the workflow stayed inside the CLI observation surface.
+
+did_attempt_example_as_subcommand:
+  answer: no
+  evidence:
+    - `python .\cli\python\unity_puer_exec.py --help-example load-and-call-csharp-type`
+    - `python .\cli\python\unity_puer_exec.py --help-example exec-and-wait-for-log-pattern`
+  note: The workflow-example IDs were accessed only through `--help-example`, not as bare subcommands.
+
+final_verification_path:
+  used_cli_observation_surface: true
+  used_direct_host_log_inspection: false
+  summary: Final confirmation stayed inside the CLI by matching the PromptB log line with wait-for-log-pattern started from a returned log_offset checkpoint.
+
+cleanup:
+  status: cleaned
+  removed:
+    - F:\C3\unity-puer-exec-workspace\c3-client-tree2\Project\Assets\Editor\PromptBSelectionGuidMenu.cs
+    - F:\C3\unity-puer-exec-workspace\c3-client-tree2\Project\Assets\Editor\PromptBSelectionGuidMenu.cs.meta
+    - F:\C3\unity-puer-exec-workspace\c3-client-tree2\Project\Assets\__AgentValidation\PromptBSelectionGuid.txt
+    - F:\C3\unity-puer-exec-workspace\c3-client-tree2\Project\Assets\__AgentValidation\PromptBSelectionGuid.txt.meta
+    - F:\C3\unity-puer-exec-workspace\unity-puer-exec\.tmp\promptb_create_and_select.js
+    - F:\C3\unity-puer-exec-workspace\unity-puer-exec\.tmp\promptb_invoke_menu.js
+    - F:\C3\unity-puer-exec-workspace\unity-puer-exec\.tmp\promptb_probe_menu.js
+    - F:\C3\unity-puer-exec-workspace\unity-puer-exec\.tmp\promptb_checkpoint.js
+  residue: []
+
+final_summary: The rerun completed the Prompt B workflow end-to-end through the published help surface, and it did not attempt to execute a workflow-example name as a subcommand. Help-example discoverability is improved relative to the baseline because the agent used `--help-example <id>` to find the workflow and never needed to type a bare example id into command position.
