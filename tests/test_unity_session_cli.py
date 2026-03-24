@@ -15,6 +15,8 @@ if str(CLI_DIR) not in sys.path:
 import unity_puer_exec  # type: ignore
 import unity_puer_exec_runtime  # type: ignore
 import unity_session  # type: ignore
+import unity_session_common  # type: ignore
+import unity_session_logs  # type: ignore
 
 
 SAMPLE_PROJECT_PATH = "X:/unity-project"
@@ -132,6 +134,7 @@ class UnityPuerExecCliTests(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         self.assertEqual(stderr, "")
         self.assertIn("`missing` -> exit 13", stdout)
+        self.assertIn("expired or malformed local pending leftovers", stdout)
         self.assertIn("`modal_blocked` -> exit 19", stdout)
         self.assertIn("`phase`", stdout)
 
@@ -579,6 +582,9 @@ class UnityPuerExecCliTests(unittest.TestCase):
             self.assertEqual(pending["request_id"], "req-start")
             self.assertIn("return 7", pending["code"])
             self.assertFalse(pending["refresh_before_exec"])
+            self.assertEqual(pending["schema_version"], 1)
+            self.assertIn("created_at_ms", pending)
+            self.assertIn("updated_at_ms", pending)
 
     def test_exec_refresh_before_exec_runs_internal_refresh_then_user_exec(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -901,6 +907,78 @@ class UnityPuerExecCliTests(unittest.TestCase):
             self.assertEqual(body["status"], "running")
             self.assertEqual(body["request_id"], "req-pending")
             self.assertEqual(body["next_step"]["command"], "wait-for-exec")
+
+    def test_wait_for_exec_refreshes_pending_timestamp_while_request_remains_recoverable(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_path = Path(temp_dir) / "Project"
+            project_path.mkdir()
+            with mock.patch.object(unity_session_logs.time, "time", return_value=100.0):
+                unity_session.write_pending_exec_artifact(
+                    str(project_path),
+                    "req-pending",
+                    {"request_id": "req-pending", "code": "export default function run(ctx) { return 11; }"},
+                )
+            session = _make_session(project_path=str(project_path))
+            stalled = unity_session.UnityStalledError("starting", session=session)
+
+            with mock.patch.object(
+                unity_session,
+                "ensure_session_ready",
+                side_effect=stalled,
+            ), mock.patch.object(unity_session_logs.time, "time", return_value=150.0):
+                exit_code, stdout, stderr = unity_puer_exec.run_cli(
+                    ["wait-for-exec", "--project-path", str(project_path), "--request-id", "req-pending"]
+                )
+
+            self.assertEqual(exit_code, unity_puer_exec.EXIT_RUNNING)
+            self.assertEqual(stderr, "")
+            body = json.loads(stdout)
+            self.assertEqual(body["status"], "running")
+            with mock.patch.object(unity_session_logs.time, "time", return_value=150.0):
+                pending = unity_session.read_pending_exec_artifact(str(project_path), "req-pending")
+            self.assertEqual(pending["created_at_ms"], 100000)
+            self.assertEqual(pending["updated_at_ms"], 150000)
+
+    def test_wait_for_exec_expired_pending_artifact_is_cleaned_and_missing_is_returned(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_path = Path(temp_dir) / "Project"
+            project_path.mkdir()
+            artifact_path = unity_session_logs.pending_exec_artifact_path(str(project_path), "req-expired")
+            artifact_path.parent.mkdir(parents=True, exist_ok=True)
+            artifact_path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "request_id": "req-expired",
+                        "code": "export default function run(ctx) { return 11; }",
+                        "refresh_before_exec": False,
+                        "created_at_ms": 1000,
+                        "updated_at_ms": 1000,
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            expired_at = (unity_session_common.PENDING_EXEC_RETENTION_MS + 2000) / 1000.0
+            with mock.patch.object(
+                unity_session,
+                "ensure_session_ready",
+                return_value=_make_session(project_path=str(project_path)),
+            ), mock.patch.object(
+                unity_puer_exec.direct_exec_client,
+                "invoke_command",
+                return_value=(unity_puer_exec.EXIT_MISSING, json.dumps({"ok": False, "status": "missing", "request_id": "req-expired"}), ""),
+            ) as invoke_command, mock.patch.object(unity_session_logs.time, "time", return_value=expired_at):
+                exit_code, stdout, stderr = unity_puer_exec.run_cli(
+                    ["wait-for-exec", "--project-path", str(project_path), "--request-id", "req-expired"]
+                )
+
+            self.assertEqual(exit_code, unity_puer_exec.EXIT_MISSING)
+            self.assertEqual(stderr, "")
+            self.assertEqual(invoke_command.call_args.args[0], "wait-for-exec")
+            body = json.loads(stdout)
+            self.assertEqual(body["status"], "missing")
+            self.assertFalse(artifact_path.exists())
 
     def test_exec_timeout_normalizes_supported_modal_blocker(self):
         with tempfile.TemporaryDirectory() as temp_dir:

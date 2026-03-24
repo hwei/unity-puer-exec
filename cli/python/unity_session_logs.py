@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 import json
+import time
 from pathlib import Path
 
 from unity_session_common import (
     LAUNCH_CLAIM_RELATIVE_PATH,
     PENDING_EXEC_DIR_RELATIVE_PATH,
+    PENDING_EXEC_RETENTION_MS,
+    PENDING_EXEC_SCHEMA_VERSION,
     PROJECT_RECOVERY_WINDOW_SECONDS,
     SESSION_RELATIVE_PATH,
     UNITY_LOCKFILE_RELATIVE_PATH,
@@ -77,6 +80,10 @@ def pending_exec_artifact_path(project_path, request_id):
     return Path(project_path) / PENDING_EXEC_DIR_RELATIVE_PATH / ("{}.json".format(request_id))
 
 
+def pending_exec_dir_path(project_path):
+    return Path(project_path) / PENDING_EXEC_DIR_RELATIVE_PATH
+
+
 def _read_json_file(path):
     if not path.exists():
         return None
@@ -91,6 +98,83 @@ def _write_json_file(path, payload):
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as handle:
         json.dump(payload, handle, ensure_ascii=True, indent=2)
+
+
+def _now_ms(time_ref=None):
+    if time_ref is None:
+        time_ref = time
+    return int(time_ref.time() * 1000)
+
+
+def _coerce_pending_exec_artifact(request_id, payload):
+    if not isinstance(payload, dict):
+        return None
+    if payload.get("schema_version") != PENDING_EXEC_SCHEMA_VERSION:
+        return None
+    if payload.get("request_id") != request_id:
+        return None
+    code = payload.get("code")
+    if not isinstance(code, str) or not code:
+        return None
+    created_at_ms = payload.get("created_at_ms")
+    updated_at_ms = payload.get("updated_at_ms")
+    if not isinstance(created_at_ms, int) or created_at_ms < 0:
+        return None
+    if not isinstance(updated_at_ms, int) or updated_at_ms < created_at_ms:
+        return None
+
+    normalized = {
+        "schema_version": PENDING_EXEC_SCHEMA_VERSION,
+        "request_id": request_id,
+        "code": code,
+        "refresh_before_exec": bool(payload.get("refresh_before_exec")),
+        "created_at_ms": created_at_ms,
+        "updated_at_ms": updated_at_ms,
+    }
+    phase = payload.get("phase")
+    if isinstance(phase, str) and phase:
+        normalized["phase"] = phase
+    refresh_request_id = payload.get("refresh_request_id")
+    if isinstance(refresh_request_id, str) and refresh_request_id:
+        normalized["refresh_request_id"] = refresh_request_id
+    return normalized
+
+
+def _is_pending_exec_artifact_expired(payload, now_ms):
+    updated_at_ms = payload.get("updated_at_ms")
+    if not isinstance(updated_at_ms, int):
+        return True
+    return updated_at_ms + PENDING_EXEC_RETENTION_MS < now_ms
+
+
+def _delete_file_if_present(path):
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        return
+
+
+def sweep_pending_exec_artifacts(project_path, time_ref=None):
+    now_ms = _now_ms(time_ref=time_ref)
+    pending_dir = pending_exec_dir_path(project_path)
+    if not pending_dir.exists():
+        return []
+
+    removed = []
+    try:
+        entries = list(pending_dir.glob("*.json"))
+    except OSError:
+        return removed
+
+    for path in entries:
+        request_id = path.stem
+        payload = _read_json_file(path)
+        normalized = _coerce_pending_exec_artifact(request_id, payload)
+        if normalized is not None and not _is_pending_exec_artifact_expired(normalized, now_ms):
+            continue
+        _delete_file_if_present(path)
+        removed.append(str(path))
+    return removed
 
 
 def read_session_artifact(project_path):
@@ -117,18 +201,42 @@ def clear_launch_claim(project_path):
 
 
 def read_pending_exec_artifact(project_path, request_id):
-    return _read_json_file(pending_exec_artifact_path(project_path, request_id))
+    path = pending_exec_artifact_path(project_path, request_id)
+    payload = _read_json_file(path)
+    normalized = _coerce_pending_exec_artifact(request_id, payload)
+    if normalized is None:
+        _delete_file_if_present(path)
+        return None
+    if _is_pending_exec_artifact_expired(normalized, _now_ms()):
+        _delete_file_if_present(path)
+        return None
+    return normalized
 
 
 def write_pending_exec_artifact(project_path, request_id, payload):
-    _write_json_file(pending_exec_artifact_path(project_path, request_id), payload)
+    path = pending_exec_artifact_path(project_path, request_id)
+    existing = _coerce_pending_exec_artifact(request_id, _read_json_file(path))
+    now_ms = _now_ms()
+    normalized = {
+        "schema_version": PENDING_EXEC_SCHEMA_VERSION,
+        "request_id": request_id,
+        "code": payload["code"],
+        "refresh_before_exec": bool(payload.get("refresh_before_exec")),
+        "created_at_ms": existing.get("created_at_ms", now_ms) if existing else now_ms,
+        "updated_at_ms": now_ms,
+    }
+    phase = payload.get("phase")
+    if isinstance(phase, str) and phase:
+        normalized["phase"] = phase
+    refresh_request_id = payload.get("refresh_request_id")
+    if isinstance(refresh_request_id, str) and refresh_request_id:
+        normalized["refresh_request_id"] = refresh_request_id
+    _write_json_file(path, normalized)
+    return normalized
 
 
 def clear_pending_exec_artifact(project_path, request_id):
-    try:
-        pending_exec_artifact_path(project_path, request_id).unlink()
-    except FileNotFoundError:
-        return
+    _delete_file_if_present(pending_exec_artifact_path(project_path, request_id))
 
 
 def build_project_lock_details(project_path, time_ref):

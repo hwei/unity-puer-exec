@@ -135,6 +135,10 @@ def clear_pending_exec_artifact(project_path, request_id):
     return unity_session_logs.clear_pending_exec_artifact(project_path, request_id)
 
 
+def sweep_pending_exec_artifacts(project_path):
+    return unity_session_logs.sweep_pending_exec_artifacts(project_path)
+
+
 def _session_artifact_log_path(session_data):
     return unity_session_logs.session_artifact_log_path(session_data, is_pid_running_fn=_is_pid_running)
 

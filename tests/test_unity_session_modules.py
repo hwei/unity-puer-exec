@@ -1,8 +1,10 @@
+import json
 import sys
 import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest import mock
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -164,6 +166,108 @@ class UnitySessionModuleTests(unittest.TestCase):
 
         self.assertEqual(restored, payload)
         self.assertIsNone(cleared)
+
+    def test_logs_write_pending_exec_artifact_persists_schema_and_refreshes_timestamps(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_path = Path(temp_dir)
+            with mock.patch.object(unity_session_logs.time, "time", return_value=100.0):
+                first = unity_session_logs.write_pending_exec_artifact(
+                    project_path,
+                    "req-1",
+                    {"request_id": "req-1", "code": "export default function run(ctx) { return 1; }"},
+                )
+            with mock.patch.object(unity_session_logs.time, "time", return_value=125.0):
+                second = unity_session_logs.write_pending_exec_artifact(
+                    project_path,
+                    "req-1",
+                    dict(first, phase="compiling"),
+                )
+            with mock.patch.object(unity_session_logs.time, "time", return_value=125.0):
+                restored = unity_session_logs.read_pending_exec_artifact(project_path, "req-1")
+
+        self.assertEqual(first["schema_version"], unity_session_common.PENDING_EXEC_SCHEMA_VERSION)
+        self.assertEqual(first["created_at_ms"], 100000)
+        self.assertEqual(first["updated_at_ms"], 100000)
+        self.assertEqual(second["created_at_ms"], 100000)
+        self.assertEqual(second["updated_at_ms"], 125000)
+        self.assertEqual(restored["phase"], "compiling")
+
+    def test_logs_read_pending_exec_artifact_cleans_expired_file(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_path = Path(temp_dir)
+            artifact_path = unity_session_logs.pending_exec_artifact_path(project_path, "req-expired")
+            artifact_path.parent.mkdir(parents=True, exist_ok=True)
+            artifact_path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": unity_session_common.PENDING_EXEC_SCHEMA_VERSION,
+                        "request_id": "req-expired",
+                        "code": "export default function run(ctx) { return 1; }",
+                        "refresh_before_exec": False,
+                        "created_at_ms": 1000,
+                        "updated_at_ms": 1000,
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            expired_at = (unity_session_common.PENDING_EXEC_RETENTION_MS + 2000) / 1000.0
+            with mock.patch.object(unity_session_logs.time, "time", return_value=expired_at):
+                restored = unity_session_logs.read_pending_exec_artifact(project_path, "req-expired")
+
+            exists_after = artifact_path.exists()
+
+        self.assertIsNone(restored)
+        self.assertFalse(exists_after)
+
+    def test_logs_read_pending_exec_artifact_cleans_malformed_file(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_path = Path(temp_dir)
+            artifact_path = unity_session_logs.pending_exec_artifact_path(project_path, "req-bad")
+            artifact_path.parent.mkdir(parents=True, exist_ok=True)
+            artifact_path.write_text("{bad json", encoding="utf-8")
+
+            restored = unity_session_logs.read_pending_exec_artifact(project_path, "req-bad")
+            exists_after = artifact_path.exists()
+
+        self.assertIsNone(restored)
+        self.assertFalse(exists_after)
+
+    def test_logs_sweep_pending_exec_artifacts_removes_only_expired_and_malformed_siblings(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_path = Path(temp_dir)
+            sweep_time = (unity_session_common.PENDING_EXEC_RETENTION_MS + 2000) / 1000.0
+            with mock.patch.object(unity_session_logs.time, "time", return_value=sweep_time):
+                unity_session_logs.write_pending_exec_artifact(
+                    project_path,
+                    "req-fresh",
+                    {"request_id": "req-fresh", "code": "export default function run(ctx) { return 1; }"},
+                )
+            expired_path = unity_session_logs.pending_exec_artifact_path(project_path, "req-expired")
+            expired_path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": unity_session_common.PENDING_EXEC_SCHEMA_VERSION,
+                        "request_id": "req-expired",
+                        "code": "export default function run(ctx) { return 2; }",
+                        "refresh_before_exec": False,
+                        "created_at_ms": 1000,
+                        "updated_at_ms": 1000,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            malformed_path = unity_session_logs.pending_exec_artifact_path(project_path, "req-bad")
+            malformed_path.write_text("{bad json", encoding="utf-8")
+
+            with mock.patch.object(unity_session_logs.time, "time", return_value=sweep_time):
+                removed = unity_session_logs.sweep_pending_exec_artifacts(project_path)
+                fresh = unity_session_logs.read_pending_exec_artifact(project_path, "req-fresh")
+
+        self.assertEqual(len(removed), 2)
+        self.assertIsNotNone(fresh)
+        self.assertFalse(expired_path.exists())
+        self.assertFalse(malformed_path.exists())
 
 
 if __name__ == "__main__":

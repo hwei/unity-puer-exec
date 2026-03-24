@@ -225,8 +225,15 @@ def _pending_exec_payload(request_id, code, refresh_before_exec=False, phase=Non
     return payload
 
 
+def _sweep_pending_exec(args):
+    project_path = _project_path_arg(args)
+    if project_path:
+        unity_session.sweep_pending_exec_artifacts(project_path)
+
+
 def _write_pending_exec(args, request_id, code, refresh_before_exec=False, phase=None, refresh_request_id=None):
-    unity_session.write_pending_exec_artifact(
+    _sweep_pending_exec(args)
+    return unity_session.write_pending_exec_artifact(
         _project_path_arg(args),
         request_id,
         _pending_exec_payload(
@@ -240,11 +247,30 @@ def _write_pending_exec(args, request_id, code, refresh_before_exec=False, phase
 
 
 def _read_pending_exec(args, request_id):
+    _sweep_pending_exec(args)
     return unity_session.read_pending_exec_artifact(_project_path_arg(args), request_id)
 
 
 def _clear_pending_exec(args, request_id):
     unity_session.clear_pending_exec_artifact(_project_path_arg(args), request_id)
+
+
+def _refresh_pending_exec(args, request_id, pending, phase=None):
+    if pending is None:
+        return None
+    updated = dict(pending)
+    if phase:
+        updated["phase"] = phase
+    return unity_session.write_pending_exec_artifact(_project_path_arg(args), request_id, updated)
+
+
+def _finalize_pending_after_submit(args, request_id, pending, exit_code, stdout_text):
+    if _is_compiling_response(exit_code, stdout_text):
+        return _refresh_pending_exec(args, request_id, pending, PHASE_COMPILING)
+    if _should_keep_pending_after_submit(exit_code, stdout_text):
+        return _refresh_pending_exec(args, request_id, pending, _pending_phase(pending))
+    _clear_pending_exec(args, request_id)
+    return None
 
 
 def _emit_running_payload(operation, session, request_id, args, phase=None):
@@ -364,11 +390,7 @@ def _pending_phase(pending):
 
 
 def _set_pending_phase(args, request_id, pending, phase):
-    if pending is None:
-        return
-    updated = dict(pending)
-    updated["phase"] = phase
-    unity_session.write_pending_exec_artifact(_project_path_arg(args), request_id, updated)
+    return _refresh_pending_exec(args, request_id, pending, phase)
 
 
 def _normalize_exec_response(
@@ -422,6 +444,7 @@ def run_exec(args):
     validate_project_mode_only(selector, "refresh-before-exec", getattr(args, "refresh_before_exec", False))
 
     if selector == "project_path":
+        _sweep_pending_exec(args)
         try:
             session = unity_session.ensure_session_ready(
                 project_path=args.project_path,
@@ -455,6 +478,7 @@ def run_exec(args):
             session,
         )
         if _running_or_timed_out_response(exit_code, stdout_text):
+            _refresh_pending_exec(args, request_id, _read_pending_exec(args, request_id), PHASE_REFRESHING)
             payload = _emit_running_payload("exec", session, request_id, args, phase=PHASE_REFRESHING)
             return EXIT_RUNNING, emit_payload(payload), ""
         if exit_code != 0:
@@ -487,6 +511,7 @@ def run_exec(args):
             session = _ensure_project_session_ready_after_refresh(args)
             base_url = session.base_url
         except (unity_session.UnityStalledError, unity_session.UnityNotReadyError) as exc:
+            _refresh_pending_exec(args, request_id, _read_pending_exec(args, request_id), PHASE_REFRESHING)
             payload = _emit_running_payload("exec", exc.session, request_id, args, phase=PHASE_REFRESHING)
             return EXIT_RUNNING, emit_payload(payload), ""
         _set_pending_phase(args, request_id, _read_pending_exec(args, request_id), PHASE_EXECUTING)
@@ -498,12 +523,9 @@ def run_exec(args):
         stderr_text,
         session if selector == "project_path" else None,
     )
-    if selector == "project_path" and _is_compiling_response(exit_code, stdout_text):
+    if selector == "project_path":
         pending = _read_pending_exec(args, request_id)
-        if pending is not None:
-            _set_pending_phase(args, request_id, pending, PHASE_COMPILING)
-    if selector == "project_path" and not _should_keep_pending_after_submit(exit_code, stdout_text):
-        _clear_pending_exec(args, request_id)
+        _finalize_pending_after_submit(args, request_id, pending, exit_code, stdout_text)
     default_phase = PHASE_COMPILING if _is_compiling_response(exit_code, stdout_text) else None
     exit_code, stdout_text, stderr_text = _normalize_exec_response(
         exit_code,
@@ -523,6 +545,8 @@ def run_wait_for_exec(args):
     validate_project_mode_only(selector, "unity-log-path", args.unity_log_path)
 
     if selector == "project_path":
+        _sweep_pending_exec(args)
+        pending = _read_pending_exec(args, args.request_id)
         try:
             session = unity_session.ensure_session_ready(
                 project_path=args.project_path,
@@ -530,13 +554,14 @@ def run_wait_for_exec(args):
                 unity_log_path=args.unity_log_path,
             )
         except (unity_session.UnityStalledError, unity_session.UnityNotReadyError) as exc:
-            if _read_pending_exec(args, args.request_id) is not None:
+            if pending is not None:
+                pending = _refresh_pending_exec(args, args.request_id, pending, _pending_phase(pending))
                 payload = _emit_running_payload(
                     "wait-for-exec",
                     exc.session,
                     args.request_id,
                     args,
-                    phase=_pending_phase(_read_pending_exec(args, args.request_id)),
+                    phase=_pending_phase(pending),
                 )
                 return EXIT_RUNNING, emit_payload(payload), ""
             raise
@@ -544,8 +569,7 @@ def run_wait_for_exec(args):
     else:
         session = None
         base_url = args.base_url
-
-    pending = _read_pending_exec(args, args.request_id) if selector == "project_path" else None
+        pending = None
     if pending is not None:
         if pending.get("refresh_before_exec") and pending.get("phase") == PHASE_REFRESHING:
             refresh_request_id = pending.get("refresh_request_id") or _refresh_request_id(args.request_id)
@@ -568,6 +592,7 @@ def run_wait_for_exec(args):
                 session if selector == "project_path" else None,
             )
             if _running_or_timed_out_response(exit_code, stdout_text):
+                pending = _refresh_pending_exec(args, args.request_id, pending, PHASE_REFRESHING)
                 payload = _emit_running_payload("wait-for-exec", session, args.request_id, args, phase=PHASE_REFRESHING)
                 return EXIT_RUNNING, emit_payload(payload), ""
             if exit_code != 0:
@@ -600,11 +625,10 @@ def run_wait_for_exec(args):
                 session = _ensure_project_session_ready_after_refresh(args)
                 base_url = session.base_url
             except (unity_session.UnityStalledError, unity_session.UnityNotReadyError) as exc:
+                pending = _refresh_pending_exec(args, args.request_id, pending, PHASE_REFRESHING)
                 payload = _emit_running_payload("wait-for-exec", exc.session, args.request_id, args, phase=PHASE_REFRESHING)
                 return EXIT_RUNNING, emit_payload(payload), ""
-            pending = dict(pending)
-            pending["phase"] = PHASE_EXECUTING
-            unity_session.write_pending_exec_artifact(_project_path_arg(args), args.request_id, pending)
+            pending = _refresh_pending_exec(args, args.request_id, pending, PHASE_EXECUTING)
         exit_code, stdout_text, stderr_text = _invoke_exec(base_url, args.request_id, pending["code"], args)
     else:
         payload = {
@@ -625,12 +649,8 @@ def run_wait_for_exec(args):
         stderr_text,
         session if selector == "project_path" else None,
     )
-    if selector == "project_path" and pending is not None and _is_compiling_response(exit_code, stdout_text):
-        pending = dict(pending)
-        pending["phase"] = PHASE_COMPILING
-        unity_session.write_pending_exec_artifact(_project_path_arg(args), args.request_id, pending)
-    if selector == "project_path" and pending is not None and not _should_keep_pending_after_submit(exit_code, stdout_text):
-        _clear_pending_exec(args, args.request_id)
+    if selector == "project_path" and pending is not None:
+        pending = _finalize_pending_after_submit(args, args.request_id, pending, exit_code, stdout_text)
     default_phase = PHASE_COMPILING if _is_compiling_response(exit_code, stdout_text) else None
     exit_code, stdout_text, stderr_text = _normalize_exec_response(
         exit_code,

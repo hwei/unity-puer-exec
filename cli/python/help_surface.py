@@ -366,7 +366,7 @@ COMMAND_HELP = {
             ],
             "Timeout Rules": [
                 "`--wait-timeout-ms` must be a positive integer.",
-                "`missing` means the addressed service currently has no recoverable record for that `request_id`.",
+                "`missing` means the addressed service currently has no recoverable record for that `request_id`, including local pending artifacts that have already expired or were cleaned up as malformed leftovers.",
             ],
         },
         "status": {
@@ -378,7 +378,7 @@ COMMAND_HELP = {
             "failure": [
                 ("address_conflict", 2, "both selectors were provided; choose exactly one."),
                 ("modal_blocked", direct_exec_client.EXIT_MODAL_BLOCKED, "a supported Unity modal dialog is blocking the accepted exec request; inspect `blocker.type` and avoid starting a fresh request."),
-                ("missing", direct_exec_client.EXIT_MISSING, "the addressed service has no recoverable record for that `request_id`."),
+                ("missing", direct_exec_client.EXIT_MISSING, "the addressed service has no recoverable record for that `request_id`, including expired or malformed local pending leftovers."),
                 ("not_available", direct_exec_client.EXIT_NOT_AVAILABLE, "the direct execution target could not be reached."),
                 ("launch_conflict", EXIT_UNITY_START_FAILED, "project-scoped launch ownership could not be established safely, so the CLI refused a competing launch."),
                 ("unity_start_failed", EXIT_UNITY_START_FAILED, "Unity could not be launched for the selected project."),
