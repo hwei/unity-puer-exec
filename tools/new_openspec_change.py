@@ -10,7 +10,11 @@ def build_parser():
         description="Create an OpenSpec change and seed repository-owned meta.yaml."
     )
     parser.add_argument("name", help="Kebab-case change name.")
-    parser.add_argument("--status", default="queued", help="Initial change status.")
+    parser.add_argument(
+        "--status",
+        default=None,
+        help="Optional explicit exception disposition such as blocked or superseded.",
+    )
     parser.add_argument("--type", dest="change_type", default="spike", help="Initial change type.")
     parser.add_argument("--priority", default="P2", help="Initial change priority.")
     parser.add_argument(
@@ -35,11 +39,11 @@ def main(argv=None):
     meta_path = ensure_meta_file(
         change_dir,
         defaults={
-            "status": args.status,
             "change_type": args.change_type,
             "priority": args.priority,
             "assumption_state": args.assumption_state,
             "evidence": args.evidence,
+            **({"status": args.status} if args.status is not None else {}),
         },
     )
 

@@ -18,10 +18,14 @@ import openspec_change_meta  # type: ignore
 
 
 class OpenSpecBacklogTests(unittest.TestCase):
-    def _write_change(self, root: Path, name: str, **defaults):
+    def _write_change(self, root: Path, name: str, *, task_lines=None, **defaults):
         change_dir = root / name
         change_dir.mkdir()
         openspec_change_meta.ensure_meta_file(change_dir, defaults=defaults)
+        if task_lines is None:
+            task_lines = ["## 1. Work", "", "- [ ] 1.1 Pending task"]
+        if task_lines:
+            (change_dir / "tasks.md").write_text("\n".join(task_lines) + "\n", encoding="utf-8")
 
     def _write_archived_change(self, archive_root: Path, name: str):
         archived_dir = archive_root / f"2026-03-23-{name}"
@@ -220,6 +224,38 @@ class OpenSpecBacklogTests(unittest.TestCase):
             payload = json.loads(stdout.getvalue())
             self.assertEqual([item["name"] for item in payload], ["old-item"])
             self.assertEqual(payload[0]["meta"]["status"], "superseded")
+
+    def test_change_without_pending_tasks_is_not_eligible(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            changes_dir = Path(temp_dir) / "changes"
+            archive_dir = changes_dir / "archive"
+            changes_dir.mkdir()
+            archive_dir.mkdir()
+            self._write_change(changes_dir, "done-change", task_lines=["## 1. Done", "", "- [x] 1.1 Finished"])
+
+            records = openspec_backlog.load_change_records(changes_dir)
+            with mock.patch.object(openspec_backlog, "get_git_commit_distance", return_value=0):
+                evaluated = openspec_backlog.evaluate_records(records, archive_dir=archive_dir)
+
+            self.assertFalse(evaluated[0].eligible)
+            self.assertEqual(evaluated[0].derived_status, "blocked")
+            self.assertIn("no_pending_tasks", evaluated[0].diagnostics)
+
+    def test_change_without_tasks_is_not_eligible(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            changes_dir = Path(temp_dir) / "changes"
+            archive_dir = changes_dir / "archive"
+            changes_dir.mkdir()
+            archive_dir.mkdir()
+            self._write_change(changes_dir, "draft-change", task_lines=[])
+
+            records = openspec_backlog.load_change_records(changes_dir)
+            with mock.patch.object(openspec_backlog, "get_git_commit_distance", return_value=0):
+                evaluated = openspec_backlog.evaluate_records(records, archive_dir=archive_dir)
+
+            self.assertFalse(evaluated[0].eligible)
+            self.assertEqual(evaluated[0].derived_status, "blocked")
+            self.assertIn("missing_tasks", evaluated[0].diagnostics)
 
 
 if __name__ == "__main__":

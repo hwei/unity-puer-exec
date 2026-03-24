@@ -11,6 +11,8 @@ CHANGE_TEMPLATE_PATH = REPO_ROOT / "openspec" / "templates" / "change-meta.yaml"
 CHANGES_DIR = REPO_ROOT / "openspec" / "changes"
 ARCHIVE_DIR = CHANGES_DIR / "archive"
 
+# `queued` and `active` remain accepted as legacy raw metadata values so older
+# non-archived changes can still be loaded during the migration.
 ALLOWED_STATUS = ("queued", "active", "blocked", "superseded")
 ALLOWED_CHANGE_TYPE = ("feature", "harness", "validation", "refactor", "spike")
 ALLOWED_PRIORITY = ("P0", "P1", "P2")
@@ -20,7 +22,7 @@ ALLOWED_EVIDENCE = ("tests", "host-validation", "cli-transcript", "manual-check"
 
 @dataclass(frozen=True)
 class ChangeMeta:
-    status: str
+    status: Optional[str]
     change_type: str
     priority: str
     blocked_by: tuple[str, ...]
@@ -52,8 +54,11 @@ def normalize_meta(raw: dict[str, object]) -> ChangeMeta:
     else:
         raise ValueError("blocked_by must be a list.")
 
+    raw_status = raw.get("status")
+    normalized_status = None if raw_status in ("", None) else _validate_choice(str(raw_status), ALLOWED_STATUS, "status")
+
     return ChangeMeta(
-        status=_validate_choice(str(raw["status"]), ALLOWED_STATUS, "status"),
+        status=normalized_status,
         change_type=_validate_choice(str(raw["change_type"]), ALLOWED_CHANGE_TYPE, "change_type"),
         priority=_validate_choice(str(raw["priority"]), ALLOWED_PRIORITY, "priority"),
         blocked_by=tuple(blocked_values),
@@ -97,15 +102,7 @@ def parse_meta_text(text: str) -> ChangeMeta:
         else:
             data[key] = value
 
-    required = {
-        "status",
-        "change_type",
-        "priority",
-        "blocked_by",
-        "assumption_state",
-        "evidence",
-        "updated_at",
-    }
+    required = {"change_type", "priority", "blocked_by", "assumption_state", "evidence", "updated_at"}
     missing = required - data.keys()
     if missing:
         missing_text = ", ".join(sorted(missing))
@@ -119,11 +116,15 @@ def load_meta(meta_path: Path) -> ChangeMeta:
 
 
 def dump_meta(meta: ChangeMeta) -> str:
-    lines = [
-        f"status: {meta.status}",
-        f"change_type: {meta.change_type}",
-        f"priority: {meta.priority}",
-    ]
+    lines = []
+    if meta.status is not None:
+        lines.append(f"status: {meta.status}")
+    lines.extend(
+        [
+            f"change_type: {meta.change_type}",
+            f"priority: {meta.priority}",
+        ]
+    )
     if meta.blocked_by:
         lines.append("blocked_by:")
         lines.extend(f"- {item}" for item in meta.blocked_by)
@@ -147,7 +148,6 @@ def ensure_meta_file(change_dir: Path, defaults: Optional[dict[str, object]] = N
     defaults = dict(defaults or {})
     template_meta = load_meta(CHANGE_TEMPLATE_PATH)
     normalized_defaults = {
-        "status": defaults.get("status", template_meta.status),
         "change_type": defaults.get("change_type", template_meta.change_type),
         "priority": defaults.get("priority", template_meta.priority),
         "blocked_by": defaults.get("blocked_by", list(template_meta.blocked_by)),
@@ -155,6 +155,10 @@ def ensure_meta_file(change_dir: Path, defaults: Optional[dict[str, object]] = N
         "evidence": defaults.get("evidence", template_meta.evidence),
         "updated_at": defaults.get("updated_at", date.today().isoformat()),
     }
+    if "status" in defaults:
+        normalized_defaults["status"] = defaults["status"]
+    elif template_meta.status is not None:
+        normalized_defaults["status"] = template_meta.status
     meta = normalize_meta(normalized_defaults)
     meta_path = meta_path_for_change(change_dir)
     meta_path.write_text(dump_meta(meta), encoding="utf-8")

@@ -28,7 +28,7 @@ When apply closeout identifies new follow-up candidates, the closeout SHALL clas
 
 ### Requirement: New follow-up candidates require human discussion before promotion
 
-When apply closeout identifies new follow-up candidates, the agent SHALL surface them for human discussion before promoting them into new queued changes, implementation work, or other persistent follow-up actions.
+When apply closeout identifies new follow-up candidates, the agent SHALL surface them for human discussion before promoting them into new follow-up changes, implementation work, or other persistent follow-up actions.
 
 #### Scenario: Agent identifies a product-improvement candidate during closeout
 

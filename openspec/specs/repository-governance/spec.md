@@ -84,6 +84,16 @@ When a change depends on prior validation, retrospective findings, or archived c
 - **AND** the current change explains which archived finding is being carried forward into current scope
 - **AND** the reader does not need to inspect backlog metadata alone to infer the narrative dependency
 
+### Requirement: Workflow guidance distinguishes artifact readiness from change completion
+
+Repository workflow guidance SHALL distinguish OpenSpec artifact readiness, task completion, and change completion so contributors do not treat a single workflow surface as the complete archive-readiness answer.
+
+#### Scenario: Agent checks whether a change is complete
+
+- **WHEN** a maintainer or agent observes `openspec status --change ...` reporting all artifacts complete
+- **THEN** the repository guidance states that this means artifact readiness only
+- **AND** the maintainer or agent still checks task progress and closeout expectations before treating the change as complete or archive-ready
+
 ### Requirement: Normal OpenSpec operations use workflow tools instead of manual directory manipulation
 
 When an agent or maintainer creates, applies, or archives OpenSpec changes, the repository SHALL direct them to prefer the installed OpenSpec skills first and the official `openspec` commands second. Contributors MUST NOT manually move, recreate, or leave behind `openspec/changes/` directory entries as part of normal workflow unless they are explicitly repairing abnormal repository state.
@@ -134,4 +144,3 @@ The repository SHALL provide a local-only place for transient validation probes 
 - **WHEN** an agent creates a short-lived probe or scratch script for local validation
 - **THEN** the artifact is placed under `.tmp/`
 - **AND** that directory does not create normal git tracking noise
-

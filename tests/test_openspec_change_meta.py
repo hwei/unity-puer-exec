@@ -13,11 +13,10 @@ import openspec_change_meta  # type: ignore
 
 
 class OpenSpecChangeMetaTests(unittest.TestCase):
-    def test_parse_meta_text_supports_scalar_and_list_fields(self):
+    def test_parse_meta_text_supports_optional_status_and_list_fields(self):
         meta = openspec_change_meta.parse_meta_text(
             "\n".join(
                 [
-                    "status: queued",
                     "change_type: harness",
                     "priority: P1",
                     "blocked_by:",
@@ -30,7 +29,7 @@ class OpenSpecChangeMetaTests(unittest.TestCase):
             )
         )
 
-        self.assertEqual(meta.status, "queued")
+        self.assertIsNone(meta.status)
         self.assertEqual(meta.change_type, "harness")
         self.assertEqual(meta.priority, "P1")
         self.assertEqual(meta.blocked_by, ("formalize-contract", "add-host-fixture"))
@@ -49,10 +48,27 @@ class OpenSpecChangeMetaTests(unittest.TestCase):
             )
 
             meta = openspec_change_meta.load_meta(meta_path)
-            self.assertEqual(meta.status, "queued")
+            self.assertIsNone(meta.status)
             self.assertEqual(meta.change_type, "validation")
             self.assertEqual(meta.priority, "P0")
             self.assertEqual(meta.blocked_by, ())
+
+    def test_parse_meta_text_keeps_legacy_status_values(self):
+        meta = openspec_change_meta.parse_meta_text(
+            "\n".join(
+                [
+                    "status: queued",
+                    "change_type: spike",
+                    "priority: P2",
+                    "blocked_by: []",
+                    "assumption_state: valid",
+                    "evidence: manual-check",
+                    "updated_at: 2026-03-24",
+                ]
+            )
+        )
+
+        self.assertEqual(meta.status, "queued")
 
     def test_list_non_archived_change_dirs_skips_archive(self):
         with tempfile.TemporaryDirectory() as temp_dir:

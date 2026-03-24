@@ -33,6 +33,8 @@ class EvaluatedRecord:
     unlock_count: int
     derived_status: str
     eligible: bool
+    total_tasks: int
+    completed_tasks: int
     unresolved_dependencies: tuple[str, ...]
     missing_dependencies: tuple[str, ...]
     diagnostics: tuple[str, ...]
@@ -49,6 +51,24 @@ def load_change_records(changes_dir: Optional[Path] = None) -> list[ChangeRecord
             continue
         records.append(ChangeRecord(name=change_dir.name, path=change_dir, meta=load_meta(meta_path)))
     return records
+
+
+TASK_PATTERN = re.compile(r"^[-*]\s+\[[\sxX]\]")
+COMPLETED_TASK_PATTERN = re.compile(r"^[-*]\s+\[[xX]\]")
+
+
+def count_tasks(change_dir: Path) -> tuple[int, int]:
+    tasks_path = change_dir / "tasks.md"
+    if not tasks_path.exists():
+        return 0, 0
+    total = 0
+    completed = 0
+    for raw_line in tasks_path.read_text(encoding="utf-8").splitlines():
+        if TASK_PATTERN.match(raw_line):
+            total += 1
+            if COMPLETED_TASK_PATTERN.match(raw_line):
+                completed += 1
+    return total, completed
 
 
 def load_archived_change_names(archive_dir: Optional[Path] = None) -> set[str]:
@@ -118,6 +138,7 @@ def evaluate_records(
     evaluated = []
 
     for record in records:
+        total_tasks, completed_tasks = count_tasks(record.path)
         unresolved_dependencies = []
         missing_dependencies = []
         for dependency in record.meta.blocked_by:
@@ -135,10 +156,22 @@ def evaluate_records(
             derived_status = "superseded"
             eligible = False
             diagnostics.append("superseded")
+        elif record.meta.status == "blocked":
+            derived_status = "blocked"
+            eligible = False
+            diagnostics.append("explicitly_blocked")
         elif missing_dependencies:
             derived_status = "inconsistent"
             eligible = False
             diagnostics.append("missing_dependency")
+        elif total_tasks == 0:
+            derived_status = "blocked"
+            eligible = False
+            diagnostics.append("missing_tasks")
+        elif completed_tasks >= total_tasks:
+            derived_status = "blocked"
+            eligible = False
+            diagnostics.append("no_pending_tasks")
         elif unresolved_dependencies or record.meta.assumption_state == "invalid":
             derived_status = "blocked"
             eligible = False
@@ -146,12 +179,15 @@ def evaluate_records(
                 diagnostics.append("unresolved_dependency")
             if record.meta.assumption_state == "invalid":
                 diagnostics.append("invalid_assumption_state")
+        if record.meta.status in {"queued", "active"}:
+            diagnostics.append("legacy_meta_status")
 
         git_distance = get_git_commit_distance(record.path, repo_root=repo_root)
         reasons = [
             f"derived_status={derived_status}",
             f"eligible={str(eligible).lower()}",
-            f"meta_status={record.meta.status}",
+            f"meta_status={record.meta.status or 'none'}",
+            f"task_progress={completed_tasks}/{total_tasks}",
             f"priority={record.meta.priority}",
             f"unlock_count={unlock_counts.get(record.name, 0)}",
             f"assumption_state={record.meta.assumption_state}",
@@ -174,6 +210,8 @@ def evaluate_records(
                 unlock_count=unlock_counts.get(record.name, 0),
                 derived_status=derived_status,
                 eligible=eligible,
+                total_tasks=total_tasks,
+                completed_tasks=completed_tasks,
                 unresolved_dependencies=tuple(unresolved_dependencies),
                 missing_dependencies=tuple(missing_dependencies),
                 diagnostics=tuple(diagnostics),
@@ -307,6 +345,10 @@ def _serialize(rankings: list[EvaluatedRecord]) -> list[dict[str, object]]:
                 "derived": {
                     "status": item.derived_status,
                     "eligible": item.eligible,
+                    "task_progress": {
+                        "total": item.total_tasks,
+                        "completed": item.completed_tasks,
+                    },
                     "diagnostics": list(item.diagnostics),
                     "unresolved_dependencies": list(item.unresolved_dependencies),
                     "missing_dependencies": list(item.missing_dependencies),

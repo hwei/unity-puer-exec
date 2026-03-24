@@ -33,8 +33,9 @@
 
 - Prefer reading only the minimal OpenSpec artifacts needed for the current task.
 - When a change affects behavior or workflow materially, create or continue an OpenSpec change instead of editing long-lived truth directly without change context.
-- Maintain repository-owned change metadata in `meta.yaml` for every non-archived change. The current convention is `status`, `change_type`, `priority`, `blocked_by`, `assumption_state`, `evidence`, and `updated_at`.
-- Treat `meta.yaml` as machine-readable planning metadata only. Repository backlog recommendation is derived from repository facts and metadata together rather than from `status` alone.
+- Maintain repository-owned change metadata in `meta.yaml` for every non-archived change. The current convention is optional explicit `status` disposition, `change_type`, `priority`, `blocked_by`, `assumption_state`, `evidence`, and `updated_at`.
+- Treat `meta.yaml` as machine-readable planning metadata only. Repository backlog recommendation is derived from repository facts and metadata together rather than from raw `status` alone.
+- Treat `openspec status --change ...` as artifact-readiness output, not as a complete answer to whether a change is finished or archive-ready.
 - When new work is discovered during execution, classify it as in-scope, prerequisite, or adjacent before continuing implementation.
 - When starting work from a clean tree, consult the backlog tooling rather than guessing from prose alone.
 - When apply work ends, always produce an explicit closeout finding summary stating whether new follow-up candidates were discovered.

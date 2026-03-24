@@ -19,19 +19,22 @@
 ## Change metadata
 
 - Every non-archived OpenSpec change should carry a repository-owned `meta.yaml`.
-- `meta.yaml` currently tracks `status`, `change_type`, `priority`, `blocked_by`, `assumption_state`, `evidence`, and `updated_at`.
-- Allowed `status` values: `queued`, `active`, `blocked`, `superseded`.
+- `meta.yaml` currently tracks optional explicit `status` disposition, `change_type`, `priority`, `blocked_by`, `assumption_state`, `evidence`, and `updated_at`.
+- Allowed explicit `status` values for new work: `blocked`, `superseded`.
+- Legacy non-archived changes may still carry `queued` or `active` during migration; treat those as compatibility values rather than the normal repository planning model.
 - Allowed `change_type` values: `feature`, `harness`, `validation`, `refactor`, `spike`.
 - Allowed `priority` values: `P0`, `P1`, `P2`.
 - `blocked_by` is a one-way list of prerequisite change names. Do not maintain reciprocal `unblocks` fields.
 - Allowed `assumption_state` values: `valid`, `needs-review`, `invalid`.
 - Allowed `evidence` values: `tests`, `host-validation`, `cli-transcript`, `manual-check`.
 - `updated_at` uses `YYYY-MM-DD`.
-- `status=queued` is the backlog definition. `active` means in progress. `blocked` means not currently actionable. `superseded` means replaced and awaiting archive.
+- Backlog is the subset of non-archived changes that repository-local tooling derives as `eligible`.
+- Explicit `status=blocked` means the change is not currently actionable even if dependency checks alone would not detect that.
+- Explicit `status=superseded` means the change was replaced and is awaiting archive.
 - Prefer `python tools/new_openspec_change.py <change-name>` when creating a new change so `meta.yaml` is seeded automatically.
 - Prefer `openspec archive <change-name>` when archiving a completed change. Do not manually move `openspec/changes/` directories during normal workflow.
 - Before selecting fresh work from a clean tree, consult the backlog tooling instead of guessing from prose alone.
-- Use `python tools/openspec_backlog.py next` for the default ranked recommendation, or `python tools/openspec_backlog.py list --status queued` to inspect backlog explicitly.
+- Use `python tools/openspec_backlog.py next` for the default ranked recommendation, or `python tools/openspec_backlog.py list --backlog` to inspect the recommendable backlog explicitly.
 
 ## Apply checkpoints
 
@@ -45,6 +48,6 @@
 - Every apply session should end with an explicit closeout finding summary.
 - The summary must say either `No new follow-up work identified` or `New follow-up candidates identified`.
 - Allowed follow-up categories are `product-improvement`, `workflow-improvement`, `tooling-improvement`, and `validation-gap`.
-- If new follow-up candidates are identified, discuss them with the human before promoting them into queued changes, implementation work, or other persistent follow-up actions.
+- If new follow-up candidates are identified, discuss them with the human before promoting them into new follow-up changes, implementation work, or other persistent follow-up actions.
 - When the change state is ready to close, recommend whether to run `git commit`, `openspec archive`, and the final `git commit`.
 - Do not execute the closeout sequence automatically unless the human explicitly asks for it.
