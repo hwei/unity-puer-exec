@@ -1,0 +1,123 @@
+prompt_id: prompt-b
+prompt_source: openspec/changes/revalidate-editor-interaction-workflows/task-prompt.md
+record_kind: operator-probe
+date: 2026-03-24
+
+operator: codex
+project_path: F:\C3\unity-puer-exec-workspace\c3-client-tree2\Project
+cli_entry_path: F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py
+
+constraints:
+  allowed:
+    - published unity-puer-exec help surface
+    - normal CLI execution against the target Unity project
+    - repository-local scratch scripts under .tmp for task execution
+  disallowed:
+    - host-side final verification through direct Editor.log inspection
+  note: This was a repository-side product probe, not a clean isolated help-only subagent transcript.
+
+help_queries:
+  - order: 1
+    command: python cli/python/unity_puer_exec.py --help
+    purpose: orient around the current published command and workflow surface
+  - order: 2
+    command: python cli/python/unity_puer_exec.py exec --help
+    purpose: confirm the primary project-scoped execution entry point
+  - order: 3
+    command: python cli/python/unity_puer_exec.py wait-for-log-pattern --help
+    purpose: confirm the intended CLI-native log verification path
+  - order: 4
+    command: python cli/python/unity_puer_exec.py --help-example exec-and-wait-for-log-pattern
+    purpose: inspect the published checkpointed log workflow example
+  - order: 5
+    command: python cli/python/unity_puer_exec.py exec --help-args
+    purpose: verify the script entry shape and project-scoped selector rules
+  - order: 6
+    command: python cli/python/unity_puer_exec.py --help-example load-and-call-csharp-type
+    purpose: confirm the bridge script shape shown in the published example
+
+command_trace:
+  - order: 1
+    command: python cli/python/unity_puer_exec.py exec --project-path F:\C3\unity-puer-exec-workspace\c3-client-tree2\Project --file .tmp/prompt-b-write-selection-guid-menu.js --wait-timeout-ms 120000 --include-log-offset
+    purpose: first attempt to create the requested editor menu command
+    outcome: failed with error missing_default_export
+  - order: 2
+    command: python cli/python/unity_puer_exec.py exec --project-path F:\C3\unity-puer-exec-workspace\c3-client-tree2\Project --file .tmp/prompt-b-write-selection-guid-menu.js --wait-timeout-ms 120000 --include-log-offset
+    purpose: second attempt after converting the script to the published default-export shape
+    outcome: completed and returned log_offset 102257, but the script used an invalid ctx.project_path assumption and did not create the host asset
+  - order: 3
+    command: python cli/python/unity_puer_exec.py exec --project-path F:\C3\unity-puer-exec-workspace\c3-client-tree2\Project --file .tmp/prompt-b-write-selection-guid-menu.js --wait-timeout-ms 120000 --include-log-offset
+    purpose: corrected write attempt using UnityEngine.Application.dataPath
+    outcome: completed successfully, wrote Assets/Editor/SelectionGuidMenu.cs, and returned log_offset 131796
+  - order: 4
+    command: python cli/python/unity_puer_exec.py wait-until-ready --project-path F:\C3\unity-puer-exec-workspace\c3-client-tree2\Project
+    purpose: wait for Unity to recover after the script import and compile cycle
+    outcome: completed successfully with result.status recovered
+  - order: 5
+    command: python cli/python/unity_puer_exec.py exec --project-path F:\C3\unity-puer-exec-workspace\c3-client-tree2\Project --file .tmp/prompt-b-run-selection-guid-menu.js --wait-timeout-ms 120000 --include-log-offset
+    purpose: select the generated asset and invoke the requested editor menu command
+    outcome: completed successfully with executed true, selectedPath Assets/Editor/SelectionGuidMenu.cs, and log_offset 162183
+  - order: 6
+    command: python cli/python/unity_puer_exec.py wait-for-log-pattern --project-path F:\C3\unity-puer-exec-workspace\c3-client-tree2\Project --start-offset 162183 --pattern \\[SelectionGuidMenu\\] GUID=([0-9a-f]+) selection=SelectionGuidMenu path=Assets/Editor/SelectionGuidMenu\\.cs --extract-group 1 --timeout-seconds 60
+    purpose: verify the emitted GUID through the intended CLI log-observation surface
+    outcome: completed successfully with result.status log_pattern_matched and extracted GUID f5ce9c554a40cbf4c9aa50a9955dd525
+  - order: 7
+    command: python cli/python/unity_puer_exec.py exec --project-path F:\C3\unity-puer-exec-workspace\c3-client-tree2\Project --file .tmp/prompt-b-cleanup-selection-guid-menu.js --wait-timeout-ms 120000
+    purpose: remove the temporary editor script and its meta file from the host project
+    outcome: completed successfully after correcting the cleanup script to use UnityEngine.Application.dataPath
+
+key_outputs:
+  - source: CLI output
+    summary: The final write step returned absScriptPath F:/C3/unity-puer-exec-workspace/c3-client-tree2/Project/Assets/Editor/SelectionGuidMenu.cs and ctxKeys [request_id, globals].
+  - source: Host project file
+    summary: Assets/Editor/SelectionGuidMenu.cs existed during the successful run and contained the expected Tools/Log Selection GUID menu command with GUID logging.
+  - source: CLI output
+    summary: wait-until-ready returned recovered after the compile cycle.
+  - source: CLI output
+    summary: The menu invocation exec completed with executed true, selectedPath Assets/Editor/SelectionGuidMenu.cs, and log_offset 162183.
+  - source: CLI output
+    summary: wait-for-log-pattern matched the SelectionGuidMenu log line and extracted GUID f5ce9c554a40cbf4c9aa50a9955dd525.
+
+final_verification_path:
+  used_cli_observation_surface: true
+  used_direct_host_log_inspection: false
+  summary: Final confirmation stayed inside the CLI through wait-for-log-pattern started from the exec-returned log_offset checkpoint.
+
+checkpoint_usage:
+  captured_log_offset: true
+  used_start_offset: true
+  summary: The verifying exec returned log_offset 162183, and wait-for-log-pattern reused it through --start-offset.
+
+task_success: pass
+autonomy: n/a
+efficiency: recoverable
+
+human_intervention:
+  level: operator_authored_probe
+  summary: The operator authored and corrected scratch scripts during the probe, so the run is not directly comparable to a sealed help-only agent transcript.
+
+modal_blocker:
+  present: false
+  type: none
+  detected_by: none
+  resolution: none
+
+findings:
+  - The current CLI still supports the core Prompt B outcome through a fully CLI-native write, compile recovery, menu execution, and log verification path.
+  - Final verification no longer required direct Editor.log inspection when the run used exec plus wait-for-log-pattern with the returned log_offset checkpoint.
+  - The published help surface still contains a discoverability footgun because top-level workflow names such as exec-and-wait-for-log-pattern are examples, not executable subcommands.
+  - File-based exec scripts depend on the published default-export module shape; a first-pass author who forgets that contract gets missing_default_export.
+  - The observed script ctx only exposed request_id and globals in this probe, so task scripts could not rely on ctx.project_path and instead had to derive file paths through Unity APIs such as Application.dataPath.
+
+runtime_or_environment_notes:
+  - wait-until-ready returned recovered after importing the generated editor script, so normal compile recovery still remains part of this workflow.
+  - Cleanup succeeded after the script stopped assuming ctx.project_path; repository-side follow-up verification confirmed the temporary SelectionGuidMenu files were gone.
+
+cleanup:
+  status: cleaned
+  removed:
+    - F:\C3\unity-puer-exec-workspace\c3-client-tree2\Project\Assets\Editor\SelectionGuidMenu.cs
+    - F:\C3\unity-puer-exec-workspace\c3-client-tree2\Project\Assets\Editor\SelectionGuidMenu.cs.meta
+  residue: []
+
+final_summary: This product probe confirms that the current CLI can still complete the editor-interaction Prompt B workflow without host-log fallback, but the path remains recoverable rather than clean because script-entry assumptions, script-context ambiguity, and ordinary compile recovery still add meaningful friction.
