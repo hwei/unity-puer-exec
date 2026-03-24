@@ -1,7 +1,0 @@
-status: queued
-change_type: validation
-priority: P1
-blocked_by: []
-assumption_state: valid
-evidence: cli-transcript
-updated_at: 2026-03-24
