@@ -54,6 +54,7 @@ class UnityPuerExecCliTests(unittest.TestCase):
         self.assertIn("Common Workflows", stdout)
         self.assertIn("get-blocker-state", stdout)
         self.assertIn("exec-and-wait-for-result-marker", stdout)
+        self.assertIn("exec-and-wait-for-log-pattern", stdout)
         self.assertIn("load-and-call-csharp-type", stdout)
         self.assertIn("recover-exec-by-request-id", stdout)
         self.assertIn("See `exec --help`.", stdout)
@@ -116,6 +117,15 @@ class UnityPuerExecCliTests(unittest.TestCase):
         self.assertIn("Preferred follow-up", stdout)
         self.assertIn("accepted exec `request_id`", stdout)
 
+    def test_wait_for_log_pattern_help_mentions_log_workflow_example(self):
+        exit_code, stdout, stderr = unity_puer_exec.run_cli(["wait-for-log-pattern", "--help"])
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(stderr, "")
+        self.assertIn("Quick Start", stdout)
+        self.assertIn("exec-and-wait-for-log-pattern", stdout)
+        self.assertIn("exec-and-wait-for-result-marker", stdout)
+
     def test_wait_for_exec_help_status_mentions_missing(self):
         exit_code, stdout, stderr = unity_puer_exec.run_cli(["wait-for-exec", "--help-status"])
 
@@ -168,6 +178,17 @@ class UnityPuerExecCliTests(unittest.TestCase):
         self.assertIn("correlation_id", stdout)
         self.assertIn("log_offset", stdout)
         self.assertIn("Do not assume `running` already includes `result.correlation_id`", stdout)
+
+    def test_log_pattern_help_example_renders_checkpointed_workflow(self):
+        exit_code, stdout, stderr = unity_puer_exec.run_cli(["--help-example", "exec-and-wait-for-log-pattern"])
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(stderr, "")
+        self.assertIn("Goal", stdout)
+        self.assertIn("wait-for-log-pattern", stdout)
+        self.assertIn("--include-log-offset", stdout)
+        self.assertIn("--start-offset OFFSET", stdout)
+        self.assertIn("direct host-log inspection", stdout)
 
     def test_recovery_help_example_renders_request_id_workflow(self):
         exit_code, stdout, stderr = unity_puer_exec.run_cli(["--help-example", "recover-exec-by-request-id"])

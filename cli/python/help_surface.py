@@ -37,6 +37,7 @@ EXIT_UNITY_NOT_READY = 21
 
 WORKFLOW_IDS = (
     "exec-and-wait-for-result-marker",
+    "exec-and-wait-for-log-pattern",
     "recover-exec-by-request-id",
     "load-and-call-csharp-type",
     "request-editor-exit-via-exec",
@@ -76,6 +77,7 @@ RECOMMENDED_PATH = (
 
 TOP_LEVEL_WORKFLOWS = {
     "exec-and-wait-for-result-marker": "run a script that returns `correlation_id`, capture `log_offset`, then wait for the terminal result marker.",
+    "exec-and-wait-for-log-pattern": "run a script, capture `log_offset`, then wait for the ordinary Unity log pattern that proves the intended result.",
     "recover-exec-by-request-id": "recover an accepted exec request by reusing or waiting on the same `request_id` after `running` or ambiguity.",
     "load-and-call-csharp-type": "learn the normal PuerTS-style bridge path for loading and calling Unity or C# types from JavaScript.",
     "request-editor-exit-via-exec": "request a normal Unity Editor exit through `exec` instead of using `ensure-stopped`.",
@@ -133,7 +135,7 @@ COMMAND_HELP = {
             "`unity-puer-exec wait-for-log-pattern --project-path X:/project --pattern \"\\\\[Build\\\\] done\"`",
             "Use this when task success is best verified through Unity log output; the pattern is a regular expression, not a literal string.",
         ],
-        "related_workflows": ("exec-and-wait-for-result-marker",),
+        "related_workflows": ("exec-and-wait-for-log-pattern", "exec-and-wait-for-result-marker"),
         "args": {
             "Arguments": [
                 "`--project-path <path>`: observe a project's Unity log source.",
@@ -498,6 +500,32 @@ WORKFLOW_EXAMPLES = {
             "Do not assume `running` already includes `result.correlation_id`; if you need correlation-aware observation before completion, design the script to expose that id deliberately.",
             "The default-exported entry function returns the immediate `result`; it is not an implicit async completion channel.",
             "Use `log_offset` plus the script-provided `correlation_id` together so observation begins after the originating `exec` request.",
+            "If the session has not yet produced `session_marker` and you intentionally use a non-default Unity log file, keep passing the same `--unity-log-path` on the log-related commands in that workflow.",
+        ],
+    },
+    "exec-and-wait-for-log-pattern": {
+        "goal": "Run a script, capture `log_offset`, and verify success through ordinary Unity log output without falling back to direct host-log inspection.",
+        "steps": [
+            {
+                "command": "`unity-puer-exec exec --project-path X:/project --file X:/scripts/emit-build-log.js --wait-timeout-ms 1000 --include-log-offset`",
+                "script_body": [
+                    "export default function run(ctx) {",
+                    "  console.log('[Build] done for request ' + ctx.request_id);",
+                    "  return { request_id: ctx.request_id, status: 'emitted-log-line' };",
+                    "}",
+                ],
+                "observation": "Expected observation: stdout returns machine-readable JSON with the immediate `result`, and the accepted response includes top-level `log_offset` when requested so later observation can start from the same checkpoint.",
+            },
+            (
+                "`unity-puer-exec wait-for-log-pattern --project-path X:/project --start-offset OFFSET --pattern \"\\\\[Build\\\\] done for request REQ\"`",
+                "Expected observation: stdout stays machine-readable and eventually reaches `status = \"completed\"` with `result.status = \"log_pattern_matched\"`.",
+            ),
+        ],
+        "notice": [
+            "Use this workflow when success is confirmed by ordinary Unity log output rather than by a correlation-aware result marker.",
+            "Capture `log_offset` from `exec --include-log-offset` before starting `wait-for-log-pattern` so observation begins after the originating request.",
+            "If the first observation window was missed, prefer creating a fresh safe checkpoint through a new exec-side attempt rather than falling back to direct host-log inspection.",
+            "The pattern is a regular expression; escape special characters such as `[` and `]` when you need a literal match.",
             "If the session has not yet produced `session_marker` and you intentionally use a non-default Unity log file, keep passing the same `--unity-log-path` on the log-related commands in that workflow.",
         ],
     },

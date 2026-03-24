@@ -1,11 +1,11 @@
 ## 1. Help Surface
 
-- [ ] 1.1 Add a first-class ordinary log workflow example to the published help surface and workflow id list.
-- [ ] 1.2 Update top-level or command-level help references so agents can discover the new ordinary log example from the existing observation workflow surfaces.
+- [x] 1.1 Add a first-class ordinary log workflow example to the published help surface and workflow id list.
+- [x] 1.2 Update top-level or command-level help references so agents can discover the new ordinary log example from the existing observation workflow surfaces.
 
 ## 2. Verification
 
-- [ ] 2.1 Add or update tests that cover rendering and discoverability of the new ordinary log workflow example.
+- [x] 2.1 Add or update tests that cover rendering and discoverability of the new ordinary log workflow example.
 - [ ] 2.2 Re-run the representative log-oriented help-only validation and record whether final confirmation stayed inside the CLI observation surface.
 
 ## 3. Closeout
