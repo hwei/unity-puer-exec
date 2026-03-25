@@ -56,6 +56,6 @@
 - Every apply session should end with an explicit closeout finding summary.
 - The summary must say either `No new follow-up work identified` or `New follow-up candidates identified`.
 - Allowed follow-up categories are `product-improvement`, `workflow-improvement`, `tooling-improvement`, and `validation-gap`.
-- If new follow-up candidates are identified, discuss them with the human before promoting them into new follow-up changes, implementation work, or other persistent follow-up actions.
+- Follow [apply-closeout-review spec](../openspec/specs/apply-closeout-review/spec.md) for human-discussion requirements on new follow-up candidates.
 - When the change state is ready to close, recommend whether to run `git commit`, `openspec archive`, and the final `git commit`.
 - Do not execute the closeout sequence automatically unless the human explicitly asks for it.

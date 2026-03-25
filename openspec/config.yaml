@@ -1,6 +1,4 @@
 schema: spec-driven
-profile: core
-delivery: both
 
 context: |
   Repository: unity-puer-exec.

@@ -47,13 +47,9 @@ Stable follow-up findings discovered during implementation SHALL remain explicit
 
 ### Requirement: Apply-closeout findings require human discussion before promotion
 
-New follow-up candidates discovered during apply closeout SHALL remain explicit review inputs until the human accepts, defers, rejects, or converts them into follow-up work. Agents MUST NOT silently promote apply-closeout findings into queued changes or further implementation without human discussion.
+See [apply-closeout-review spec, Requirement 3](../apply-closeout-review/spec.md).
 
-#### Scenario: Apply closeout identifies a workflow-improvement candidate
-
-- **WHEN** an apply closeout reports a new workflow-improvement candidate
-- **THEN** the candidate is surfaced as an explicit discussion item
-- **AND** the agent waits for human disposition before promoting it into a queued change or further implementation
+This repository requirement aligns with the durable apply-closeout-review spec and adds no additional constraints.
 
 ### Requirement: Discovered work is triaged before scope continues
 
@@ -69,6 +65,8 @@ Work discovered during execution SHALL be classified before implementation conti
 ### Requirement: Follow-up changes preserve prerequisite evidence context
 
 When a change depends on prior validation, retrospective findings, or archived change conclusions to make its scope understandable, the change SHALL identify the upstream change names and summarize the inherited findings in its proposal or design artifacts. Contributors MUST NOT rely on unstated team memory or metadata-only dependency references as the sole way to reconstruct that context.
+
+This requirement focuses on the "why" and "how" of preserving evidence for human narrative continuity. For the complementary rule that metadata alone is insufficient, see [change-backlog-triage spec, Requirement 5](../change-backlog-triage/spec.md).
 
 #### Scenario: Follow-up optimization change builds on prior validation
 
@@ -120,18 +118,10 @@ The repository SHALL define artifact expectations by change type so feature, har
 - **AND** durable product specs are only introduced when the change creates durable validation requirements
 
 ### Requirement: Superseded changes are archived rather than deleted
-Changes that are no longer the recommended execution path SHALL be marked superseded only as a temporary pre-archive disposition rather than as a normal long-lived planning state. Once their disposition is clear, superseded changes SHALL be archived so they no longer appear in active planning scans, typically without updating main specs when no durable requirement change is being merged.
 
-#### Scenario: Older change is replaced by newer direction
-- **WHEN** a maintainer decides that an existing non-archived change has been replaced by a newer change or conclusion
-- **THEN** the older change may be marked superseded as a temporary disposition
-- **AND** the older change is archived once its disposition is stable
-- **AND** the repository keeps the archived record instead of deleting the change from history
+See [change-backlog-triage spec, Requirement 10](../change-backlog-triage/spec.md).
 
-#### Scenario: Superseded change lingers in active scans
-- **WHEN** a non-archived change remains marked superseded instead of being archived promptly
-- **THEN** repository workflow treats that state as archive hygiene debt rather than as a normal steady-state planning bucket
-- **AND** maintainers can identify the change as requiring cleanup
+This repository requirement aligns with the durable change-backlog-triage spec and adds no additional constraints.
 
 ### Requirement: Repository-local scratch artifacts stay out of normal working paths
 
