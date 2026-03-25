@@ -1,0 +1,174 @@
+prompt_id: prompt-b
+prompt_source: openspec/changes/archive/2026-03-23-revalidate-basic-agent-cli-workflows/task-prompts.md
+record_kind: retrospective-summary
+date: 2026-03-25
+change_under_validation: improve-wait-for-log-pattern-stall-guidance
+
+model: claude-haiku-4-5-20251001 subagent
+project_path: F:\C3\unity-puer-exec-workspace\c3-client-tree2\Project
+cli_entry_path: F:\C3\unity-puer-exec-workspace\unity-puer-exec\cli\python\unity_puer_exec.py
+
+constraints:
+  allowed:
+    - published unity-puer-exec help surface
+    - normal CLI execution against the target Unity project
+  disallowed:
+    - repository source in this product workspace
+    - repository tests
+    - OpenSpec change artifacts as task hints
+    - command-level maintainer hints
+
+help_queries:
+  - order: 1
+    command: python unity_puer_exec.py --help
+    retained_exact_argv: true
+    purpose: orient around the published command surface
+  - order: 2
+    command: python unity_puer_exec.py exec --help
+    retained_exact_argv: true
+    purpose: inspect the primary execution entry for code write
+  - order: 3
+    command: python unity_puer_exec.py exec --help-args
+    retained_exact_argv: true
+    purpose: inspect exec arguments before writing host-side code
+  - order: 4
+    command: python unity_puer_exec.py --help-example load-and-call-csharp-type
+    retained_exact_argv: true
+    purpose: review the PuerTS bridge model for loading C# types
+  - order: 5
+    command: python unity_puer_exec.py wait-until-ready --help
+    retained_exact_argv: true
+    purpose: inspect readiness recovery after import and compile
+  - order: 6
+    command: python unity_puer_exec.py wait-for-log-pattern --help
+    retained_exact_argv: true
+    purpose: inspect the CLI-native log verification path
+  - order: 7
+    command: python unity_puer_exec.py wait-for-log-pattern --help-args
+    retained_exact_argv: true
+    purpose: inspect start-offset and pattern arguments
+  - order: 8
+    command: python unity_puer_exec.py get-log-briefs --help-args
+    retained_exact_argv: true
+    purpose: inspect how to retrieve structured log summaries
+  - order: 9
+    command: python unity_puer_exec.py get-blocker-state
+    retained_exact_argv: true
+    purpose: check for modal blockers before proceeding
+  - order: 10
+    command: python unity_puer_exec.py get-log-source --help
+    retained_exact_argv: true
+    purpose: get the project's log source path
+
+command_trace:
+  - order: 1
+    command: python unity_puer_exec.py exec --project-path <PROJECT> --file .tmp\create_menu_item.js --wait-timeout-ms 10000
+    retained_exact_argv: false
+    purpose: create the Unity Editor menu command script (SelectionGuidMenu.cs)
+    outcome: completed successfully, wrote Assets/Editor/SelectionGuidMenu.cs, returned log_range {start: 3207145, end: 3226802}
+  - order: 2
+    command: python unity_puer_exec.py exec --project-path <PROJECT> --refresh-before-exec --code <trigger-refresh> --wait-timeout-ms 30000
+    retained_exact_argv: false
+    purpose: force project refresh and compile the new C# file
+    outcome: returned status running, phase compiling, request_id 08a5b1c9094b45d1bb88d3c7fced9ccf
+  - order: 3
+    command: python unity_puer_exec.py wait-for-exec --project-path <PROJECT> --request-id 08a5b1c9094b45d1bb88d3c7fced9ccf --wait-timeout-ms 60000
+    retained_exact_argv: false
+    purpose: wait for compile to complete
+    outcome: completed successfully, log_range {start: 3243174, end: 3257803}
+  - order: 4
+    command: python unity_puer_exec.py exec --project-path <PROJECT> --file .tmp\verify_menu_item_v2.js --wait-timeout-ms 10000
+    retained_exact_argv: false
+    purpose: verify menu item compiled and exists
+    outcome: completed successfully, log_range {start: 3268779, end: 3281056}
+  - order: 5
+    command: python unity_puer_exec.py get-log-briefs --project-path <PROJECT> --range 3268779-3281056
+    retained_exact_argv: false
+    purpose: view log output from verification step
+    outcome: showed verification messages in log
+  - order: 6
+    command: python unity_puer_exec.py exec --project-path <PROJECT> --file .tmp\final_menu_item_test.js --wait-timeout-ms 10000
+    retained_exact_argv: false
+    purpose: final verification of file existence and GUID
+    outcome: confirmed file exists, GUID f5ce9c554a40cbf4c9aa50a9955dd525
+
+key_outputs:
+  - source: CLI output (exec #1)
+    summary: Editor script write completed successfully. SelectionGuidMenu.cs created at Assets/Editor/. log_range returned.
+  - source: CLI output (wait-for-exec)
+    summary: Compile completed with status completed. log_range {start: 3243174, end: 3257803} returned.
+  - source: CLI output (get-log-briefs)
+    summary: Structured log briefs confirmed verification messages present in the observation window.
+  - source: CLI output (exec #6)
+    summary: Final verification confirmed menu item file exists with GUID f5ce9c554a40cbf4c9aa50a9955dd525.
+
+final_verification_path:
+  used_cli_observation_surface: true
+  used_direct_host_log_inspection: false
+  summary: Final confirmation stayed entirely inside the CLI. Used exec for verification scripts and get-log-briefs for structured log observation. No direct Editor.log reading was needed.
+
+checkpoint_usage:
+  captured_log_offset: true
+  used_start_offset: false
+  summary: log_range was captured from all exec and wait-for-exec responses (a direct result of the add-log-brief-capability and improve-wait-for-log-pattern-stall-guidance changes). The agent used get-log-briefs with --range to observe logs but did not use wait-for-log-pattern with --start-offset for the final verification path.
+
+task_success: pass
+autonomy: pass
+efficiency: recoverable
+
+efficiency_rationale: >
+  Classified as recoverable rather than the subagent's self-assessed clean because:
+  (1) the verification approach confirmed file existence and GUID via exec scripts but did not
+  actually invoke the menu command and observe the Debug.Log output through wait-for-log-pattern,
+  which is the intended end-to-end verification path;
+  (2) multiple probe scripts were needed before arriving at a working verification approach.
+  However, this is a clear improvement over the 2026-03-23 baseline which fell back to direct
+  Editor.log inspection.
+
+human_intervention:
+  level: observed_only
+  summary: The operator launched the subagent and later performed cleanup; no command-level hints were provided during the run.
+
+modal_blocker:
+  present: false
+  type: none
+  detected_by: none
+  resolution: none
+
+findings:
+  - The agent stayed entirely within the CLI observation surface and did not fall back to direct Editor.log inspection.
+  - log_range was returned from all exec and wait-for-exec responses, providing structured observation windows throughout.
+  - The agent discovered and used get-log-briefs for structured log observation, demonstrating the log-brief capability is discoverable from help.
+  - The agent did not use wait-for-log-pattern for final verification, instead relying on exec scripts to confirm file existence. This suggests the wait-for-log-pattern path for end-to-end verification was not the agent's first instinct.
+  - No unity_stalled event occurred during this run, so the post-stall log_range+brief_sequence output from the three wait commands was not directly exercised.
+  - The compile recovery was handled cleanly via exec --refresh-before-exec + wait-for-exec, with log_range available throughout.
+
+runtime_or_environment_notes:
+  - Unity session was already available with unity_pid 20368 at the start.
+  - wait-until-ready returned recovered with log_range and brief_sequence (confirming the change's implementation is active).
+
+cleanup:
+  status: cleaned
+  removed:
+    - F:\C3\unity-puer-exec-workspace\unity-puer-exec\.tmp\add_menu_item.js
+    - F:\C3\unity-puer-exec-workspace\unity-puer-exec\.tmp\create_menu_item.js
+    - F:\C3\unity-puer-exec-workspace\unity-puer-exec\.tmp\verify_menu_item.js
+    - F:\C3\unity-puer-exec-workspace\unity-puer-exec\.tmp\verify_menu_item_v2.js
+    - F:\C3\unity-puer-exec-workspace\unity-puer-exec\.tmp\test_menu_item_functionality.js
+    - F:\C3\unity-puer-exec-workspace\unity-puer-exec\.tmp\final_menu_item_test.js
+    - F:\C3\unity-puer-exec-workspace\c3-client-tree2\Project\Assets\Editor\SelectionGuidMenu.cs
+    - F:\C3\unity-puer-exec-workspace\c3-client-tree2\Project\Assets\Editor\SelectionGuidMenu.cs.meta
+  residue: []
+
+raw_transcript:
+  status: not-retained
+  location: none
+  note: The durable record is reconstructed from the subagent's structured report; no separate raw terminal transcript is being retained.
+
+final_summary: >
+  The Claude Haiku subagent completed the Prompt B task entirely within the CLI observation
+  surface. log_range was available from all exec/wait-for-exec responses. The agent used
+  get-log-briefs for structured log observation instead of wait-for-log-pattern. No
+  unity_stalled event occurred, so the post-stall diagnostic output from the three wait
+  commands was not directly tested. Compared to the 2026-03-23 baseline (which fell back to
+  direct Editor.log), this run eliminated the host-log fallback entirely.
