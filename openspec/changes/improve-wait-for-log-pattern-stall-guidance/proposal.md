@@ -1,19 +1,20 @@
 ## Why
 
-The newly archived Prompt B compile-recovery rerun still had to fall back to direct `Editor.log` inspection because `wait-for-log-pattern` returned `unity_stalled` twice without giving the validating subagent a clearly published next step that preserved the intended CLI-native verification path.
+The `exec` and `wait-for-exec` commands already return `log_range` + `brief_sequence` on every exit path (success, stall, timeout, error), giving agents structured diagnostic context to make recovery decisions without reading raw `Editor.log`. The three wait commands — `wait-for-log-pattern`, `wait-for-result-marker`, and `wait-until-ready` — lack this capability entirely. When any of them encounters a stall or timeout, the agent gets only a bare `unity_stalled` status and must fall back to direct log inspection.
 
 ## What Changes
 
-- Clarify or improve the `wait-for-log-pattern` stalled-outcome recovery path so help-only agents can stay inside the CLI surface more reliably.
-- Keep the scope narrow: focus on post-stall guidance and bounded observation behavior, not a general log-observation redesign.
-- Validate the result with a follow-up help-only rerun that checks whether direct `Editor.log` fallback decreases.
+- All three wait commands (`wait-for-log-pattern`, `wait-for-result-marker`, `wait-until-ready`) return `log_range` + `brief_sequence` on every exit path: success, stall, timeout, and other failures.
+- `wait-until-ready` gains a new `--start-offset` parameter (default=None → auto-capture current log end at invocation time), aligning its interface with the other wait commands.
+- The diagnostic output contract becomes uniform across all five observation commands (exec, wait-for-exec, and the three waits).
 
 ## Capabilities
 
 ### Modified Capabilities
-- `agent-cli-discoverability-validation`: log-observation reruns can measure whether `unity_stalled` remains a common reason that agents leave the intended CLI verification surface.
+- `log-brief`: wait commands gain the same log_range + brief_sequence output that exec/wait-for-exec already provide.
+- `agent-cli-discoverability-validation`: agents can stay inside the CLI surface for post-stall diagnosis across all commands, not just exec.
 
 ## Impact
 
-- Targets the main remaining regression observed in the latest Prompt B evidence after compile-recovery guidance improved.
-- Keeps the follow-up small enough for a focused next session.
+- Eliminates the diagnostic blind spot that forced agents to fall back to raw `Editor.log` after `unity_stalled` from wait commands.
+- Uniform interface reduces the number of special cases agents must handle.
