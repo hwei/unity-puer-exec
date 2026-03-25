@@ -6,7 +6,7 @@ Define the durable machine-facing contract for the `unity-puer-exec` CLI, includ
 ## Requirements
 ### Requirement: The CLI has one primary entry and flat command tree
 
-The formal CLI SHALL use `unity-puer-exec` as its single primary entry. The authoritative flat command tree SHALL include `wait-until-ready`, `wait-for-log-pattern`, `wait-for-exec`, `wait-for-result-marker`, `get-log-source`, `exec`, and `ensure-stopped`.
+The formal CLI SHALL use `unity-puer-exec` as its single primary entry. The authoritative flat command tree SHALL include `wait-until-ready`, `wait-for-log-pattern`, `wait-for-exec`, `wait-for-result-marker`, `get-log-source`, `get-log-briefs`, `exec`, `ensure-stopped`, and `resolve-blocker`.
 
 #### Scenario: Agent discovers the CLI surface
 
@@ -167,20 +167,19 @@ The formal CLI SHALL provide a dedicated `wait-for-exec` follow-up surface that 
 
 ### Requirement: Async execution remains machine-usable without continuation tokens
 
-Long-running execution SHALL remain machine-usable without token-driven continuation. `exec` SHALL provide enough machine-readable information for a caller to observe the intended long-running work, including an explicit opt-in path for returning the observation start offset used by result-marker waiting. When that opt-in path is requested, `exec` SHALL return top-level `log_offset` consistently for both `completed` and `running` responses. That `log_offset` SHALL be measured against the same log source consumed by `wait-for-log-pattern` and `wait-for-result-marker`, so callers can rely on it as an observation checkpoint. `wait-for-log-pattern` SHALL remain the regex-oriented observation primitive and SHALL support extraction modes including parsed JSON group extraction for structured markers. The extraction modes that return plain text and parsed JSON SHALL be mutually exclusive. The CLI SHALL provide a higher-level `wait-for-result-marker` path for the recommended single-line JSON result-marker workflow so callers do not need to author brittle full-JSON regexes themselves.
+Long-running execution SHALL remain machine-usable without token-driven continuation. `exec` SHALL return `log_range` and `brief_sequence` in every response so callers can observe the operation window without an opt-in flag. `log_range.start` SHALL be the authoritative observation checkpoint for `wait-for-log-pattern` and `wait-for-result-marker`, replacing the former `log_offset` field. `wait-for-log-pattern` SHALL remain the regex-oriented observation primitive and SHALL support extraction modes including parsed JSON group extraction for structured markers. The extraction modes that return plain text and parsed JSON SHALL be mutually exclusive. The CLI SHALL provide a higher-level `wait-for-result-marker` path for the recommended single-line JSON result-marker workflow so callers do not need to author brittle full-JSON regexes themselves.
 
 The `exec` entry function SHALL return an immediate JSON-serializable value for top-level `result`. The runtime SHALL NOT automatically await Promise or thenable return values from the default-exported entry function. Promise- or thenable-returning entry functions MUST fail explicitly so long-running async work continues to use result-marker observation instead of implicit return awaiting.
 
 #### Scenario: Long-running script uses a correlation-aware result marker
 
 - **WHEN** `exec` starts a script that emits a correlation-specific terminal result marker into the Unity log
-- **THEN** the initial `exec` response includes enough machine-readable information for the caller to observe that marker
-- **AND** when the caller explicitly requests log offset capture, the response includes the observation start offset
-- **AND** the caller can use either `wait-for-log-pattern` with extraction or `wait-for-result-marker` to detect and extract the intended terminal marker without polling a dedicated `get-result` command
+- **THEN** the initial `exec` response includes `log_range` with a stable `start` offset for the caller to use as the observation checkpoint
+- **AND** the caller can use either `wait-for-log-pattern` with extraction or `wait-for-result-marker` starting from `log_range.start` to detect and extract the intended terminal marker without polling a dedicated `get-result` command
 
 #### Scenario: Caller starts observation from the returned checkpoint
 
-- **WHEN** a caller invokes `exec --include-log-offset` and then starts either `wait-for-result-marker` or `wait-for-log-pattern` from the returned `log_offset`
+- **WHEN** a caller invokes `exec` and then starts either `wait-for-result-marker` or `wait-for-log-pattern` from `log_range.start`
 - **THEN** the returned offset is compatible with the observer's actual log source
 - **AND** the caller does not need to fall back to scanning from the beginning of the log to find the intended marker
 
@@ -296,7 +295,7 @@ Help for `exec` SHALL describe the new module-shaped entry contract, the require
 
 - **WHEN** an agent reads the published help surface for a project-scoped workflow that verifies success through ordinary Unity log output rather than a result marker
 - **THEN** the help surface exposes a first-class workflow example for `exec` plus `wait-for-log-pattern`
-- **AND** that example shows capturing `log_offset` before starting `wait-for-log-pattern --start-offset ...`
+- **AND** that example shows reading `log_range.start` from the `exec` response and passing it to `wait-for-log-pattern --start-offset ...`
 - **AND** the help surface does not force the agent to infer the full ordinary log-verification path only from scattered command-level prose
 
 #### Scenario: Agent reads help for exec script authoring

@@ -21,6 +21,7 @@ COMMAND_GROUPS = (
             "Secondary / Troubleshooting",
             (
                 "get-log-source",
+                "get-log-briefs",
                 "get-blocker-state",
                 "resolve-blocker",
                 "ensure-stopped",
@@ -59,6 +60,7 @@ TOP_LEVEL_COMMANDS = {
     "wait-for-exec": "continue waiting on an accepted exec request by `request_id`. See `wait-for-exec --help`.",
     "wait-for-result-marker": "wait for the standard single-line JSON result marker emitted by a long-running script. See `wait-for-result-marker --help`.",
     "get-log-source": "report the observable Unity log source for the selected target. See `get-log-source --help`.",
+    "get-log-briefs": "return structured log brief entries for a byte range; use `log_range` from exec or wait-for-exec responses to specify the range. See `get-log-briefs --help`.",
     "get-blocker-state": "report whether a supported Unity modal blocker is currently detected for the target project. See `get-blocker-state --help`.",
     "resolve-blocker": "dismiss a supported Unity modal blocker for the target project with an explicit action. See `resolve-blocker --help`.",
     "exec": "run JavaScript against a project or direct service; primary entry for script execution. See `exec --help`.",
@@ -77,8 +79,8 @@ RECOMMENDED_PATH = (
 )
 
 TOP_LEVEL_WORKFLOWS = {
-    "exec-and-wait-for-result-marker": "run a script that returns `correlation_id`, capture `log_offset`, then wait for the terminal result marker.",
-    "exec-and-wait-for-log-pattern": "run a script, capture `log_offset`, then wait for the ordinary Unity log pattern that proves the intended result.",
+    "exec-and-wait-for-result-marker": "run a script that returns `correlation_id`, use `log_range.start` from the exec response, then wait for the terminal result marker.",
+    "exec-and-wait-for-log-pattern": "run a script, use `log_range.start` from the exec response, then wait for the ordinary Unity log pattern that proves the intended result.",
     "recover-exec-by-request-id": "recover an accepted exec request by reusing or waiting on the same `request_id` after `running` or ambiguity.",
     "load-and-call-csharp-type": "learn the normal PuerTS-style bridge path for loading and calling Unity or C# types from JavaScript.",
     "derive-project-path-from-unity-api": "derive project-local paths through Unity APIs instead of assuming undocumented `ctx` fields.",
@@ -210,6 +212,43 @@ COMMAND_HELP = {
             ],
         },
     },
+    "get-log-briefs": {
+        "quick_start": [
+            "Secondary observation command for fetching structured log brief entries for a byte range.",
+            "`unity-puer-exec get-log-briefs --project-path X:/project --range 12345-18920`",
+            "Use the `log_range.start` and `log_range.end` values from an `exec` or `wait-for-exec` response to scope the range.",
+            "Check `brief_sequence` in the exec response first; call `get-log-briefs` only when you need structured detail beyond what the sequence string provides.",
+        ],
+        "related_workflows": (),
+        "args": {
+            "Arguments": [
+                "`--project-path <path>`: resolve the log source from a Unity project session artifact.",
+                "`--unity-log-path <path>`: explicit Unity Editor log file path; takes priority over project session artifact.",
+                "`--range START-END`: required byte range to parse; also accepts comma-separated `START,END` form.",
+                "`--levels error,warning`: filter results to the specified comma-separated level names (`info`, `warning`, `error`, `unknown`).",
+                "`--include 1,3,5`: select specific 1-based brief indices; union with `--levels` when both are supplied.",
+                "`--include-diagnostics`: include top-level debug diagnostics in the machine-readable response.",
+            ],
+            "Range Rules": [
+                "`--range` is required and must be two non-negative integers.",
+                "Both `START-END` (hyphen) and `START,END` (comma) forms are accepted.",
+                "Use `log_range.start` and `log_range.end` from an `exec` or `wait-for-exec` response as the source of truth for range values.",
+            ],
+            "Filter Rules": [
+                "When neither `--levels` nor `--include` is supplied, all briefs in the range are returned.",
+                "When both `--levels` and `--include` are supplied, the result is their union; no brief appears more than once.",
+                "`--include` uses 1-based indices matching the `index` field in each brief entry.",
+            ],
+        },
+        "status": {
+            "success": [
+                "`completed`: `result` is a JSON array of brief objects, each with `index`, `level`, `line_count`, `start_offset`, `end_offset`, and `text` fields.",
+            ],
+            "failure": [
+                ("failed", 1, "the range was invalid, the log file could not be read, or another unexpected failure occurred."),
+            ],
+        },
+    },
     "get-blocker-state": {
         "quick_start": [
             "Secondary troubleshooting command for confirming whether a supported Unity modal blocker is currently open for the selected project.",
@@ -297,7 +336,6 @@ COMMAND_HELP = {
                 "`--wait-timeout-ms <ms>`: how long to wait before returning the current execution state.",
                 "`--request-id <id>`: optional caller-owned exec identity for recovery or idempotent replay; omitted values are generated automatically.",
                 "`--refresh-before-exec`: for project-scoped execution, refresh the Unity project before running this script and keep any resulting recovery inside the same request lifecycle instead of a separate recovery command.",
-                "`--include-log-offset`: include top-level observation `log_offset` in the response for later result-marker waiting.",
                 "`--include-diagnostics`: include top-level debug diagnostics in the machine-readable response.",
                 "`--file <path>`: preferred script input for multi-line or AI-generated scripts; the file must export `default function (ctx) { ... }`.",
                 "`--stdin`: read script content from standard input; stdin content must export `default function (ctx) { ... }`.",
@@ -335,8 +373,8 @@ COMMAND_HELP = {
         },
         "status": {
             "success": [
-                "`completed`: the script finished; the accepted response includes `request_id`, and the default-exported entry function's immediate return value is in `result`.",
-                "`running`: the request is still active; continue with `wait-for-exec --request-id ...` or the script's own observation workflow.",
+                "`completed`: the script finished; the accepted response includes `request_id`, `log_range`, `brief_sequence`, and the default-exported entry function's immediate return value is in `result`.",
+                "`running`: the request is still active; continue with `wait-for-exec --request-id ...` or the script's own observation workflow. The response always includes `log_range` and `brief_sequence` for the observation window so far.",
                 "When `phase` is present, it names the current request stage without changing the top-level `running` contract; first-version values may include `refreshing`, `compiling`, and `executing`.",
             ],
             "failure": [
@@ -368,7 +406,7 @@ COMMAND_HELP = {
                 "`--unity-log-path <path>`: explicit non-default Unity Editor log path for project-scoped startup before `session_marker` exists.",
                 "`--request-id <id>`: required accepted exec identity to continue waiting on.",
                 "`--wait-timeout-ms <ms>`: how long to wait before returning the current request state again.",
-                "`--include-log-offset`: include top-level observation `log_offset` in the response.",
+                "`--log-start-offset <offset>`: optional log observation start offset; pass `log_range.start` from the original `exec` response so `brief_sequence` grows consistently across successive calls.",
                 "`--include-diagnostics`: include top-level debug diagnostics in the machine-readable response.",
             ],
             "Selector Rules": [
@@ -405,7 +443,7 @@ COMMAND_HELP = {
         "quick_start": [
             "Normal follow-up when `exec` returns `running` for a long-running workflow.",
             "`unity-puer-exec wait-for-result-marker --project-path X:/project --correlation-id ID --start-offset 12345`",
-            "Use the `correlation_id` from the script workflow and the `log_offset` returned by `exec --include-log-offset` or `wait-for-exec --include-log-offset`.",
+            "Use the `correlation_id` from the script workflow and the `log_range.start` returned by `exec` or `wait-for-exec`.",
         ],
         "related_workflows": ("exec-and-wait-for-result-marker",),
         "args": {
@@ -413,7 +451,7 @@ COMMAND_HELP = {
                 "`--project-path <path>` or `--base-url <url>`: select the observation target.",
                 "`--unity-log-path <path>`: explicit non-default Unity Editor log path for pre-session project-scoped observation.",
                 "`--correlation-id <id>`: required result-marker correlation id to match.",
-                "`--start-offset <offset>`: optional starting log offset, typically returned from `exec --include-log-offset`.",
+                "`--start-offset <offset>`: optional starting log offset; use `log_range.start` from the `exec` or `wait-for-exec` response as the observation checkpoint.",
                 "`--expected-session-marker <marker>`: optional same-session guard.",
                 "`--timeout-seconds <seconds>`: total wait budget for the terminal marker.",
                 "`--activity-timeout-seconds <seconds>`: how long observation may stay idle before stalling.",
@@ -488,10 +526,10 @@ COMMAND_HELP = {
 
 WORKFLOW_EXAMPLES = {
     "exec-and-wait-for-result-marker": {
-        "goal": "Run a long-running script, capture `log_offset`, and wait for the terminal result marker once the script has made the intended `correlation_id` available.",
+        "goal": "Run a long-running script and wait for the terminal result marker once the script has made the intended `correlation_id` available; use `log_range.start` from the exec response as the observation checkpoint.",
         "steps": [
             {
-                "command": "`unity-puer-exec exec --project-path X:/project --file X:/scripts/do-work.js --wait-timeout-ms 1000 --include-log-offset`",
+                "command": "`unity-puer-exec exec --project-path X:/project --file X:/scripts/do-work.js --wait-timeout-ms 1000`",
                 "script_body": [
                     "export default function run(ctx) {",
                     "  const correlation_id = ctx.request_id;",
@@ -499,7 +537,7 @@ WORKFLOW_EXAMPLES = {
                     "  return { correlation_id };",
                     "}",
                 ],
-                "observation": "Expected observation: stdout returns machine-readable JSON with `request_id`. If the script finishes within the wait budget, the immediate entry return value is in `result`. If the script is still active, the response may use `status = \"running\"` and still include top-level `log_offset`.",
+                "observation": "Expected observation: stdout returns machine-readable JSON with `request_id` and `log_range`. If the script finishes within the wait budget, the immediate entry return value is in `result`. If the script is still active, the response uses `status = \"running\"`. Read `log_range.start` from the response to use as the observation checkpoint.",
             },
             (
                 "`unity-puer-exec wait-for-result-marker --project-path X:/project --correlation-id ID --start-offset OFFSET`",
@@ -512,22 +550,22 @@ WORKFLOW_EXAMPLES = {
             "`running` is an expected machine state, not an error; branch on it and keep observing via result markers.",
             "Do not assume `running` already includes `result.correlation_id`; if you need correlation-aware observation before completion, design the script to expose that id deliberately.",
             "The default-exported entry function returns the immediate `result`; it is not an implicit async completion channel.",
-            "Use `log_offset` plus the script-provided `correlation_id` together so observation begins after the originating `exec` request.",
+            "Use `log_range.start` plus the script-provided `correlation_id` together so observation begins after the originating `exec` request.",
             "If the session has not yet produced `session_marker` and you intentionally use a non-default Unity log file, keep passing the same `--unity-log-path` on the log-related commands in that workflow.",
         ],
     },
     "exec-and-wait-for-log-pattern": {
-        "goal": "Run a script, capture `log_offset`, and verify success through ordinary Unity log output without falling back to direct host-log inspection.",
+        "goal": "Run a script and verify success through ordinary Unity log output without falling back to direct host-log inspection; use `log_range.start` from the exec response as the observation checkpoint.",
         "steps": [
             {
-                "command": "`unity-puer-exec exec --project-path X:/project --file X:/scripts/emit-build-log.js --wait-timeout-ms 1000 --include-log-offset`",
+                "command": "`unity-puer-exec exec --project-path X:/project --file X:/scripts/emit-build-log.js --wait-timeout-ms 1000`",
                 "script_body": [
                     "export default function run(ctx) {",
                     "  console.log('[Build] done for request ' + ctx.request_id);",
                     "  return { request_id: ctx.request_id, status: 'emitted-log-line' };",
                     "}",
                 ],
-                "observation": "Expected observation: stdout returns machine-readable JSON with the immediate `result`, and the accepted response includes top-level `log_offset` when requested so later observation can start from the same checkpoint.",
+                "observation": "Expected observation: stdout returns machine-readable JSON with the immediate `result` and `log_range`. Read `log_range.start` from the response so later observation can start from the same checkpoint.",
             },
             (
                 "`unity-puer-exec wait-for-log-pattern --project-path X:/project --start-offset OFFSET --pattern \"\\\\[Build\\\\] done for request REQ\"`",
@@ -536,7 +574,7 @@ WORKFLOW_EXAMPLES = {
         ],
         "notice": [
             "Use this workflow when success is confirmed by ordinary Unity log output rather than by a correlation-aware result marker.",
-            "Capture `log_offset` from `exec --include-log-offset` before starting `wait-for-log-pattern` so observation begins after the originating request.",
+            "Read `log_range.start` from the `exec` response and pass it to `wait-for-log-pattern --start-offset` so observation begins after the originating request.",
             "If the first observation window was missed, prefer creating a fresh safe checkpoint through a new exec-side attempt rather than falling back to direct host-log inspection.",
             "The pattern is a regular expression; escape special characters such as `[` and `]` when you need a literal match.",
             "If the session has not yet produced `session_marker` and you intentionally use a non-default Unity log file, keep passing the same `--unity-log-path` on the log-related commands in that workflow.",

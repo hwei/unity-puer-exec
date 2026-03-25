@@ -56,7 +56,7 @@ def build_parser():
     exec_parser.add_argument("--unity-log-path", default=None)
     exec_parser.add_argument("--wait-timeout-ms", type=int, default=direct_exec_client.DEFAULT_WAIT_TIMEOUT_MS)
     exec_parser.add_argument("--request-id", default=None)
-    exec_parser.add_argument("--include-log-offset", action="store_true")
+    exec_parser.add_argument("--include-log-offset", action="store_true")  # removed; emits usage error
     exec_parser.add_argument("--refresh-before-exec", action="store_true")
     _add_diagnostics_arg(exec_parser)
     script_source = exec_parser.add_mutually_exclusive_group(required=True)
@@ -70,7 +70,8 @@ def build_parser():
     wait_exec_parser.add_argument("--unity-log-path", default=None)
     wait_exec_parser.add_argument("--request-id", required=True)
     wait_exec_parser.add_argument("--wait-timeout-ms", type=int, default=direct_exec_client.DEFAULT_WAIT_TIMEOUT_MS)
-    wait_exec_parser.add_argument("--include-log-offset", action="store_true")
+    wait_exec_parser.add_argument("--include-log-offset", action="store_true")  # removed; emits usage error
+    wait_exec_parser.add_argument("--log-start-offset", type=int, default=None)
     _add_diagnostics_arg(wait_exec_parser)
 
     wait_result_parser = subparsers.add_parser("wait-for-result-marker", add_help=False)
@@ -83,6 +84,14 @@ def build_parser():
     wait_result_parser.add_argument("--activity-timeout-seconds", type=float, default=unity_session.DEFAULT_ACTIVITY_TIMEOUT_SECONDS)
     wait_result_parser.add_argument("--health-timeout-seconds", type=float, default=unity_session.DEFAULT_HEALTH_TIMEOUT_SECONDS)
     _add_diagnostics_arg(wait_result_parser)
+
+    get_log_briefs_parser = subparsers.add_parser("get-log-briefs", add_help=False)
+    get_log_briefs_parser.add_argument("--project-path", default=None)
+    get_log_briefs_parser.add_argument("--unity-log-path", default=None)
+    get_log_briefs_parser.add_argument("--range", required=True, dest="range_str")
+    get_log_briefs_parser.add_argument("--levels", default=None)
+    get_log_briefs_parser.add_argument("--include", default=None, dest="include_str")
+    _add_diagnostics_arg(get_log_briefs_parser)
 
     ensure_stopped_parser = subparsers.add_parser("ensure-stopped", add_help=False)
     _add_selector_args(ensure_stopped_parser)

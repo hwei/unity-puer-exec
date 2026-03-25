@@ -9,7 +9,6 @@ namespace UnityPuerExec
         public string request_id = "";
         public string code = "";
         public int wait_timeout_ms = 1000;
-        public bool include_log_offset = false;
         public bool include_diagnostics = false;
     }
 
@@ -18,7 +17,6 @@ namespace UnityPuerExec
     {
         public string request_id = "";
         public int wait_timeout_ms = 1000;
-        public bool include_log_offset = false;
         public bool include_diagnostics = false;
     }
 
@@ -122,9 +120,8 @@ namespace UnityPuerExec
             return true;
         }
 
-        internal static string BuildExecResponseJson(UnityPuerExecJobSnapshot snapshot, string sessionMarker, long? logOffset)
+        internal static string BuildExecResponseJson(UnityPuerExecJobSnapshot snapshot, string sessionMarker)
         {
-            var logOffsetJson = logOffset.HasValue ? "\"log_offset\":" + logOffset.Value + "," : "";
             switch (snapshot.Status)
             {
                 case UnityPuerExecJobStatus.Completed:
@@ -132,7 +129,6 @@ namespace UnityPuerExec
                            "\"ok\":true," +
                            "\"status\":\"completed\"," +
                            "\"request_id\":\"" + JsonEscape(snapshot.RequestId) + "\"," +
-                           logOffsetJson +
                            "\"session_marker\":\"" + JsonEscape(sessionMarker) + "\"," +
                            "\"result\":" + (snapshot.ResultJson ?? "null") +
                            "}";
@@ -142,7 +138,6 @@ namespace UnityPuerExec
                            "\"ok\":false," +
                            "\"status\":\"failed\"," +
                            "\"request_id\":\"" + JsonEscape(snapshot.RequestId) + "\"," +
-                           logOffsetJson +
                            "\"session_marker\":\"" + JsonEscape(sessionMarker) + "\"," +
                            "\"error\":\"" + JsonEscape(snapshot.Error) + "\"," +
                            errorDetailJson +
@@ -153,7 +148,6 @@ namespace UnityPuerExec
                            "\"ok\":true," +
                            "\"status\":\"running\"," +
                            "\"request_id\":\"" + JsonEscape(snapshot.RequestId) + "\"," +
-                           logOffsetJson +
                            "\"session_marker\":\"" + JsonEscape(sessionMarker) + "\"," +
                            "\"result\":null" +
                            "}";

@@ -6,8 +6,10 @@ import time
 import uuid
 
 import direct_exec_client
+import unity_log_brief
 import unity_modal_blockers
 import unity_session
+import unity_session_logs
 
 
 EXIT_RUNNING = direct_exec_client.EXIT_RUNNING
@@ -61,6 +63,37 @@ def validate_project_mode_only(selector, option_name, value):
         raise ValueError("{} is only valid with --project-path".format(option_name))
 
 
+def _resolve_exec_log_path(args, session):
+    if session is not None and getattr(session, "effective_log_path", None):
+        return session.effective_log_path
+    if getattr(args, "unity_log_path", None):
+        return args.unity_log_path
+    return str(unity_session_logs.default_editor_log_path())
+
+
+def _capture_log_offset(log_path):
+    if log_path is None:
+        return 0
+    size = unity_session_logs.read_editor_log_size(log_path)
+    return size if size is not None else 0
+
+
+def _inject_log_range_into_stdout(stdout_text, log_path, log_start, log_end):
+    if not stdout_text:
+        return stdout_text
+    body = json.loads(stdout_text)
+    body["log_range"] = {"start": log_start, "end": log_end}
+    briefs = unity_log_brief.parse_log_briefs(log_path, log_start, log_end)
+    body["brief_sequence"] = unity_log_brief.build_brief_sequence(briefs)
+    return emit_payload(body)
+
+
+def _inject_log_range_into_payload(payload, log_path, log_start, log_end):
+    payload["log_range"] = {"start": log_start, "end": log_end}
+    briefs = unity_log_brief.parse_log_briefs(log_path, log_start, log_end)
+    payload["brief_sequence"] = unity_log_brief.build_brief_sequence(briefs)
+
+
 def resolve_selector(args):
     if getattr(args, "project_path", None) and getattr(args, "base_url", None):
         raise ValueError("address_conflict")
@@ -110,6 +143,8 @@ def run_command(args):
             return run_get_blocker_state(args)
         if args.command == "resolve-blocker":
             return run_resolve_blocker(args)
+        if args.command == "get-log-briefs":
+            return run_get_log_briefs(args)
         return run_ensure_stopped(args)
     except ValueError as exc:
         status = "address_conflict" if str(exc) == "address_conflict" else "failed"
@@ -201,8 +236,6 @@ def _next_step_payload(args, request_id):
         argv.extend(["--unity-exe-path", args.unity_exe_path])
     if getattr(args, "unity_log_path", None):
         argv.extend(["--unity-log-path", args.unity_log_path])
-    if getattr(args, "include_log_offset", False):
-        argv.append("--include-log-offset")
     if getattr(args, "include_diagnostics", False):
         argv.append("--include-diagnostics")
     return {"command": "wait-for-exec", "argv": argv}
@@ -293,7 +326,6 @@ def _invoke_exec(base_url, request_id, code, args):
         "request_id": request_id,
         "code": code,
         "wait_timeout_ms": args.wait_timeout_ms,
-        "include_log_offset": args.include_log_offset,
         "include_diagnostics": args.include_diagnostics,
     }
     return direct_exec_client.invoke_command(
@@ -435,6 +467,8 @@ def _should_keep_pending_after_submit(exit_code, stdout_text):
 
 
 def run_exec(args):
+    if getattr(args, "include_log_offset", False):
+        return usage_error("--include-log-offset has been removed; use log_range.start from exec response")
     request_id = args.request_id or uuid.uuid4().hex
     code = read_exec_code(args)
     selector = resolve_selector(args)
@@ -454,11 +488,17 @@ def run_exec(args):
         except (unity_session.UnityStalledError, unity_session.UnityNotReadyError) as exc:
             _write_pending_exec(args, request_id, code, refresh_before_exec=args.refresh_before_exec)
             payload = _emit_running_payload("exec", exc.session, request_id, args)
+            _rp1_log_path = _resolve_exec_log_path(args, exc.session)
+            _rp1_log_end = _capture_log_offset(_rp1_log_path)
+            _inject_log_range_into_payload(payload, _rp1_log_path, _rp1_log_end, _rp1_log_end)
             return EXIT_RUNNING, emit_payload(payload), ""
         base_url = session.base_url
     else:
         session = None
         base_url = args.base_url
+
+    log_path = _resolve_exec_log_path(args, session)
+    log_start = _capture_log_offset(log_path)
 
     if selector == "project_path" and args.refresh_before_exec:
         refresh_request_id = _refresh_request_id(request_id)
@@ -480,6 +520,7 @@ def run_exec(args):
         if _running_or_timed_out_response(exit_code, stdout_text):
             _refresh_pending_exec(args, request_id, _read_pending_exec(args, request_id), PHASE_REFRESHING)
             payload = _emit_running_payload("exec", session, request_id, args, phase=PHASE_REFRESHING)
+            _inject_log_range_into_payload(payload, log_path, log_start, _capture_log_offset(log_path))
             return EXIT_RUNNING, emit_payload(payload), ""
         if exit_code != 0:
             _clear_pending_exec(args, request_id)
@@ -506,6 +547,7 @@ def run_exec(args):
                 default_phase=PHASE_REFRESHING,
                 normalize_compiling=False,
             )
+            stdout_text = _inject_log_range_into_stdout(stdout_text, log_path, log_start, _capture_log_offset(log_path))
             return exit_code, stdout_text, stderr_text
         try:
             session = _ensure_project_session_ready_after_refresh(args)
@@ -513,6 +555,7 @@ def run_exec(args):
         except (unity_session.UnityStalledError, unity_session.UnityNotReadyError) as exc:
             _refresh_pending_exec(args, request_id, _read_pending_exec(args, request_id), PHASE_REFRESHING)
             payload = _emit_running_payload("exec", exc.session, request_id, args, phase=PHASE_REFRESHING)
+            _inject_log_range_into_payload(payload, log_path, log_start, _capture_log_offset(log_path))
             return EXIT_RUNNING, emit_payload(payload), ""
         _set_pending_phase(args, request_id, _read_pending_exec(args, request_id), PHASE_EXECUTING)
 
@@ -535,14 +578,20 @@ def run_exec(args):
         request_id=request_id,
         default_phase=default_phase,
     )
+    stdout_text = _inject_log_range_into_stdout(stdout_text, log_path, log_start, _capture_log_offset(log_path))
     return exit_code, stdout_text, stderr_text
 
 
 def run_wait_for_exec(args):
+    if getattr(args, "include_log_offset", False):
+        return usage_error("--include-log-offset has been removed; use log_range.start from exec response")
     selector = resolve_selector(args)
     validate_positive(args.wait_timeout_ms, "wait-timeout-ms")
     validate_project_mode_only(selector, "unity-exe-path", args.unity_exe_path)
     validate_project_mode_only(selector, "unity-log-path", args.unity_log_path)
+
+    _wfe_log_path_early = getattr(args, "unity_log_path", None) or str(unity_session_logs.default_editor_log_path())
+    _wfe_log_start = args.log_start_offset if args.log_start_offset is not None else _capture_log_offset(_wfe_log_path_early)
 
     if selector == "project_path":
         _sweep_pending_exec(args)
@@ -563,6 +612,8 @@ def run_wait_for_exec(args):
                     args,
                     phase=_pending_phase(pending),
                 )
+                _wfe_rp1_log_path = _resolve_exec_log_path(args, exc.session)
+                _inject_log_range_into_payload(payload, _wfe_rp1_log_path, _wfe_log_start, _capture_log_offset(_wfe_rp1_log_path))
                 return EXIT_RUNNING, emit_payload(payload), ""
             raise
         base_url = session.base_url
@@ -573,10 +624,10 @@ def run_wait_for_exec(args):
     if pending is not None:
         if pending.get("refresh_before_exec") and pending.get("phase") == PHASE_REFRESHING:
             refresh_request_id = pending.get("refresh_request_id") or _refresh_request_id(args.request_id)
+            _wfe_refresh_log_path = _resolve_exec_log_path(args, session)
             payload = {
                 "request_id": refresh_request_id,
                 "wait_timeout_ms": args.wait_timeout_ms,
-                "include_log_offset": args.include_log_offset,
                 "include_diagnostics": args.include_diagnostics,
             }
             exit_code, stdout_text, stderr_text = direct_exec_client.invoke_command(
@@ -594,6 +645,7 @@ def run_wait_for_exec(args):
             if _running_or_timed_out_response(exit_code, stdout_text):
                 pending = _refresh_pending_exec(args, args.request_id, pending, PHASE_REFRESHING)
                 payload = _emit_running_payload("wait-for-exec", session, args.request_id, args, phase=PHASE_REFRESHING)
+                _inject_log_range_into_payload(payload, _wfe_refresh_log_path, _wfe_log_start, _capture_log_offset(_wfe_refresh_log_path))
                 return EXIT_RUNNING, emit_payload(payload), ""
             if exit_code != 0:
                 _clear_pending_exec(args, args.request_id)
@@ -620,6 +672,7 @@ def run_wait_for_exec(args):
                     default_phase=PHASE_REFRESHING,
                     normalize_compiling=False,
                 )
+                stdout_text = _inject_log_range_into_stdout(stdout_text, _wfe_refresh_log_path, _wfe_log_start, _capture_log_offset(_wfe_refresh_log_path))
                 return exit_code, stdout_text, stderr_text
             try:
                 session = _ensure_project_session_ready_after_refresh(args)
@@ -627,6 +680,7 @@ def run_wait_for_exec(args):
             except (unity_session.UnityStalledError, unity_session.UnityNotReadyError) as exc:
                 pending = _refresh_pending_exec(args, args.request_id, pending, PHASE_REFRESHING)
                 payload = _emit_running_payload("wait-for-exec", exc.session, args.request_id, args, phase=PHASE_REFRESHING)
+                _inject_log_range_into_payload(payload, _wfe_refresh_log_path, _wfe_log_start, _capture_log_offset(_wfe_refresh_log_path))
                 return EXIT_RUNNING, emit_payload(payload), ""
             pending = _refresh_pending_exec(args, args.request_id, pending, PHASE_EXECUTING)
         exit_code, stdout_text, stderr_text = _invoke_exec(base_url, args.request_id, pending["code"], args)
@@ -634,7 +688,6 @@ def run_wait_for_exec(args):
         payload = {
             "request_id": args.request_id,
             "wait_timeout_ms": args.wait_timeout_ms,
-            "include_log_offset": args.include_log_offset,
             "include_diagnostics": args.include_diagnostics,
         }
         exit_code, stdout_text, stderr_text = direct_exec_client.invoke_command(
@@ -660,6 +713,8 @@ def run_wait_for_exec(args):
         request_id=args.request_id,
         default_phase=default_phase,
     )
+    _wfe_final_log_path = _resolve_exec_log_path(args, session)
+    stdout_text = _inject_log_range_into_stdout(stdout_text, _wfe_final_log_path, _wfe_log_start, _capture_log_offset(_wfe_final_log_path))
     return exit_code, stdout_text, stderr_text
 
 
@@ -886,6 +941,53 @@ def run_resolve_blocker(args):
         payload["error"] = result["error"]
     payload = attach_diagnostics(payload, include_diagnostics=args.include_diagnostics, session=session)
     return 1, emit_payload(payload), ""
+
+
+def run_get_log_briefs(args):
+    range_str = args.range_str
+    sep = "," if "," in range_str and "-" not in range_str.lstrip("-") else "-"
+    if "," in range_str:
+        parts = range_str.split(",", 1)
+    else:
+        # Handle START-END where END could also be negative; use last hyphen as separator
+        idx = range_str.rfind("-")
+        if idx <= 0:
+            raise ValueError("--range must be START-END or START,END")
+        parts = [range_str[:idx], range_str[idx + 1:]]
+    try:
+        range_start = int(parts[0])
+        range_end = int(parts[1])
+    except (ValueError, IndexError):
+        raise ValueError("--range must contain integer start and end offsets")
+
+    levels = None
+    if args.levels:
+        levels = [lv.strip() for lv in args.levels.split(",") if lv.strip()]
+
+    include_indices = None
+    if args.include_str:
+        try:
+            include_indices = [int(x.strip()) for x in args.include_str.split(",") if x.strip()]
+        except ValueError:
+            raise ValueError("--include must be comma-separated integers")
+
+    log_path = getattr(args, "unity_log_path", None)
+    if log_path is None and getattr(args, "project_path", None):
+        source = unity_session.get_log_source(project_path=args.project_path)
+        if source is not None:
+            log_path = source[0].effective_log_path
+    if log_path is None:
+        log_path = str(unity_session_logs.default_editor_log_path())
+
+    briefs = unity_log_brief.parse_log_briefs(log_path, range_start, range_end)
+    filtered = unity_log_brief.filter_briefs(briefs, levels=levels, include_indices=include_indices)
+
+    payload = success_payload(
+        "get-log-briefs",
+        result=filtered,
+        include_diagnostics=args.include_diagnostics,
+    )
+    return 0, emit_payload(payload), ""
 
 
 def run_ensure_stopped(args):

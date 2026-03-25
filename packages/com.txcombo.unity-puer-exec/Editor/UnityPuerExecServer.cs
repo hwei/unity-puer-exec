@@ -230,7 +230,6 @@ namespace UnityPuerExec
             }
 
             Debug.Log($"[UnityPuerExec] Exec request accepted request={execJob.RequestId} new={isNewRequest}");
-            var logOffset = request.include_log_offset ? ReadEditorLogOffset() : (long?)null;
             if (isNewRequest)
             {
                 var enqueueCompletion = new TaskCompletionSource<bool>();
@@ -255,7 +254,7 @@ namespace UnityPuerExec
 
             Debug.Log($"[UnityPuerExec] Exec waiting request={execJob.RequestId}");
             await WaitForTerminalOrTimeoutAsync(execJob, request.wait_timeout_ms);
-            var payload = UnityPuerExecProtocol.BuildExecResponseJson(execJob.Snapshot(), sessionMarker, logOffset);
+            var payload = UnityPuerExecProtocol.BuildExecResponseJson(execJob.Snapshot(), sessionMarker);
             Debug.Log($"[UnityPuerExec] Exec responding request={execJob.RequestId} payload={payload}");
             await WriteJsonAsync(context, payload);
         }
@@ -287,9 +286,8 @@ namespace UnityPuerExec
                 return;
             }
 
-            var logOffset = request.include_log_offset ? ReadEditorLogOffset() : (long?)null;
             await WaitForTerminalOrTimeoutAsync(execJob, request.wait_timeout_ms);
-            var payload = UnityPuerExecProtocol.BuildExecResponseJson(execJob.Snapshot(), sessionMarker, logOffset);
+            var payload = UnityPuerExecProtocol.BuildExecResponseJson(execJob.Snapshot(), sessionMarker);
             await WriteJsonAsync(context, payload);
         }
 

@@ -193,7 +193,7 @@ class UnityPuerExecCliTests(unittest.TestCase):
         self.assertIn("Steps", stdout)
         self.assertIn("What To Notice", stdout)
         self.assertIn("correlation_id", stdout)
-        self.assertIn("log_offset", stdout)
+        self.assertIn("log_range.start", stdout)
         self.assertIn("Do not assume `running` already includes `result.correlation_id`", stdout)
 
     def test_log_pattern_help_example_renders_checkpointed_workflow(self):
@@ -203,7 +203,7 @@ class UnityPuerExecCliTests(unittest.TestCase):
         self.assertEqual(stderr, "")
         self.assertIn("Goal", stdout)
         self.assertIn("wait-for-log-pattern", stdout)
-        self.assertIn("--include-log-offset", stdout)
+        self.assertIn("log_range.start", stdout)
         self.assertIn("--start-offset OFFSET", stdout)
         self.assertIn("direct host-log inspection", stdout)
 
@@ -412,22 +412,23 @@ class UnityPuerExecCliTests(unittest.TestCase):
                 "invoke_command",
                 return_value=(
                     unity_puer_exec.EXIT_RUNNING,
-                    json.dumps({"ok": True, "status": "running", "request_id": "req-running", "log_offset": 12345, "result": {"correlation_id": "id-7"}}),
+                    json.dumps({"ok": True, "status": "running", "request_id": "req-running", "result": {"correlation_id": "id-7"}}),
                     "",
                 ),
             ) as invoke_command:
-                exit_code, stdout, stderr = unity_puer_exec.run_cli(["exec", "--file", str(script_path), "--include-log-offset"])
+                exit_code, stdout, stderr = unity_puer_exec.run_cli(["exec", "--file", str(script_path)])
 
         self.assertEqual(exit_code, unity_puer_exec.EXIT_RUNNING)
         self.assertEqual(stderr, "")
         payload = invoke_command.call_args.args[2]
         self.assertEqual(payload["code"], "export default function run(ctx) { return 7; }")
         self.assertTrue(payload["request_id"])
-        self.assertTrue(payload["include_log_offset"])
+        self.assertNotIn("include_log_offset", payload)
         body = json.loads(stdout)
         self.assertEqual(body["status"], "running")
         self.assertEqual(body["request_id"], "req-running")
-        self.assertEqual(body["log_offset"], 12345)
+        self.assertIn("log_range", body)
+        self.assertIn("brief_sequence", body)
         self.assertEqual(body["result"]["correlation_id"], "id-7")
 
     def test_exec_forwards_explicit_request_id(self):
@@ -493,7 +494,7 @@ class UnityPuerExecCliTests(unittest.TestCase):
 
         self.assertEqual(ensure_session_ready.call_args.kwargs["unity_log_path"], "X:/Logs/Editor.log")
 
-    def test_exec_completed_response_preserves_top_level_log_offset(self):
+    def test_exec_completed_response_includes_log_range(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             script_path = Path(temp_dir) / "script.js"
             script_path.write_text("export default function run(ctx) { return { correlation_id: 'id-8' }; }", encoding="utf-8")
@@ -511,21 +512,23 @@ class UnityPuerExecCliTests(unittest.TestCase):
                             "ok": True,
                             "status": "completed",
                             "request_id": "req-8",
-                            "log_offset": 67890,
                             "result": {"correlation_id": "id-8"},
                         }
                     ),
                     "",
                 ),
             ):
-                exit_code, stdout, stderr = unity_puer_exec.run_cli(["exec", "--file", str(script_path), "--include-log-offset"])
+                exit_code, stdout, stderr = unity_puer_exec.run_cli(["exec", "--file", str(script_path)])
 
         self.assertEqual(exit_code, 0)
         self.assertEqual(stderr, "")
         body = json.loads(stdout)
         self.assertEqual(body["status"], "completed")
         self.assertEqual(body["request_id"], "req-8")
-        self.assertEqual(body["log_offset"], 67890)
+        self.assertIn("log_range", body)
+        self.assertIn("start", body["log_range"])
+        self.assertIn("end", body["log_range"])
+        self.assertIn("brief_sequence", body)
         self.assertEqual(body["result"]["correlation_id"], "id-8")
 
     def test_exec_hides_diagnostics_by_default(self):
