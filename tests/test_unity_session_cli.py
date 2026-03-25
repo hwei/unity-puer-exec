@@ -1407,5 +1407,63 @@ class UnityPuerExecCliTests(unittest.TestCase):
         self.assertEqual(payload["status"], "unity_not_ready")
 
 
+    def test_wait_for_exec_brief_sequence_grows_with_log(self):
+        """Task 3.5: brief_sequence grows across successive wait-for-exec calls when log_range.start is held constant."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            log_path = Path(temp_dir) / "Editor.log"
+            log_path.write_text(
+                "Loading module assembly\nInitializing engine\n",
+                encoding="utf-8",
+            )
+            initial_size = log_path.stat().st_size
+
+            def _make_running_response(req_id):
+                return (
+                    unity_puer_exec.EXIT_RUNNING,
+                    json.dumps({"ok": True, "status": "running", "request_id": req_id}),
+                    "",
+                )
+
+            with mock.patch.object(
+                unity_session_logs,
+                "default_editor_log_path",
+                return_value=log_path,
+            ), mock.patch.object(
+                unity_puer_exec.direct_exec_client,
+                "invoke_command",
+                return_value=_make_running_response("req-grow"),
+            ):
+                # First call: observe brief_sequence at initial log size
+                exit_code_1, stdout_1, _ = unity_puer_exec.run_cli([
+                    "wait-for-exec", "--base-url", "http://127.0.0.1:55231",
+                    "--request-id", "req-grow", "--log-start-offset", "0",
+                ])
+                body_1 = json.loads(stdout_1)
+                seq_1 = body_1["brief_sequence"]
+                log_range_1 = body_1["log_range"]
+
+                # Append more log content
+                with log_path.open("a", encoding="utf-8") as f:
+                    f.write("[Warning] Shader compilation slow\n[Error] NullReferenceException\n  at Foo.Bar()\n")
+
+                # Second call: same log_start_offset, log has grown
+                exit_code_2, stdout_2, _ = unity_puer_exec.run_cli([
+                    "wait-for-exec", "--base-url", "http://127.0.0.1:55231",
+                    "--request-id", "req-grow", "--log-start-offset", "0",
+                ])
+                body_2 = json.loads(stdout_2)
+                seq_2 = body_2["brief_sequence"]
+                log_range_2 = body_2["log_range"]
+
+            # Verify: log_range.start stays constant
+            self.assertEqual(log_range_1["start"], 0)
+            self.assertEqual(log_range_2["start"], 0)
+            # Verify: log_range.end grew
+            self.assertGreater(log_range_2["end"], log_range_1["end"])
+            # Verify: brief_sequence grew and is prefix-consistent
+            self.assertTrue(len(seq_2) > len(seq_1), f"seq_2={seq_2!r} should be longer than seq_1={seq_1!r}")
+            self.assertTrue(seq_2.startswith(seq_1), f"seq_2={seq_2!r} should start with seq_1={seq_1!r}")
+
+
 if __name__ == "__main__":
     unittest.main()

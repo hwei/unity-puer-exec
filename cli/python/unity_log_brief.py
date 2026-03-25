@@ -56,6 +56,11 @@ def _parse_chunk(chunk, base_offset):
     # as a proxy for byte length. The offsets are approximate for non-ASCII content but
     # are consistent with how read_editor_log_size works (st_size is bytes).
     raw_lines = chunk.split("\n")
+    # Drop trailing empty element produced by split on newline-terminated content;
+    # without this, the empty string is mis-classified as an unknown brief and
+    # breaks brief_sequence prefix consistency across growing log ranges.
+    if raw_lines and raw_lines[-1] == "":
+        raw_lines.pop()
     # Compute byte offset for each line start. We use encoded length + 1 for "\n".
     line_byte_starts = []
     current = base_offset
