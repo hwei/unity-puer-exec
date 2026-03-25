@@ -20,6 +20,7 @@ def build_parser():
     ready_parser.add_argument("--ready-timeout-seconds", type=float, default=unity_session.DEFAULT_READY_TIMEOUT_SECONDS)
     ready_parser.add_argument("--activity-timeout-seconds", type=float, default=unity_session.DEFAULT_ACTIVITY_TIMEOUT_SECONDS)
     ready_parser.add_argument("--health-timeout-seconds", type=float, default=unity_session.DEFAULT_HEALTH_TIMEOUT_SECONDS)
+    ready_parser.add_argument("--start-offset", type=int, default=None)
     _add_diagnostics_arg(ready_parser)
 
     wait_log_parser = subparsers.add_parser("wait-for-log-pattern", add_help=False)

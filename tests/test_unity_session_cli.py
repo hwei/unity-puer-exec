@@ -1465,5 +1465,184 @@ class UnityPuerExecCliTests(unittest.TestCase):
             self.assertTrue(seq_2.startswith(seq_1), f"seq_2={seq_2!r} should start with seq_1={seq_1!r}")
 
 
+    def test_wait_for_log_pattern_success_includes_log_range(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            log_path = Path(temp_dir) / "Editor.log"
+            log_path.write_text("Loading module\n[Build] complete\n", encoding="utf-8")
+            session = _make_session()
+            session.diagnostics["matched_log_text"] = "[Build] complete"
+
+            with mock.patch.object(
+                unity_session, "create_observation_session", return_value=session
+            ), mock.patch.object(
+                unity_session, "wait_for_log_pattern", return_value=session
+            ), mock.patch.object(
+                unity_session_logs, "default_editor_log_path", return_value=log_path
+            ):
+                exit_code, stdout, stderr = unity_puer_exec.run_cli(
+                    ["wait-for-log-pattern", "--pattern", r"\[Build\] complete", "--timeout-seconds", "5"]
+                )
+
+            self.assertEqual(exit_code, 0)
+            body = json.loads(stdout)
+            self.assertIn("log_range", body)
+            self.assertIn("start", body["log_range"])
+            self.assertIn("end", body["log_range"])
+            self.assertIn("brief_sequence", body)
+
+    def test_wait_for_log_pattern_stall_includes_log_range(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            log_path = Path(temp_dir) / "Editor.log"
+            log_path.write_text("Loading module\n", encoding="utf-8")
+            session = _make_session()
+            stalled = unity_session.UnityStalledError("compiling", session=session)
+
+            with mock.patch.object(
+                unity_session, "create_observation_session", return_value=session
+            ), mock.patch.object(
+                unity_session, "wait_for_log_pattern", side_effect=stalled
+            ), mock.patch.object(
+                unity_session_logs, "default_editor_log_path", return_value=log_path
+            ):
+                exit_code, stdout, stderr = unity_puer_exec.run_cli(
+                    ["wait-for-log-pattern", "--pattern", r"\[Build\] complete", "--timeout-seconds", "5"]
+                )
+
+            self.assertEqual(exit_code, unity_puer_exec.EXIT_UNITY_NOT_READY)
+            body = json.loads(stdout)
+            self.assertEqual(body["status"], "unity_stalled")
+            self.assertEqual(body["operation"], "wait-for-log-pattern")
+            self.assertIn("log_range", body)
+            self.assertIn("brief_sequence", body)
+
+    def test_wait_for_log_pattern_start_offset_sets_log_range_start(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            log_path = Path(temp_dir) / "Editor.log"
+            log_path.write_text("Loading module\n[Build] complete\n", encoding="utf-8")
+            session = _make_session()
+
+            with mock.patch.object(
+                unity_session, "create_observation_session", return_value=session
+            ), mock.patch.object(
+                unity_session, "wait_for_log_pattern", return_value=session
+            ), mock.patch.object(
+                unity_session_logs, "default_editor_log_path", return_value=log_path
+            ):
+                exit_code, stdout, stderr = unity_puer_exec.run_cli(
+                    ["wait-for-log-pattern", "--pattern", r"\[Build\]", "--start-offset", "5"]
+                )
+
+            self.assertEqual(exit_code, 0)
+            body = json.loads(stdout)
+            self.assertEqual(body["log_range"]["start"], 5)
+
+    def test_wait_for_result_marker_success_includes_log_range(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            log_path = Path(temp_dir) / "Editor.log"
+            log_path.write_text("Loading module\n", encoding="utf-8")
+            session = _make_session()
+            session.diagnostics["extracted_group"] = json.dumps({"correlation_id": "wanted"})
+            session.diagnostics["matched_log_offset"] = 100
+
+            with mock.patch.object(
+                unity_session, "create_observation_session", return_value=session
+            ), mock.patch.object(
+                unity_session, "wait_for_log_pattern", return_value=session
+            ), mock.patch.object(
+                unity_session_logs, "default_editor_log_path", return_value=log_path
+            ):
+                exit_code, stdout, stderr = unity_puer_exec.run_cli(
+                    ["wait-for-result-marker", "--correlation-id", "wanted"]
+                )
+
+            self.assertEqual(exit_code, 0)
+            body = json.loads(stdout)
+            self.assertIn("log_range", body)
+            self.assertIn("brief_sequence", body)
+
+    def test_wait_for_result_marker_stall_includes_log_range(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            log_path = Path(temp_dir) / "Editor.log"
+            log_path.write_text("Loading module\n", encoding="utf-8")
+            session = _make_session()
+            stalled = unity_session.UnityStalledError("compiling", session=session)
+
+            with mock.patch.object(
+                unity_session, "create_observation_session", return_value=session
+            ), mock.patch.object(
+                unity_session, "wait_for_log_pattern", side_effect=stalled
+            ), mock.patch.object(
+                unity_session_logs, "default_editor_log_path", return_value=log_path
+            ):
+                exit_code, stdout, stderr = unity_puer_exec.run_cli(
+                    ["wait-for-result-marker", "--correlation-id", "wanted"]
+                )
+
+            self.assertEqual(exit_code, unity_puer_exec.EXIT_UNITY_NOT_READY)
+            body = json.loads(stdout)
+            self.assertEqual(body["status"], "unity_stalled")
+            self.assertEqual(body["operation"], "wait-for-result-marker")
+            self.assertIn("log_range", body)
+            self.assertIn("brief_sequence", body)
+
+    def test_wait_until_ready_success_includes_log_range(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            log_path = Path(temp_dir) / "Editor.log"
+            log_path.write_text("Loading module\nReady\n", encoding="utf-8")
+            session = _make_session()
+
+            with mock.patch.object(
+                unity_session, "ensure_session_ready", return_value=session
+            ), mock.patch.object(
+                unity_session_logs, "default_editor_log_path", return_value=log_path
+            ):
+                exit_code, stdout, stderr = unity_puer_exec.run_cli(["wait-until-ready"])
+
+            self.assertEqual(exit_code, 0)
+            body = json.loads(stdout)
+            self.assertIn("log_range", body)
+            self.assertIn("brief_sequence", body)
+
+    def test_wait_until_ready_stall_includes_log_range(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            log_path = Path(temp_dir) / "Editor.log"
+            log_path.write_text("Loading module\n", encoding="utf-8")
+            session = _make_session()
+            stalled = unity_session.UnityStalledError("starting", session=session)
+
+            with mock.patch.object(
+                unity_session, "ensure_session_ready", side_effect=stalled
+            ), mock.patch.object(
+                unity_session_logs, "default_editor_log_path", return_value=log_path
+            ):
+                exit_code, stdout, stderr = unity_puer_exec.run_cli(["wait-until-ready"])
+
+            self.assertEqual(exit_code, unity_puer_exec.EXIT_UNITY_NOT_READY)
+            body = json.loads(stdout)
+            self.assertEqual(body["status"], "unity_stalled")
+            self.assertEqual(body["operation"], "wait-until-ready")
+            self.assertIn("log_range", body)
+            self.assertIn("brief_sequence", body)
+
+    def test_wait_until_ready_start_offset_sets_log_range_start(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            log_path = Path(temp_dir) / "Editor.log"
+            log_path.write_text("Loading module\nReady\n", encoding="utf-8")
+            session = _make_session()
+
+            with mock.patch.object(
+                unity_session, "ensure_session_ready", return_value=session
+            ), mock.patch.object(
+                unity_session_logs, "default_editor_log_path", return_value=log_path
+            ):
+                exit_code, stdout, stderr = unity_puer_exec.run_cli(
+                    ["wait-until-ready", "--start-offset", "10"]
+                )
+
+            self.assertEqual(exit_code, 0)
+            body = json.loads(stdout)
+            self.assertEqual(body["log_range"]["start"], 10)
+
+
 if __name__ == "__main__":
     unittest.main()

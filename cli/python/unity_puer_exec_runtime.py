@@ -63,7 +63,7 @@ def validate_project_mode_only(selector, option_name, value):
         raise ValueError("{} is only valid with --project-path".format(option_name))
 
 
-def _resolve_exec_log_path(args, session):
+def _resolve_log_path(args, session):
     if session is not None and getattr(session, "effective_log_path", None):
         return session.effective_log_path
     if getattr(args, "unity_log_path", None):
@@ -488,7 +488,7 @@ def run_exec(args):
         except (unity_session.UnityStalledError, unity_session.UnityNotReadyError) as exc:
             _write_pending_exec(args, request_id, code, refresh_before_exec=args.refresh_before_exec)
             payload = _emit_running_payload("exec", exc.session, request_id, args)
-            _rp1_log_path = _resolve_exec_log_path(args, exc.session)
+            _rp1_log_path = _resolve_log_path(args, exc.session)
             _rp1_log_end = _capture_log_offset(_rp1_log_path)
             _inject_log_range_into_payload(payload, _rp1_log_path, _rp1_log_end, _rp1_log_end)
             return EXIT_RUNNING, emit_payload(payload), ""
@@ -497,7 +497,7 @@ def run_exec(args):
         session = None
         base_url = args.base_url
 
-    log_path = _resolve_exec_log_path(args, session)
+    log_path = _resolve_log_path(args, session)
     log_start = _capture_log_offset(log_path)
 
     if selector == "project_path" and args.refresh_before_exec:
@@ -612,7 +612,7 @@ def run_wait_for_exec(args):
                     args,
                     phase=_pending_phase(pending),
                 )
-                _wfe_rp1_log_path = _resolve_exec_log_path(args, exc.session)
+                _wfe_rp1_log_path = _resolve_log_path(args, exc.session)
                 _inject_log_range_into_payload(payload, _wfe_rp1_log_path, _wfe_log_start, _capture_log_offset(_wfe_rp1_log_path))
                 return EXIT_RUNNING, emit_payload(payload), ""
             raise
@@ -624,7 +624,7 @@ def run_wait_for_exec(args):
     if pending is not None:
         if pending.get("refresh_before_exec") and pending.get("phase") == PHASE_REFRESHING:
             refresh_request_id = pending.get("refresh_request_id") or _refresh_request_id(args.request_id)
-            _wfe_refresh_log_path = _resolve_exec_log_path(args, session)
+            _wfe_refresh_log_path = _resolve_log_path(args, session)
             payload = {
                 "request_id": refresh_request_id,
                 "wait_timeout_ms": args.wait_timeout_ms,
@@ -713,7 +713,7 @@ def run_wait_for_exec(args):
         request_id=args.request_id,
         default_phase=default_phase,
     )
-    _wfe_final_log_path = _resolve_exec_log_path(args, session)
+    _wfe_final_log_path = _resolve_log_path(args, session)
     stdout_text = _inject_log_range_into_stdout(stdout_text, _wfe_final_log_path, _wfe_log_start, _capture_log_offset(_wfe_final_log_path))
     return exit_code, stdout_text, stderr_text
 
@@ -723,33 +723,52 @@ def run_wait_until_ready(args):
     validate_positive(args.ready_timeout_seconds, "ready-timeout-seconds")
     validate_positive(args.activity_timeout_seconds, "activity-timeout-seconds")
     validate_positive(args.health_timeout_seconds, "health-timeout-seconds")
+    validate_non_negative(args.start_offset, "start-offset")
     validate_project_mode_only(selector, "unity-exe-path", args.unity_exe_path)
     validate_project_mode_only(selector, "unity-log-path", args.unity_log_path)
 
-    if selector == "project_path":
-        session = unity_session.ensure_session_ready(
-            project_path=args.project_path,
-            unity_exe_path=args.unity_exe_path,
-            ready_timeout_seconds=args.ready_timeout_seconds,
-            activity_timeout_seconds=args.activity_timeout_seconds,
-            health_timeout_seconds=args.health_timeout_seconds,
-            unity_log_path=args.unity_log_path,
-        )
-    else:
-        session = unity_session.create_direct_session(args.base_url)
-        session = unity_session.wait_until_recovered(
-            session,
-            args.ready_timeout_seconds,
-            activity_timeout_seconds=args.activity_timeout_seconds,
-            health_timeout_seconds=args.health_timeout_seconds,
-        )
+    log_path = _resolve_log_path(args, None)
+    log_start = args.start_offset if args.start_offset is not None else _capture_log_offset(log_path)
 
+    try:
+        if selector == "project_path":
+            session = unity_session.ensure_session_ready(
+                project_path=args.project_path,
+                unity_exe_path=args.unity_exe_path,
+                ready_timeout_seconds=args.ready_timeout_seconds,
+                activity_timeout_seconds=args.activity_timeout_seconds,
+                health_timeout_seconds=args.health_timeout_seconds,
+                unity_log_path=args.unity_log_path,
+            )
+        else:
+            session = unity_session.create_direct_session(args.base_url)
+            session = unity_session.wait_until_recovered(
+                session,
+                args.ready_timeout_seconds,
+                activity_timeout_seconds=args.activity_timeout_seconds,
+                health_timeout_seconds=args.health_timeout_seconds,
+            )
+    except (unity_session.UnityStalledError, unity_session.UnityNotReadyError) as exc:
+        status = "unity_stalled" if isinstance(exc, unity_session.UnityStalledError) else "unity_not_ready"
+        exc_log_path = _resolve_log_path(args, exc.session)
+        payload = expected_failure_payload(
+            "wait-until-ready",
+            status,
+            exc,
+            session=exc.session,
+            include_diagnostics=args.include_diagnostics,
+        )
+        _inject_log_range_into_payload(payload, exc_log_path, log_start, _capture_log_offset(exc_log_path))
+        return EXIT_UNITY_NOT_READY, emit_payload(payload), ""
+
+    log_path = _resolve_log_path(args, session)
     payload = success_payload(
         "wait-until-ready",
         session=session,
         result={"status": "recovered"},
         include_diagnostics=args.include_diagnostics,
     )
+    _inject_log_range_into_payload(payload, log_path, log_start, _capture_log_offset(log_path))
     return 0, emit_payload(payload), ""
 
 
@@ -779,17 +798,33 @@ def run_wait_for_log_pattern(args):
         )
         return EXIT_NO_OBSERVATION_TARGET, emit_payload(payload), ""
 
-    session = unity_session.wait_for_log_pattern(
-        session,
-        args.pattern,
-        args.timeout_seconds,
-        activity_timeout_seconds=args.activity_timeout_seconds,
-        health_timeout_seconds=args.health_timeout_seconds,
-        start_offset=args.start_offset,
-        extract_group=args.extract_group,
-        extract_json_group=args.extract_json_group,
-        expected_session_marker=args.expected_session_marker,
-    )
+    log_path = _resolve_log_path(args, session)
+    log_start = args.start_offset if args.start_offset is not None else _capture_log_offset(log_path)
+
+    try:
+        session = unity_session.wait_for_log_pattern(
+            session,
+            args.pattern,
+            args.timeout_seconds,
+            activity_timeout_seconds=args.activity_timeout_seconds,
+            health_timeout_seconds=args.health_timeout_seconds,
+            start_offset=args.start_offset,
+            extract_group=args.extract_group,
+            extract_json_group=args.extract_json_group,
+            expected_session_marker=args.expected_session_marker,
+        )
+    except (unity_session.UnityStalledError, unity_session.UnityNotReadyError) as exc:
+        status = "unity_stalled" if isinstance(exc, unity_session.UnityStalledError) else "unity_not_ready"
+        payload = expected_failure_payload(
+            "wait-for-log-pattern",
+            status,
+            exc,
+            session=exc.session,
+            include_diagnostics=args.include_diagnostics,
+        )
+        _inject_log_range_into_payload(payload, log_path, log_start, _capture_log_offset(log_path))
+        return EXIT_UNITY_NOT_READY, emit_payload(payload), ""
+
     result = {"status": "log_pattern_matched"}
     if args.extract_group is not None:
         result["extracted_group"] = session.diagnostics["extracted_group"]
@@ -801,6 +836,7 @@ def run_wait_for_log_pattern(args):
         result=result,
         include_diagnostics=args.include_diagnostics,
     )
+    _inject_log_range_into_payload(payload, log_path, log_start, _capture_log_offset(log_path))
     return 0, emit_payload(payload), ""
 
 
@@ -826,19 +862,35 @@ def run_wait_for_result_marker(args):
         )
         return EXIT_NO_OBSERVATION_TARGET, emit_payload(payload), ""
 
+    log_path = _resolve_log_path(args, session)
+    log_start = args.start_offset if args.start_offset is not None else _capture_log_offset(log_path)
+
     deadline = time.time() + args.timeout_seconds
     while True:
         remaining = max(deadline - time.time(), 0.001)
-        session = unity_session.wait_for_log_pattern(
-            session,
-            RESULT_MARKER_PATTERN,
-            remaining,
-            activity_timeout_seconds=args.activity_timeout_seconds,
-            health_timeout_seconds=args.health_timeout_seconds,
-            start_offset=args.start_offset,
-            extract_group=1,
-            expected_session_marker=args.expected_session_marker,
-        )
+        try:
+            session = unity_session.wait_for_log_pattern(
+                session,
+                RESULT_MARKER_PATTERN,
+                remaining,
+                activity_timeout_seconds=args.activity_timeout_seconds,
+                health_timeout_seconds=args.health_timeout_seconds,
+                start_offset=args.start_offset,
+                extract_group=1,
+                expected_session_marker=args.expected_session_marker,
+            )
+        except (unity_session.UnityStalledError, unity_session.UnityNotReadyError) as exc:
+            status = "unity_stalled" if isinstance(exc, unity_session.UnityStalledError) else "unity_not_ready"
+            payload = expected_failure_payload(
+                "wait-for-result-marker",
+                status,
+                exc,
+                session=exc.session,
+                include_diagnostics=args.include_diagnostics,
+            )
+            _inject_log_range_into_payload(payload, log_path, log_start, _capture_log_offset(log_path))
+            return EXIT_UNITY_NOT_READY, emit_payload(payload), ""
+
         marker_text = session.diagnostics.get("extracted_group")
         try:
             marker = json.loads(marker_text)
@@ -854,6 +906,7 @@ def run_wait_for_result_marker(args):
                 },
                 include_diagnostics=args.include_diagnostics,
             )
+            _inject_log_range_into_payload(payload, log_path, log_start, _capture_log_offset(log_path))
             return 0, emit_payload(payload), ""
         next_offset = session.diagnostics.get("matched_log_offset")
         args.start_offset = next_offset

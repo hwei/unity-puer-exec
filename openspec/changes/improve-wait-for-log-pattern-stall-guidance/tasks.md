@@ -1,11 +1,11 @@
 ## 1. Implementation
 
-- [ ] 1.1 Generalize `_resolve_exec_log_path` for all commands
-- [ ] 1.2 Add `--start-offset` parameter to `wait-until-ready`
-- [ ] 1.3 Inject `log_range` + `brief_sequence` on all exit paths of `wait-for-log-pattern`
-- [ ] 1.4 Inject `log_range` + `brief_sequence` on all exit paths of `wait-for-result-marker`
-- [ ] 1.5 Inject `log_range` + `brief_sequence` on all exit paths of `wait-until-ready`
-- [ ] 1.6 Unit/integration tests covering the new output for each command's exit paths
+- [x] 1.1 Generalize `_resolve_exec_log_path` for all commands
+- [x] 1.2 Add `--start-offset` parameter to `wait-until-ready`
+- [x] 1.3 Inject `log_range` + `brief_sequence` on all exit paths of `wait-for-log-pattern`
+- [x] 1.4 Inject `log_range` + `brief_sequence` on all exit paths of `wait-for-result-marker`
+- [x] 1.5 Inject `log_range` + `brief_sequence` on all exit paths of `wait-until-ready`
+- [x] 1.6 Unit/integration tests covering the new output for each command's exit paths
 
 ## 2. Validation
 
