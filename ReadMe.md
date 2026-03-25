@@ -14,7 +14,7 @@
 
 快速入口：
 
-- repository context: `openspec/project.md`
+- repository context: `openspec/config.yaml`
 - durable requirements: `openspec/specs/`
 - active change work: `openspec/changes/`
 - tests: `python -m unittest discover -s tests -p "test_*.py"`

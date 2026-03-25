@@ -7,7 +7,7 @@ context: |
   Primary products: Unity package com.txcombo.unity-puer-exec and CLI unity-puer-exec.
   Validation host is external to this repository and is not the product source of truth.
   OpenSpec is the canonical governance and planning system.
-  Use openspec/project.md for repository-wide context and openspec/specs/ for durable requirements.
+  Use openspec/specs/ for durable requirements and AGENTS.md for agent conventions.
   Temporary execution context is ephemeral; distill stable conclusions into specs, tests, or source.
   Repository Python entry points auto-load ./.env when needed.
   UNITY_PROJECT_PATH in the process environment overrides repository-local .env.
@@ -20,7 +20,7 @@ rules:
     - Do not recreate the legacy global roadmap tree inside a proposal.
   design:
     - For follow-up changes, explain which upstream findings remain true and which gap the current design is addressing.
-    - Explain why content belongs in project.md versus openspec/specs/.
+    - Explain why content belongs in config.yaml context versus openspec/specs/.
     - Call out migration risks when replacing legacy governance paths.
   specs:
     - Write normative SHALL or MUST requirements with at least one scenario each.

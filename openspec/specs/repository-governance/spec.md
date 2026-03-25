@@ -11,7 +11,7 @@ The repository SHALL use OpenSpec as the canonical system for project context, d
 #### Scenario: Fresh contributor looks for process entry
 
 - **WHEN** a contributor or agent needs the repository workflow entry point
-- **THEN** `openspec/project.md` provides repository-wide context
+- **THEN** `openspec/config.yaml` and `AGENTS.md` provide repository-wide context
 - **AND** `openspec/specs/repository-governance/spec.md` defines the durable workflow rules
 - **AND** the working tree does not provide a parallel `docs/` workflow entry path
 

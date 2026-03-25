@@ -8,7 +8,7 @@
 
 ## OpenSpec entry points
 
-- `openspec/project.md` is the canonical repository-wide context file.
+- `openspec/config.yaml` carries repository-wide context for OpenSpec workflows.
 - `openspec/specs/` holds durable requirements that survive individual changes.
 - `openspec/changes/` holds active and archived change artifacts.
 - `tests/` is the canonical repository-level test location.
@@ -35,6 +35,14 @@
 - Prefer `openspec archive <change-name>` when archiving a completed change. Do not manually move `openspec/changes/` directories during normal workflow.
 - Before selecting fresh work from a clean tree, consult the backlog tooling instead of guessing from prose alone.
 - Use `python tools/openspec_backlog.py next` for the default ranked recommendation, or `python tools/openspec_backlog.py list --backlog` to inspect the recommendable backlog explicitly.
+
+## Change type policy
+
+- `feature`: proposal, tasks, and durable specs are expected; add design when architecture changes materially.
+- `harness`: proposal and tasks are expected; add design in most cases; add durable specs when contracts or workflow rules change.
+- `validation`: proposal and tasks are expected; add design only when coordination or setup is non-trivial; add durable specs only when validation policy becomes long-lived truth.
+- `refactor`: proposal and tasks are expected; add design when risk or coordination is significant; add durable specs only when external behavior or governance changes.
+- `spike`: keep proposal lightweight and tasks explicit; add design only when it helps reasoning; add durable specs only if the spike graduates into stable requirements.
 
 ## Apply checkpoints
 

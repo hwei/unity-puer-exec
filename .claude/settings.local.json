@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(openspec init:*)",
+      "Bash(for skill:*)",
+      "Bash(do echo:*)",
+      "Read(//f/C3/unity-puer-exec-workspace/unity-puer-exec/.codex/skills/**)",
+      "Bash(done)",
+      "Bash(git:*)"
+    ]
+  }
+}
