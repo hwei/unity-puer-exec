@@ -213,6 +213,9 @@ class UnitySessionModuleTests(unittest.TestCase):
                         "code": "export default function run(ctx) { return 1; }",
                         "script_args": {"mode": "test"},
                         "script_args_json": "{\"mode\":\"test\"}",
+                        "source_path": "C:/scripts/entry.js",
+                        "import_base_url": "http://localhost:3000",
+                        "reset_jsenv_before_exec": True,
                     },
                 )
             with mock.patch.object(unity_session_logs.time, "time", return_value=125.0):
@@ -229,10 +232,16 @@ class UnitySessionModuleTests(unittest.TestCase):
         self.assertEqual(first["updated_at_ms"], 100000)
         self.assertEqual(first["script_args"], {"mode": "test"})
         self.assertEqual(first["script_args_json"], "{\"mode\":\"test\"}")
+        self.assertEqual(first["source_path"], "C:/scripts/entry.js")
+        self.assertEqual(first["import_base_url"], "http://localhost:3000")
+        self.assertTrue(first["reset_jsenv_before_exec"])
         self.assertEqual(second["created_at_ms"], 100000)
         self.assertEqual(second["updated_at_ms"], 125000)
         self.assertEqual(restored["phase"], "compiling")
         self.assertEqual(restored["script_args"], {"mode": "test"})
+        self.assertEqual(restored["source_path"], "C:/scripts/entry.js")
+        self.assertEqual(restored["import_base_url"], "http://localhost:3000")
+        self.assertTrue(restored["reset_jsenv_before_exec"])
 
     def test_logs_read_pending_exec_artifact_cleans_expired_file(self):
         with tempfile.TemporaryDirectory() as temp_dir:

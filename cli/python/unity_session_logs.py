@@ -128,6 +128,7 @@ def _coerce_pending_exec_artifact(request_id, payload):
         "request_id": request_id,
         "code": code,
         "refresh_before_exec": bool(payload.get("refresh_before_exec")),
+        "reset_jsenv_before_exec": bool(payload.get("reset_jsenv_before_exec")),
         "created_at_ms": created_at_ms,
         "updated_at_ms": updated_at_ms,
     }
@@ -139,6 +140,12 @@ def _coerce_pending_exec_artifact(request_id, payload):
         return None
     normalized["script_args"] = script_args
     normalized["script_args_json"] = script_args_json
+    source_path = payload.get("source_path")
+    if isinstance(source_path, str) and source_path:
+        normalized["source_path"] = source_path
+    import_base_url = payload.get("import_base_url")
+    if isinstance(import_base_url, str) and import_base_url:
+        normalized["import_base_url"] = import_base_url
     phase = payload.get("phase")
     if isinstance(phase, str) and phase:
         normalized["phase"] = phase
@@ -230,11 +237,18 @@ def write_pending_exec_artifact(project_path, request_id, payload):
         "request_id": request_id,
         "code": payload["code"],
         "refresh_before_exec": bool(payload.get("refresh_before_exec")),
+        "reset_jsenv_before_exec": bool(payload.get("reset_jsenv_before_exec")),
         "created_at_ms": existing.get("created_at_ms", now_ms) if existing else now_ms,
         "updated_at_ms": now_ms,
         "script_args": payload["script_args"],
         "script_args_json": payload["script_args_json"],
     }
+    source_path = payload.get("source_path")
+    if isinstance(source_path, str) and source_path:
+        normalized["source_path"] = source_path
+    import_base_url = payload.get("import_base_url")
+    if isinstance(import_base_url, str) and import_base_url:
+        normalized["import_base_url"] = import_base_url
     phase = payload.get("phase")
     if isinstance(phase, str) and phase:
         normalized["phase"] = phase

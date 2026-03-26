@@ -109,11 +109,22 @@ class PackageLayoutTests(unittest.TestCase):
         self.assertIn("globalThis.__unityPuerExecGlobals", protocol_content)
         self.assertIn("const __args =", protocol_content)
         self.assertIn("args: __args", protocol_content)
+        self.assertIn("import __entry from", protocol_content)
         self.assertIn("missing_default_export", protocol_content)
+        self.assertIn("missing_import_base_url", protocol_content)
         self.assertIn("default_export_must_be_function", protocol_content)
         self.assertIn("async_result_not_supported", protocol_content)
         self.assertIn("result_not_json_serializable", protocol_content)
-        self.assertIn("__unityPuerExecEntry", protocol_content)
+        self.assertIn("DetectsImport", protocol_content)
+        self.assertIn("BuildEntrySpecifier", protocol_content)
+
+    def test_exec_protocol_supports_import_detection_without_comment_only_false_positives(self):
+        protocol_path = PACKAGE_ROOT / "Editor" / "UnityPuerExecProtocol.cs"
+        protocol_content = protocol_path.read_text(encoding="utf-8")
+
+        self.assertIn("ImportDeclarationPattern", protocol_content)
+        self.assertIn("StringAndCommentPattern", protocol_content)
+        self.assertIn("new string(' ', match.Value.Length)", protocol_content)
 
 
 if __name__ == "__main__":

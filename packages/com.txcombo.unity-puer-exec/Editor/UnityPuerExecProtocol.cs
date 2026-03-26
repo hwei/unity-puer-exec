@@ -1,3 +1,5 @@
+using System;
+using System.IO;
 using System.Text;
 using System.Text.RegularExpressions;
 
@@ -9,8 +11,11 @@ namespace UnityPuerExec
         public string request_id = "";
         public string code = "";
         public string script_args_json = "{}";
+        public string source_path = "";
+        public string import_base_url = "";
         public int wait_timeout_ms = 1000;
         public bool include_diagnostics = false;
+        public bool reset_jsenv_before_exec = false;
     }
 
     [System.Serializable]
@@ -27,30 +32,53 @@ namespace UnityPuerExec
             @"\bexport\s+default\s+(async\s+)?function\b",
             RegexOptions.Compiled
         );
+        private static readonly Regex ImportDeclarationPattern = new Regex(
+            @"(^|\n)\s*import(?:\s+[\w*\s{},]+\s+from\s+|[\s]+['""][^'""]+['""]\s*;?)",
+            RegexOptions.Compiled
+        );
+        private static readonly Regex StringAndCommentPattern = new Regex(
+            @"//.*?$|/\*[\s\S]*?\*/|""(?:\\.|[^""\\])*""|'(?:\\.|[^'\\])*'|`(?:\\.|[^`\\])*`",
+            RegexOptions.Compiled | RegexOptions.Multiline
+        );
 
-        internal static bool TryBuildWrappedScript(string jobId, string code, string scriptArgsJson, out string wrappedScript, out string error)
+        internal static bool TryBuildWrappedScript(ExecRequest request, out string wrappedScript, out string error)
         {
             wrappedScript = string.Empty;
             error = string.Empty;
-            if (!TryRewriteModuleEntry(code, out var rewrittenCode, out error))
+            if (!TryRewriteModuleEntry(request.code, out _, out error))
             {
                 return false;
             }
 
+            var entrySpecifier = BuildEntrySpecifier(request);
+            if (string.IsNullOrEmpty(entrySpecifier))
+            {
+                if (string.IsNullOrEmpty(request.source_path)
+                    && string.IsNullOrEmpty(request.import_base_url)
+                    && DetectsImport(request.code))
+                {
+                    error = "missing_import_base_url";
+                }
+                else
+                {
+                    error = "invalid_exec_module";
+                }
+
+                return false;
+            }
+
             var builder = new StringBuilder();
-            builder.AppendLine("(async () => {");
-            builder.Append("const __jobId = \"").Append(JsonEscape(jobId)).AppendLine("\";");
+            builder.Append("import __entry from '").Append(EscapeModuleSpecifier(entrySpecifier)).AppendLine("';");
+            builder.Append("const __jobId = \"").Append(JsonEscape(request.request_id)).AppendLine("\";");
             builder.AppendLine("const __bridge = CS.UnityPuerExec.UnityPuerExecBridge;");
             builder.AppendLine("try {");
             builder.AppendLine("  const __globals = globalThis.__unityPuerExecGlobals || (globalThis.__unityPuerExecGlobals = {});");
-            builder.Append("  const __args = ").Append(string.IsNullOrEmpty(scriptArgsJson) ? "{}" : scriptArgsJson).AppendLine(";");
-            builder.AppendLine("  let __unityPuerExecEntry = null;");
-            builder.AppendLine(rewrittenCode);
-            builder.AppendLine("  if (typeof __unityPuerExecEntry !== 'function') {");
+            builder.AppendLine("  if (typeof __entry !== 'function') {");
             builder.AppendLine("    throw new Error('default_export_must_be_function');");
             builder.AppendLine("  }");
+            builder.Append("  const __args = ").Append(string.IsNullOrEmpty(request.script_args_json) ? "{}" : request.script_args_json).AppendLine(";");
             builder.AppendLine("  const __ctx = Object.freeze({ request_id: __jobId, globals: __globals, args: __args });");
-            builder.AppendLine("  const __result = __unityPuerExecEntry(__ctx);");
+            builder.AppendLine("  const __result = __entry(__ctx);");
             builder.AppendLine("  const __isThenable = __result !== null && (typeof __result === 'object' || typeof __result === 'function') && typeof __result.then === 'function';");
             builder.AppendLine("  if (__isThenable) {");
             builder.AppendLine("    throw new Error('async_result_not_supported');");
@@ -70,7 +98,6 @@ namespace UnityPuerExec
             builder.AppendLine("  const __stackText = __error && __error.stack ? String(__error.stack) : '';");
             builder.AppendLine("  __bridge.FailJob(__jobId, __errorText, __stackText);");
             builder.AppendLine("}");
-            builder.AppendLine("})();");
             wrappedScript = builder.ToString();
             return true;
         }
@@ -101,25 +128,47 @@ namespace UnityPuerExec
                 return false;
             }
 
-            if (Regex.IsMatch(normalizedCode, @"(^|\n)\s*import\b"))
-            {
-                error = "invalid_exec_module";
-                return false;
-            }
-
-            rewrittenCode = DefaultExportFunctionPattern.Replace(
-                normalizedCode,
-                "__unityPuerExecEntry = ${1}function",
-                1
-            );
-            if (Regex.IsMatch(rewrittenCode, @"(^|\n)\s*export\b"))
-            {
-                error = "invalid_exec_module";
-                rewrittenCode = string.Empty;
-                return false;
-            }
-
+            rewrittenCode = normalizedCode;
             return true;
+        }
+
+        internal static string BuildEntrySpecifier(ExecRequest request)
+        {
+            if (!string.IsNullOrEmpty(request.import_base_url)
+                && Uri.TryCreate(request.import_base_url, UriKind.Absolute, out var importBaseUri)
+                && (importBaseUri.Scheme == Uri.UriSchemeHttp || importBaseUri.Scheme == Uri.UriSchemeHttps))
+            {
+                var trimmed = request.import_base_url.TrimEnd('/');
+                return $"{trimmed}/__puer_exec_entry_{request.request_id}";
+            }
+
+            if (!string.IsNullOrEmpty(request.import_base_url))
+            {
+                var baseDirectory = Path.GetFullPath(request.import_base_url);
+                return NormalizeModulePath(Path.Combine(baseDirectory, $"__puer_exec_entry_{request.request_id}.js"));
+            }
+
+            if (!string.IsNullOrEmpty(request.source_path))
+            {
+                return NormalizeModulePath(request.source_path);
+            }
+
+            return $"puer-exec://entry/{request.request_id}";
+        }
+
+        internal static bool DetectsImport(string code)
+        {
+            if (string.IsNullOrEmpty(code))
+            {
+                return false;
+            }
+
+            var normalizedCode = code.Replace("\r\n", "\n").Replace('\r', '\n');
+            var sanitizedCode = StringAndCommentPattern.Replace(
+                normalizedCode,
+                match => new string(' ', match.Value.Length)
+            );
+            return ImportDeclarationPattern.IsMatch(sanitizedCode);
         }
 
         internal static string BuildExecResponseJson(UnityPuerExecJobSnapshot snapshot, string sessionMarker)
@@ -212,6 +261,16 @@ namespace UnityPuerExec
                 .Replace("\r", "\\r")
                 .Replace("\n", "\\n")
                 .Replace("\t", "\\t");
+        }
+
+        private static string NormalizeModulePath(string value)
+        {
+            return string.IsNullOrEmpty(value) ? string.Empty : value.Replace('\\', '/');
+        }
+
+        private static string EscapeModuleSpecifier(string value)
+        {
+            return NormalizeModulePath(value).Replace("\\", "\\\\").Replace("'", "\\'");
         }
     }
 }

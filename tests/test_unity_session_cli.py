@@ -40,6 +40,16 @@ class UnityPuerExecCliTests(unittest.TestCase):
         args = parser.parse_args(["wait-until-ready"])
         self.assertEqual(args.command, "wait-until-ready")
 
+    def test_exec_parser_accepts_import_base_url_and_reset_jsenv_before_exec(self):
+        parser = unity_puer_exec._build_parser()
+        args = parser.parse_args(
+            ["exec", "--code", "export default function run(ctx) { return 1; }", "--import-base-url", "http://localhost:3000", "--reset-jsenv-before-exec"]
+        )
+
+        self.assertEqual(args.command, "exec")
+        self.assertEqual(args.import_base_url, "http://localhost:3000")
+        self.assertTrue(args.reset_jsenv_before_exec)
+
     def test_top_level_help_renders_formal_sections(self):
         exit_code, stdout, stderr = unity_puer_exec.run_cli(["--help"])
 
@@ -436,6 +446,46 @@ class UnityPuerExecCliTests(unittest.TestCase):
         self.assertIn("brief_sequence", body)
         self.assertEqual(body["result"]["correlation_id"], "id-7")
 
+    def test_exec_payload_includes_source_path_import_base_url_and_reset_flag(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            script_path = Path(temp_dir) / "script.js"
+            script_path.write_text("export default function run(ctx) { return 7; }", encoding="utf-8")
+            with mock.patch.object(
+                unity_session,
+                "ensure_session_ready",
+                return_value=_make_session(),
+            ), mock.patch.object(
+                unity_puer_exec.direct_exec_client,
+                "invoke_command",
+                side_effect=[
+                    (0, json.dumps({"ok": True, "status": "completed"}), ""),
+                    (0, json.dumps({"ok": True, "status": "completed", "request_id": "req-import", "result": {"value": 7}}), ""),
+                ],
+            ) as invoke_command:
+                exit_code, stdout, stderr = unity_puer_exec.run_cli(
+                    [
+                        "exec",
+                        "--file",
+                        str(script_path),
+                        "--request-id",
+                        "req-import",
+                        "--import-base-url",
+                        "http://localhost:3000",
+                        "--reset-jsenv-before-exec",
+                    ]
+                )
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(stderr, "")
+        self.assertEqual(invoke_command.call_args_list[0].args[0], "reset-jsenv")
+        payload = invoke_command.call_args_list[1].args[2]
+        self.assertEqual(payload["request_id"], "req-import")
+        self.assertEqual(payload["source_path"], os.path.abspath(script_path))
+        self.assertEqual(payload["import_base_url"], "http://localhost:3000")
+        self.assertTrue(payload["reset_jsenv_before_exec"])
+        body = json.loads(stdout)
+        self.assertEqual(body["status"], "completed")
+
     def test_exec_forwards_explicit_request_id(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             script_path = Path(temp_dir) / "script.js"
@@ -679,6 +729,48 @@ class UnityPuerExecCliTests(unittest.TestCase):
             self.assertEqual(body["status"], "completed")
             self.assertIsNone(unity_session.read_pending_exec_artifact(str(project_path), "req-refresh"))
 
+    def test_exec_refresh_then_reset_jsenv_then_user_exec(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_path = Path(temp_dir) / "Project"
+            project_path.mkdir()
+            script_path = Path(temp_dir) / "script.js"
+            script_path.write_text("export default function run(ctx) { return 7; }", encoding="utf-8")
+            with mock.patch.object(
+                unity_session,
+                "ensure_session_ready",
+                return_value=_make_session(project_path=str(project_path)),
+            ), mock.patch.object(
+                unity_puer_exec.direct_exec_client,
+                "invoke_command",
+                side_effect=[
+                    (0, json.dumps({"ok": True, "status": "completed", "request_id": "req-refresh-reset-refresh", "result": {"refreshed": True}}), ""),
+                    (0, json.dumps({"ok": True, "status": "completed"}), ""),
+                    (0, json.dumps({"ok": True, "status": "completed", "request_id": "req-refresh-reset", "result": {"value": 7}}), ""),
+                ],
+            ) as invoke_command:
+                exit_code, stdout, stderr = unity_puer_exec.run_cli(
+                    [
+                        "exec",
+                        "--project-path",
+                        str(project_path),
+                        "--file",
+                        str(script_path),
+                        "--request-id",
+                        "req-refresh-reset",
+                        "--refresh-before-exec",
+                        "--reset-jsenv-before-exec",
+                    ]
+                )
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(stderr, "")
+        self.assertEqual(invoke_command.call_args_list[0].args[0], "exec")
+        self.assertEqual(invoke_command.call_args_list[1].args[0], "reset-jsenv")
+        self.assertEqual(invoke_command.call_args_list[2].args[0], "exec")
+        self.assertEqual(invoke_command.call_args_list[2].args[2]["request_id"], "req-refresh-reset")
+        body = json.loads(stdout)
+        self.assertEqual(body["status"], "completed")
+
     def test_exec_refresh_before_exec_returns_running_with_refresh_phase(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             project_path = Path(temp_dir) / "Project"
@@ -797,6 +889,48 @@ class UnityPuerExecCliTests(unittest.TestCase):
             body = json.loads(stdout)
             self.assertEqual(body["status"], "completed")
             self.assertIsNone(unity_session.read_pending_exec_artifact(str(project_path), "req-pending"))
+
+    def test_wait_for_exec_replays_pending_exec_with_import_context_and_reset_flag(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_path = Path(temp_dir) / "Project"
+            project_path.mkdir()
+            unity_session.write_pending_exec_artifact(
+                str(project_path),
+                "req-pending",
+                {
+                    "request_id": "req-pending",
+                    "code": "export default function run(ctx) { return 11; }",
+                    "source_path": "C:/scripts/entry.js",
+                    "import_base_url": "http://localhost:3000",
+                    "reset_jsenv_before_exec": True,
+                },
+            )
+            with mock.patch.object(
+                unity_session,
+                "ensure_session_ready",
+                return_value=_make_session(project_path=str(project_path)),
+            ), mock.patch.object(
+                unity_puer_exec.direct_exec_client,
+                "invoke_command",
+                side_effect=[
+                    (0, json.dumps({"ok": True, "status": "completed"}), ""),
+                    (0, json.dumps({"ok": True, "status": "completed", "request_id": "req-pending", "result": {"value": 11}}), ""),
+                ],
+            ) as invoke_command:
+                exit_code, stdout, stderr = unity_puer_exec.run_cli(
+                    ["wait-for-exec", "--project-path", str(project_path), "--request-id", "req-pending"]
+                )
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(stderr, "")
+        self.assertEqual(invoke_command.call_args_list[0].args[0], "reset-jsenv")
+        self.assertEqual(invoke_command.call_args_list[1].args[0], "exec")
+        payload = invoke_command.call_args_list[1].args[2]
+        self.assertEqual(payload["source_path"], "C:/scripts/entry.js")
+        self.assertEqual(payload["import_base_url"], "http://localhost:3000")
+        self.assertTrue(payload["reset_jsenv_before_exec"])
+        body = json.loads(stdout)
+        self.assertEqual(body["status"], "completed")
 
     def test_wait_for_exec_continues_refresh_phase_then_replays_user_exec(self):
         with tempfile.TemporaryDirectory() as temp_dir:

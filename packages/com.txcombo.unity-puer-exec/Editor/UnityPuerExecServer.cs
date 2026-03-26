@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.IO;
 using System.Net;
 using System.Text;
@@ -11,21 +12,115 @@ using UnityEngine;
 
 namespace UnityPuerExec
 {
+    internal sealed class PuerExecLoader : ILoader
+    {
+        internal sealed class RequestContext
+        {
+            public Dictionary<string, string> VirtualModules = new Dictionary<string, string>(StringComparer.Ordinal);
+            public string ImportBaseUrl = "";
+        }
+
+        private RequestContext currentContext;
+
+        public bool FileExists(string filepath)
+        {
+            var normalizedPath = NormalizeSpecifier(filepath);
+            if (TryGetVirtualModule(normalizedPath, out _))
+            {
+                return true;
+            }
+
+            if (IsHttpSpecifier(normalizedPath))
+            {
+                return true;
+            }
+
+            return File.Exists(ToFileSystemPath(normalizedPath));
+        }
+
+        public string ReadFile(string filepath, out string debugpath)
+        {
+            var normalizedPath = NormalizeSpecifier(filepath);
+            debugpath = normalizedPath;
+            if (TryGetVirtualModule(normalizedPath, out var moduleText))
+            {
+                return moduleText;
+            }
+
+            if (IsHttpSpecifier(normalizedPath))
+            {
+                using var client = new WebClient();
+                return client.DownloadString(normalizedPath);
+            }
+
+            var filePath = ToFileSystemPath(normalizedPath);
+            debugpath = filePath;
+            return File.ReadAllText(filePath, Encoding.UTF8);
+        }
+
+        internal void SetContext(RequestContext context)
+        {
+            currentContext = context;
+        }
+
+        internal void ClearContext()
+        {
+            currentContext = null;
+        }
+
+        private bool TryGetVirtualModule(string filepath, out string moduleText)
+        {
+            moduleText = null;
+            var context = currentContext;
+            if (context == null || context.VirtualModules == null)
+            {
+                return false;
+            }
+
+            return context.VirtualModules.TryGetValue(filepath, out moduleText);
+        }
+
+        private static bool IsHttpSpecifier(string filepath)
+        {
+            return filepath.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
+                || filepath.StartsWith("https://", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static string NormalizeSpecifier(string filepath)
+        {
+            return string.IsNullOrEmpty(filepath) ? string.Empty : filepath.Replace('\\', '/');
+        }
+
+        private static string ToFileSystemPath(string filepath)
+        {
+            if (filepath.StartsWith("file://", StringComparison.OrdinalIgnoreCase))
+            {
+                return new Uri(filepath).LocalPath;
+            }
+
+            return filepath.Replace('/', Path.DirectorySeparatorChar);
+        }
+    }
+
     [InitializeOnLoad]
     internal static class UnityPuerExecServer
     {
         internal const int Port = 55231;
         private const string ReadyLogPrefix = "[UnityPuerExec] Ready on port";
+        private const string HarnessModulePrefix = "puer-exec://harness/";
 
         private static readonly ConcurrentDictionary<string, UnityPuerExecJob> Requests =
             new ConcurrentDictionary<string, UnityPuerExecJob>();
         private static readonly object RequestGate = new object();
         private static readonly ConcurrentQueue<Action> MainThreadActions = new ConcurrentQueue<Action>();
         private static readonly string ListenerPrefix = $"http://127.0.0.1:{Port}/";
+        private static readonly object TempFileGate = new object();
+        private static readonly HashSet<string> PendingTempEntryPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         private static HttpListener listener;
         private static CancellationTokenSource listenerCancellation;
         private static JsEnv jsEnv;
+        private static PuerExecLoader execLoader;
         private static string envInitError = "";
         private static string sessionMarker = Guid.NewGuid().ToString("N");
         private static string cachedConsoleLogPath = "";
@@ -167,6 +262,12 @@ namespace UnityPuerExec
                     return;
                 }
 
+                if (path.Equals("/reset-jsenv", StringComparison.OrdinalIgnoreCase))
+                {
+                    await HandleResetJsEnvAsync(context);
+                    return;
+                }
+
                 context.Response.StatusCode = 404;
                 await WriteJsonAsync(context, "{\"ok\":false,\"status\":\"not_found\"}");
             }
@@ -210,6 +311,8 @@ namespace UnityPuerExec
                 out var execJob,
                 out var isNewRequest
             );
+            request.code = normalizedCode;
+            request.script_args_json = normalizedScriptArgsJson;
             if (acceptStatus == "busy")
             {
                 await WriteJsonAsync(
@@ -245,7 +348,12 @@ namespace UnityPuerExec
                     try
                     {
                         Debug.Log($"[UnityPuerExec] Exec starting request={execJob.RequestId}");
-                        StartJobEvaluation(execJob, request.code, normalizedScriptArgsJson);
+                        if (request.reset_jsenv_before_exec)
+                        {
+                            ResetJsEnv();
+                        }
+
+                        StartJobEvaluation(execJob, request);
                         enqueueCompletion.TrySetResult(true);
                     }
                     catch (Exception ex)
@@ -264,6 +372,38 @@ namespace UnityPuerExec
             var payload = UnityPuerExecProtocol.BuildExecResponseJson(execJob.Snapshot(), sessionMarker);
             Debug.Log($"[UnityPuerExec] Exec responding request={execJob.RequestId} payload={payload}");
             await WriteJsonAsync(context, payload);
+        }
+
+        private static async Task HandleResetJsEnvAsync(HttpListenerContext context)
+        {
+            var completion = new TaskCompletionSource<bool>();
+            MainThreadActions.Enqueue(() =>
+            {
+                try
+                {
+                    ResetJsEnv();
+                    completion.TrySetResult(true);
+                }
+                catch (Exception ex)
+                {
+                    envInitError = ex.ToString();
+                    Debug.LogError($"[UnityPuerExec] Reset JsEnv failed: {ex}");
+                    completion.TrySetResult(false);
+                }
+            });
+
+            await completion.Task;
+            if (jsEnv == null)
+            {
+                context.Response.StatusCode = 500;
+                await WriteJsonAsync(
+                    context,
+                    UnityPuerExecProtocol.BuildSimpleErrorJson("failed", "js_env_not_available")
+                );
+                return;
+            }
+
+            await WriteJsonAsync(context, "{\"ok\":true,\"status\":\"completed\"}");
         }
 
         private static async Task HandleWaitForExecAsync(HttpListenerContext context)
@@ -361,7 +501,7 @@ namespace UnityPuerExec
             }
         }
 
-        private static void StartJobEvaluation(UnityPuerExecJob job, string code, string scriptArgsJson)
+        private static void StartJobEvaluation(UnityPuerExecJob job, ExecRequest request)
         {
             EnsureJsEnv();
             if (jsEnv == null)
@@ -371,17 +511,57 @@ namespace UnityPuerExec
                 return;
             }
 
-            if (!UnityPuerExecProtocol.TryBuildWrappedScript(job.RequestId, code, scriptArgsJson, out var wrappedScript, out var error))
+            if (!UnityPuerExecProtocol.TryBuildWrappedScript(request, out var wrappedScript, out var error))
             {
                 job.Fail(error, string.Empty);
                 ReleaseActiveRequest(job.RequestId);
                 return;
             }
 
-            jsEnv.Eval(
-                wrappedScript,
-                $"unity-puer-exec/{job.RequestId}.js"
-            );
+            SweepPendingTempEntryFiles();
+            var requestContext = new PuerExecLoader.RequestContext();
+            var harnessSpecifier = HarnessModulePrefix + job.RequestId;
+            requestContext.VirtualModules[harnessSpecifier] = wrappedScript;
+
+            var entrySpecifier = UnityPuerExecProtocol.BuildEntrySpecifier(request);
+            string tempEntryPath = null;
+            var usesCustomImportBase = !string.IsNullOrEmpty(request.import_base_url);
+            if (string.IsNullOrEmpty(request.source_path) || usesCustomImportBase)
+            {
+                if (IsHttpBaseUrl(request.import_base_url) || string.IsNullOrEmpty(request.import_base_url))
+                {
+                    requestContext.VirtualModules[entrySpecifier] = request.code;
+                }
+                else
+                {
+                    tempEntryPath = entrySpecifier.Replace('/', Path.DirectorySeparatorChar);
+                    var tempEntryDirectory = Path.GetDirectoryName(tempEntryPath);
+                    if (!string.IsNullOrEmpty(tempEntryDirectory))
+                    {
+                        Directory.CreateDirectory(tempEntryDirectory);
+                    }
+
+                    File.WriteAllText(tempEntryPath, request.code, Encoding.UTF8);
+                }
+            }
+
+            requestContext.ImportBaseUrl = request.import_base_url ?? string.Empty;
+            execLoader.SetContext(requestContext);
+
+            try
+            {
+                jsEnv.ExecuteModule(harnessSpecifier);
+            }
+            catch (Exception ex)
+            {
+                job.Fail(ex.Message, ex.ToString());
+                ReleaseActiveRequest(job.RequestId);
+            }
+            finally
+            {
+                execLoader.ClearContext();
+                CleanupTempEntryFile(tempEntryPath);
+            }
         }
 
         private static void EnsureJsEnv()
@@ -393,7 +573,8 @@ namespace UnityPuerExec
 
             try
             {
-                jsEnv = new JsEnv();
+                execLoader = new PuerExecLoader();
+                jsEnv = new JsEnv(execLoader);
                 envInitError = "";
             }
             catch (Exception ex)
@@ -420,6 +601,14 @@ namespace UnityPuerExec
             }
 
             jsEnv = null;
+            execLoader = null;
+            SweepPendingTempEntryFiles();
+        }
+
+        private static void ResetJsEnv()
+        {
+            DisposeJsEnv();
+            EnsureJsEnv();
         }
 
         private static void OnEditorUpdate()
@@ -505,6 +694,70 @@ namespace UnityPuerExec
             }
 
             return code.Replace("\r\n", "\n").Replace('\r', '\n');
+        }
+
+        private static bool IsHttpBaseUrl(string importBaseUrl)
+        {
+            return !string.IsNullOrEmpty(importBaseUrl)
+                && Uri.TryCreate(importBaseUrl, UriKind.Absolute, out var importBaseUri)
+                && (importBaseUri.Scheme == Uri.UriSchemeHttp || importBaseUri.Scheme == Uri.UriSchemeHttps);
+        }
+
+        private static void CleanupTempEntryFile(string tempEntryPath)
+        {
+            if (string.IsNullOrEmpty(tempEntryPath))
+            {
+                return;
+            }
+
+            try
+            {
+                if (File.Exists(tempEntryPath))
+                {
+                    File.Delete(tempEntryPath);
+                }
+
+                lock (TempFileGate)
+                {
+                    PendingTempEntryPaths.Remove(tempEntryPath);
+                }
+            }
+            catch
+            {
+                lock (TempFileGate)
+                {
+                    PendingTempEntryPaths.Add(tempEntryPath);
+                }
+            }
+        }
+
+        private static void SweepPendingTempEntryFiles()
+        {
+            string[] paths;
+            lock (TempFileGate)
+            {
+                paths = new string[PendingTempEntryPaths.Count];
+                PendingTempEntryPaths.CopyTo(paths);
+            }
+
+            foreach (var path in paths)
+            {
+                try
+                {
+                    if (File.Exists(path))
+                    {
+                        File.Delete(path);
+                    }
+
+                    lock (TempFileGate)
+                    {
+                        PendingTempEntryPaths.Remove(path);
+                    }
+                }
+                catch
+                {
+                }
+            }
         }
 
         private static string NormalizeScriptArgsJson(string scriptArgsJson)

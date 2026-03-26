@@ -61,6 +61,8 @@ def build_parser():
     exec_parser.add_argument("--script-args", default=None)
     exec_parser.add_argument("--include-log-offset", action="store_true")  # removed; emits usage error
     exec_parser.add_argument("--refresh-before-exec", action="store_true")
+    exec_parser.add_argument("--import-base-url", default=None)
+    exec_parser.add_argument("--reset-jsenv-before-exec", action="store_true")
     _add_diagnostics_arg(exec_parser)
     script_source = exec_parser.add_mutually_exclusive_group(required=True)
     script_source.add_argument("--file", dest="file_path")
