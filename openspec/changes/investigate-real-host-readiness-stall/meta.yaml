@@ -1,0 +1,6 @@
+change_type: harness
+priority: P1
+blocked_by: []
+assumption_state: needs-review
+evidence: host-validation
+updated_at: 2026-03-26
