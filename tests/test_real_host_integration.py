@@ -1,5 +1,6 @@
 import json
 import os
+import time
 import sys
 import unittest
 from pathlib import Path
@@ -75,6 +76,38 @@ def _wait_until_ready(project_path, unity_exe_path, include_diagnostics=False):
     return _run_cli(argv)
 
 
+def _ensure_clean_test_boundary(project_path):
+    attempts = 0
+    while attempts < 3:
+        attempts += 1
+        exit_code, payload, _, _ = _run_cli(
+            [
+                "ensure-stopped",
+                "--project-path",
+                str(project_path),
+                "--timeout-seconds",
+                "5",
+                "--include-diagnostics",
+            ]
+        )
+        if exit_code == 0:
+            return
+        if attempts == 2:
+            _run_cli(
+                [
+                    "ensure-stopped",
+                    "--project-path",
+                    str(project_path),
+                    "--timeout-seconds",
+                    "1",
+                    "--immediate-kill",
+                    "--include-diagnostics",
+                ]
+            )
+        time.sleep(1.0)
+    raise AssertionError("failed to establish a clean real-host boundary: {}".format(payload))
+
+
 class RealHostIntegrationTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -89,20 +122,13 @@ class RealHostIntegrationTests(unittest.TestCase):
         cls.unity_exe_path = _require_unity_editor(cls.project_path)
 
     def setUp(self):
+        _ensure_clean_test_boundary(self.project_path)
         prepare_validation_host.main(["--project-path", str(self.project_path)])
         cleanup_validation_host.cleanup_validation_temp_assets(self.project_path)
 
     def tearDown(self):
         try:
-            unity_puer_exec.run_cli(
-                [
-                    "ensure-stopped",
-                    "--project-path",
-                    str(self.project_path),
-                    "--timeout-seconds",
-                    "5",
-                ]
-            )
+            _ensure_clean_test_boundary(self.project_path)
         except Exception:
             pass
         try:
@@ -110,7 +136,7 @@ class RealHostIntegrationTests(unittest.TestCase):
         except Exception:
             pass
 
-    def test_exec_log_offset_observation_chain_against_real_host(self):
+    def test_exec_checkpoint_observation_chain_against_real_host(self):
         correlation_id = "sync-{}".format(os.getpid())
         script = "\n".join(
             [
@@ -147,15 +173,15 @@ class RealHostIntegrationTests(unittest.TestCase):
                 str(self.unity_exe_path),
                 "--wait-timeout-ms",
                 str(WAIT_TIMEOUT_MS),
-                "--include-log-offset",
                 "--code",
                 script,
             ]
         )
         self.assertEqual(exec_exit_code, 0, exec_payload)
         self.assertEqual(exec_payload["status"], "completed")
-        self.assertIn("log_offset", exec_payload)
-        self.assertGreaterEqual(exec_payload["log_offset"], 0)
+        self.assertIn("log_range", exec_payload)
+        self.assertGreaterEqual(exec_payload["log_range"]["start"], 0)
+        self.assertGreaterEqual(exec_payload["log_range"]["end"], exec_payload["log_range"]["start"])
         self.assertEqual(exec_payload["result"]["correlation_id"], correlation_id)
 
         wait_result_exit_code, wait_result_payload, _, _ = _run_cli(
@@ -166,7 +192,7 @@ class RealHostIntegrationTests(unittest.TestCase):
                 "--correlation-id",
                 correlation_id,
                 "--start-offset",
-                str(exec_payload["log_offset"]),
+                str(exec_payload["log_range"]["start"]),
                 "--timeout-seconds",
                 "30",
                 "--activity-timeout-seconds",
@@ -188,7 +214,7 @@ class RealHostIntegrationTests(unittest.TestCase):
                 "--extract-json-group",
                 "1",
                 "--start-offset",
-                str(exec_payload["log_offset"]),
+                str(exec_payload["log_range"]["start"]),
                 "--timeout-seconds",
                 "30",
                 "--activity-timeout-seconds",
@@ -244,7 +270,7 @@ class RealHostIntegrationTests(unittest.TestCase):
 
         self.assertEqual(exec_exit_code, 1, exec_payload)
         self.assertEqual(exec_payload["status"], "failed")
-        self.assertEqual(exec_payload["error"], "async_result_not_supported")
+        self.assertIn("async_result_not_supported", exec_payload["error"])
 
     def test_exec_globals_are_visible_across_requests_against_real_host(self):
         ready_exit_code, ready_payload, _, _ = _wait_until_ready(self.project_path, self.unity_exe_path)

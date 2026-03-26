@@ -15,3 +15,8 @@
 - [x] 3.1 Run the repository unit suites that cover exec CLI/runtime behavior and confirm the new script-argument contract passes locally.
 - [x] 3.2 If validation host prerequisites are available, run a real-host exec workflow that passes `--script-args` into a reusable script and verify the observed result matches `ctx.args`.
 - [x] 3.3 Review the change for closeout readiness, including whether new follow-up work was identified and whether the change is ready for `git commit` and later `openspec archive`.
+
+## Closeout status
+
+- 2026-03-26: `investigate-real-host-readiness-stall` restored the real-host gate by removing the stale `--include-log-offset` assertions, hardening the stop/start test boundary, and avoiding false project recovery when only a fresh lockfile remains.
+- Archive readiness for `add-exec-script-args` is now unblocked by the real-host suite; the follow-up gate that had deferred archive review is back to a trustworthy passing state.

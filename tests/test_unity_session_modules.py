@@ -5,6 +5,7 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
+import subprocess
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -75,6 +76,39 @@ class UnitySessionModuleTests(unittest.TestCase):
         self.assertEqual(stopped, False)
         self.assertEqual(session.owner, "project_control")
         self.assertEqual(session.diagnostics["unity_pids"], [1234])
+
+    def test_process_ensure_stopped_waits_briefly_after_taskkill(self):
+        time_values = iter([0.0, 0.0, 0.2, 0.2])
+        sleep_calls = []
+        pid_running = iter([True, True, False])
+
+        time_ref = SimpleNamespace(time=lambda: next(time_values), sleep=lambda seconds: sleep_calls.append(seconds))
+
+        with mock.patch.object(
+            unity_session_process.subprocess,
+            "run",
+            return_value=subprocess.CompletedProcess(
+                args=["taskkill", "/PID", "1234", "/T", "/F"],
+                returncode=0,
+                stdout="SUCCESS",
+                stderr="",
+            ),
+        ):
+            stopped, session = unity_session_process.ensure_stopped(
+                project_path="X:/project",
+                mode="immediate_kill",
+                resolve_project_path_fn=lambda value: Path(value),
+                read_session_artifact_fn=lambda _path: {"base_url": "http://127.0.0.1:55231", "unity_pid": 1234},
+                session_artifact_path_fn=lambda _path: Path("X:/project/Temp/UnityPuerExec/session.json"),
+                list_unity_pids_fn=lambda: [1234],
+                is_pid_running_fn=lambda _pid: next(pid_running),
+                default_base_url="http://127.0.0.1:55231",
+                time_ref=time_ref,
+            )
+
+        self.assertTrue(stopped)
+        self.assertEqual(session.diagnostics["taskkill_exit_code"], 0)
+        self.assertEqual(sleep_calls, [unity_session_common.POLL_INTERVAL_SECONDS])
 
     def test_wait_wait_until_healthy_uses_wait_for_session_injection(self):
         session = unity_session_common.UnitySession(

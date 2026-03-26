@@ -186,6 +186,11 @@ def ensure_stopped(
         session.diagnostics["taskkill_stdout"] = result.stdout.strip()
         session.diagnostics["taskkill_stderr"] = result.stderr.strip()
         session.diagnostics["taskkill_exit_code"] = result.returncode
+        settle_deadline = time_ref.time() + max(POLL_INTERVAL_SECONDS, min(timeout_seconds, 2.0))
+        while time_ref.time() < settle_deadline:
+            if not is_pid_running_fn(target_pid):
+                return True, session
+            time_ref.sleep(POLL_INTERVAL_SECONDS)
         return not is_pid_running_fn(target_pid), session
 
     return False, session

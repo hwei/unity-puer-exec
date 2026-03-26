@@ -296,6 +296,10 @@ def _build_recovery_session(project_path, base_url, log_path, session_data, unit
     )
 
 
+def _has_recoverable_editor_signal(artifact_pid_running, unity_pids):
+    return bool(artifact_pid_running or unity_pids)
+
+
 def _build_ready_service_session(project_path, base_url, log_path, unity_pids, owner="existing_service"):
     return UnitySession(
         owner=owner,
@@ -516,7 +520,7 @@ def ensure_session_ready(
             "project_launch_claim_active",
         )
 
-    if artifact_pid_running or project_lock.get("fresh"):
+    if _has_recoverable_editor_signal(artifact_pid_running, initial_pids):
         owner = "session_artifact" if artifact_pid_running else "project_recovery"
         session = _build_recovery_session(project_path, base_url, log_path, session_data, initial_pids, owner)
         session.diagnostics = _collect_diagnostics(base_url, log_path, error)
@@ -580,7 +584,7 @@ def ensure_session_ready(
             _persist_ready_session_artifact(session, log_path, payload=followup_payload)
             return session
 
-        if artifact_pid_running or followup_lock.get("fresh"):
+        if _has_recoverable_editor_signal(artifact_pid_running, followup_pids):
             owner = "session_artifact" if artifact_pid_running else "project_recovery"
             session = _build_recovery_session(project_path, base_url, log_path, session_data, followup_pids, owner)
             session.diagnostics = _collect_diagnostics(base_url, log_path, followup_error)
@@ -670,7 +674,7 @@ def ensure_session_ready(
                     )
                     _persist_ready_session_artifact(session, log_path, payload=recovery_payload)
                     return session
-                if artifact_pid_running or recovery_lock.get("fresh"):
+                if _has_recoverable_editor_signal(artifact_pid_running, recovery_pids):
                     recovery_session = _build_recovery_session(
                         project_path,
                         base_url,

@@ -42,7 +42,7 @@ The default GitHub Actions workflow excludes `tests/test_real_host_integration.p
 The real-host regression exercises this primary chain:
 
 ```
-wait-until-ready -> exec --include-log-offset -> wait-for-result-marker -> wait-for-log-pattern --extract-json-group
+wait-until-ready -> exec -> use log_range.start -> wait-for-result-marker -> wait-for-log-pattern --extract-json-group
 ```
 
 For the full set of runtime validation requirements this covers, see [spec.md](spec.md).
