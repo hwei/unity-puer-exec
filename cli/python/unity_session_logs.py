@@ -133,11 +133,11 @@ def _coerce_pending_exec_artifact(request_id, payload):
         "updated_at_ms": updated_at_ms,
     }
     script_args = payload.get("script_args")
-    script_args_json = payload.get("script_args_json")
     if not isinstance(script_args, dict):
-        return None
+        script_args = {}
+    script_args_json = payload.get("script_args_json")
     if not isinstance(script_args_json, str) or not script_args_json:
-        return None
+        script_args_json = "{}"
     normalized["script_args"] = script_args
     normalized["script_args_json"] = script_args_json
     source_path = payload.get("source_path")
@@ -232,6 +232,13 @@ def write_pending_exec_artifact(project_path, request_id, payload):
     path = pending_exec_artifact_path(project_path, request_id)
     existing = _coerce_pending_exec_artifact(request_id, _read_json_file(path))
     now_ms = _now_ms()
+    script_args = payload.get("script_args")
+    if not isinstance(script_args, dict):
+        script_args = {}
+    script_args_json = payload.get("script_args_json")
+    if not isinstance(script_args_json, str) or not script_args_json:
+        script_args_json = "{}"
+
     normalized = {
         "schema_version": PENDING_EXEC_SCHEMA_VERSION,
         "request_id": request_id,
@@ -240,8 +247,8 @@ def write_pending_exec_artifact(project_path, request_id, payload):
         "reset_jsenv_before_exec": bool(payload.get("reset_jsenv_before_exec")),
         "created_at_ms": existing.get("created_at_ms", now_ms) if existing else now_ms,
         "updated_at_ms": now_ms,
-        "script_args": payload["script_args"],
-        "script_args_json": payload["script_args_json"],
+        "script_args": script_args,
+        "script_args_json": script_args_json,
     }
     source_path = payload.get("source_path")
     if isinstance(source_path, str) and source_path:
