@@ -1,0 +1,18 @@
+{
+  "name": "com.txcombo.unity-puer-exec",
+  "displayName": "Unity Puer Exec",
+  "version": "0.0.1",
+  "unity": "2022.3",
+  "description": "Unity Editor package for driving a Puerts host from an external CLI.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/hwei/unity-puer-exec.git"
+  },
+  "author": {
+    "name": "Will Huang"
+  },
+  "dependencies": {
+    "com.tencent.puerts.core": "3.0.0"
+  }
+}
