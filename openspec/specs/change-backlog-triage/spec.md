@@ -77,17 +77,17 @@ The repository SHALL support filtering change views by both derived recommendati
 - **AND** the raw inspection path remains distinguishable from the derived recommendation path
 
 ### Requirement: Change-query output distinguishes raw metadata from interpreted state
-Repository query tooling SHALL preserve access to a change's raw `meta.yaml` planning metadata while also surfacing interpreted operator-facing state when dependency resolution, task progress, archived prerequisites, generic OpenSpec workflow reporting, or abnormal repository state make raw metadata alone insufficient for trustworthy planning decisions.
+Repository query tooling SHALL preserve access to a change's raw `meta.yaml` planning state while also surfacing an interpreted operator-facing state when dependency resolution, archived prerequisites, generic OpenSpec workflow reporting, or abnormal repository state make raw metadata alone insufficient for trustworthy planning decisions.
 
 #### Scenario: Query output detects a state interpretation gap
 - **WHEN** a maintainer or agent queries a non-archived change whose raw metadata does not cleanly match the effective planning situation
 - **THEN** the query surface reports enough information to distinguish raw metadata from the interpreted operator-facing state
 - **AND** the output does not silently force contributors to infer which source of truth to trust
 
-#### Scenario: Derived backlog state replaces raw queued metadata
-- **WHEN** a non-archived change has unfinished tasks, no unresolved prerequisites, and no explicit blocked or superseded disposition
-- **THEN** repository recommendation tooling may report the change as derived `eligible`
-- **AND** the query surface does not require raw `meta.yaml.status = queued` in order to recommend the change
+#### Scenario: Raw metadata and generic workflow state disagree
+- **WHEN** a non-archived change still carries raw metadata such as `status: queued` while a generic OpenSpec workflow surface reports the same change as workflow `in-progress`
+- **THEN** repository query behavior preserves visibility into both the raw metadata state and the workflow interpretation
+- **AND** the mismatch is presented as an explicit diagnostic condition rather than as an unexplained contradiction
 
 ### Requirement: Change-query output stays trustworthy under inconsistent repository state
 Repository query tooling SHALL handle stale placeholders, resolved blockers, or other repository-state inconsistencies in a way that reduces misleading planning output and makes the inconsistency visible for follow-up correction.
