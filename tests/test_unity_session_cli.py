@@ -606,9 +606,9 @@ class UnityPuerExecCliTests(unittest.TestCase):
             body = json.loads(stdout)
             self.assertEqual(body["status"], "running")
             self.assertEqual(body["request_id"], "req-start")
-            self.assertEqual(body["next_step"]["command"], "wait-for-exec")
-            self.assertIn("wait-for-exec", body["next_step"]["argv"])
-            self.assertIn("req-start", body["next_step"]["argv"])
+            self.assertEqual(body["next_steps"][0]["command"], "wait-for-exec")
+            self.assertIn("wait-for-exec", body["next_steps"][0]["argv"])
+            self.assertIn("req-start", body["next_steps"][0]["argv"])
             pending = unity_session.read_pending_exec_artifact(str(project_path), "req-start")
             self.assertEqual(pending["request_id"], "req-start")
             self.assertIn("return 7", pending["code"])
@@ -708,7 +708,7 @@ class UnityPuerExecCliTests(unittest.TestCase):
             self.assertEqual(body["status"], "running")
             self.assertEqual(body["request_id"], "req-refresh")
             self.assertEqual(body["phase"], "compiling")
-            self.assertEqual(body["next_step"]["command"], "wait-for-exec")
+            self.assertEqual(body["next_steps"][0]["command"], "wait-for-exec")
             pending = unity_session.read_pending_exec_artifact(str(project_path), "req-refresh")
             self.assertEqual(pending["phase"], "compiling")
             self.assertEqual(pending["request_id"], "req-refresh")
@@ -873,7 +873,7 @@ class UnityPuerExecCliTests(unittest.TestCase):
             self.assertEqual(body["status"], "running")
             self.assertEqual(body["request_id"], "req-pending")
             self.assertEqual(body["phase"], "compiling")
-            self.assertEqual(body["next_step"]["command"], "wait-for-exec")
+            self.assertEqual(body["next_steps"][0]["command"], "wait-for-exec")
 
     def test_wait_for_exec_retries_pending_compile_phase_and_clears_pending_on_success(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -937,7 +937,7 @@ class UnityPuerExecCliTests(unittest.TestCase):
             body = json.loads(stdout)
             self.assertEqual(body["status"], "running")
             self.assertEqual(body["request_id"], "req-pending")
-            self.assertEqual(body["next_step"]["command"], "wait-for-exec")
+            self.assertEqual(body["next_steps"][0]["command"], "wait-for-exec")
 
     def test_wait_for_exec_refreshes_pending_timestamp_while_request_remains_recoverable(self):
         with tempfile.TemporaryDirectory() as temp_dir:
