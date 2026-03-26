@@ -11,6 +11,7 @@ HELP_FLAGS = ("--help", "--help-args", "--help-status")
 
 def build_parser():
     parser = argparse.ArgumentParser(prog="unity-puer-exec", add_help=False)
+    parser.add_argument("--suppress-guidance", action="store_true", default=False)
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     ready_parser = subparsers.add_parser("wait-until-ready", add_help=False)

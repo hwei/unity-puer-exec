@@ -6,6 +6,7 @@ import time
 import uuid
 
 import direct_exec_client
+import help_surface
 import unity_log_brief
 import unity_modal_blockers
 import unity_session
@@ -157,6 +158,7 @@ def run_command(args):
             session=exc.session,
             include_diagnostics=getattr(args, "include_diagnostics", False),
         )
+        _attach_guidance(payload, args.command, "unity_start_failed", args, request_id=getattr(args, "request_id", None))
         return EXIT_UNITY_START_FAILED, emit_payload(payload), ""
     except unity_session.UnityLaunchConflictError as exc:
         payload = expected_failure_payload(
@@ -166,6 +168,7 @@ def run_command(args):
             session=exc.session,
             include_diagnostics=getattr(args, "include_diagnostics", False),
         )
+        _attach_guidance(payload, args.command, "launch_conflict", args, request_id=getattr(args, "request_id", None))
         return EXIT_UNITY_START_FAILED, emit_payload(payload), ""
     except (unity_session.UnityStalledError, unity_session.UnityNotReadyError) as exc:
         status = "unity_stalled" if isinstance(exc, unity_session.UnityStalledError) else "unity_not_ready"
@@ -176,6 +179,7 @@ def run_command(args):
             session=exc.session,
             include_diagnostics=getattr(args, "include_diagnostics", False),
         )
+        _attach_guidance(payload, args.command, status, args, request_id=getattr(args, "request_id", None))
         return EXIT_UNITY_NOT_READY, emit_payload(payload), ""
     except unity_session.UnitySessionStateError as exc:
         payload = expected_failure_payload(
@@ -185,6 +189,7 @@ def run_command(args):
             session=exc.session,
             include_diagnostics=getattr(args, "include_diagnostics", False),
         )
+        _attach_guidance(payload, args.command, exc.status, args)
         return EXIT_SESSION_STATE, emit_payload(payload), ""
     except Exception as exc:  # noqa: BLE001 - CLI should normalize unexpected failures.
         payload = unexpected_failure_payload(
@@ -192,14 +197,16 @@ def run_command(args):
             exc,
             include_diagnostics=getattr(args, "include_diagnostics", False),
         )
+        _attach_guidance(payload, args.command, "failed", args)
         return 1, emit_payload(payload), ""
 
 
 def run_cli(argv, surface):
-    help_result = surface.handle_top_level_help(argv)
+    filtered_argv = [a for a in argv if a != "--suppress-guidance"]
+    help_result = surface.handle_top_level_help(filtered_argv)
     if help_result is not None:
         return help_result
-    help_result = surface.handle_command_help(argv)
+    help_result = surface.handle_command_help(filtered_argv)
     if help_result is not None:
         return help_result
     parser = surface.build_parser()
@@ -220,25 +227,43 @@ def _project_path_arg(args):
     return str(unity_session.resolve_project_path(getattr(args, "project_path", None)))
 
 
-def _next_step_payload(args, request_id):
-    project_path = _project_path_arg(args)
-    argv = [
-        "unity-puer-exec",
-        "wait-for-exec",
-        "--project-path",
-        project_path,
-        "--request-id",
-        request_id,
-        "--wait-timeout-ms",
-        str(args.wait_timeout_ms),
-    ]
+def _build_guidance_context(args, request_id=None):
+    context = {}
+    project_path = getattr(args, "project_path", None)
+    if project_path:
+        context["project_path"] = str(unity_session.resolve_project_path(project_path))
+    if request_id:
+        context["request_id"] = request_id
+    if getattr(args, "wait_timeout_ms", None) is not None:
+        context["wait_timeout_ms"] = args.wait_timeout_ms
     if getattr(args, "unity_exe_path", None):
-        argv.extend(["--unity-exe-path", args.unity_exe_path])
+        context["unity_exe_path"] = args.unity_exe_path
     if getattr(args, "unity_log_path", None):
-        argv.extend(["--unity-log-path", args.unity_log_path])
+        context["unity_log_path"] = args.unity_log_path
     if getattr(args, "include_diagnostics", False):
-        argv.append("--include-diagnostics")
-    return {"command": "wait-for-exec", "argv": argv}
+        context["include_diagnostics"] = True
+    return context
+
+
+def _attach_guidance(payload, command, status, args, request_id=None):
+    if getattr(args, "suppress_guidance", False):
+        return
+    context = _build_guidance_context(args, request_id=request_id)
+    next_steps = help_surface.build_next_steps(command, status, context)
+    if next_steps:
+        payload["next_steps"] = next_steps
+    situation = help_surface.build_situation(command, status)
+    if situation:
+        payload["situation"] = situation
+
+
+def _inject_guidance_into_stdout(stdout_text, command, args, request_id=None):
+    if not stdout_text or getattr(args, "suppress_guidance", False):
+        return stdout_text
+    body = json.loads(stdout_text)
+    rid = request_id or body.get("request_id")
+    _attach_guidance(body, command, body.get("status"), args, request_id=rid)
+    return emit_payload(body)
 
 
 def _refresh_request_id(request_id):
@@ -312,12 +337,12 @@ def _emit_running_payload(operation, session, request_id, args, phase=None):
         "status": "running",
         "operation": operation,
         "request_id": request_id,
-        "next_step": _next_step_payload(args, request_id),
     }
     if phase:
         payload["phase"] = phase
     if session is not None:
         payload["session"] = session.to_payload()
+    _attach_guidance(payload, operation, "running", args, request_id=request_id)
     return attach_diagnostics(payload, include_diagnostics=args.include_diagnostics, session=session)
 
 
@@ -386,14 +411,12 @@ def _normalize_exec_lifecycle_body(body, args, request_id=None, default_phase=No
         body["status"] = "running"
         if normalized_request_id:
             body["request_id"] = normalized_request_id
-            body["next_step"] = _next_step_payload(args, normalized_request_id)
         body["phase"] = PHASE_COMPILING
         return body, EXIT_RUNNING
     if status == "running":
         normalized_request_id = request_id or body.get("request_id")
         if normalized_request_id:
             body["request_id"] = normalized_request_id
-            body["next_step"] = _next_step_payload(args, normalized_request_id)
         body.setdefault("phase", default_phase or PHASE_EXECUTING)
         return body, EXIT_RUNNING
     return body, None
@@ -548,6 +571,7 @@ def run_exec(args):
                 normalize_compiling=False,
             )
             stdout_text = _inject_log_range_into_stdout(stdout_text, log_path, log_start, _capture_log_offset(log_path))
+            stdout_text = _inject_guidance_into_stdout(stdout_text, "exec", args, request_id=request_id)
             return exit_code, stdout_text, stderr_text
         try:
             session = _ensure_project_session_ready_after_refresh(args)
@@ -579,6 +603,7 @@ def run_exec(args):
         default_phase=default_phase,
     )
     stdout_text = _inject_log_range_into_stdout(stdout_text, log_path, log_start, _capture_log_offset(log_path))
+    stdout_text = _inject_guidance_into_stdout(stdout_text, "exec", args, request_id=request_id)
     return exit_code, stdout_text, stderr_text
 
 
@@ -673,6 +698,7 @@ def run_wait_for_exec(args):
                     normalize_compiling=False,
                 )
                 stdout_text = _inject_log_range_into_stdout(stdout_text, _wfe_refresh_log_path, _wfe_log_start, _capture_log_offset(_wfe_refresh_log_path))
+                stdout_text = _inject_guidance_into_stdout(stdout_text, "wait-for-exec", args, request_id=args.request_id)
                 return exit_code, stdout_text, stderr_text
             try:
                 session = _ensure_project_session_ready_after_refresh(args)
@@ -715,6 +741,7 @@ def run_wait_for_exec(args):
     )
     _wfe_final_log_path = _resolve_log_path(args, session)
     stdout_text = _inject_log_range_into_stdout(stdout_text, _wfe_final_log_path, _wfe_log_start, _capture_log_offset(_wfe_final_log_path))
+    stdout_text = _inject_guidance_into_stdout(stdout_text, "wait-for-exec", args, request_id=args.request_id)
     return exit_code, stdout_text, stderr_text
 
 
@@ -759,6 +786,7 @@ def run_wait_until_ready(args):
             include_diagnostics=args.include_diagnostics,
         )
         _inject_log_range_into_payload(payload, exc_log_path, log_start, _capture_log_offset(exc_log_path))
+        _attach_guidance(payload, "wait-until-ready", status, args)
         return EXIT_UNITY_NOT_READY, emit_payload(payload), ""
 
     log_path = _resolve_log_path(args, session)
@@ -769,6 +797,7 @@ def run_wait_until_ready(args):
         include_diagnostics=args.include_diagnostics,
     )
     _inject_log_range_into_payload(payload, log_path, log_start, _capture_log_offset(log_path))
+    _attach_guidance(payload, "wait-until-ready", "completed", args)
     return 0, emit_payload(payload), ""
 
 
@@ -796,6 +825,7 @@ def run_wait_for_log_pattern(args):
             "no observable Unity log source is available",
             include_diagnostics=args.include_diagnostics,
         )
+        _attach_guidance(payload, "wait-for-log-pattern", "no_observation_target", args)
         return EXIT_NO_OBSERVATION_TARGET, emit_payload(payload), ""
 
     log_path = _resolve_log_path(args, session)
@@ -823,6 +853,7 @@ def run_wait_for_log_pattern(args):
             include_diagnostics=args.include_diagnostics,
         )
         _inject_log_range_into_payload(payload, log_path, log_start, _capture_log_offset(log_path))
+        _attach_guidance(payload, "wait-for-log-pattern", status, args)
         return EXIT_UNITY_NOT_READY, emit_payload(payload), ""
 
     result = {"status": "log_pattern_matched"}
@@ -860,6 +891,7 @@ def run_wait_for_result_marker(args):
             "no observable Unity log source is available",
             include_diagnostics=args.include_diagnostics,
         )
+        _attach_guidance(payload, "wait-for-result-marker", "no_observation_target", args)
         return EXIT_NO_OBSERVATION_TARGET, emit_payload(payload), ""
 
     log_path = _resolve_log_path(args, session)
@@ -889,6 +921,7 @@ def run_wait_for_result_marker(args):
                 include_diagnostics=args.include_diagnostics,
             )
             _inject_log_range_into_payload(payload, log_path, log_start, _capture_log_offset(log_path))
+            _attach_guidance(payload, "wait-for-result-marker", status, args)
             return EXIT_UNITY_NOT_READY, emit_payload(payload), ""
 
         marker_text = session.diagnostics.get("extracted_group")
@@ -951,6 +984,7 @@ def run_get_blocker_state(args):
             result={"status": "no_blocker"},
             include_diagnostics=args.include_diagnostics,
         )
+        _attach_guidance(payload, "get-blocker-state", "completed", args)
         return 0, emit_payload(payload), ""
 
     payload = success_payload(
@@ -959,6 +993,7 @@ def run_get_blocker_state(args):
         result={"status": "modal_blocked", "blocker": blocker},
         include_diagnostics=args.include_diagnostics,
     )
+    _attach_guidance(payload, "get-blocker-state", "completed", args)
     return 0, emit_payload(payload), ""
 
 
@@ -981,6 +1016,7 @@ def run_resolve_blocker(args):
             result=result["result"],
             include_diagnostics=args.include_diagnostics,
         )
+        _attach_guidance(payload, "resolve-blocker", "completed", args)
         return 0, emit_payload(payload), ""
 
     payload = {"ok": False, "status": result["status"], "operation": "resolve-blocker"}
@@ -993,6 +1029,7 @@ def run_resolve_blocker(args):
     if "error" in result:
         payload["error"] = result["error"]
     payload = attach_diagnostics(payload, include_diagnostics=args.include_diagnostics, session=session)
+    _attach_guidance(payload, "resolve-blocker", result["status"], args)
     return 1, emit_payload(payload), ""
 
 
@@ -1040,6 +1077,7 @@ def run_get_log_briefs(args):
         result=filtered,
         include_diagnostics=args.include_diagnostics,
     )
+    _attach_guidance(payload, "get-log-briefs", "completed", args)
     return 0, emit_payload(payload), ""
 
 
@@ -1069,6 +1107,7 @@ def run_ensure_stopped(args):
             session=session,
             include_diagnostics=args.include_diagnostics,
         )
+        _attach_guidance(payload, "ensure-stopped", "not_stopped", args)
         return EXIT_NOT_STOPPED, emit_payload(payload), ""
 
     payload = success_payload(

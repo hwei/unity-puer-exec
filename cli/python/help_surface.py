@@ -671,6 +671,520 @@ WORKFLOW_EXAMPLES = {
 }
 
 
+_OPTIONAL_FORWARDED_ARGS = {
+    "wait-for-exec": (
+        ("--wait-timeout-ms", "wait_timeout_ms"),
+        ("--unity-exe-path", "unity_exe_path"),
+        ("--unity-log-path", "unity_log_path"),
+    ),
+    "exec": (
+        ("--unity-exe-path", "unity_exe_path"),
+        ("--unity-log-path", "unity_log_path"),
+    ),
+    "wait-until-ready": (
+        ("--unity-exe-path", "unity_exe_path"),
+        ("--unity-log-path", "unity_log_path"),
+    ),
+    "wait-for-log-pattern": (
+        ("--unity-log-path", "unity_log_path"),
+    ),
+    "wait-for-result-marker": (
+        ("--unity-log-path", "unity_log_path"),
+    ),
+    "get-log-source": (
+        ("--unity-log-path", "unity_log_path"),
+    ),
+    "get-log-briefs": (
+        ("--unity-log-path", "unity_log_path"),
+    ),
+}
+
+GUIDANCE_MATRIX = {
+    # --- exec ---
+    ("exec", "running"): {
+        "next_steps": [
+            {
+                "command": "wait-for-exec",
+                "when": "you want to continue waiting for the accepted request to finish",
+                "argv_template": [
+                    "unity-puer-exec", "wait-for-exec",
+                    "--project-path", "{project_path}",
+                    "--request-id", "{request_id}",
+                ],
+            },
+            {
+                "command": "wait-for-result-marker",
+                "when": "the script deliberately exposes a correlation_id and you want to wait for the terminal result marker",
+            },
+            {
+                "command": "wait-for-log-pattern",
+                "when": "you want to verify success through ordinary Unity log output rather than a result marker",
+            },
+        ],
+    },
+    ("exec", "completed"): {},
+    ("exec", "modal_blocked"): {
+        "situation": "A supported Unity modal dialog is blocking exec progress. Inspect the blocker type before deciding whether to resolve it.",
+        "next_steps": [
+            {
+                "command": "get-blocker-state",
+                "when": "you want to confirm the specific blocker type before acting",
+                "argv_template": [
+                    "unity-puer-exec", "get-blocker-state",
+                    "--project-path", "{project_path}",
+                ],
+            },
+            {
+                "command": "resolve-blocker",
+                "when": "you have confirmed a supported modal blocker and machine-issued cancel is acceptable",
+                "argv_template": [
+                    "unity-puer-exec", "resolve-blocker",
+                    "--project-path", "{project_path}",
+                    "--action", "cancel",
+                ],
+            },
+            {
+                "command": "wait-for-exec",
+                "when": "the blocker has been resolved and you want to continue waiting on the same request",
+                "argv_template": [
+                    "unity-puer-exec", "wait-for-exec",
+                    "--project-path", "{project_path}",
+                    "--request-id", "{request_id}",
+                ],
+            },
+        ],
+    },
+    ("exec", "busy"): {
+        "situation": "A different exec request is already active on this service. Wait for the current request to finish or use wait-for-exec with its request_id.",
+    },
+    ("exec", "not_available"): {
+        "situation": "The execution target could not be reached. Project-scoped exec already attempted Unity launch/recovery before returning this status.",
+    },
+    ("exec", "request_id_conflict"): {
+        "situation": "The provided request_id is already associated with different execution content. Use a fresh request_id for a new execution attempt, or resubmit with the original content for recovery.",
+    },
+    ("exec", "launch_conflict"): {
+        "situation": "Project-scoped launch ownership could not be established safely. Another process may be launching Unity for this project.",
+    },
+    ("exec", "unity_start_failed"): {
+        "situation": "Unity could not be launched for the selected project.",
+        "next_steps": [
+            {
+                "command": "wait-for-exec",
+                "when": "a pending exec artifact exists and Unity may become available after the launch issue is resolved",
+                "argv_template": [
+                    "unity-puer-exec", "wait-for-exec",
+                    "--project-path", "{project_path}",
+                    "--request-id", "{request_id}",
+                ],
+            },
+        ],
+    },
+    ("exec", "unity_stalled"): {
+        "situation": "Readiness stopped making progress before execution could proceed.",
+        "next_steps": [
+            {
+                "command": "get-blocker-state",
+                "when": "the stall might be caused by a supported Unity modal dialog",
+                "argv_template": [
+                    "unity-puer-exec", "get-blocker-state",
+                    "--project-path", "{project_path}",
+                ],
+            },
+            {
+                "command": "wait-for-exec",
+                "when": "a pending exec artifact exists and Unity may resume progress",
+                "argv_template": [
+                    "unity-puer-exec", "wait-for-exec",
+                    "--project-path", "{project_path}",
+                    "--request-id", "{request_id}",
+                ],
+            },
+        ],
+    },
+    ("exec", "unity_not_ready"): {
+        "situation": "Unity did not become ready before the readiness budget expired.",
+        "next_steps": [
+            {
+                "command": "wait-for-exec",
+                "when": "a pending exec artifact exists and you want to retry after more time",
+                "argv_template": [
+                    "unity-puer-exec", "wait-for-exec",
+                    "--project-path", "{project_path}",
+                    "--request-id", "{request_id}",
+                ],
+            },
+        ],
+    },
+    ("exec", "failed"): {
+        "situation": "An unexpected execution failure occurred. Check the error field for details.",
+    },
+    # --- wait-for-exec ---
+    ("wait-for-exec", "running"): {
+        "next_steps": [
+            {
+                "command": "wait-for-exec",
+                "when": "you want to continue waiting for the same request",
+                "argv_template": [
+                    "unity-puer-exec", "wait-for-exec",
+                    "--project-path", "{project_path}",
+                    "--request-id", "{request_id}",
+                ],
+            },
+            {
+                "command": "wait-for-result-marker",
+                "when": "the script exposes a correlation_id and you want to observe the terminal result marker instead",
+            },
+            {
+                "command": "wait-for-log-pattern",
+                "when": "you want to verify progress or success through ordinary Unity log output",
+            },
+        ],
+    },
+    ("wait-for-exec", "completed"): {},
+    ("wait-for-exec", "modal_blocked"): {
+        "situation": "A supported Unity modal dialog is blocking the accepted exec request. Do not start a fresh request; resolve the blocker first.",
+        "next_steps": [
+            {
+                "command": "get-blocker-state",
+                "when": "you want to confirm the specific blocker type before acting",
+                "argv_template": [
+                    "unity-puer-exec", "get-blocker-state",
+                    "--project-path", "{project_path}",
+                ],
+            },
+            {
+                "command": "resolve-blocker",
+                "when": "you have confirmed a supported modal blocker and machine-issued cancel is acceptable",
+                "argv_template": [
+                    "unity-puer-exec", "resolve-blocker",
+                    "--project-path", "{project_path}",
+                    "--action", "cancel",
+                ],
+            },
+            {
+                "command": "wait-for-exec",
+                "when": "the blocker has been resolved and you want to continue the same request",
+                "argv_template": [
+                    "unity-puer-exec", "wait-for-exec",
+                    "--project-path", "{project_path}",
+                    "--request-id", "{request_id}",
+                ],
+            },
+        ],
+    },
+    ("wait-for-exec", "missing"): {
+        "situation": "The addressed service has no recoverable record for that request_id. The request may have completed, expired, or never been submitted.",
+        "next_steps": [
+            {
+                "command": "exec",
+                "when": "you need to resubmit the script as a new execution attempt",
+            },
+        ],
+    },
+    ("wait-for-exec", "not_available"): {
+        "situation": "The execution target could not be reached.",
+    },
+    ("wait-for-exec", "launch_conflict"): {
+        "situation": "Project-scoped launch ownership could not be established safely. Another process may be launching Unity for this project.",
+    },
+    ("wait-for-exec", "unity_start_failed"): {
+        "situation": "Unity could not be launched for the selected project.",
+        "next_steps": [
+            {
+                "command": "wait-for-exec",
+                "when": "Unity may become available after the launch issue is resolved",
+                "argv_template": [
+                    "unity-puer-exec", "wait-for-exec",
+                    "--project-path", "{project_path}",
+                    "--request-id", "{request_id}",
+                ],
+            },
+        ],
+    },
+    ("wait-for-exec", "unity_stalled"): {
+        "situation": "Readiness stopped making progress before waiting could proceed.",
+        "next_steps": [
+            {
+                "command": "get-blocker-state",
+                "when": "the stall might be caused by a supported Unity modal dialog",
+                "argv_template": [
+                    "unity-puer-exec", "get-blocker-state",
+                    "--project-path", "{project_path}",
+                ],
+            },
+            {
+                "command": "wait-for-exec",
+                "when": "Unity may resume progress and you want to keep waiting",
+                "argv_template": [
+                    "unity-puer-exec", "wait-for-exec",
+                    "--project-path", "{project_path}",
+                    "--request-id", "{request_id}",
+                ],
+            },
+        ],
+    },
+    ("wait-for-exec", "unity_not_ready"): {
+        "situation": "Unity did not become ready before waiting could proceed.",
+        "next_steps": [
+            {
+                "command": "wait-for-exec",
+                "when": "you want to retry after more time",
+                "argv_template": [
+                    "unity-puer-exec", "wait-for-exec",
+                    "--project-path", "{project_path}",
+                    "--request-id", "{request_id}",
+                ],
+            },
+        ],
+    },
+    ("wait-for-exec", "failed"): {
+        "situation": "An unexpected wait-for-exec failure occurred. Check the error field for details.",
+    },
+    # --- wait-for-log-pattern ---
+    ("wait-for-log-pattern", "completed"): {},
+    ("wait-for-log-pattern", "no_observation_target"): {
+        "situation": "No eligible Unity log source could be observed for the selected target.",
+        "next_steps": [
+            {
+                "command": "get-log-source",
+                "when": "you need to diagnose whether a log source exists for this target",
+                "argv_template": [
+                    "unity-puer-exec", "get-log-source",
+                    "--project-path", "{project_path}",
+                ],
+            },
+        ],
+    },
+    ("wait-for-log-pattern", "unity_stalled"): {
+        "situation": "Observation lost forward progress before the pattern appeared.",
+        "next_steps": [
+            {
+                "command": "get-blocker-state",
+                "when": "the stall might be caused by a supported Unity modal dialog",
+                "argv_template": [
+                    "unity-puer-exec", "get-blocker-state",
+                    "--project-path", "{project_path}",
+                ],
+            },
+        ],
+    },
+    ("wait-for-log-pattern", "unity_not_ready"): {
+        "situation": "The observed target stopped being ready while waiting for the pattern.",
+    },
+    ("wait-for-log-pattern", "failed"): {
+        "situation": "The pattern observation failed unexpectedly. Check the error field for details.",
+    },
+    # --- wait-for-result-marker ---
+    ("wait-for-result-marker", "completed"): {},
+    ("wait-for-result-marker", "no_observation_target"): {
+        "situation": "No eligible Unity log source could be observed for the selected target.",
+        "next_steps": [
+            {
+                "command": "get-log-source",
+                "when": "you need to diagnose whether a log source exists for this target",
+                "argv_template": [
+                    "unity-puer-exec", "get-log-source",
+                    "--project-path", "{project_path}",
+                ],
+            },
+        ],
+    },
+    ("wait-for-result-marker", "session_missing"): {
+        "situation": "The target no longer exposes the session continuity information needed for safe guarded observation.",
+    },
+    ("wait-for-result-marker", "session_stale"): {
+        "situation": "The target session changed since the expected session marker was recorded. Observation results may not correspond to the original execution.",
+    },
+    ("wait-for-result-marker", "unity_stalled"): {
+        "situation": "Observation lost forward progress before the result marker appeared.",
+        "next_steps": [
+            {
+                "command": "get-blocker-state",
+                "when": "the stall might be caused by a supported Unity modal dialog",
+                "argv_template": [
+                    "unity-puer-exec", "get-blocker-state",
+                    "--project-path", "{project_path}",
+                ],
+            },
+        ],
+    },
+    ("wait-for-result-marker", "unity_not_ready"): {
+        "situation": "The observed target stopped being ready while waiting for the result marker.",
+    },
+    ("wait-for-result-marker", "failed"): {
+        "situation": "The result marker observation failed unexpectedly. Check the error field for details.",
+    },
+    # --- wait-until-ready ---
+    ("wait-until-ready", "completed"): {
+        "next_steps": [
+            {
+                "command": "exec",
+                "when": "Unity is ready and you want to execute a script",
+            },
+        ],
+    },
+    ("wait-until-ready", "launch_conflict"): {
+        "situation": "Project-scoped launch ownership could not be established safely. Another process may be launching Unity for this project.",
+    },
+    ("wait-until-ready", "unity_start_failed"): {
+        "situation": "Unity could not be launched for the selected project.",
+    },
+    ("wait-until-ready", "unity_stalled"): {
+        "situation": "Readiness stopped making progress before becoming usable.",
+        "next_steps": [
+            {
+                "command": "get-blocker-state",
+                "when": "the stall might be caused by a supported Unity modal dialog",
+                "argv_template": [
+                    "unity-puer-exec", "get-blocker-state",
+                    "--project-path", "{project_path}",
+                ],
+            },
+            {
+                "command": "wait-until-ready",
+                "when": "you want to retry readiness after addressing the stall",
+            },
+        ],
+    },
+    ("wait-until-ready", "unity_not_ready"): {
+        "situation": "Unity did not become ready before the readiness budget expired.",
+        "next_steps": [
+            {
+                "command": "wait-until-ready",
+                "when": "you want to retry readiness with a longer budget or after addressing the issue",
+            },
+        ],
+    },
+    ("wait-until-ready", "failed"): {
+        "situation": "An unexpected readiness failure occurred. Check the error field for details.",
+    },
+    # --- ensure-stopped ---
+    ("ensure-stopped", "completed"): {},
+    ("ensure-stopped", "not_stopped"): {
+        "situation": "The target is still not stopped under the selected stop mode.",
+        "next_steps": [
+            {
+                "command": "ensure-stopped",
+                "when": "you want to force-stop with --immediate-kill",
+            },
+        ],
+    },
+    ("ensure-stopped", "failed"): {
+        "situation": "An unexpected failure occurred while checking or enforcing the stopped state.",
+    },
+    # --- get-blocker-state ---
+    ("get-blocker-state", "completed"): {
+        "next_steps": [
+            {
+                "command": "resolve-blocker",
+                "when": "result.status is modal_blocked and you want to dismiss the blocker",
+                "argv_template": [
+                    "unity-puer-exec", "resolve-blocker",
+                    "--project-path", "{project_path}",
+                    "--action", "cancel",
+                ],
+            },
+        ],
+    },
+    ("get-blocker-state", "failed"): {
+        "situation": "An unexpected blocker-query failure occurred.",
+    },
+    # --- resolve-blocker ---
+    ("resolve-blocker", "completed"): {
+        "next_steps": [
+            {
+                "command": "wait-for-exec",
+                "when": "you had a pending exec request and want to continue it after resolving the blocker",
+                "argv_template": [
+                    "unity-puer-exec", "wait-for-exec",
+                    "--project-path", "{project_path}",
+                    "--request-id", "{request_id}",
+                ],
+            },
+            {
+                "command": "exec",
+                "when": "you want to start a new execution attempt after resolving the blocker",
+            },
+        ],
+    },
+    ("resolve-blocker", "no_supported_blocker"): {
+        "situation": "No supported blocker was currently detected. The dialog may have already been dismissed or is not a supported blocker type.",
+    },
+    ("resolve-blocker", "resolution_failed"): {
+        "situation": "A supported blocker was detected but the cancel interaction could not be completed safely or confirmed.",
+    },
+    ("resolve-blocker", "unsupported_operation"): {
+        "situation": "Blocker resolution requires Windows and --project-path in the first version.",
+    },
+    ("resolve-blocker", "failed"): {
+        "situation": "An unexpected resolution failure occurred.",
+    },
+    # --- get-log-briefs ---
+    ("get-log-briefs", "completed"): {
+        "next_steps": [
+            {
+                "command": "get-log-source",
+                "when": "you need the full log file path for deeper inspection beyond brief entries",
+            },
+        ],
+    },
+    ("get-log-briefs", "failed"): {
+        "situation": "The brief retrieval failed. The range may be invalid or the log file could not be read.",
+    },
+    # --- get-log-source: no guidance (task 1.7) ---
+}
+
+
+def _build_argv(template, target_command, context):
+    if not context:
+        return None
+    argv = []
+    for item in template:
+        if item.startswith("{") and item.endswith("}"):
+            key = item[1:-1]
+            value = context.get(key)
+            if value is None:
+                return None
+            argv.append(str(value))
+        else:
+            argv.append(item)
+    forwarded = _OPTIONAL_FORWARDED_ARGS.get(target_command, ())
+    for flag, key in forwarded:
+        value = context.get(key)
+        if value:
+            argv.extend([flag, str(value)])
+    if context.get("include_diagnostics"):
+        argv.append("--include-diagnostics")
+    return argv
+
+
+def build_next_steps(command, status, context):
+    entry = GUIDANCE_MATRIX.get((command, status))
+    if entry is None:
+        return None
+    templates = entry.get("next_steps")
+    if not templates:
+        return None
+    result = []
+    for template in templates:
+        step = {"command": template["command"], "when": template["when"]}
+        argv_template = template.get("argv_template")
+        if argv_template is not None:
+            argv = _build_argv(argv_template, template["command"], context)
+            if argv is not None:
+                step["argv"] = argv
+        result.append(step)
+    return result if result else None
+
+
+def build_situation(command, status):
+    entry = GUIDANCE_MATRIX.get((command, status))
+    if entry is None:
+        return None
+    return entry.get("situation")
+
+
 def render_top_level_help():
     command_group_sections = []
     for title, commands in COMMAND_GROUPS:
@@ -682,6 +1196,7 @@ def render_top_level_help():
         "Bridge Model\n`unity-puer-exec` script authoring uses a PuerTS-style JavaScript-to-C# bridge. Use `puer.loadType(...)` to load Unity or C# types, and do not assume bridged C# arrays or `List<T>` values behave exactly like native JS arrays.",
         "Recommended Path\n{}".format(_bullet_lines(RECOMMENDED_PATH)),
         "Command Groups\n{}".format("\n\n".join(command_group_sections)),
+        "Global Options\n- `--suppress-guidance`: omit `next_steps` and `situation` from command responses. Status explanations remain available via `<command> --help-status`.",
         "Global Selector Rules\n- Use exactly one selector on commands that target a Unity session: `--project-path` or `--base-url`.\n- `--project-path` is the normal choice when the CLI should discover, launch, or recover Unity for a project.\n- `--base-url` is for a direct service you already know how to reach.",
         "Common Help Examples\nUse `unity-puer-exec --help-example <example-id>` to view full steps.\n{}".format(
             _bullet_lines(
@@ -720,16 +1235,22 @@ def render_command_args_help(command):
         items = info.get(title)
         if items:
             sections.append("{}\n{}".format(title, _bullet_lines(items)))
+    sections.append("Global Options\n{}".format(_bullet_lines([
+        "`--suppress-guidance`: omit `next_steps` and `situation` from responses. Use `--help-status` as a fallback for status explanations.",
+    ])))
     return _join_sections(sections)
 
 
 def render_command_status_help(command):
     info = COMMAND_HELP[command]["status"]
     success_lines = ["All success states exit with code `0`."] + list(info["success"])
-    failure_lines = [
-        "`{}` -> exit {}: {}".format(status, code, meaning)
-        for status, code, meaning in info["failure"]
-    ]
+    failure_lines = []
+    for status, code, meaning in info["failure"]:
+        line = "`{}` -> exit {}: {}".format(status, code, meaning)
+        situation = build_situation(command, status)
+        if situation:
+            line += " Situation: {}".format(situation)
+        failure_lines.append(line)
     sections = [
         "Success Statuses\n{}".format(_bullet_lines(success_lines)),
         "Non-success Statuses\n{}".format(_bullet_lines(failure_lines)),
