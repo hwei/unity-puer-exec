@@ -1,0 +1,36 @@
+name: Unit Tests
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  unit-tests:
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run mocked and helper-tool unit tests
+        shell: pwsh
+        run: |
+          python -m unittest `
+            tests.test_cleanup_validation_host_tool `
+            tests.test_direct_exec_client `
+            tests.test_openspec_backlog `
+            tests.test_openspec_change_meta `
+            tests.test_package_layout `
+            tests.test_prepare_validation_host_tool `
+            tests.test_unity_log_brief `
+            tests.test_unity_puer_session `
+            tests.test_unity_session `
+            tests.test_unity_session_cli `
+            tests.test_unity_session_modules

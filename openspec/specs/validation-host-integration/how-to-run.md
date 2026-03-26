@@ -4,11 +4,13 @@
 
 This repository has two distinct test layers:
 
-**Mocked tests** (default):
+**Mocked and helper-tool unit tests** (default):
 ```
-python -m unittest discover -s tests -p "test_*.py"
+python -m unittest tests.test_cleanup_validation_host_tool tests.test_direct_exec_client tests.test_openspec_backlog tests.test_openspec_change_meta tests.test_package_layout tests.test_prepare_validation_host_tool tests.test_unity_log_brief tests.test_unity_puer_session tests.test_unity_session tests.test_unity_session_cli tests.test_unity_session_modules
 ```
-Cover parsing, payload contracts, status codes, and local helper logic. Run without any external dependencies.
+Cover parsing, payload contracts, status codes, packaging checks, OpenSpec tooling, and local validation-host helper logic. Run without Unity Editor or a validation-host project.
+
+This is the same default suite executed by the repository's GitHub Actions unit-test workflow for pull requests and pushes to `main`.
 
 **Real-host integration tests** (`tests/test_real_host_integration.py`):
 Require a live Unity Editor and a prepared validation host project. Not executed unless explicitly enabled — they skip silently when prerequisites are not met.
@@ -33,6 +35,7 @@ UNITY_PUER_EXEC_RUN_REAL_HOST_TESTS=1 python -m unittest tests.test_real_host_in
 | `fail` / `error` | Prerequisites were satisfied but the CLI chain, runtime, log observation, or assertion failed. This is a real-host regression. |
 
 Mocked test passes do **not** substitute for real-host regression. They protect parsing, payload, and local contract logic only.
+The default GitHub Actions workflow excludes `tests/test_real_host_integration.py` on purpose; real-host coverage remains a separate manual validation path.
 
 ## Current Coverage Chain
 
