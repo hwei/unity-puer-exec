@@ -14,7 +14,7 @@
 ## 3. Validation
 
 - [x] 3.1 Add a package-layout test that verifies the expected files exist in `packages/com.txcombo.unity-puer-exec/` (package.json fields, LICENSE)
-- [ ] 3.2 Manually test the workflow by pushing a `v0.0.1` tag to the GitHub repo and verifying the `upm` branch and `upm/v0.0.1` tag are created correctly
+- [x] 3.2 Manually test the workflow by pushing a `v0.0.1` tag to the GitHub repo and verifying the `upm` branch and `upm/v0.0.1` tag are created correctly
 
 ## 4. OpenUPM Registration
 
