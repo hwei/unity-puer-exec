@@ -19,4 +19,4 @@
 ## 4. OpenUPM Registration
 
 - [x] 4.1 Prepare OpenUPM package listing YAML (`com.txcombo.unity-puer-exec.yml`) with `gitTagPrefix: upm/`, license, topics
-- [ ] 4.2 Submit PR to `openupm/openupm` repository to register the package
+- [x] 4.2 Submit PR to `openupm/openupm` repository to register the package
