@@ -1,8 +1,10 @@
 import json
+import os
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -13,11 +15,24 @@ if str(TOOLS_DIR) not in sys.path:
 import prepare_validation_host  # type: ignore
 
 
+def _same_anchor_manifest_path(package_root):
+    return Path(package_root.anchor) / "validation-host" / "Project" / "Packages" / "manifest.json"
+
+
 class PrepareValidationHostTests(unittest.TestCase):
     def test_compute_file_dependency_uses_reproducible_relative_path(self):
-        manifest_path = Path("F:/C3/unity-puer-exec-workspace/c3-client-tree2/Project/Packages/manifest.json")
-        dependency = prepare_validation_host.compute_file_dependency(manifest_path)
-        self.assertEqual(dependency, "file:../../../unity-puer-exec/packages/com.txcombo.unity-puer-exec")
+        package_root = prepare_validation_host.FORMAL_PACKAGE_ROOT
+        manifest_path = _same_anchor_manifest_path(package_root)
+        expected_dependency = "file:{}".format(
+            os.path.relpath(package_root, manifest_path.parent).replace("\\", "/")
+        )
+
+        dependency = prepare_validation_host.compute_file_dependency(
+            manifest_path,
+            package_root=package_root,
+        )
+
+        self.assertEqual(dependency, expected_dependency)
 
     def test_compute_file_dependency_falls_back_to_absolute_file_url_across_windows_volumes(self):
         manifest_path = Path("F:/validation-host/Project/Packages/manifest.json")
@@ -31,7 +46,11 @@ class PrepareValidationHostTests(unittest.TestCase):
         self.assertEqual(dependency, "file:///D:/repo/packages/com.txcombo.unity-puer-exec")
 
     def test_rewrite_manifest_replaces_legacy_embedded_package(self):
-        manifest_path = Path("F:/C3/unity-puer-exec-workspace/c3-client-tree2/Project/Packages/manifest.json")
+        package_root = prepare_validation_host.FORMAL_PACKAGE_ROOT
+        manifest_path = _same_anchor_manifest_path(package_root)
+        expected_dependency = "file:{}".format(
+            os.path.relpath(package_root, manifest_path.parent).replace("\\", "/")
+        )
         manifest = {
             "dependencies": {
                 "com.c3.unity-puer-exec.validation": "file:com.c3.unity-puer-exec.validation",
@@ -40,34 +59,43 @@ class PrepareValidationHostTests(unittest.TestCase):
             "scopedRegistries": [],
         }
 
-        rewritten, changed, dependency = prepare_validation_host.rewrite_manifest(manifest, manifest_path)
+        rewritten, changed, dependency = prepare_validation_host.rewrite_manifest(
+            manifest,
+            manifest_path,
+            package_root=package_root,
+        )
 
         self.assertTrue(changed)
-        self.assertEqual(dependency, "file:../../../unity-puer-exec/packages/com.txcombo.unity-puer-exec")
+        self.assertEqual(dependency, expected_dependency)
         self.assertNotIn("com.c3.unity-puer-exec.validation", rewritten["dependencies"])
         self.assertEqual(
             rewritten["dependencies"]["com.txcombo.unity-puer-exec"],
-            "file:../../../unity-puer-exec/packages/com.txcombo.unity-puer-exec",
+            expected_dependency,
         )
         self.assertEqual(rewritten["dependencies"]["com.cysharp.unitask"], "file:com.cysharp.unitask")
 
     def test_rewrite_manifest_is_idempotent_for_formal_dependency(self):
-        manifest_path = Path("F:/C3/unity-puer-exec-workspace/c3-client-tree2/Project/Packages/manifest.json")
+        package_root = prepare_validation_host.FORMAL_PACKAGE_ROOT
+        manifest_path = _same_anchor_manifest_path(package_root)
+        expected_dependency = "file:{}".format(
+            os.path.relpath(package_root, manifest_path.parent).replace("\\", "/")
+        )
         manifest = {
             "dependencies": {
-                "com.txcombo.unity-puer-exec": "file:../../../unity-puer-exec/packages/com.txcombo.unity-puer-exec",
+                "com.txcombo.unity-puer-exec": expected_dependency,
                 "com.cysharp.unitask": "file:com.cysharp.unitask",
             }
         }
 
-        rewritten, changed, dependency = prepare_validation_host.rewrite_manifest(manifest, manifest_path)
+        rewritten, changed, dependency = prepare_validation_host.rewrite_manifest(
+            manifest,
+            manifest_path,
+            package_root=package_root,
+        )
 
         self.assertFalse(changed)
-        self.assertEqual(
-            rewritten["dependencies"]["com.txcombo.unity-puer-exec"],
-            "file:../../../unity-puer-exec/packages/com.txcombo.unity-puer-exec",
-        )
-        self.assertEqual(dependency, "file:../../../unity-puer-exec/packages/com.txcombo.unity-puer-exec")
+        self.assertEqual(rewritten["dependencies"]["com.txcombo.unity-puer-exec"], expected_dependency)
+        self.assertEqual(dependency, expected_dependency)
 
     def test_main_supports_dry_run_with_explicit_manifest(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -83,7 +111,7 @@ class PrepareValidationHostTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            with unittest.mock.patch.object(
+            with mock.patch.object(
                 prepare_validation_host,
                 "FORMAL_PACKAGE_ROOT",
                 Path("D:/repo/packages/com.txcombo.unity-puer-exec"),
