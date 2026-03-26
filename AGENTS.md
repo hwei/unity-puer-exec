@@ -11,7 +11,7 @@
 - `openspec/config.yaml` carries repository-wide context for OpenSpec workflows.
 - `openspec/specs/` holds durable requirements that survive individual changes.
 - `openspec/changes/` holds active and archived change artifacts.
-- `tests/` is the canonical repository-level test location.
+- `tests/` is the canonical repository-level test location. For test execution instructions and real-host regression setup, see [`openspec/specs/validation-host-integration/how-to-run.md`](openspec/specs/validation-host-integration/how-to-run.md).
 - `.tmp/` is the preferred local-only location for transient validation probes and scratch scripts.
 - Use OpenSpec artifacts directly; there is no parallel `docs/` workflow surface in the working tree.
 - For propose/apply/archive operations, prefer the installed OpenSpec skills first. Use the official `openspec` CLI when a direct command path is needed.
