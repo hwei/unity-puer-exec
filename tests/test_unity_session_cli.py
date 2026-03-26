@@ -94,6 +94,8 @@ class UnityPuerExecCliTests(unittest.TestCase):
         self.assertIn("PuerTS-style JavaScript-to-C# bridge", stdout)
         self.assertIn("make the next project-scoped `exec` use `--refresh-before-exec`", stdout)
         self.assertIn("Every script source (`--file`, `--stdin`, `--code`) must use this module entry template", stdout)
+        self.assertIn("only `ctx.request_id` and `ctx.globals` are guaranteed", stdout)
+        self.assertIn("`--help-example derive-project-path-from-unity-api`", stdout)
 
     def test_exec_help_args_renders_argument_template(self):
         exit_code, stdout, stderr = unity_puer_exec.run_cli(["exec", "--help-args"])
