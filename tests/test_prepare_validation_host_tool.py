@@ -19,6 +19,17 @@ class PrepareValidationHostTests(unittest.TestCase):
         dependency = prepare_validation_host.compute_file_dependency(manifest_path)
         self.assertEqual(dependency, "file:../../../unity-puer-exec/packages/com.txcombo.unity-puer-exec")
 
+    def test_compute_file_dependency_falls_back_to_absolute_file_url_across_windows_volumes(self):
+        manifest_path = Path("F:/validation-host/Project/Packages/manifest.json")
+        package_root = Path("D:/repo/packages/com.txcombo.unity-puer-exec")
+
+        dependency = prepare_validation_host.compute_file_dependency(
+            manifest_path,
+            package_root=package_root,
+        )
+
+        self.assertEqual(dependency, "file:///D:/repo/packages/com.txcombo.unity-puer-exec")
+
     def test_rewrite_manifest_replaces_legacy_embedded_package(self):
         manifest_path = Path("F:/C3/unity-puer-exec-workspace/c3-client-tree2/Project/Packages/manifest.json")
         manifest = {
@@ -72,9 +83,14 @@ class PrepareValidationHostTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            exit_code = prepare_validation_host.main(
-                ["--manifest-path", str(manifest_path), "--dry-run"]
-            )
+            with unittest.mock.patch.object(
+                prepare_validation_host,
+                "FORMAL_PACKAGE_ROOT",
+                Path("D:/repo/packages/com.txcombo.unity-puer-exec"),
+            ):
+                exit_code = prepare_validation_host.main(
+                    ["--manifest-path", str(manifest_path), "--dry-run"]
+                )
 
             self.assertEqual(exit_code, 0)
             manifest_after = json.loads(manifest_path.read_text(encoding="utf-8"))

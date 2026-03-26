@@ -25,20 +25,6 @@ def _make_session():
     )
 
 
-def _require_test_project_path():
-    # This test intentionally exercises the repo-level runtime resolution path,
-    # so it loads .env before checking the process environment.
-    unity_session._ensure_dotenv_loaded(force=True)
-    project_path = os.environ.get(unity_session.UNITY_PROJECT_PATH_ENV)
-    if not project_path:
-        raise AssertionError(
-            "{} must be set before running tests that require a real Unity project path.".format(
-                unity_session.UNITY_PROJECT_PATH_ENV
-            )
-        )
-    return Path(project_path)
-
-
 class UnitySessionTests(unittest.TestCase):
     def test_resolve_project_path_prefers_explicit_argument(self):
         with mock.patch.dict(os.environ, {unity_session.UNITY_PROJECT_PATH_ENV: "X:/from-env"}, clear=False):
@@ -217,10 +203,19 @@ class UnitySessionTests(unittest.TestCase):
         self.assertEqual(artifact["session_marker"], "marker-1")
         self.assertEqual(Path(artifact["effective_log_path"]), Path("X:/artifact/Editor.log"))
 
-    def test_get_unity_version_reads_real_project_from_environment(self):
-        project_path = _require_test_project_path()
-        version = unity_session._get_unity_version(project_path)
-        self.assertTrue(version)
+    def test_get_unity_version_reads_project_version_file(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_path = Path(temp_dir)
+            project_version_path = project_path / "ProjectSettings" / "ProjectVersion.txt"
+            project_version_path.parent.mkdir(parents=True, exist_ok=True)
+            project_version_path.write_text(
+                "m_EditorVersion: 2022.3.62f2\n",
+                encoding="utf-8",
+            )
+
+            version = unity_session._get_unity_version(project_path)
+
+        self.assertEqual(version, "2022.3.62f2")
 
     def test_wait_until_healthy_returns_session_when_ready(self):
         session = _make_session()

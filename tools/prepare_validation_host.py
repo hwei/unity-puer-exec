@@ -47,17 +47,30 @@ def project_path_to_manifest_path(project_path):
     return project_path / "Packages" / "manifest.json"
 
 
-def compute_file_dependency(manifest_path, package_root=FORMAL_PACKAGE_ROOT):
-    relative_path = os.path.relpath(package_root, manifest_path.parent)
-    return "file:{}".format(relative_path.replace("\\", "/"))
+def _normalized_anchor(path):
+    return str(path.anchor).rstrip("\\/").lower()
 
 
-def rewrite_manifest(manifest_data, manifest_path):
+def _absolute_file_dependency(package_root):
+    normalized = package_root.as_posix().lstrip("/")
+    return "file:///{}".format(normalized)
+
+
+def compute_file_dependency(manifest_path, package_root=None):
+    package_root = FORMAL_PACKAGE_ROOT if package_root is None else Path(package_root)
+    manifest_parent = Path(manifest_path).parent
+    if _normalized_anchor(package_root) == _normalized_anchor(manifest_parent):
+        relative_path = os.path.relpath(package_root, manifest_parent)
+        return "file:{}".format(relative_path.replace("\\", "/"))
+    return _absolute_file_dependency(package_root)
+
+
+def rewrite_manifest(manifest_data, manifest_path, package_root=None):
     dependencies = manifest_data.get("dependencies")
     if not isinstance(dependencies, dict):
         raise ValueError("manifest.json must contain a dependencies object.")
 
-    expected_value = compute_file_dependency(manifest_path)
+    expected_value = compute_file_dependency(manifest_path, package_root=package_root)
     current_value = dependencies.get(FORMAL_PACKAGE_NAME)
     legacy_value = dependencies.get(LEGACY_PACKAGE_NAME)
 
