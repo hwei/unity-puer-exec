@@ -35,7 +35,7 @@ namespace UnityPuerExec
                 return true;
             }
 
-            return File.Exists(ToFileSystemPath(normalizedPath));
+            return File.Exists(ToFileSystemPath(normalizedPath)) || TryLoadResourceTextAsset(normalizedPath, out _);
         }
 
         public string ReadFile(string filepath, out string debugpath)
@@ -54,8 +54,20 @@ namespace UnityPuerExec
             }
 
             var filePath = ToFileSystemPath(normalizedPath);
+            if (File.Exists(filePath))
+            {
+                debugpath = filePath;
+                return File.ReadAllText(filePath, Encoding.UTF8);
+            }
+
+            if (TryLoadResourceTextAsset(normalizedPath, out var textAsset))
+            {
+                debugpath = normalizedPath;
+                return textAsset.text;
+            }
+
             debugpath = filePath;
-            return File.ReadAllText(filePath, Encoding.UTF8);
+            throw new DirectoryNotFoundException("Could not find a part of the path \"" + filePath + "\".");
         }
 
         internal void SetContext(RequestContext context)
@@ -99,6 +111,23 @@ namespace UnityPuerExec
             }
 
             return filepath.Replace('/', Path.DirectorySeparatorChar);
+        }
+
+        private static bool TryLoadResourceTextAsset(string filepath, out TextAsset textAsset)
+        {
+            textAsset = Resources.Load<TextAsset>(ToUnityResourcePath(filepath));
+            return textAsset != null;
+        }
+
+        private static string ToUnityResourcePath(string filepath)
+        {
+            if (filepath.EndsWith(".cjs", StringComparison.OrdinalIgnoreCase)
+                || filepath.EndsWith(".mjs", StringComparison.OrdinalIgnoreCase))
+            {
+                return filepath.Substring(0, filepath.Length - 4);
+            }
+
+            return filepath;
         }
     }
 
