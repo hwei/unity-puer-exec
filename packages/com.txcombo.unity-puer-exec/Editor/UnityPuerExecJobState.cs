@@ -19,15 +19,17 @@ namespace UnityPuerExec
         private string error = "";
         private string stack = "";
 
-        public UnityPuerExecJob(string requestId, string normalizedCode)
+        public UnityPuerExecJob(string requestId, string normalizedCode, string normalizedScriptArgsJson)
         {
             RequestId = requestId;
             NormalizedCode = normalizedCode;
+            NormalizedScriptArgsJson = normalizedScriptArgsJson;
             UpdatedAtUtc = DateTime.UtcNow;
         }
 
         public string RequestId { get; }
         public string NormalizedCode { get; }
+        public string NormalizedScriptArgsJson { get; }
         public DateTime UpdatedAtUtc { get; private set; }
         public Task Completion => completionSource.Task;
 

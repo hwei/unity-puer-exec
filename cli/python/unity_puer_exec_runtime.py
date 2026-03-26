@@ -49,6 +49,20 @@ def usage_error(message, status="failed"):
     return 2, "", emit_payload(payload)
 
 
+def _canonicalize_script_args(raw_text):
+    if raw_text is None:
+        script_args = {}
+    else:
+        try:
+            script_args = json.loads(raw_text)
+        except json.JSONDecodeError as exc:
+            raise ValueError("invalid script-argument JSON: {}".format(exc.msg), "invalid_script_args_json") from exc
+        if not isinstance(script_args, dict):
+            raise ValueError("script arguments must be a JSON object", "invalid_script_args_type")
+    script_args_json = json.dumps(script_args, ensure_ascii=True, separators=(",", ":"), sort_keys=True)
+    return script_args, script_args_json
+
+
 def validate_positive(value, name):
     if value is not None and value <= 0:
         raise ValueError("{} must be positive".format(name))
@@ -148,6 +162,8 @@ def run_command(args):
             return run_get_log_briefs(args)
         return run_ensure_stopped(args)
     except ValueError as exc:
+        if len(exc.args) >= 2 and isinstance(exc.args[1], str):
+            return usage_error(str(exc.args[0]), status=exc.args[1])
         status = "address_conflict" if str(exc) == "address_conflict" else "failed"
         return usage_error(str(exc), status=status)
     except unity_session.UnityLaunchError as exc:
@@ -270,10 +286,20 @@ def _refresh_request_id(request_id):
     return "{}-refresh".format(request_id)
 
 
-def _pending_exec_payload(request_id, code, refresh_before_exec=False, phase=None, refresh_request_id=None):
+def _pending_exec_payload(
+    request_id,
+    code,
+    script_args,
+    script_args_json,
+    refresh_before_exec=False,
+    phase=None,
+    refresh_request_id=None,
+):
     payload = {
         "request_id": request_id,
         "code": code,
+        "script_args": script_args,
+        "script_args_json": script_args_json,
         "refresh_before_exec": bool(refresh_before_exec),
     }
     if phase:
@@ -289,7 +315,16 @@ def _sweep_pending_exec(args):
         unity_session.sweep_pending_exec_artifacts(project_path)
 
 
-def _write_pending_exec(args, request_id, code, refresh_before_exec=False, phase=None, refresh_request_id=None):
+def _write_pending_exec(
+    args,
+    request_id,
+    code,
+    script_args,
+    script_args_json,
+    refresh_before_exec=False,
+    phase=None,
+    refresh_request_id=None,
+):
     _sweep_pending_exec(args)
     return unity_session.write_pending_exec_artifact(
         _project_path_arg(args),
@@ -297,6 +332,8 @@ def _write_pending_exec(args, request_id, code, refresh_before_exec=False, phase
         _pending_exec_payload(
             request_id,
             code,
+            script_args,
+            script_args_json,
             refresh_before_exec=refresh_before_exec,
             phase=phase,
             refresh_request_id=refresh_request_id,
@@ -346,10 +383,11 @@ def _emit_running_payload(operation, session, request_id, args, phase=None):
     return attach_diagnostics(payload, include_diagnostics=args.include_diagnostics, session=session)
 
 
-def _invoke_exec(base_url, request_id, code, args):
+def _invoke_exec(base_url, request_id, code, script_args_json, args):
     payload = {
         "request_id": request_id,
         "code": code,
+        "script_args_json": script_args_json,
         "wait_timeout_ms": args.wait_timeout_ms,
         "include_diagnostics": args.include_diagnostics,
     }
@@ -379,7 +417,7 @@ def _refresh_exec_code():
 
 
 def _invoke_refresh_exec(base_url, request_id, args):
-    return _invoke_exec(base_url, request_id, _refresh_exec_code(), args)
+    return _invoke_exec(base_url, request_id, _refresh_exec_code(), "{}", args)
 
 
 def _running_or_timed_out_response(exit_code, stdout_text):
@@ -494,6 +532,7 @@ def run_exec(args):
         return usage_error("--include-log-offset has been removed; use log_range.start from exec response")
     request_id = args.request_id or uuid.uuid4().hex
     code = read_exec_code(args)
+    script_args, script_args_json = _canonicalize_script_args(getattr(args, "script_args", None))
     selector = resolve_selector(args)
     validate_positive(args.wait_timeout_ms, "wait-timeout-ms")
     validate_project_mode_only(selector, "unity-exe-path", args.unity_exe_path)
@@ -509,7 +548,14 @@ def run_exec(args):
                 unity_log_path=args.unity_log_path,
             )
         except (unity_session.UnityStalledError, unity_session.UnityNotReadyError) as exc:
-            _write_pending_exec(args, request_id, code, refresh_before_exec=args.refresh_before_exec)
+            _write_pending_exec(
+                args,
+                request_id,
+                code,
+                script_args,
+                script_args_json,
+                refresh_before_exec=args.refresh_before_exec,
+            )
             payload = _emit_running_payload("exec", exc.session, request_id, args)
             _rp1_log_path = _resolve_log_path(args, exc.session)
             _rp1_log_end = _capture_log_offset(_rp1_log_path)
@@ -529,6 +575,8 @@ def run_exec(args):
             args,
             request_id,
             code,
+            script_args,
+            script_args_json,
             refresh_before_exec=True,
             phase=PHASE_REFRESHING,
             refresh_request_id=refresh_request_id,
@@ -583,7 +631,7 @@ def run_exec(args):
             return EXIT_RUNNING, emit_payload(payload), ""
         _set_pending_phase(args, request_id, _read_pending_exec(args, request_id), PHASE_EXECUTING)
 
-    exit_code, stdout_text, stderr_text = _invoke_exec(base_url, request_id, code, args)
+    exit_code, stdout_text, stderr_text = _invoke_exec(base_url, request_id, code, script_args_json, args)
     exit_code, stdout_text, stderr_text = _normalize_exec_blocker_result(
         exit_code,
         stdout_text,
@@ -709,7 +757,13 @@ def run_wait_for_exec(args):
                 _inject_log_range_into_payload(payload, _wfe_refresh_log_path, _wfe_log_start, _capture_log_offset(_wfe_refresh_log_path))
                 return EXIT_RUNNING, emit_payload(payload), ""
             pending = _refresh_pending_exec(args, args.request_id, pending, PHASE_EXECUTING)
-        exit_code, stdout_text, stderr_text = _invoke_exec(base_url, args.request_id, pending["code"], args)
+        exit_code, stdout_text, stderr_text = _invoke_exec(
+            base_url,
+            args.request_id,
+            pending["code"],
+            pending["script_args_json"],
+            args,
+        )
     else:
         payload = {
             "request_id": args.request_id,

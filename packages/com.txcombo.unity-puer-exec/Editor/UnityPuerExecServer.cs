@@ -202,7 +202,14 @@ namespace UnityPuerExec
             }
 
             var normalizedCode = NormalizeCode(request.code);
-            var acceptStatus = TryAcceptExecRequest(request.request_id, normalizedCode, out var execJob, out var isNewRequest);
+            var normalizedScriptArgsJson = NormalizeScriptArgsJson(request.script_args_json);
+            var acceptStatus = TryAcceptExecRequest(
+                request.request_id,
+                normalizedCode,
+                normalizedScriptArgsJson,
+                out var execJob,
+                out var isNewRequest
+            );
             if (acceptStatus == "busy")
             {
                 await WriteJsonAsync(
@@ -238,7 +245,7 @@ namespace UnityPuerExec
                     try
                     {
                         Debug.Log($"[UnityPuerExec] Exec starting request={execJob.RequestId}");
-                        StartJobEvaluation(execJob, request.code);
+                        StartJobEvaluation(execJob, request.code, normalizedScriptArgsJson);
                         enqueueCompletion.TrySetResult(true);
                     }
                     catch (Exception ex)
@@ -321,6 +328,7 @@ namespace UnityPuerExec
         private static string TryAcceptExecRequest(
             string requestId,
             string normalizedCode,
+            string normalizedScriptArgsJson,
             out UnityPuerExecJob job,
             out bool isNewRequest
         )
@@ -330,7 +338,9 @@ namespace UnityPuerExec
                 if (Requests.TryGetValue(requestId, out job))
                 {
                     isNewRequest = false;
-                    return job.NormalizedCode == normalizedCode ? "accepted" : "request_id_conflict";
+                    return job.NormalizedCode == normalizedCode && job.NormalizedScriptArgsJson == normalizedScriptArgsJson
+                        ? "accepted"
+                        : "request_id_conflict";
                 }
 
                 if (
@@ -343,7 +353,7 @@ namespace UnityPuerExec
                     return "busy";
                 }
 
-                job = new UnityPuerExecJob(requestId, normalizedCode);
+                job = new UnityPuerExecJob(requestId, normalizedCode, normalizedScriptArgsJson);
                 Requests[requestId] = job;
                 activeRequestId = requestId;
                 isNewRequest = true;
@@ -351,7 +361,7 @@ namespace UnityPuerExec
             }
         }
 
-        private static void StartJobEvaluation(UnityPuerExecJob job, string code)
+        private static void StartJobEvaluation(UnityPuerExecJob job, string code, string scriptArgsJson)
         {
             EnsureJsEnv();
             if (jsEnv == null)
@@ -361,7 +371,7 @@ namespace UnityPuerExec
                 return;
             }
 
-            if (!UnityPuerExecProtocol.TryBuildWrappedScript(job.RequestId, code, out var wrappedScript, out var error))
+            if (!UnityPuerExecProtocol.TryBuildWrappedScript(job.RequestId, code, scriptArgsJson, out var wrappedScript, out var error))
             {
                 job.Fail(error, string.Empty);
                 ReleaseActiveRequest(job.RequestId);
@@ -495,6 +505,11 @@ namespace UnityPuerExec
             }
 
             return code.Replace("\r\n", "\n").Replace('\r', '\n');
+        }
+
+        private static string NormalizeScriptArgsJson(string scriptArgsJson)
+        {
+            return string.IsNullOrEmpty(scriptArgsJson) ? "{}" : scriptArgsJson;
         }
 
     }

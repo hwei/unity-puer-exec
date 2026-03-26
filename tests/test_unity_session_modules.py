@@ -174,7 +174,12 @@ class UnitySessionModuleTests(unittest.TestCase):
                 first = unity_session_logs.write_pending_exec_artifact(
                     project_path,
                     "req-1",
-                    {"request_id": "req-1", "code": "export default function run(ctx) { return 1; }"},
+                    {
+                        "request_id": "req-1",
+                        "code": "export default function run(ctx) { return 1; }",
+                        "script_args": {"mode": "test"},
+                        "script_args_json": "{\"mode\":\"test\"}",
+                    },
                 )
             with mock.patch.object(unity_session_logs.time, "time", return_value=125.0):
                 second = unity_session_logs.write_pending_exec_artifact(
@@ -188,9 +193,12 @@ class UnitySessionModuleTests(unittest.TestCase):
         self.assertEqual(first["schema_version"], unity_session_common.PENDING_EXEC_SCHEMA_VERSION)
         self.assertEqual(first["created_at_ms"], 100000)
         self.assertEqual(first["updated_at_ms"], 100000)
+        self.assertEqual(first["script_args"], {"mode": "test"})
+        self.assertEqual(first["script_args_json"], "{\"mode\":\"test\"}")
         self.assertEqual(second["created_at_ms"], 100000)
         self.assertEqual(second["updated_at_ms"], 125000)
         self.assertEqual(restored["phase"], "compiling")
+        self.assertEqual(restored["script_args"], {"mode": "test"})
 
     def test_logs_read_pending_exec_artifact_cleans_expired_file(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -203,6 +211,8 @@ class UnitySessionModuleTests(unittest.TestCase):
                         "schema_version": unity_session_common.PENDING_EXEC_SCHEMA_VERSION,
                         "request_id": "req-expired",
                         "code": "export default function run(ctx) { return 1; }",
+                        "script_args": {},
+                        "script_args_json": "{}",
                         "refresh_before_exec": False,
                         "created_at_ms": 1000,
                         "updated_at_ms": 1000,
@@ -241,7 +251,12 @@ class UnitySessionModuleTests(unittest.TestCase):
                 unity_session_logs.write_pending_exec_artifact(
                     project_path,
                     "req-fresh",
-                    {"request_id": "req-fresh", "code": "export default function run(ctx) { return 1; }"},
+                    {
+                        "request_id": "req-fresh",
+                        "code": "export default function run(ctx) { return 1; }",
+                        "script_args": {},
+                        "script_args_json": "{}",
+                    },
                 )
             expired_path = unity_session_logs.pending_exec_artifact_path(project_path, "req-expired")
             expired_path.write_text(
@@ -250,6 +265,8 @@ class UnitySessionModuleTests(unittest.TestCase):
                         "schema_version": unity_session_common.PENDING_EXEC_SCHEMA_VERSION,
                         "request_id": "req-expired",
                         "code": "export default function run(ctx) { return 2; }",
+                        "script_args": {},
+                        "script_args_json": "{}",
                         "refresh_before_exec": False,
                         "created_at_ms": 1000,
                         "updated_at_ms": 1000,

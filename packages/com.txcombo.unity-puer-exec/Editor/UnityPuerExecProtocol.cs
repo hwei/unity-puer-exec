@@ -8,6 +8,7 @@ namespace UnityPuerExec
     {
         public string request_id = "";
         public string code = "";
+        public string script_args_json = "{}";
         public int wait_timeout_ms = 1000;
         public bool include_diagnostics = false;
     }
@@ -27,7 +28,7 @@ namespace UnityPuerExec
             RegexOptions.Compiled
         );
 
-        internal static bool TryBuildWrappedScript(string jobId, string code, out string wrappedScript, out string error)
+        internal static bool TryBuildWrappedScript(string jobId, string code, string scriptArgsJson, out string wrappedScript, out string error)
         {
             wrappedScript = string.Empty;
             error = string.Empty;
@@ -42,12 +43,13 @@ namespace UnityPuerExec
             builder.AppendLine("const __bridge = CS.UnityPuerExec.UnityPuerExecBridge;");
             builder.AppendLine("try {");
             builder.AppendLine("  const __globals = globalThis.__unityPuerExecGlobals || (globalThis.__unityPuerExecGlobals = {});");
+            builder.Append("  const __args = ").Append(string.IsNullOrEmpty(scriptArgsJson) ? "{}" : scriptArgsJson).AppendLine(";");
             builder.AppendLine("  let __unityPuerExecEntry = null;");
             builder.AppendLine(rewrittenCode);
             builder.AppendLine("  if (typeof __unityPuerExecEntry !== 'function') {");
             builder.AppendLine("    throw new Error('default_export_must_be_function');");
             builder.AppendLine("  }");
-            builder.AppendLine("  const __ctx = Object.freeze({ request_id: __jobId, globals: __globals });");
+            builder.AppendLine("  const __ctx = Object.freeze({ request_id: __jobId, globals: __globals, args: __args });");
             builder.AppendLine("  const __result = __unityPuerExecEntry(__ctx);");
             builder.AppendLine("  const __isThenable = __result !== null && (typeof __result === 'object' || typeof __result === 'function') && typeof __result.then === 'function';");
             builder.AppendLine("  if (__isThenable) {");

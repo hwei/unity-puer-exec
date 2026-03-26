@@ -107,6 +107,8 @@ class PackageLayoutTests(unittest.TestCase):
         protocol_content = protocol_path.read_text(encoding="utf-8")
 
         self.assertIn("globalThis.__unityPuerExecGlobals", protocol_content)
+        self.assertIn("const __args =", protocol_content)
+        self.assertIn("args: __args", protocol_content)
         self.assertIn("missing_default_export", protocol_content)
         self.assertIn("default_export_must_be_function", protocol_content)
         self.assertIn("async_result_not_supported", protocol_content)

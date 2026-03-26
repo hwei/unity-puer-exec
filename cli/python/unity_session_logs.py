@@ -131,6 +131,14 @@ def _coerce_pending_exec_artifact(request_id, payload):
         "created_at_ms": created_at_ms,
         "updated_at_ms": updated_at_ms,
     }
+    script_args = payload.get("script_args")
+    script_args_json = payload.get("script_args_json")
+    if not isinstance(script_args, dict):
+        return None
+    if not isinstance(script_args_json, str) or not script_args_json:
+        return None
+    normalized["script_args"] = script_args
+    normalized["script_args_json"] = script_args_json
     phase = payload.get("phase")
     if isinstance(phase, str) and phase:
         normalized["phase"] = phase
@@ -224,6 +232,8 @@ def write_pending_exec_artifact(project_path, request_id, payload):
         "refresh_before_exec": bool(payload.get("refresh_before_exec")),
         "created_at_ms": existing.get("created_at_ms", now_ms) if existing else now_ms,
         "updated_at_ms": now_ms,
+        "script_args": payload["script_args"],
+        "script_args_json": payload["script_args_json"],
     }
     phase = payload.get("phase")
     if isinstance(phase, str) and phase:

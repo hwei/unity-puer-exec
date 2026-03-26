@@ -94,7 +94,7 @@ class UnityPuerExecCliTests(unittest.TestCase):
         self.assertIn("PuerTS-style JavaScript-to-C# bridge", stdout)
         self.assertIn("make the next project-scoped `exec` use `--refresh-before-exec`", stdout)
         self.assertIn("Every script source (`--file`, `--stdin`, `--code`) must use this module entry template", stdout)
-        self.assertIn("only `ctx.request_id` and `ctx.globals` are guaranteed", stdout)
+        self.assertIn("only `ctx.request_id`, `ctx.globals`, and `ctx.args` are guaranteed", stdout)
         self.assertIn("`--help-example derive-project-path-from-unity-api`", stdout)
 
     def test_exec_help_args_renders_argument_template(self):
@@ -120,7 +120,8 @@ class UnityPuerExecCliTests(unittest.TestCase):
         self.assertIn("Bridged C# arrays and `List<T>` values are not plain JS arrays", stdout)
         self.assertIn("prefer the next task `exec --refresh-before-exec`", stdout)
         self.assertIn("https://puerts.github.io/docs/puerts/unity/tutorial/js2cs", stdout)
-        self.assertIn("`ctx.request_id` and `ctx.globals`", stdout)
+        self.assertIn("`ctx.request_id`, `ctx.globals`, and `ctx.args`", stdout)
+        self.assertIn("`--script-args <json-object>`", stdout)
         self.assertIn("`ctx.project_path`", stdout)
         self.assertIn("`UnityEngine.Application.dataPath`", stdout)
         self.assertIn("`System.IO.Path.GetDirectoryName(...)`", stdout)
@@ -227,6 +228,7 @@ class UnityPuerExecCliTests(unittest.TestCase):
         self.assertIn("const Math = puer.loadType('System.Math');", stdout)
         self.assertIn("const EditorApplication = puer.loadType('UnityEditor.EditorApplication');", stdout)
         self.assertIn("maxValue", stdout)
+        self.assertIn("ctx.args", stdout)
         self.assertIn("bridged C# arrays and `List<T>` values", stdout)
         self.assertIn("compile recovery stays attached to that request", stdout)
         self.assertIn("https://puerts.github.io/docs/puerts/unity/tutorial/js2cs", stdout)
@@ -425,6 +427,7 @@ class UnityPuerExecCliTests(unittest.TestCase):
         payload = invoke_command.call_args.args[2]
         self.assertEqual(payload["code"], "export default function run(ctx) { return 7; }")
         self.assertTrue(payload["request_id"])
+        self.assertEqual(payload["script_args_json"], "{}")
         self.assertNotIn("include_log_offset", payload)
         body = json.loads(stdout)
         self.assertEqual(body["status"], "running")
@@ -446,10 +449,33 @@ class UnityPuerExecCliTests(unittest.TestCase):
                 "invoke_command",
                 return_value=(0, json.dumps({"ok": True, "status": "completed", "request_id": "req-explicit"}), ""),
             ) as invoke_command:
-                unity_puer_exec.run_cli(["exec", "--file", str(script_path), "--request-id", "req-explicit"])
+                unity_puer_exec.run_cli(
+                    ["exec", "--file", str(script_path), "--request-id", "req-explicit", "--script-args", '{"b":2,"a":1}']
+                )
 
         payload = invoke_command.call_args.args[2]
         self.assertEqual(payload["request_id"], "req-explicit")
+        self.assertEqual(payload["script_args_json"], '{"a":1,"b":2}')
+
+    def test_exec_rejects_malformed_script_args_before_runtime(self):
+        exit_code, stdout, stderr = unity_puer_exec.run_cli(
+            ["exec", "--code", "export default function run(ctx) { return 1; }", "--script-args", "{bad"]
+        )
+
+        self.assertEqual(exit_code, 2)
+        self.assertEqual(stdout, "")
+        payload = json.loads(stderr)
+        self.assertEqual(payload["status"], "invalid_script_args_json")
+
+    def test_exec_rejects_non_object_script_args_before_runtime(self):
+        exit_code, stdout, stderr = unity_puer_exec.run_cli(
+            ["exec", "--code", "export default function run(ctx) { return 1; }", "--script-args", "[1,2,3]"]
+        )
+
+        self.assertEqual(exit_code, 2)
+        self.assertEqual(stdout, "")
+        payload = json.loads(stderr)
+        self.assertEqual(payload["status"], "invalid_script_args_type")
 
     def test_exec_include_diagnostics_is_forwarded_and_preserved_top_level(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -612,8 +638,10 @@ class UnityPuerExecCliTests(unittest.TestCase):
             pending = unity_session.read_pending_exec_artifact(str(project_path), "req-start")
             self.assertEqual(pending["request_id"], "req-start")
             self.assertIn("return 7", pending["code"])
+            self.assertEqual(pending["script_args"], {})
+            self.assertEqual(pending["script_args_json"], "{}")
             self.assertFalse(pending["refresh_before_exec"])
-            self.assertEqual(pending["schema_version"], 1)
+            self.assertEqual(pending["schema_version"], 2)
             self.assertIn("created_at_ms", pending)
             self.assertIn("updated_at_ms", pending)
 
@@ -739,7 +767,12 @@ class UnityPuerExecCliTests(unittest.TestCase):
             unity_session.write_pending_exec_artifact(
                 str(project_path),
                 "req-pending",
-                {"request_id": "req-pending", "code": "export default function run(ctx) { return 11; }"},
+                {
+                    "request_id": "req-pending",
+                    "code": "export default function run(ctx) { return 11; }",
+                    "script_args": {"value": 11},
+                    "script_args_json": "{\"value\":11}",
+                },
             )
             with mock.patch.object(
                 unity_session,
@@ -760,6 +793,7 @@ class UnityPuerExecCliTests(unittest.TestCase):
             payload = invoke_command.call_args.args[2]
             self.assertEqual(payload["request_id"], "req-pending")
             self.assertIn("return 11", payload["code"])
+            self.assertEqual(payload["script_args_json"], "{\"value\":11}")
             body = json.loads(stdout)
             self.assertEqual(body["status"], "completed")
             self.assertIsNone(unity_session.read_pending_exec_artifact(str(project_path), "req-pending"))
@@ -774,6 +808,8 @@ class UnityPuerExecCliTests(unittest.TestCase):
                 {
                     "request_id": "req-pending",
                     "code": "export default function run(ctx) { return 11; }",
+                    "script_args": {"value": 11},
+                    "script_args_json": "{\"value\":11}",
                     "refresh_before_exec": True,
                     "phase": "refreshing",
                     "refresh_request_id": "req-pending-refresh",
@@ -801,6 +837,7 @@ class UnityPuerExecCliTests(unittest.TestCase):
             self.assertEqual(invoke_command.call_args_list[0].args[2]["request_id"], "req-pending-refresh")
             self.assertEqual(invoke_command.call_args_list[1].args[0], "exec")
             self.assertEqual(invoke_command.call_args_list[1].args[2]["request_id"], "req-pending")
+            self.assertEqual(invoke_command.call_args_list[1].args[2]["script_args_json"], "{\"value\":11}")
             body = json.loads(stdout)
             self.assertEqual(body["status"], "completed")
             self.assertIsNone(unity_session.read_pending_exec_artifact(str(project_path), "req-pending"))
@@ -815,6 +852,8 @@ class UnityPuerExecCliTests(unittest.TestCase):
                 {
                     "request_id": "req-pending",
                     "code": "export default function run(ctx) { return 11; }",
+                    "script_args": {},
+                    "script_args_json": "{}",
                     "refresh_before_exec": True,
                     "phase": "refreshing",
                     "refresh_request_id": "req-pending-refresh",
@@ -850,6 +889,8 @@ class UnityPuerExecCliTests(unittest.TestCase):
                 {
                     "request_id": "req-pending",
                     "code": "export default function run(ctx) { return 11; }",
+                    "script_args": {},
+                    "script_args_json": "{}",
                     "refresh_before_exec": True,
                     "phase": "compiling",
                     "refresh_request_id": "req-pending-refresh",
@@ -885,6 +926,8 @@ class UnityPuerExecCliTests(unittest.TestCase):
                 {
                     "request_id": "req-pending",
                     "code": "export default function run(ctx) { return 11; }",
+                    "script_args": {},
+                    "script_args_json": "{}",
                     "refresh_before_exec": True,
                     "phase": "compiling",
                     "refresh_request_id": "req-pending-refresh",
@@ -918,7 +961,12 @@ class UnityPuerExecCliTests(unittest.TestCase):
             unity_session.write_pending_exec_artifact(
                 str(project_path),
                 "req-pending",
-                {"request_id": "req-pending", "code": "export default function run(ctx) { return 11; }"},
+                {
+                    "request_id": "req-pending",
+                    "code": "export default function run(ctx) { return 11; }",
+                    "script_args": {},
+                    "script_args_json": "{}",
+                },
             )
             session = _make_session(project_path=str(project_path))
             stalled = unity_session.UnityStalledError("starting", session=session)
@@ -947,7 +995,12 @@ class UnityPuerExecCliTests(unittest.TestCase):
                 unity_session.write_pending_exec_artifact(
                     str(project_path),
                     "req-pending",
-                    {"request_id": "req-pending", "code": "export default function run(ctx) { return 11; }"},
+                    {
+                        "request_id": "req-pending",
+                        "code": "export default function run(ctx) { return 11; }",
+                        "script_args": {},
+                        "script_args_json": "{}",
+                    },
                 )
             session = _make_session(project_path=str(project_path))
             stalled = unity_session.UnityStalledError("starting", session=session)
@@ -979,9 +1032,11 @@ class UnityPuerExecCliTests(unittest.TestCase):
             artifact_path.write_text(
                 json.dumps(
                     {
-                        "schema_version": 1,
+                        "schema_version": 2,
                         "request_id": "req-expired",
                         "code": "export default function run(ctx) { return 11; }",
+                        "script_args": {},
+                        "script_args_json": "{}",
                         "refresh_before_exec": False,
                         "created_at_ms": 1000,
                         "updated_at_ms": 1000,

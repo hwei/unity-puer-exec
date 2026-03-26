@@ -284,6 +284,32 @@ class RealHostIntegrationTests(unittest.TestCase):
         self.assertEqual(second_payload["status"], "completed")
         self.assertEqual(second_payload["result"]["counter"], 2)
 
+    def test_exec_script_args_are_visible_against_real_host(self):
+        ready_exit_code, ready_payload, _, _ = _wait_until_ready(self.project_path, self.unity_exe_path)
+        self.assertEqual(ready_exit_code, 0, ready_payload)
+
+        exec_exit_code, exec_payload, _, _ = _run_cli(
+            [
+                "exec",
+                "--project-path",
+                str(self.project_path),
+                "--unity-exe-path",
+                str(self.unity_exe_path),
+                "--wait-timeout-ms",
+                str(WAIT_TIMEOUT_MS),
+                "--script-args",
+                '{"count":2,"name":"codex"}',
+                "--code",
+                "export default function run(ctx) { return { args: ctx.args, greeting: 'hi ' + ctx.args.name, count: ctx.args.count }; }",
+            ]
+        )
+
+        self.assertEqual(exec_exit_code, 0, exec_payload)
+        self.assertEqual(exec_payload["status"], "completed")
+        self.assertEqual(exec_payload["result"]["args"], {"count": 2, "name": "codex"})
+        self.assertEqual(exec_payload["result"]["greeting"], "hi codex")
+        self.assertEqual(exec_payload["result"]["count"], 2)
+
     def test_wait_for_exec_reports_modified_scene_modal_blocker_against_real_host(self):
         ready_exit_code, ready_payload, _, _ = _wait_until_ready(self.project_path, self.unity_exe_path)
         self.assertEqual(ready_exit_code, 0, ready_payload)
