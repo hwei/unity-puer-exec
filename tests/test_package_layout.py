@@ -16,6 +16,28 @@ class PackageLayoutTests(unittest.TestCase):
         self.assertEqual(package_json["name"], "com.txcombo.unity-puer-exec")
         self.assertEqual(package_json["displayName"], "Unity Puer Exec")
 
+    def test_package_publish_metadata_and_license_exist(self):
+        package_json_path = PACKAGE_ROOT / "package.json"
+        license_path = PACKAGE_ROOT / "LICENSE"
+        self.assertTrue(license_path.exists())
+
+        package_json = json.loads(package_json_path.read_text(encoding="utf-8"))
+        license_text = license_path.read_text(encoding="utf-8")
+
+        self.assertEqual(package_json["license"], "MIT")
+        self.assertEqual(package_json["repository"]["type"], "git")
+        self.assertEqual(
+            package_json["repository"]["url"],
+            "https://github.com/hwei/unity-puer-exec.git",
+        )
+        self.assertEqual(package_json["author"]["name"], "Will Huang")
+        self.assertEqual(
+            package_json["dependencies"]["com.tencent.puerts.core"],
+            "3.0.0",
+        )
+        self.assertIn("MIT License", license_text)
+        self.assertIn("Will Huang", license_text)
+
     def test_editor_assembly_uses_formal_identity(self):
         asmdef_path = PACKAGE_ROOT / "Editor" / "UnityPuerExec.Editor.asmdef"
         self.assertTrue(asmdef_path.exists())

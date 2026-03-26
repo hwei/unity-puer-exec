@@ -1,0 +1,93 @@
+name: Release OpenUPM Package
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Validate tag matches package version
+        id: version
+        shell: pwsh
+        run: |
+          $package = Get-Content "packages/com.txcombo.unity-puer-exec/package.json" | ConvertFrom-Json
+          $version = [string]$package.version
+          $expectedTag = "v$version"
+          $actualTag = "${{ github.ref_name }}"
+          if ($actualTag -ne $expectedTag) {
+            throw "Release tag mismatch: pushed tag '$actualTag' does not match package.json version '$version' (expected '$expectedTag')."
+          }
+
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "tag=$expectedTag" >> $env:GITHUB_OUTPUT
+          "upm_tag=upm/$expectedTag" >> $env:GITHUB_OUTPUT
+
+      - name: Install PyInstaller
+        shell: pwsh
+        run: python -m pip install --upgrade pip pyinstaller
+
+      - name: Build CLI executable
+        shell: pwsh
+        run: |
+          pyinstaller `
+            --onefile `
+            --paths=cli/python `
+            --name unity-puer-exec `
+            cli/python/unity_puer_exec.py
+
+      - name: Assemble UPM package tree
+        shell: pwsh
+        run: |
+          $stageDir = Join-Path $env:RUNNER_TEMP "upm-package"
+          Remove-Item $stageDir -Recurse -Force -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Path $stageDir | Out-Null
+          New-Item -ItemType Directory -Path (Join-Path $stageDir "CLI~") | Out-Null
+
+          Copy-Item "packages/com.txcombo.unity-puer-exec/Editor" -Destination $stageDir -Recurse
+          Copy-Item "packages/com.txcombo.unity-puer-exec/package.json" -Destination $stageDir
+          Copy-Item "packages/com.txcombo.unity-puer-exec/LICENSE" -Destination $stageDir
+          Copy-Item "dist/unity-puer-exec.exe" -Destination (Join-Path $stageDir "CLI~/unity-puer-exec.exe")
+
+          "UPM_STAGE_DIR=$stageDir" >> $env:GITHUB_ENV
+
+      - name: Publish upm branch and tag
+        shell: pwsh
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          UPM_TAG: ${{ steps.version.outputs.upm_tag }}
+        run: |
+          $publishDir = Join-Path $env:RUNNER_TEMP "upm-publish"
+          Remove-Item $publishDir -Recurse -Force -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Path $publishDir | Out-Null
+
+          Copy-Item (Join-Path $env:UPM_STAGE_DIR "*") -Destination $publishDir -Recurse
+
+          Push-Location $publishDir
+          git init
+          git checkout -b upm
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .
+          git commit -m "Release v$env:VERSION"
+          git remote add origin "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git"
+          git push --force origin HEAD:upm
+          git tag -f $env:UPM_TAG
+          git push --force origin "refs/tags/$env:UPM_TAG"
+          Pop-Location
