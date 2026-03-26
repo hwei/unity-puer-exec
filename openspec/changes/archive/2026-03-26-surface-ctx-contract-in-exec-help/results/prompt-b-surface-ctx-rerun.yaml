@@ -1,0 +1,150 @@
+prompt_id: prompt-b
+prompt_source: openspec/changes/archive/2026-03-19-validate-help-only-agent-cli-discoverability/task-prompts.md
+record_kind: subagent-rerun
+date: 2026-03-26
+change_under_validation: surface-ctx-contract-in-exec-help
+
+model: gpt-5.4-mini subagent
+project_path: F:\C3\unity-puer-exec-workspace\c3-client-tree2\Project
+cli_entry_path: F:\C3\unity-puer-exec-workspace\unity-puer-exec-worktree-2\cli\python\unity_puer_exec.py
+
+constraints:
+  allowed:
+    - published unity-puer-exec help surface
+    - normal CLI execution against the target Unity project
+    - repository-local scratch scripts under .tmp for task execution
+  disallowed:
+    - repository source in this product workspace
+    - repository tests
+    - OpenSpec change artifacts as task hints
+    - command-level maintainer hints
+
+help_queries:
+  - order: 1
+    command: python cli/python/unity_puer_exec.py --help
+    retained_exact_argv: true
+    purpose: orient around the published command surface
+  - order: 2
+    command: python cli/python/unity_puer_exec.py exec --help
+    retained_exact_argv: true
+    purpose: inspect the primary execution entry and Quick Start guidance
+  - order: 3
+    command: python cli/python/unity_puer_exec.py exec --help-args
+    retained_exact_argv: true
+    purpose: confirm the narrow ctx contract and supported path derivation guidance
+  - order: 4
+    command: python cli/python/unity_puer_exec.py exec --help-status
+    retained_exact_argv: true
+    purpose: inspect machine-readable exec outcomes before authoring verification scripts
+  - order: 5
+    command: python cli/python/unity_puer_exec.py wait-for-exec --help
+    retained_exact_argv: true
+    purpose: inspect accepted-request continuation during compile recovery
+  - order: 6
+    command: python cli/python/unity_puer_exec.py --help-example derive-project-path-from-unity-api
+    retained_exact_argv: true
+    purpose: inspect the published project-path derivation example from Quick Start
+  - order: 7
+    command: python cli/python/unity_puer_exec.py --help-example load-and-call-csharp-type
+    retained_exact_argv: true
+    purpose: inspect the bridge pattern for loading Unity and .NET types inside exec scripts
+  - order: 8
+    command: python cli/python/unity_puer_exec.py --help-example exec-and-wait-for-log-pattern
+    retained_exact_argv: true
+    purpose: inspect the intended CLI-native verification workflow for log observation
+
+command_trace:
+  - order: 1
+    command: python cli/python/unity_puer_exec.py exec --project-path F:\C3\unity-puer-exec-workspace\c3-client-tree2\Project --file .tmp\write_selection_guid_menu.js --wait-timeout-ms 60000
+    retained_exact_argv: false
+    purpose: write a temporary Unity Editor menu command that logs the current Selection GUID
+    outcome: completed and wrote Assets/Editor/CodexSelectionGuidMenu.cs
+  - order: 2
+    command: python cli/python/unity_puer_exec.py wait-for-exec --project-path F:\C3\unity-puer-exec-workspace\c3-client-tree2\Project --request-id 5dbcc344194c4a08b143f5f050532872 --wait-timeout-ms 60000
+    retained_exact_argv: false
+    purpose: continue the accepted write request until Unity-side import work settled
+    outcome: completed for the accepted request
+  - order: 3
+    command: python cli/python/unity_puer_exec.py exec --project-path F:\C3\unity-puer-exec-workspace\c3-client-tree2\Project --refresh-before-exec --file .tmp\verify_selection_guid_menu.js --wait-timeout-ms 60000
+    retained_exact_argv: false
+    purpose: create a selection probe asset, invoke the new menu item, and emit the expected verification log
+    outcome: returned an accepted request that required follow-up waiting
+  - order: 4
+    command: python cli/python/unity_puer_exec.py wait-for-exec --project-path F:\C3\unity-puer-exec-workspace\c3-client-tree2\Project --request-id f3832f93d1274e5c83b4aa142e676b79 --wait-timeout-ms 60000
+    retained_exact_argv: false
+    purpose: continue the accepted verification request through refresh and compile recovery
+    outcome: completed with projectRoot F:\C3\unity-puer-exec-workspace\c3-client-tree2\Project, expectedGuid 52ddb086948073048a7ed62e9c028f0a, invoked true, and cleaned true for the probe asset
+  - order: 5
+    command: python cli/python/unity_puer_exec.py wait-for-log-pattern --project-path F:\C3\unity-puer-exec-workspace\c3-client-tree2\Project --start-offset 132073 --pattern \[CodexSelectionGuidMenu\] Selection GUID: 52ddb086948073048a7ed62e9c028f0a
+    retained_exact_argv: false
+    purpose: verify the menu command through the intended CLI observation surface
+    outcome: completed successfully with result.status log_pattern_matched
+
+key_outputs:
+  - source: CLI output
+    summary: The write step completed and created Assets/Editor/CodexSelectionGuidMenu.cs in the target Unity project.
+  - source: CLI output
+    summary: The verification step derived projectRoot from Unity APIs, invoked the menu command, and returned expectedGuid 52ddb086948073048a7ed62e9c028f0a without assuming extra ctx fields.
+  - source: CLI output
+    summary: wait-for-log-pattern matched [CodexSelectionGuidMenu] Selection GUID: 52ddb086948073048a7ed62e9c028f0a, so final confirmation stayed inside the CLI observation surface.
+
+script_context_assumptions:
+  unsupported_ctx_fields_assumed: false
+  supported_fields_used:
+    - ctx.request_id
+  supported_path_derivation:
+    - UnityEngine.Application.dataPath
+    - System.IO.Path.GetDirectoryName(...)
+  summary: The subagent did not assume ctx.project_path or another undocumented ctx helper. It derived the project root from Application.dataPath exactly through the supported Unity/.NET path described in published help.
+
+final_verification_path:
+  used_cli_observation_surface: true
+  used_direct_host_log_inspection: false
+  summary: Verification stayed on exec --refresh-before-exec, wait-for-exec, and wait-for-log-pattern. The proving signal came from Unity Debug.Log matched through the CLI rather than from host-side file inspection.
+
+checkpoint_usage:
+  captured_log_offset: true
+  used_start_offset: true
+  summary: The subagent used the returned start offset checkpoint to feed wait-for-log-pattern rather than searching the host log directly.
+
+task_success: pass
+autonomy: pass
+efficiency: recoverable
+
+human_intervention:
+  level: observed_only
+  summary: The operator launched the subagent without command-level hints. The user later interrupted the subagent's own cleanup attempt, and the operator then removed the temporary Editor script residue during closeout.
+
+modal_blocker:
+  present: false
+  type: none
+  detected_by: none
+  resolution: none
+
+findings:
+  - The Quick Start-level ctx warning was sufficient to stop the validating rerun from assuming undocumented ctx fields.
+  - The rerun consulted the published derive-project-path-from-unity-api example and used UnityEngine.Application.dataPath plus System.IO.Path.GetDirectoryName(...) directly.
+  - Final verification stayed inside the CLI observation surface through wait-for-log-pattern rather than falling back to direct Editor.log inspection.
+  - The subagent's own cleanup attempt was interrupted, but closeout cleanup removed the temporary Editor C# residue afterward.
+
+comparison_against_2026_03_25_haiku_probe:
+  baseline_source: openspec/changes/archive/2026-03-25-add-log-brief-capability/tasks.md
+  script_context_misunderstanding_decreased: true
+  summary: The 2026-03-25 haiku probe still assumed ctx.getProjectRoot(), which motivated this change. This rerun instead read the Quick Start warning, consulted the published derivation example, and never assumed an undocumented ctx field.
+
+cleanup:
+  status: cleaned
+  removed:
+    - F:\C3\unity-puer-exec-workspace\unity-puer-exec-worktree-2\.tmp\write_selection_guid_menu.js
+    - F:\C3\unity-puer-exec-workspace\unity-puer-exec-worktree-2\.tmp\verify_selection_guid_menu.js
+    - F:\C3\unity-puer-exec-workspace\c3-client-tree2\Project\Assets\Editor\CodexSelectionGuidMenu.cs
+    - F:\C3\unity-puer-exec-workspace\c3-client-tree2\Project\Assets\Editor\CodexSelectionGuidMenu.cs.meta
+  residue: []
+  note: The probe asset under Assets/__codex_tmp__ was cleaned during verification. The user interrupted the subagent's final deletion attempt, and closeout cleanup removed the temporary Editor C# script and meta file afterward.
+
+raw_transcript:
+  status: not-retained
+  location: none
+  note: The durable record is normalized from the subagent's structured final report; no separate raw terminal transcript is retained.
+
+final_summary: The help-only Prompt B rerun no longer assumed undocumented ctx fields. It used the Quick Start warning plus the published Unity API derivation example, completed menu creation and log verification through the CLI surface, and the temporary validation residue was cleaned during closeout.

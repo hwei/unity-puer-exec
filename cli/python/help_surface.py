@@ -316,6 +316,7 @@ COMMAND_HELP = {
             "`unity-puer-exec exec --project-path X:/project --file X:/script.js --request-id RID`",
             "`unity-puer-exec exec --project-path X:/project --stdin < script.js`",
             "Every script source (`--file`, `--stdin`, `--code`) must use this module entry template: `export default function (ctx) { return null; }`",
+            "Script `ctx` is intentionally narrow: only `ctx.request_id` and `ctx.globals` are guaranteed. See `exec --help-args` or `--help-example derive-project-path-from-unity-api` before assuming project-path helpers.",
             "With `--project-path`, `exec` may launch or recover Unity for the project, so you do not need `wait-until-ready` as the default first step.",
             "Scripts use a PuerTS-style JavaScript-to-C# bridge; `puer.loadType(...)` is the normal way to load Unity or C# types inside `exec` scripts.",
             "If an earlier step wrote C# or other import-triggering project assets, make the next project-scoped `exec` use `--refresh-before-exec` instead of splitting recovery into a separate `wait-until-ready` call.",
