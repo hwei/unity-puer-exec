@@ -34,6 +34,6 @@
 
 ## 5. Spec archive and meta
 
-- [ ] 5.1 Update `openspec/specs/exec-import-support/spec.md` (move from change dir to specs dir during archive)
-- [ ] 5.2 Update `openspec/specs/formal-cli-contract/spec.md` by merging the delta (during archive)
+- [x] 5.1 Update `openspec/specs/exec-import-support/spec.md` (move from change dir to specs dir during archive)
+- [x] 5.2 Update `openspec/specs/formal-cli-contract/spec.md` by merging the delta (during archive)
 - [x] 5.3 Update `meta.yaml` for this change as implementation progresses
