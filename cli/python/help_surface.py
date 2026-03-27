@@ -410,7 +410,7 @@ COMMAND_HELP = {
                 "`--unity-log-path <path>`: explicit non-default Unity Editor log path for project-scoped startup before `session_marker` exists.",
                 "`--request-id <id>`: required accepted exec identity to continue waiting on.",
                 "`--wait-timeout-ms <ms>`: how long to wait before returning the current request state again.",
-                "`--log-start-offset <offset>`: optional log observation start offset; pass `log_range.start` from the original `exec` response so `brief_sequence` grows consistently across successive calls.",
+                "`--log-start-offset <offset>`: optional log observation start offset; pass `log_range.start` from the original `exec` response so `brief_sequence` remains consistent with the cumulative observed log activity across successive calls.",
                 "`--include-diagnostics`: include top-level debug diagnostics in the machine-readable response.",
             ],
             "Selector Rules": [

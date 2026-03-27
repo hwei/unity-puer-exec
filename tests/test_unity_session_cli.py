@@ -22,6 +22,20 @@ import unity_session_logs  # type: ignore
 SAMPLE_PROJECT_PATH = "X:/unity-project"
 
 
+def _expand_brief_sequence(sequence):
+    expanded = []
+    i = 0
+    while i < len(sequence):
+        symbol = sequence[i]
+        i += 1
+        count_start = i
+        while i < len(sequence) and sequence[i].isdigit():
+            i += 1
+        count = int(sequence[count_start:i]) if i > count_start else 1
+        expanded.append(symbol * count)
+    return "".join(expanded)
+
+
 def _make_session(project_path=SAMPLE_PROJECT_PATH):
     session = unity_session.UnitySession(
         owner="launched",
@@ -1599,14 +1613,13 @@ class UnityPuerExecCliTests(unittest.TestCase):
 
 
     def test_wait_for_exec_brief_sequence_grows_with_log(self):
-        """Task 3.5: brief_sequence grows across successive wait-for-exec calls when log_range.start is held constant."""
+        """Compact brief_sequence stays faithful as observed log activity accumulates."""
         with tempfile.TemporaryDirectory() as temp_dir:
             log_path = Path(temp_dir) / "Editor.log"
             log_path.write_text(
-                "Loading module assembly\nInitializing engine\n",
+                "Loading module assembly\nInitializing engine\nCompiling scripts\n",
                 encoding="utf-8",
             )
-            initial_size = log_path.stat().st_size
 
             def _make_running_response(req_id):
                 return (
@@ -1635,7 +1648,10 @@ class UnityPuerExecCliTests(unittest.TestCase):
 
                 # Append more log content
                 with log_path.open("a", encoding="utf-8") as f:
-                    f.write("[Warning] Shader compilation slow\n[Error] NullReferenceException\n  at Foo.Bar()\n")
+                    f.write(
+                        "Refreshing assets\n[Warning] Shader compilation slow\n"
+                        "[Error] NullReferenceException\n  at Foo.Bar()\n"
+                    )
 
                 # Second call: same log_start_offset, log has grown
                 exit_code_2, stdout_2, _ = unity_puer_exec.run_cli([
@@ -1651,9 +1667,16 @@ class UnityPuerExecCliTests(unittest.TestCase):
             self.assertEqual(log_range_2["start"], 0)
             # Verify: log_range.end grew
             self.assertGreater(log_range_2["end"], log_range_1["end"])
-            # Verify: brief_sequence grew and is prefix-consistent
-            self.assertTrue(len(seq_2) > len(seq_1), f"seq_2={seq_2!r} should be longer than seq_1={seq_1!r}")
-            self.assertTrue(seq_2.startswith(seq_1), f"seq_2={seq_2!r} should start with seq_1={seq_1!r}")
+            # Verify: compact encoding remains faithful even when extending a
+            # repeated run changes the encoded prefix text.
+            self.assertEqual(seq_1, "I3")
+            self.assertEqual(seq_2, "I4WE")
+            self.assertEqual(_expand_brief_sequence(seq_1), "III")
+            self.assertEqual(_expand_brief_sequence(seq_2), "IIIIWE")
+            self.assertTrue(
+                _expand_brief_sequence(seq_2).startswith(_expand_brief_sequence(seq_1)),
+                f"expanded seq_2={_expand_brief_sequence(seq_2)!r} should start with expanded seq_1={_expand_brief_sequence(seq_1)!r}",
+            )
 
 
     def test_wait_for_log_pattern_success_includes_log_range(self):

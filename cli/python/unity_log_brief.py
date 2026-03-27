@@ -247,15 +247,41 @@ def parse_log_briefs(log_path, start_offset, end_offset):
 def build_brief_sequence(briefs):
     """Build a compact brief sequence string from a list of brief dicts.
 
-    Each character represents one brief: I=info, W=warning, E=error, ?=unknown.
+    Each run uses the existing brief symbol. Single-entry runs stay as the bare
+    symbol; repeated runs append a decimal count to that symbol.
 
     Args:
         briefs: List of brief dicts as returned by parse_log_briefs.
 
     Returns:
-        String like "IIW?EI".
+        String like "WI32E2I".
     """
-    return "".join(_BRIEF_SEQUENCE_CHARS.get(b.get("level", ""), "?") for b in briefs)
+    if not briefs:
+        return ""
+
+    parts = []
+    run_char = None
+    run_count = 0
+
+    def flush_run():
+        if run_char is None:
+            return
+        if run_count == 1:
+            parts.append(run_char)
+        else:
+            parts.append(f"{run_char}{run_count}")
+
+    for brief in briefs:
+        brief_char = _BRIEF_SEQUENCE_CHARS.get(brief.get("level", ""), "?")
+        if brief_char == run_char:
+            run_count += 1
+            continue
+        flush_run()
+        run_char = brief_char
+        run_count = 1
+
+    flush_run()
+    return "".join(parts)
 
 
 def filter_briefs(briefs, levels=None, include_indices=None):
