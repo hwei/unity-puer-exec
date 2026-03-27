@@ -66,6 +66,10 @@ Use this opening prompt to start that design conversation:
 The unity-puer-exec commands we just ran will come up often, and the JS scripts might be reusable. Can you find a way to turn these into a skill? Let's discuss the design.
 ```
 
+## Maintainer Release Prep
+
+For the maintainer release-preparation workflow and the local `tools/release_openupm.py` helper, see [openspec/specs/openupm-release-pipeline/how-to-run.md](openspec/specs/openupm-release-pipeline/how-to-run.md).
+
 ## License
 
 MIT
