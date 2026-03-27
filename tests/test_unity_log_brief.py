@@ -198,6 +198,18 @@ class BuildBriefSequenceTests(unittest.TestCase):
         ]
         self.assertEqual(unity_log_brief.build_brief_sequence(briefs), "IWE?")
 
+    def test_repeated_runs_use_symbol_plus_count(self):
+        briefs = [
+            {"level": "warning"},
+            {"level": "info"},
+            {"level": "info"},
+            {"level": "info"},
+            {"level": "error"},
+            {"level": "error"},
+            {"level": "info"},
+        ]
+        self.assertEqual(unity_log_brief.build_brief_sequence(briefs), "WI3E2I")
+
     def test_empty_sequence(self):
         self.assertEqual(unity_log_brief.build_brief_sequence([]), "")
 
