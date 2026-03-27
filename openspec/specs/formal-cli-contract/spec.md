@@ -160,19 +160,6 @@ The formal CLI SHALL treat `request_id` as a caller-owned idempotency key for to
 
 The formal CLI SHALL define how callers distinguish between safe retry and recovery-oriented follow-up after `exec` returns `not_available`, transport timeout, `running`, or another ambiguous non-terminal condition. When an exec request has already been accepted and remains recoverable, the implementation SHALL prefer graceful transport close behavior over noisy server-side write failures if the original client connection ends before Unity-side work has fully drained.
 
-#### Scenario: Caller hits an ambiguous exec timeout
-
-- **WHEN** `unity-puer-exec exec ...` ends in a transport-level timeout or equivalent ambiguous availability failure
-- **AND** the caller knows the `request_id` used for that attempt
-- **THEN** the published contract explains that the caller should recover with the same `request_id` rather than blindly starting a fresh request
-- **AND** the published contract explains how to recover or query the state of a possibly accepted request
-
-#### Scenario: Caller intentionally starts a new request after ambiguity
-
-- **WHEN** a caller chooses a fresh `request_id` after an ambiguous timeout on a side-effecting script
-- **THEN** the published contract treats that action as a new execution attempt rather than as recovery
-- **AND** help warns that doing so may duplicate side effects if the original request had already been accepted
-
 #### Scenario: Accepted request outlives the original response wait
 
 - **WHEN** a project-scoped or direct-service `exec` request has already been accepted
