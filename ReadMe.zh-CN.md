@@ -31,7 +31,7 @@
 把下面这段提示词直接交给你的 Agent：
 
 ```text
-请把 Unity 包 com.txcombo.unity-puer-exec 从 OpenUPM（registry: https://package.openupm.com）安装到我的 Unity 项目里。如果你不能自动定位项目，请向我询问项目路径。
+请把 Unity 包 com.txcombo.unity-puer-exec 从 OpenUPM（registry: https://package.openupm.com）安装到我的 Unity 项目里。如果你不能自动定位项目，请向我询问项目路径。如果 OpenUPM registry 无法访问，请向我询问应使用的代理或镜像配置，例如 HTTP_PROXY 和 HTTPS_PROXY。
 ```
 
 包名是 `com.txcombo.unity-puer-exec`。

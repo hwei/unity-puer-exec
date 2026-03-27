@@ -31,7 +31,7 @@ That means no routine clicking through the Unity Editor, no hand-driving an IDE 
 Give your agent this prompt:
 
 ```text
-Install the Unity package com.txcombo.unity-puer-exec from OpenUPM (registry: https://package.openupm.com) into my Unity project. If you can't locate the project automatically, ask me for the project path.
+Install the Unity package com.txcombo.unity-puer-exec from OpenUPM (registry: https://package.openupm.com) into my Unity project. If you can't locate the project automatically, ask me for the project path. If the OpenUPM registry is unreachable, ask me for the proxy settings or mirror configuration you should use, such as HTTP_PROXY and HTTPS_PROXY.
 ```
 
 The package name is `com.txcombo.unity-puer-exec`.
