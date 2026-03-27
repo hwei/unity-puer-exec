@@ -19,3 +19,9 @@
 - `product-improvement`: investigate the immutable-package warning `Asset Packages/com.txcombo.unity-puer-exec/Editor has no meta file, but it's in an immutable folder. The asset will be ignored.`
 - `product-improvement`: reduce or eliminate harmless transport disconnect noise such as `[UnityPuerExec] Request handling failed: System.IO.IOException: Unable to write data to the transport connection...` when the client-side wait path ends before Unity-side work has fully drained.
 - `product-improvement`: compress repeated marker / brief output so long repeated segments can be represented compactly, for example `WI32E2I`-style repetition encoding instead of fully expanded repeated characters.
+
+## README Prompt Re-Read
+
+- Updated README installation guidance now tells the agent to ask for the Unity project path if it cannot auto-detect it and to ask for proxy or mirror settings if `https://package.openupm.com` is unreachable.
+- That would have reduced the observed friction in this experiment because the first OpenUPM failure mode was missing proxy configuration rather than an invalid package name or broken project path.
+- The prompt stays generic: it points the agent toward `HTTP_PROXY` / `HTTPS_PROXY` style recovery without overfitting the durable docs to the exact local proxy address used in this one run.
