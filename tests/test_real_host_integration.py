@@ -18,6 +18,7 @@ import prepare_validation_host  # type: ignore
 import cleanup_validation_host  # type: ignore
 import unity_puer_exec  # type: ignore
 import unity_session  # type: ignore
+import unity_session_logs  # type: ignore
 
 
 RUN_REAL_HOST_TESTS_ENV = "UNITY_PUER_EXEC_RUN_REAL_HOST_TESTS"
@@ -388,6 +389,80 @@ class RealHostIntegrationTests(unittest.TestCase):
         self.assertEqual(wait_payload["status"], "modal_blocked")
         self.assertEqual(wait_payload["blocker"]["type"], "save_modified_scenes_prompt")
         self.assertEqual(wait_payload["blocker"]["scope"], "exec")
+
+    def test_exec_timeout_recovery_avoids_disconnect_noise_against_real_host(self):
+        ready_exit_code, ready_payload, _, _ = _wait_until_ready(self.project_path, self.unity_exe_path)
+        self.assertEqual(ready_exit_code, 0, ready_payload)
+
+        log_source = unity_session.get_log_source(project_path=self.project_path)
+        self.assertIsNotNone(log_source)
+        _, log_info = log_source
+        log_path = Path(log_info["path"])
+
+        request_id = "disconnect-recover-{}".format(os.getpid())
+        exec_exit_code, exec_payload, _, _ = _run_cli(
+            [
+                "exec",
+                "--project-path",
+                str(self.project_path),
+                "--unity-exe-path",
+                str(self.unity_exe_path),
+                "--request-id",
+                request_id,
+                "--wait-timeout-ms",
+                str(WAIT_TIMEOUT_MS),
+                "--code",
+                "\n".join(
+                    [
+                        "export default function run(ctx) {",
+                        "  const Thread = puer.loadType('System.Threading.Thread');",
+                        "  Thread.Sleep(7000);",
+                        "  return { request_id: ctx.request_id, recovered: true };",
+                        "}",
+                    ]
+                ),
+            ]
+        )
+
+        self.assertEqual(exec_exit_code, unity_puer_exec.EXIT_NOT_AVAILABLE, exec_payload)
+        self.assertEqual(exec_payload["status"], "not_available")
+        self.assertEqual(exec_payload["request_id"], request_id)
+        self.assertIn("log_range", exec_payload)
+
+        time.sleep(2.0)
+
+        wait_exit_code = None
+        wait_payload = None
+        for _ in range(6):
+            wait_exit_code, wait_payload, _, _ = _run_cli(
+                [
+                    "wait-for-exec",
+                    "--project-path",
+                    str(self.project_path),
+                    "--unity-exe-path",
+                    str(self.unity_exe_path),
+                    "--request-id",
+                    request_id,
+                    "--wait-timeout-ms",
+                    str(WAIT_TIMEOUT_MS),
+                    "--log-start-offset",
+                    str(exec_payload["log_range"]["start"]),
+                ]
+            )
+            if wait_exit_code == 0:
+                break
+            self.assertEqual(wait_exit_code, unity_puer_exec.EXIT_RUNNING, wait_payload)
+            time.sleep(1.0)
+
+        self.assertEqual(wait_exit_code, 0, wait_payload)
+        self.assertEqual(wait_payload["status"], "completed")
+        self.assertEqual(wait_payload["result"]["request_id"], request_id)
+        self.assertTrue(wait_payload["result"]["recovered"])
+
+        _, log_chunk = unity_session_logs.read_editor_log_chunk(log_path, exec_payload["log_range"]["start"])
+        self.assertIn("Complete request={}".format(request_id), log_chunk)
+        self.assertNotIn("Request handling failed", log_chunk)
+        self.assertNotIn("Unable to write data to the transport connection", log_chunk)
 
     def test_get_blocker_state_reports_save_scene_dialog_against_real_host(self):
         ready_exit_code, ready_payload, _, _ = _wait_until_ready(self.project_path, self.unity_exe_path)

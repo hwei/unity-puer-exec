@@ -400,7 +400,7 @@ namespace UnityPuerExec
             await WaitForTerminalOrTimeoutAsync(execJob, request.wait_timeout_ms);
             var payload = UnityPuerExecProtocol.BuildExecResponseJson(execJob.Snapshot(), sessionMarker);
             Debug.Log($"[UnityPuerExec] Exec responding request={execJob.RequestId} payload={payload}");
-            await WriteJsonAsync(context, payload);
+            await WriteAcceptedExecResponseAsync(context, payload, execJob.RequestId, "exec");
         }
 
         private static async Task HandleResetJsEnvAsync(HttpListenerContext context)
@@ -464,7 +464,7 @@ namespace UnityPuerExec
 
             await WaitForTerminalOrTimeoutAsync(execJob, request.wait_timeout_ms);
             var payload = UnityPuerExecProtocol.BuildExecResponseJson(execJob.Snapshot(), sessionMarker);
-            await WriteJsonAsync(context, payload);
+            await WriteAcceptedExecResponseAsync(context, payload, execJob.RequestId, "wait-for-exec");
         }
 
         private static async Task<string> ReadRequestBodyAsync(HttpListenerRequest request)
@@ -481,6 +481,72 @@ namespace UnityPuerExec
             await context.Response.OutputStream.WriteAsync(bytes, 0, bytes.Length);
             await context.Response.OutputStream.FlushAsync();
             context.Response.Close();
+        }
+
+        private static async Task WriteAcceptedExecResponseAsync(
+            HttpListenerContext context,
+            string payload,
+            string requestId,
+            string operation
+        )
+        {
+            try
+            {
+                await WriteJsonAsync(context, payload);
+            }
+            catch (Exception ex) when (IsBenignAcceptedRequestDisconnect(ex))
+            {
+                Debug.LogWarning(
+                    $"[UnityPuerExec] Suppressed benign disconnect while responding operation={operation} request={requestId}: {ex.GetType().Name}: {ex.Message}"
+                );
+            }
+        }
+
+        private static bool IsBenignAcceptedRequestDisconnect(Exception ex)
+        {
+            for (var current = ex; current != null; current = current.InnerException)
+            {
+                if (current is ObjectDisposedException)
+                {
+                    return true;
+                }
+
+                if (current is HttpListenerException listenerException && IsExpectedDisconnectErrorCode(listenerException.ErrorCode))
+                {
+                    return true;
+                }
+
+                if (IsExpectedDisconnectMessage(current.Message))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private static bool IsExpectedDisconnectErrorCode(int errorCode)
+        {
+            return errorCode == 64
+                || errorCode == 109
+                || errorCode == 995
+                || errorCode == 1236;
+        }
+
+        private static bool IsExpectedDisconnectMessage(string message)
+        {
+            if (string.IsNullOrEmpty(message))
+            {
+                return false;
+            }
+
+            return message.IndexOf("Unable to write data to the transport connection", StringComparison.OrdinalIgnoreCase) >= 0
+                || message.IndexOf("forcibly closed by the remote host", StringComparison.OrdinalIgnoreCase) >= 0
+                || message.IndexOf("broken pipe", StringComparison.OrdinalIgnoreCase) >= 0
+                || message.IndexOf("The I/O operation has been aborted", StringComparison.OrdinalIgnoreCase) >= 0
+                || message.IndexOf("network name is no longer available", StringComparison.OrdinalIgnoreCase) >= 0
+                || message.IndexOf("pipe has been ended", StringComparison.OrdinalIgnoreCase) >= 0
+                || message.IndexOf("Cannot access a disposed object", StringComparison.OrdinalIgnoreCase) >= 0;
         }
 
         private static async Task WaitForTerminalOrTimeoutAsync(UnityPuerExecJob job, int waitTimeoutMs)
