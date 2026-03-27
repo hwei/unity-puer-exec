@@ -3,9 +3,7 @@
 ## Purpose
 
 Define the log-brief parsing model and `get-log-briefs` command. Log briefs provide compact, structured summaries of Unity Editor log entries within a caller-specified byte offset range, enabling agents to scan log activity without reading raw log files.
-
 ## Requirements
-
 ### Requirement: Log briefs summarize parsed log entries for an offset range
 
 A log brief SHALL represent one parsed log entry (or one merged group of consecutive unrecognized entries) within a given log offset range. Each brief SHALL carry: a 1-based `index`, a `level` (`"info"`, `"warning"`, `"error"`, or `"unknown"`), a `line_count` (number of raw log lines covered), a `start_offset`, an `end_offset`, and a `text` field containing the first 100 characters of the entry's first line. Briefs with `level = "unknown"` SHALL have `text: null`.
@@ -82,25 +80,13 @@ The CLI SHALL provide a `get-log-briefs` command that accepts a mandatory `--ran
 
 ### Requirement: exec and wait-for-exec responses include log_range and brief_sequence
 
-Every `exec` and `wait-for-exec` response SHALL include a top-level `log_range` object with `start` and `end` offset fields, and a top-level `brief_sequence` string. `log_range.start` SHALL be set to the log position at the time the CLI began observing the log for the request. `log_range.end` SHALL be set to the latest observed log tail at response time and SHALL never be absent. `brief_sequence` SHALL be a string where each character represents one parsed entry within `log_range`: `"I"` for info, `"W"` for warning, `"E"` for error, `"?"` for one merged unknown group.
+Every `exec` and `wait-for-exec` response SHALL include a top-level `log_range` object with `start` and `end` offset fields, and a top-level `brief_sequence` string. `log_range.start` SHALL be set to the log position at the time the CLI began observing the log for the request. `log_range.end` SHALL be set to the latest observed log tail at response time and SHALL never be absent. `brief_sequence` SHALL use a compact run encoding where each brief kind still uses the existing symbols (`"I"`, `"W"`, `"E"`, `"?"`), single-entry runs are emitted as the bare symbol, and repeated runs append a decimal count to the symbol. For example, `WI32E2I` represents `W`, then thirty-two `I` briefs, then two `E` briefs, then one `I` brief.
 
-#### Scenario: exec returns with log activity during the operation
+#### Scenario: exec returns with repeated log activity during the operation
 
-- **WHEN** `exec` returns any status response
-- **THEN** the response includes `log_range.start`, `log_range.end`, and `brief_sequence`
-- **AND** `brief_sequence` reflects log entries observed between `log_range.start` and `log_range.end`
-
-#### Scenario: wait-for-exec returns an in-progress response
-
-- **WHEN** `wait-for-exec` returns a non-terminal status such as `running` or `compiling`
-- **THEN** the response includes `log_range` with `end` equal to the current log tail
-- **AND** `brief_sequence` reflects log entries observed so far within the window
-
-#### Scenario: brief_sequence grows across successive wait-for-exec calls
-
-- **WHEN** a caller passes the same `log_range.start` as `--log-start-offset` to successive `wait-for-exec` calls
-- **THEN** `brief_sequence` in later responses contains at least as many characters as in earlier responses
-- **AND** the sequence is consistent with the cumulative log activity since `log_range.start`
+- **WHEN** `exec` returns any status response with long repeated runs of the same brief kind
+- **THEN** the response includes `log_range.start`, `log_range.end`, and compact encoded `brief_sequence`
+- **AND** callers can still reconstruct the underlying brief kinds from the encoded form without ambiguity
 
 ### Requirement: log_offset and --include-log-offset are removed
 
@@ -111,3 +97,4 @@ The `log_offset` response field and the `--include-log-offset` flag SHALL be rem
 - **WHEN** a caller invokes `exec --include-log-offset`
 - **THEN** the CLI reports a usage error
 - **AND** the error message directs the caller to use `log_range.start` from the standard response instead
+
