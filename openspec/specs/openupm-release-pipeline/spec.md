@@ -12,7 +12,7 @@ The repository SHALL include a GitHub Actions workflow that triggers on `v*` tag
 - **WHEN** a maintainer pushes a tag matching `v*` (e.g., `v0.1.0`) to `main`
 - **THEN** the GitHub Actions workflow triggers automatically
 - **AND** the workflow builds the CLI Windows executable
-- **AND** the workflow assembles a package tree containing only Editor/, CLI~/, package.json, and LICENSE
+- **AND** the workflow assembles a package tree containing only the publishable package assets: `Editor/`, `CLI~/`, `package.json`, `LICENSE`, and the committed `.meta` siblings required for Unity-imported assets outside `CLI~/`
 - **AND** the workflow force-pushes the assembled tree to the `upm` branch
 - **AND** the workflow creates a `upm/v<version>` tag on the `upm` branch
 
@@ -20,7 +20,7 @@ The repository SHALL include a GitHub Actions workflow that triggers on `v*` tag
 
 - **WHEN** the CI workflow assembles the UPM package tree for the `upm` branch
 - **THEN** the tree does NOT contain tests/, tools/, openspec/, cli/python/, .github/, or any other development-only content
-- **AND** the tree contains exactly the files needed for a functional UPM package installation
+- **AND** the tree contains exactly the files needed for a functional UPM package installation, including committed `.meta` files for Unity-imported package assets outside `CLI~/`
 
 ### Requirement: Version consistency between package.json and git tags
 
@@ -74,4 +74,3 @@ The repository SHALL keep `v<version>` source tag push as the event that trigger
 - **WHEN** a maintainer completes release preparation with the local helper
 - **THEN** the repository still requires an explicit remote push of the source commit and `v<version>` tag to trigger publishing
 - **AND** the local helper does not itself publish to OpenUPM or replace the existing CI release workflow
-

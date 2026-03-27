@@ -61,8 +61,11 @@ jobs:
           New-Item -ItemType Directory -Path (Join-Path $stageDir "CLI~") | Out-Null
 
           Copy-Item "packages/com.txcombo.unity-puer-exec/Editor" -Destination $stageDir -Recurse
+          Copy-Item "packages/com.txcombo.unity-puer-exec/Editor.meta" -Destination $stageDir
           Copy-Item "packages/com.txcombo.unity-puer-exec/package.json" -Destination $stageDir
+          Copy-Item "packages/com.txcombo.unity-puer-exec/package.json.meta" -Destination $stageDir
           Copy-Item "packages/com.txcombo.unity-puer-exec/LICENSE" -Destination $stageDir
+          Copy-Item "packages/com.txcombo.unity-puer-exec/LICENSE.meta" -Destination $stageDir
           Copy-Item "dist/unity-puer-exec.exe" -Destination (Join-Path $stageDir "CLI~/unity-puer-exec.exe")
 
           "UPM_STAGE_DIR=$stageDir" >> $env:GITHUB_ENV
