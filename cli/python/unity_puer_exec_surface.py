@@ -14,16 +14,6 @@ def build_parser():
     parser.add_argument("--suppress-guidance", action="store_true", default=False)
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    ready_parser = subparsers.add_parser("wait-until-ready", add_help=False)
-    _add_selector_args(ready_parser)
-    ready_parser.add_argument("--unity-exe-path", default=None)
-    ready_parser.add_argument("--unity-log-path", default=None)
-    ready_parser.add_argument("--ready-timeout-seconds", type=float, default=unity_session.DEFAULT_READY_TIMEOUT_SECONDS)
-    ready_parser.add_argument("--activity-timeout-seconds", type=float, default=unity_session.DEFAULT_ACTIVITY_TIMEOUT_SECONDS)
-    ready_parser.add_argument("--health-timeout-seconds", type=float, default=unity_session.DEFAULT_HEALTH_TIMEOUT_SECONDS)
-    ready_parser.add_argument("--start-offset", type=int, default=None)
-    _add_diagnostics_arg(ready_parser)
-
     wait_log_parser = subparsers.add_parser("wait-for-log-pattern", add_help=False)
     _add_selector_args(wait_log_parser)
     wait_log_parser.add_argument("--unity-log-path", default=None)

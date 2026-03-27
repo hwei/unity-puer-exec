@@ -11,14 +11,6 @@ def _build_parser():
     parser = argparse.ArgumentParser(prog="unity-puer-session")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    ensure_ready_parser = subparsers.add_parser("ensure-ready")
-    _add_session_args(ensure_ready_parser)
-    ensure_ready_parser.add_argument("--ready-timeout-seconds", type=float, default=180.0)
-
-    wait_recovered_parser = subparsers.add_parser("wait-until-recovered")
-    _add_session_args(wait_recovered_parser)
-    wait_recovered_parser.add_argument("--timeout-seconds", type=float, default=180.0)
-
     wait_log_parser = subparsers.add_parser("wait-for-log-pattern")
     _add_session_args(wait_log_parser)
     wait_log_parser.add_argument("--pattern", required=True)
@@ -39,11 +31,7 @@ def run_cli(argv):
     parser = _build_parser()
     args = parser.parse_args(argv)
 
-    if args.command == "ensure-ready":
-        mapped_args = ["wait-until-ready", "--ready-timeout-seconds", str(args.ready_timeout_seconds)]
-    elif args.command == "wait-until-recovered":
-        mapped_args = ["wait-until-ready", "--ready-timeout-seconds", str(args.timeout_seconds)]
-    else:
+    if args.command == "wait-for-log-pattern":
         mapped_args = [
             "wait-for-log-pattern",
             "--pattern",
@@ -51,6 +39,8 @@ def run_cli(argv):
             "--timeout-seconds",
             str(args.timeout_seconds),
         ]
+    else:
+        raise ValueError("unsupported unity-puer-session command: {}".format(args.command))
 
     if args.project_path is not None:
         mapped_args.extend(["--project-path", args.project_path])

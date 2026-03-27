@@ -60,21 +60,37 @@ def _run_cli(argv):
     return exit_code, payload, stdout, stderr
 
 
-def _wait_until_ready(project_path, unity_exe_path, include_diagnostics=False):
+def _warm_up_project_exec(project_path, unity_exe_path, include_diagnostics=False):
+    script = "export default function run(ctx) { return { probe: 'warmup', request_id: ctx.request_id }; }"
     argv = [
-        "wait-until-ready",
+        "exec",
         "--project-path",
         str(project_path),
         "--unity-exe-path",
         str(unity_exe_path),
-        "--ready-timeout-seconds",
-        str(READY_TIMEOUT_SECONDS),
-        "--activity-timeout-seconds",
-        str(ACTIVITY_TIMEOUT_SECONDS),
+        "--wait-timeout-ms",
+        str(WAIT_TIMEOUT_MS),
+        "--code",
+        script,
     ]
     if include_diagnostics:
         argv.append("--include-diagnostics")
-    return _run_cli(argv)
+    exit_code, payload, stdout, stderr = _run_cli(argv)
+    if payload is not None and payload.get("status") == "running":
+        exit_code, payload, stdout, stderr = _run_cli(
+            [
+                "wait-for-exec",
+                "--project-path",
+                str(project_path),
+                "--unity-exe-path",
+                str(unity_exe_path),
+                "--request-id",
+                payload["request_id"],
+                "--wait-timeout-ms",
+                str(READY_TIMEOUT_SECONDS * 1000),
+            ] + (["--include-diagnostics"] if include_diagnostics else [])
+        )
+    return exit_code, payload, stdout, stderr
 
 
 def _ensure_clean_test_boundary(project_path):
@@ -149,21 +165,20 @@ class RealHostIntegrationTests(unittest.TestCase):
             ]
         )
 
-        ready_exit_code, ready_payload, _, _ = _wait_until_ready(self.project_path, self.unity_exe_path)
-        self.assertEqual(ready_exit_code, 0, ready_payload)
-        self.assertEqual(ready_payload["result"]["status"], "recovered")
+        warmup_exit_code, warmup_payload, _, _ = _warm_up_project_exec(self.project_path, self.unity_exe_path)
+        self.assertEqual(warmup_exit_code, 0, warmup_payload)
+        self.assertEqual(warmup_payload["status"], "completed")
+        self.assertEqual(warmup_payload["result"]["probe"], "warmup")
 
-        repeat_ready_exit_code, repeat_ready_payload, _, _ = _wait_until_ready(
+        repeat_warmup_exit_code, repeat_warmup_payload, _, _ = _warm_up_project_exec(
             self.project_path,
             self.unity_exe_path,
             include_diagnostics=True,
         )
-        self.assertEqual(repeat_ready_exit_code, 0, repeat_ready_payload)
-        self.assertEqual(repeat_ready_payload["result"]["status"], "recovered")
-        self.assertIn(
-            repeat_ready_payload["diagnostics"].get("launch_coordination_stage"),
-            {"initial_ready", "prelaunch_recovery", "post_claim_ready", "post_claim_recovery"},
-        )
+        self.assertEqual(repeat_warmup_exit_code, 0, repeat_warmup_payload)
+        self.assertEqual(repeat_warmup_payload["status"], "completed")
+        self.assertEqual(repeat_warmup_payload["result"]["probe"], "warmup")
+        self.assertIn("diagnostics", repeat_warmup_payload)
 
         exec_exit_code, exec_payload, _, _ = _run_cli(
             [

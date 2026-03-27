@@ -49,10 +49,12 @@ def _make_session(project_path=SAMPLE_PROJECT_PATH):
 
 
 class UnityPuerExecCliTests(unittest.TestCase):
-    def test_parser_exposes_formal_command_tree(self):
+    def test_parser_exposes_formal_command_tree_without_wait_until_ready(self):
         parser = unity_puer_exec._build_parser()
-        args = parser.parse_args(["wait-until-ready"])
-        self.assertEqual(args.command, "wait-until-ready")
+        args = parser.parse_args(["wait-for-exec", "--request-id", "req-1"])
+        self.assertEqual(args.command, "wait-for-exec")
+        with self.assertRaises(SystemExit):
+            parser.parse_args(["wait-until-ready"])
 
     def test_exec_parser_accepts_import_base_url_and_reset_jsenv_before_exec(self):
         parser = unity_puer_exec._build_parser()
@@ -114,9 +116,10 @@ class UnityPuerExecCliTests(unittest.TestCase):
         self.assertIn("load-and-call-csharp-type", stdout)
         self.assertIn("use `unity-puer-exec --help-example exec-and-wait-for-result-marker`", stdout)
         self.assertIn("Normal first command for project-scoped work", stdout)
-        self.assertIn("do not need `wait-until-ready` as the default first step", stdout)
+        self.assertIn("owns Unity launch or recovery for the project", stdout)
         self.assertIn("PuerTS-style JavaScript-to-C# bridge", stdout)
         self.assertIn("make the next project-scoped `exec` use `--refresh-before-exec`", stdout)
+        self.assertIn("continue with `wait-for-exec` if the request stays non-terminal", stdout)
         self.assertIn("Every script source (`--file`, `--stdin`, `--code`) must use this module entry template", stdout)
         self.assertIn("only `ctx.request_id`, `ctx.globals`, and `ctx.args` are guaranteed", stdout)
         self.assertIn("`--help-example derive-project-path-from-unity-api`", stdout)
@@ -203,13 +206,6 @@ class UnityPuerExecCliTests(unittest.TestCase):
         self.assertIn("Non-success Statuses", stdout)
         self.assertIn("`session_stale` -> exit 14", stdout)
         self.assertIn("`no_observation_target` -> exit 15", stdout)
-
-    def test_wait_until_ready_help_status_mentions_launch_conflict(self):
-        exit_code, stdout, stderr = unity_puer_exec.run_cli(["wait-until-ready", "--help-status"])
-
-        self.assertEqual(exit_code, 0)
-        self.assertEqual(stderr, "")
-        self.assertIn("`launch_conflict` -> exit 20", stdout)
 
     def test_help_example_renders_known_workflow(self):
         exit_code, stdout, stderr = unity_puer_exec.run_cli(["--help-example", "exec-and-wait-for-result-marker"])
@@ -305,54 +301,6 @@ class UnityPuerExecCliTests(unittest.TestCase):
         self.assertEqual(exit_code, 2)
         self.assertEqual(stdout, "")
         self.assertIn("usage: unity-puer-exec exec [--help | --help-args | --help-status]", stderr)
-
-    def test_wait_until_ready_prefers_explicit_project_path(self):
-        with mock.patch.dict(os.environ, {unity_session.UNITY_PROJECT_PATH_ENV: "X:/from-env"}, clear=False), mock.patch.object(
-            unity_session,
-            "ensure_session_ready",
-            return_value=_make_session(),
-        ) as ensure_session_ready:
-            unity_puer_exec.run_cli(["wait-until-ready", "--project-path", "X:/from-arg"])
-
-        self.assertEqual(ensure_session_ready.call_args.kwargs["project_path"], "X:/from-arg")
-
-    def test_wait_until_ready_forwards_unity_log_path(self):
-        with mock.patch.object(
-            unity_session,
-            "ensure_session_ready",
-            return_value=_make_session(),
-        ) as ensure_session_ready:
-            unity_puer_exec.run_cli(["wait-until-ready", "--project-path", "X:/project", "--unity-log-path", "X:/Logs/Editor.log"])
-
-        self.assertEqual(ensure_session_ready.call_args.kwargs["unity_log_path"], "X:/Logs/Editor.log")
-
-    def test_wait_until_ready_returns_success_payload(self):
-        session = _make_session()
-
-        with mock.patch.object(unity_session, "ensure_session_ready", return_value=session):
-            exit_code, stdout, stderr = unity_puer_exec.run_cli(["wait-until-ready"])
-
-        self.assertEqual(exit_code, 0)
-        self.assertEqual(stderr, "")
-        payload = json.loads(stdout)
-        self.assertEqual(payload["status"], "completed")
-        self.assertEqual(payload["operation"], "wait-until-ready")
-        self.assertEqual(payload["result"]["status"], "recovered")
-        self.assertEqual(payload["session"]["unity_pid"], 1234)
-        self.assertNotIn("diagnostics", payload)
-        self.assertNotIn("diagnostics", payload["session"])
-
-    def test_wait_until_ready_include_diagnostics_returns_top_level_diagnostics(self):
-        session = _make_session()
-
-        with mock.patch.object(unity_session, "ensure_session_ready", return_value=session):
-            exit_code, stdout, stderr = unity_puer_exec.run_cli(["wait-until-ready", "--include-diagnostics"])
-
-        self.assertEqual(exit_code, 0)
-        self.assertEqual(stderr, "")
-        payload = json.loads(stdout)
-        self.assertEqual(payload["diagnostics"]["phase"], "test")
-        self.assertNotIn("diagnostics", payload["session"])
 
     def test_wait_for_log_pattern_returns_success_payload(self):
         session = _make_session()
@@ -1455,7 +1403,7 @@ class UnityPuerExecCliTests(unittest.TestCase):
 
     def test_address_conflict_is_usage_error(self):
         exit_code, stdout, stderr = unity_puer_exec.run_cli(
-            ["wait-until-ready", "--project-path", "X:/a", "--base-url", "http://127.0.0.1:55231"]
+            ["exec", "--project-path", "X:/a", "--base-url", "http://127.0.0.1:55231", "--code", "export default function run(ctx) { return 1; }"]
         )
 
         self.assertEqual(exit_code, 2)
@@ -1578,7 +1526,9 @@ class UnityPuerExecCliTests(unittest.TestCase):
         error = unity_session.UnityLaunchError("failed to launch", session=session)
 
         with mock.patch.object(unity_session, "ensure_session_ready", side_effect=error):
-            exit_code, stdout, stderr = unity_puer_exec.run_cli(["wait-until-ready"])
+            exit_code, stdout, stderr = unity_puer_exec.run_cli(
+                ["exec", "--project-path", "X:/project", "--code", "export default function run(ctx) { return 1; }"]
+            )
 
         self.assertEqual(exit_code, unity_puer_exec.EXIT_UNITY_START_FAILED)
         self.assertEqual(stderr, "")
@@ -1591,7 +1541,9 @@ class UnityPuerExecCliTests(unittest.TestCase):
         error = unity_session.UnityLaunchConflictError("launch ownership conflict", session=session)
 
         with mock.patch.object(unity_session, "ensure_session_ready", side_effect=error):
-            exit_code, stdout, stderr = unity_puer_exec.run_cli(["wait-until-ready"])
+            exit_code, stdout, stderr = unity_puer_exec.run_cli(
+                ["exec", "--project-path", "X:/project", "--code", "export default function run(ctx) { return 1; }"]
+            )
 
         self.assertEqual(exit_code, unity_puer_exec.EXIT_UNITY_START_FAILED)
         self.assertEqual(stderr, "")
@@ -1599,17 +1551,24 @@ class UnityPuerExecCliTests(unittest.TestCase):
         self.assertEqual(payload["status"], "launch_conflict")
         self.assertEqual(payload["session"]["unity_pid"], 1234)
 
-    def test_not_ready_error_maps_to_exit_code_21(self):
-        session = _make_session()
-        error = unity_session.UnityNotReadyError("not ready", session=session)
+    def test_not_ready_during_exec_becomes_running_request(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_path = Path(temp_dir) / "Project"
+            project_path.mkdir()
+            session = _make_session(project_path=str(project_path))
+            error = unity_session.UnityNotReadyError("not ready", session=session)
 
-        with mock.patch.object(unity_session, "ensure_session_ready", side_effect=error):
-            exit_code, stdout, stderr = unity_puer_exec.run_cli(["wait-until-ready"])
+            with mock.patch.object(unity_session, "ensure_session_ready", side_effect=error):
+                exit_code, stdout, stderr = unity_puer_exec.run_cli(
+                    ["exec", "--project-path", str(project_path), "--code", "export default function run(ctx) { return 1; }"]
+                )
 
-        self.assertEqual(exit_code, unity_puer_exec.EXIT_UNITY_NOT_READY)
-        self.assertEqual(stderr, "")
-        payload = json.loads(stdout)
-        self.assertEqual(payload["status"], "unity_not_ready")
+            self.assertEqual(exit_code, unity_puer_exec.EXIT_RUNNING)
+            self.assertEqual(stderr, "")
+            payload = json.loads(stdout)
+            self.assertEqual(payload["status"], "running")
+            self.assertEqual(payload["operation"], "exec")
+            self.assertIn("request_id", payload)
 
 
     def test_wait_for_exec_brief_sequence_grows_with_log(self):
@@ -1798,65 +1757,6 @@ class UnityPuerExecCliTests(unittest.TestCase):
             self.assertEqual(body["operation"], "wait-for-result-marker")
             self.assertIn("log_range", body)
             self.assertIn("brief_sequence", body)
-
-    def test_wait_until_ready_success_includes_log_range(self):
-        with tempfile.TemporaryDirectory() as temp_dir:
-            log_path = Path(temp_dir) / "Editor.log"
-            log_path.write_text("Loading module\nReady\n", encoding="utf-8")
-            session = _make_session()
-
-            with mock.patch.object(
-                unity_session, "ensure_session_ready", return_value=session
-            ), mock.patch.object(
-                unity_session_logs, "default_editor_log_path", return_value=log_path
-            ):
-                exit_code, stdout, stderr = unity_puer_exec.run_cli(["wait-until-ready"])
-
-            self.assertEqual(exit_code, 0)
-            body = json.loads(stdout)
-            self.assertIn("log_range", body)
-            self.assertIn("brief_sequence", body)
-
-    def test_wait_until_ready_stall_includes_log_range(self):
-        with tempfile.TemporaryDirectory() as temp_dir:
-            log_path = Path(temp_dir) / "Editor.log"
-            log_path.write_text("Loading module\n", encoding="utf-8")
-            session = _make_session()
-            stalled = unity_session.UnityStalledError("starting", session=session)
-
-            with mock.patch.object(
-                unity_session, "ensure_session_ready", side_effect=stalled
-            ), mock.patch.object(
-                unity_session_logs, "default_editor_log_path", return_value=log_path
-            ):
-                exit_code, stdout, stderr = unity_puer_exec.run_cli(["wait-until-ready"])
-
-            self.assertEqual(exit_code, unity_puer_exec.EXIT_UNITY_NOT_READY)
-            body = json.loads(stdout)
-            self.assertEqual(body["status"], "unity_stalled")
-            self.assertEqual(body["operation"], "wait-until-ready")
-            self.assertIn("log_range", body)
-            self.assertIn("brief_sequence", body)
-
-    def test_wait_until_ready_start_offset_sets_log_range_start(self):
-        with tempfile.TemporaryDirectory() as temp_dir:
-            log_path = Path(temp_dir) / "Editor.log"
-            log_path.write_text("Loading module\nReady\n", encoding="utf-8")
-            session = _make_session()
-
-            with mock.patch.object(
-                unity_session, "ensure_session_ready", return_value=session
-            ), mock.patch.object(
-                unity_session_logs, "default_editor_log_path", return_value=log_path
-            ):
-                exit_code, stdout, stderr = unity_puer_exec.run_cli(
-                    ["wait-until-ready", "--start-offset", "10"]
-                )
-
-            self.assertEqual(exit_code, 0)
-            body = json.loads(stdout)
-            self.assertEqual(body["log_range"]["start"], 10)
-
 
 if __name__ == "__main__":
     unittest.main()

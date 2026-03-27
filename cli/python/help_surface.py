@@ -14,7 +14,6 @@ COMMAND_GROUPS = (
             "wait-for-exec",
             "wait-for-result-marker",
             "wait-for-log-pattern",
-            "wait-until-ready",
         ),
     ),
         (
@@ -55,7 +54,6 @@ def _bullet_lines(items):
 
 
 TOP_LEVEL_COMMANDS = {
-    "wait-until-ready": "prepare a project or direct service until Unity is ready. See `wait-until-ready --help`.",
     "wait-for-log-pattern": "observe logs until a regular-expression pattern appears. See `wait-for-log-pattern --help`.",
     "wait-for-exec": "continue waiting on an accepted exec request by `request_id`. See `wait-for-exec --help`.",
     "wait-for-result-marker": "wait for the standard single-line JSON result marker emitted by a long-running script. See `wait-for-result-marker --help`.",
@@ -70,9 +68,9 @@ TOP_LEVEL_COMMANDS = {
 RECOMMENDED_PATH = (
     "For normal project-scoped work, start with `exec --project-path ...`.",
     "If `exec` returns `running`, continue with `wait-for-exec --request-id ...` or the script-specific observation path you designed.",
+    "If an earlier step wrote C# or other import-triggering project assets, use the next project-scoped `exec --refresh-before-exec` instead of a separate readiness-only step.",
     "Use `wait-for-result-marker` after `exec` only when the script deliberately exposes a `correlation_id` workflow.",
     "If you need log-based verification, continue with `wait-for-log-pattern`.",
-    "Use `wait-until-ready` when you specifically need readiness recovery before or between `exec` steps.",
     "Use `get-blocker-state` when an exec-side timeout or stall might be caused by a supported Unity modal dialog.",
     "Use `resolve-blocker` only when you intentionally want the CLI to dismiss a supported modal blocker; then continue with the original `request_id` if needed.",
     "`get-log-source` and `ensure-stopped` are secondary commands, not the normal first step.",
@@ -89,50 +87,6 @@ TOP_LEVEL_WORKFLOWS = {
 
 
 COMMAND_HELP = {
-    "wait-until-ready": {
-        "quick_start": [
-            "Supporting readiness command for cases where you explicitly need Unity ready before or between `exec` steps.",
-            "`unity-puer-exec wait-until-ready --project-path X:/project`",
-            "For normal project-scoped work, start with `unity-puer-exec exec --project-path X:/project --file X:/script.js` instead of using this as the default first step.",
-        ],
-        "related_workflows": (),
-        "args": {
-            "Arguments": [
-                "`--project-path <path>`: select a Unity project and allow Unity launch when needed.",
-                "`--base-url <url>`: target an already-known direct service instead of a project.",
-                "`--unity-exe-path <path>`: override the Unity executable for project-scoped startup only.",
-                "`--unity-log-path <path>`: explicit non-default Unity Editor log path for pre-session project-scoped startup and observation.",
-                "`--ready-timeout-seconds <seconds>`: total time allowed for readiness.",
-                "`--activity-timeout-seconds <seconds>`: how long readiness may stay idle before stalling.",
-                "`--health-timeout-seconds <seconds>`: timeout for each health probe.",
-                "`--include-diagnostics`: include top-level debug diagnostics in the machine-readable response.",
-            ],
-            "Selector Rules": [
-                "Use exactly one selector: `--project-path` or `--base-url`.",
-                "`--project-path` is the normal choice when you want the CLI to prepare Unity for a project.",
-                "`--base-url` is for a direct service you already know how to reach.",
-                "`--unity-exe-path` is only valid with `--project-path`.",
-            ],
-            "Timeout Rules": [
-                "All timeout values must be positive numbers.",
-                "`--ready-timeout-seconds` bounds the whole readiness wait.",
-                "`--activity-timeout-seconds` and `--health-timeout-seconds` refine how readiness stalls are detected.",
-            ],
-        },
-        "status": {
-            "success": [
-                "`completed`: Unity is ready and `result.status` is `recovered`.",
-            ],
-            "failure": [
-                ("address_conflict", 2, "both selectors were provided; choose exactly one."),
-                ("launch_conflict", EXIT_UNITY_START_FAILED, "project-scoped launch ownership could not be established safely, so the CLI refused a competing launch."),
-                ("unity_start_failed", EXIT_UNITY_START_FAILED, "Unity could not be launched for the selected project."),
-                ("unity_stalled", EXIT_UNITY_NOT_READY, "readiness stopped making progress before becoming usable."),
-                ("unity_not_ready", EXIT_UNITY_NOT_READY, "Unity did not become ready before the readiness budget expired."),
-                ("failed", 1, "an unexpected command failure happened outside the expected machine states."),
-            ],
-        },
-    },
     "wait-for-log-pattern": {
         "quick_start": [
             "Supporting observation command for log-based verification after or alongside `exec`.",
@@ -318,9 +272,9 @@ COMMAND_HELP = {
             "`unity-puer-exec exec --project-path X:/project --stdin < script.js`",
             "Every script source (`--file`, `--stdin`, `--code`) must use this module entry template: `export default function (ctx) { return null; }`",
             "Script `ctx` is intentionally narrow: only `ctx.request_id`, `ctx.globals`, and `ctx.args` are guaranteed. See `exec --help-args` or `--help-example derive-project-path-from-unity-api` before assuming project-path helpers.",
-            "With `--project-path`, `exec` may launch or recover Unity for the project, so you do not need `wait-until-ready` as the default first step.",
+            "With `--project-path`, `exec` owns Unity launch or recovery for the project as part of the main work lifecycle.",
             "Scripts use a PuerTS-style JavaScript-to-C# bridge; `puer.loadType(...)` is the normal way to load Unity or C# types inside `exec` scripts.",
-            "If an earlier step wrote C# or other import-triggering project assets, make the next project-scoped `exec` use `--refresh-before-exec` instead of splitting recovery into a separate `wait-until-ready` call.",
+            "If an earlier step wrote C# or other import-triggering project assets, make the next project-scoped `exec` use `--refresh-before-exec` and continue with `wait-for-exec` if the request stays non-terminal.",
         ],
         "related_workflows": (
             "recover-exec-by-request-id",
@@ -348,7 +302,7 @@ COMMAND_HELP = {
                 "Use exactly one selector: `--project-path` or `--base-url`.",
                 "`--project-path` is the normal choice when the CLI should prepare Unity for the project before execution.",
                 "`--refresh-before-exec` is only valid with `--project-path` and is intended for the next step after changing project assets or C# code.",
-                "After a script writes C# or other import-triggering assets, prefer the next task `exec --refresh-before-exec` over a standalone `wait-until-ready` step.",
+                "After a script writes C# or other import-triggering assets, prefer the next task `exec --refresh-before-exec` and stay on `wait-for-exec` for accepted continuation.",
                 "`--base-url` is for a direct service that is already known.",
                 "`--unity-exe-path` is only valid with `--project-path`.",
                 "Use exactly one script source: `--file`, `--stdin`, or `--code`.",
@@ -686,10 +640,6 @@ _OPTIONAL_FORWARDED_ARGS = {
         ("--unity-exe-path", "unity_exe_path"),
         ("--unity-log-path", "unity_log_path"),
     ),
-    "wait-until-ready": (
-        ("--unity-exe-path", "unity_exe_path"),
-        ("--unity-log-path", "unity_log_path"),
-    ),
     "wait-for-log-pattern": (
         ("--unity-log-path", "unity_log_path"),
     ),
@@ -1019,50 +969,6 @@ GUIDANCE_MATRIX = {
     },
     ("wait-for-result-marker", "failed"): {
         "situation": "The result marker observation failed unexpectedly. Check the error field for details.",
-    },
-    # --- wait-until-ready ---
-    ("wait-until-ready", "completed"): {
-        "next_steps": [
-            {
-                "command": "exec",
-                "when": "Unity is ready and you want to execute a script",
-            },
-        ],
-    },
-    ("wait-until-ready", "launch_conflict"): {
-        "situation": "Project-scoped launch ownership could not be established safely. Another process may be launching Unity for this project.",
-    },
-    ("wait-until-ready", "unity_start_failed"): {
-        "situation": "Unity could not be launched for the selected project.",
-    },
-    ("wait-until-ready", "unity_stalled"): {
-        "situation": "Readiness stopped making progress before becoming usable.",
-        "next_steps": [
-            {
-                "command": "get-blocker-state",
-                "when": "the stall might be caused by a supported Unity modal dialog",
-                "argv_template": [
-                    "unity-puer-exec", "get-blocker-state",
-                    "--project-path", "{project_path}",
-                ],
-            },
-            {
-                "command": "wait-until-ready",
-                "when": "you want to retry readiness after addressing the stall",
-            },
-        ],
-    },
-    ("wait-until-ready", "unity_not_ready"): {
-        "situation": "Unity did not become ready before the readiness budget expired.",
-        "next_steps": [
-            {
-                "command": "wait-until-ready",
-                "when": "you want to retry readiness with a longer budget or after addressing the issue",
-            },
-        ],
-    },
-    ("wait-until-ready", "failed"): {
-        "situation": "An unexpected readiness failure occurred. Check the error field for details.",
     },
     # --- ensure-stopped ---
     ("ensure-stopped", "completed"): {},

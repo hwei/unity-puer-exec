@@ -145,8 +145,6 @@ def run_command(args):
     try:
         if args.command == "exec":
             return run_exec(args)
-        if args.command == "wait-until-ready":
-            return run_wait_until_ready(args)
         if args.command == "wait-for-exec":
             return run_wait_for_exec(args)
         if args.command == "wait-for-log-pattern":
@@ -939,62 +937,6 @@ def run_wait_for_exec(args):
     stdout_text = _inject_log_range_into_stdout(stdout_text, _wfe_final_log_path, _wfe_log_start, _capture_log_offset(_wfe_final_log_path))
     stdout_text = _inject_guidance_into_stdout(stdout_text, "wait-for-exec", args, request_id=args.request_id)
     return exit_code, stdout_text, stderr_text
-
-
-def run_wait_until_ready(args):
-    selector = resolve_selector(args)
-    validate_positive(args.ready_timeout_seconds, "ready-timeout-seconds")
-    validate_positive(args.activity_timeout_seconds, "activity-timeout-seconds")
-    validate_positive(args.health_timeout_seconds, "health-timeout-seconds")
-    validate_non_negative(args.start_offset, "start-offset")
-    validate_project_mode_only(selector, "unity-exe-path", args.unity_exe_path)
-    validate_project_mode_only(selector, "unity-log-path", args.unity_log_path)
-
-    log_path = _resolve_log_path(args, None)
-    log_start = args.start_offset if args.start_offset is not None else _capture_log_offset(log_path)
-
-    try:
-        if selector == "project_path":
-            session = unity_session.ensure_session_ready(
-                project_path=args.project_path,
-                unity_exe_path=args.unity_exe_path,
-                ready_timeout_seconds=args.ready_timeout_seconds,
-                activity_timeout_seconds=args.activity_timeout_seconds,
-                health_timeout_seconds=args.health_timeout_seconds,
-                unity_log_path=args.unity_log_path,
-            )
-        else:
-            session = unity_session.create_direct_session(args.base_url)
-            session = unity_session.wait_until_recovered(
-                session,
-                args.ready_timeout_seconds,
-                activity_timeout_seconds=args.activity_timeout_seconds,
-                health_timeout_seconds=args.health_timeout_seconds,
-            )
-    except (unity_session.UnityStalledError, unity_session.UnityNotReadyError) as exc:
-        status = "unity_stalled" if isinstance(exc, unity_session.UnityStalledError) else "unity_not_ready"
-        exc_log_path = _resolve_log_path(args, exc.session)
-        payload = expected_failure_payload(
-            "wait-until-ready",
-            status,
-            exc,
-            session=exc.session,
-            include_diagnostics=args.include_diagnostics,
-        )
-        _inject_log_range_into_payload(payload, exc_log_path, log_start, _capture_log_offset(exc_log_path))
-        _attach_guidance(payload, "wait-until-ready", status, args)
-        return EXIT_UNITY_NOT_READY, emit_payload(payload), ""
-
-    log_path = _resolve_log_path(args, session)
-    payload = success_payload(
-        "wait-until-ready",
-        session=session,
-        result={"status": "recovered"},
-        include_diagnostics=args.include_diagnostics,
-    )
-    _inject_log_range_into_payload(payload, log_path, log_start, _capture_log_offset(log_path))
-    _attach_guidance(payload, "wait-until-ready", "completed", args)
-    return 0, emit_payload(payload), ""
 
 
 def run_wait_for_log_pattern(args):

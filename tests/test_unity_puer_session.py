@@ -13,14 +13,16 @@ import unity_puer_session  # type: ignore
 
 
 class UnityPuerSessionAliasTests(unittest.TestCase):
-    def test_legacy_alias_remains_a_thin_wrapper(self):
+    def test_wait_for_log_pattern_alias_remains_a_thin_wrapper(self):
         with mock.patch.object(unity_puer_session.unity_puer_exec, "run_cli", return_value=(0, "", "")) as run_cli:
             exit_code, stdout, stderr = unity_puer_session.run_cli(
                 [
-                    "ensure-ready",
+                    "wait-for-log-pattern",
                     "--project-path",
                     "X:/project",
-                    "--ready-timeout-seconds",
+                    "--pattern",
+                    r"\[Build\] done",
+                    "--timeout-seconds",
                     "5",
                 ]
             )
@@ -29,8 +31,10 @@ class UnityPuerSessionAliasTests(unittest.TestCase):
         self.assertEqual(
             run_cli.call_args.args[0],
             [
-                "wait-until-ready",
-                "--ready-timeout-seconds",
+                "wait-for-log-pattern",
+                "--pattern",
+                r"\[Build\] done",
+                "--timeout-seconds",
                 "5.0",
                 "--project-path",
                 "X:/project",
@@ -41,9 +45,9 @@ class UnityPuerSessionAliasTests(unittest.TestCase):
             ],
         )
 
-    def test_legacy_alias_no_longer_accepts_unused_keep_unity_flag(self):
+    def test_legacy_ensure_ready_alias_is_removed(self):
         with self.assertRaises(SystemExit) as ctx:
-            unity_puer_session.run_cli(["ensure-ready", "--keep-unity"])
+            unity_puer_session.run_cli(["ensure-ready"])
 
         self.assertEqual(ctx.exception.code, 2)
 
