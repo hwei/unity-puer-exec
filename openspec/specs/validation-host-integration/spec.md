@@ -63,7 +63,7 @@ The repository SHALL distinguish static host wiring proof from runtime validatio
 
 ### Requirement: Real-host runtime validation covers critical CLI workflows
 
-The repository SHALL provide a repeatable runtime validation workflow for the external Unity host that exercises the critical project-scoped CLI integration path against both the repository-local package wiring path and the published OpenUPM install path when that path is under evaluation. For the published path, the durable record SHALL distinguish package acquisition blockers, import stabilization, and runtime workflow outcome instead of collapsing them into a single undifferentiated failure. For the hardened pending-artifact lifecycle, that workflow SHALL still prove the accepted `exec -> running -> wait-for-exec` recovery path against a real Unity host.
+The repository SHALL provide a repeatable runtime validation workflow for the external Unity host that exercises the critical project-scoped CLI integration path against both the repository-local package wiring path and the published OpenUPM install path when that path is under evaluation. For the published path, the durable record SHALL distinguish package acquisition blockers, import stabilization, and runtime workflow outcome instead of collapsing them into a single undifferentiated failure.
 
 #### Scenario: Contributor validates the published OpenUPM install path against a real host
 
@@ -72,28 +72,9 @@ The repository SHALL provide a repeatable runtime validation workflow for the ex
 - **AND** the workflow waits until Unity import / domain reload activity is sufficiently stable before judging the representative `exec` path as failed
 - **AND** the final record separates acquisition friction, editor stabilization friction, and post-install CLI outcome
 
-#### Scenario: Contributor runs the critical real-host regression path
-
-- **WHEN** a contributor runs the repository-owned real-host validation workflow against a prepared `UNITY_PROJECT_PATH`
-- **THEN** the workflow exercises project-scoped readiness, project-scoped `exec`, and both high-level and low-level log-observation commands against the real Unity host
-- **AND** the workflow uses the current exec observation checkpoint surface instead of relying on removed CLI flags
-- **AND** the workflow reports failures in a form that distinguishes runtime host-validation regressions from ordinary mocked test failures
-
-#### Scenario: Contributor validates accepted exec recovery after lifecycle hardening
-
-- **WHEN** the real-host validation workflow triggers a project-scoped `exec` path that first returns an accepted non-terminal state and later continues through `wait-for-exec`
-- **THEN** the workflow confirms the same `request_id` remains usable through completion
-- **AND** the hardened pending-artifact lifecycle does not break the normal `exec -> running -> wait-for-exec` recovery path
-
 ### Requirement: Real-host observation validation proves checkpoint compatibility
 
 The repository SHALL maintain a repeatable real-host validation expectation proving that the observation checkpoint returned by `exec` remains compatible with the actual log source consumed by the CLI observation commands, including the case where a first observation attempt happens during import churn and the same request later becomes recoverable.
-
-#### Scenario: Contributor validates observation from the returned checkpoint
-
-- **WHEN** the real-host validation workflow starts an execution that emits a correlation-aware result marker and then observes from the checkpoint returned in the exec response
-- **THEN** `wait-for-result-marker` succeeds from that checkpoint against the real host
-- **AND** `wait-for-log-pattern` with structured extraction can observe the same marker from a compatible checkpoint without falling back to a full-log scan
 
 #### Scenario: Contributor observes a package-local exec request through import churn
 
