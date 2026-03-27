@@ -178,7 +178,7 @@ class RealHostIntegrationTests(unittest.TestCase):
         self.assertEqual(repeat_warmup_exit_code, 0, repeat_warmup_payload)
         self.assertEqual(repeat_warmup_payload["status"], "completed")
         self.assertEqual(repeat_warmup_payload["result"]["probe"], "warmup")
-        self.assertIn("diagnostics", repeat_warmup_payload)
+        self.assertIn("log_range", repeat_warmup_payload)
 
         exec_exit_code, exec_payload, _, _ = _run_cli(
             [
@@ -243,7 +243,7 @@ class RealHostIntegrationTests(unittest.TestCase):
         self.assertEqual(wait_pattern_payload["result"]["extracted_json"]["probe"], "integration")
 
     def test_exec_rejects_legacy_fragment_script_against_real_host(self):
-        ready_exit_code, ready_payload, _, _ = _wait_until_ready(self.project_path, self.unity_exe_path)
+        ready_exit_code, ready_payload, _, _ = _warm_up_project_exec(self.project_path, self.unity_exe_path)
         self.assertEqual(ready_exit_code, 0, ready_payload)
 
         exec_exit_code, exec_payload, _, _ = _run_cli(
@@ -267,7 +267,7 @@ class RealHostIntegrationTests(unittest.TestCase):
         self.assertIn("return null;", exec_payload["error_detail"])
 
     def test_exec_rejects_promise_return_against_real_host(self):
-        ready_exit_code, ready_payload, _, _ = _wait_until_ready(self.project_path, self.unity_exe_path)
+        ready_exit_code, ready_payload, _, _ = _warm_up_project_exec(self.project_path, self.unity_exe_path)
         self.assertEqual(ready_exit_code, 0, ready_payload)
 
         exec_exit_code, exec_payload, _, _ = _run_cli(
@@ -289,7 +289,7 @@ class RealHostIntegrationTests(unittest.TestCase):
         self.assertIn("async_result_not_supported", exec_payload["error"])
 
     def test_exec_globals_are_visible_across_requests_against_real_host(self):
-        ready_exit_code, ready_payload, _, _ = _wait_until_ready(self.project_path, self.unity_exe_path)
+        ready_exit_code, ready_payload, _, _ = _warm_up_project_exec(self.project_path, self.unity_exe_path)
         self.assertEqual(ready_exit_code, 0, ready_payload)
 
         first_exit_code, first_payload, _, _ = _run_cli(
@@ -327,7 +327,7 @@ class RealHostIntegrationTests(unittest.TestCase):
         self.assertEqual(second_payload["result"]["counter"], 2)
 
     def test_exec_script_args_are_visible_against_real_host(self):
-        ready_exit_code, ready_payload, _, _ = _wait_until_ready(self.project_path, self.unity_exe_path)
+        ready_exit_code, ready_payload, _, _ = _warm_up_project_exec(self.project_path, self.unity_exe_path)
         self.assertEqual(ready_exit_code, 0, ready_payload)
 
         exec_exit_code, exec_payload, _, _ = _run_cli(
@@ -353,7 +353,7 @@ class RealHostIntegrationTests(unittest.TestCase):
         self.assertEqual(exec_payload["result"]["count"], 2)
 
     def test_wait_for_exec_reports_modified_scene_modal_blocker_against_real_host(self):
-        ready_exit_code, ready_payload, _, _ = _wait_until_ready(self.project_path, self.unity_exe_path)
+        ready_exit_code, ready_payload, _, _ = _warm_up_project_exec(self.project_path, self.unity_exe_path)
         self.assertEqual(ready_exit_code, 0, ready_payload)
 
         request_id = "modal-modified-{}".format(os.getpid())
@@ -406,7 +406,7 @@ class RealHostIntegrationTests(unittest.TestCase):
         self.assertEqual(wait_payload["blocker"]["scope"], "exec")
 
     def test_exec_timeout_recovery_avoids_disconnect_noise_against_real_host(self):
-        ready_exit_code, ready_payload, _, _ = _wait_until_ready(self.project_path, self.unity_exe_path)
+        ready_exit_code, ready_payload, _, _ = _warm_up_project_exec(self.project_path, self.unity_exe_path)
         self.assertEqual(ready_exit_code, 0, ready_payload)
 
         log_source = unity_session.get_log_source(project_path=self.project_path)
@@ -480,7 +480,7 @@ class RealHostIntegrationTests(unittest.TestCase):
         self.assertNotIn("Unable to write data to the transport connection", log_chunk)
 
     def test_get_blocker_state_reports_save_scene_dialog_against_real_host(self):
-        ready_exit_code, ready_payload, _, _ = _wait_until_ready(self.project_path, self.unity_exe_path)
+        ready_exit_code, ready_payload, _, _ = _warm_up_project_exec(self.project_path, self.unity_exe_path)
         self.assertEqual(ready_exit_code, 0, ready_payload)
 
         request_id = "modal-save-scene-{}".format(os.getpid())
@@ -526,7 +526,7 @@ class RealHostIntegrationTests(unittest.TestCase):
         self.assertEqual(blocker_payload["result"]["blocker"]["scope"], "exec")
 
     def test_resolve_blocker_cancels_modified_scene_prompt_against_real_host(self):
-        ready_exit_code, ready_payload, _, _ = _wait_until_ready(self.project_path, self.unity_exe_path)
+        ready_exit_code, ready_payload, _, _ = _warm_up_project_exec(self.project_path, self.unity_exe_path)
         self.assertEqual(ready_exit_code, 0, ready_payload)
 
         request_id = "resolve-modified-{}".format(os.getpid())
@@ -590,7 +590,7 @@ class RealHostIntegrationTests(unittest.TestCase):
         self.assertEqual(wait_payload["result"]["request_id"], request_id)
 
     def test_resolve_blocker_cancels_save_scene_dialog_against_real_host(self):
-        ready_exit_code, ready_payload, _, _ = _wait_until_ready(self.project_path, self.unity_exe_path)
+        ready_exit_code, ready_payload, _, _ = _warm_up_project_exec(self.project_path, self.unity_exe_path)
         self.assertEqual(ready_exit_code, 0, ready_payload)
 
         request_id = "resolve-save-scene-{}".format(os.getpid())
