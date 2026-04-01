@@ -66,7 +66,7 @@ TOP_LEVEL_COMMANDS = {
 }
 
 RECOMMENDED_PATH = (
-    "For normal project-scoped work, start with `exec --project-path ...`.",
+    "For normal project-scoped work, start with `exec --project-path ...` (or omit `--project-path` when the exe is invoked from its installed location inside the Unity project).",
     "If `exec` returns `running`, continue with `wait-for-exec --request-id ...` or the script-specific observation path you designed.",
     "If an earlier step wrote C# or other import-triggering project assets, use the next project-scoped `exec --refresh-before-exec` instead of a separate readiness-only step.",
     "Use `wait-for-result-marker` after `exec` only when the script deliberately exposes a `correlation_id` workflow.",
@@ -285,7 +285,7 @@ COMMAND_HELP = {
         ),
         "args": {
             "Arguments": [
-                "`--project-path <path>`: select a Unity project and allow Unity launch when needed.",
+                "`--project-path <path>`: select a Unity project and allow Unity launch when needed. Optional when the exe is invoked from its installed location inside the target Unity project.",
                 "`--base-url <url>`: target an already-known direct service instead of a project.",
                 "`--unity-exe-path <path>`: override the Unity executable for project-scoped startup only.",
                 "`--unity-log-path <path>`: explicit non-default Unity Editor log path for project-scoped startup before `session_marker` exists.",
@@ -299,8 +299,8 @@ COMMAND_HELP = {
                 "`--code <inline-js>`: inline module-shaped source that still must export `default function (ctx) { ... }`; compatibility path with quoting and multiline drawbacks.",
             ],
             "Selector Rules": [
-                "Use exactly one selector: `--project-path` or `--base-url`.",
-                "`--project-path` is the normal choice when the CLI should prepare Unity for the project before execution.",
+                "Use at most one selector: `--project-path` or `--base-url`. Supplying both is a usage error.",
+                "`--project-path` is the normal choice when the CLI should prepare Unity for the project before execution. When the exe is installed inside the target Unity project and invoked by its installed path, `--project-path` may be omitted; the CLI infers the project root from the exe location.",
                 "`--refresh-before-exec` is only valid with `--project-path` and is intended for the next step after changing project assets or C# code.",
                 "After a script writes C# or other import-triggering assets, prefer the next task `exec --refresh-before-exec` and stay on `wait-for-exec` for accepted continuation.",
                 "`--base-url` is for a direct service that is already known.",
@@ -358,7 +358,7 @@ COMMAND_HELP = {
         "related_workflows": ("recover-exec-by-request-id",),
         "args": {
             "Arguments": [
-                "`--project-path <path>`: select a Unity project and allow Unity launch when needed.",
+                "`--project-path <path>`: select a Unity project and allow Unity launch when needed. Optional when the exe is invoked from its installed location inside the target Unity project.",
                 "`--base-url <url>`: target an already-known direct service instead of a project.",
                 "`--unity-exe-path <path>`: override the Unity executable for project-scoped startup only.",
                 "`--unity-log-path <path>`: explicit non-default Unity Editor log path for project-scoped startup before `session_marker` exists.",

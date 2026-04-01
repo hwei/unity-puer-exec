@@ -330,5 +330,127 @@ class UnitySessionModuleTests(unittest.TestCase):
         self.assertFalse(malformed_path.exists())
 
 
+class ExeOriginProjectInferenceTests(unittest.TestCase):
+    def _make_manifest(self, root, has_package=True):
+        packages_dir = root / "Packages"
+        packages_dir.mkdir(parents=True, exist_ok=True)
+        deps = {"com.txcombo.unity-puer-exec": "1.0.0"} if has_package else {"com.unity.foo": "1.0.0"}
+        manifest_path = packages_dir / "manifest.json"
+        manifest_path.write_text(json.dumps({"dependencies": deps}), encoding="utf-8")
+        return manifest_path
+
+    def test_infer_package_cache_layout_returns_project_root(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._make_manifest(root)
+            exe_path = root / "Library" / "PackageCache" / "com.txcombo.unity-puer-exec@1.0.0" / "CLI~" / "unity-puer-exec.exe"
+            result = unity_session_env._infer_project_from_exe(str(exe_path))
+            self.assertEqual(result, root.resolve())
+
+    def test_infer_embedded_package_layout_returns_project_root(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._make_manifest(root)
+            exe_path = root / "Packages" / "com.txcombo.unity-puer-exec" / "CLI~" / "unity-puer-exec.exe"
+            result = unity_session_env._infer_project_from_exe(str(exe_path))
+            self.assertEqual(result, root.resolve())
+
+    def test_infer_manifest_without_package_returns_none(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._make_manifest(root, has_package=False)
+            exe_path = root / "Library" / "PackageCache" / "com.txcombo.unity-puer-exec@1.0.0" / "CLI~" / "unity-puer-exec.exe"
+            result = unity_session_env._infer_project_from_exe(str(exe_path))
+            self.assertIsNone(result)
+
+    def test_infer_no_manifest_returns_none(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            exe_path = root / "some" / "path" / "unity-puer-exec.exe"
+            result = unity_session_env._infer_project_from_exe(str(exe_path))
+            self.assertIsNone(result)
+
+    def test_resolve_priority_explicit_project_path_wins(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._make_manifest(root)
+            exe_path = root / "Library" / "PackageCache" / "com.txcombo.unity-puer-exec@1.0.0" / "CLI~" / "unity-puer-exec.exe"
+            env = {"UNITY_PROJECT_PATH": str(root / "from-env")}
+
+            def no_loader(**kwargs):
+                return False
+
+            resolved = unity_session_env.resolve_project_path(
+                __file__,
+                project_path=str(root / "explicit"),
+                cwd=str(root / "from-cwd"),
+                env=env,
+                ensure_dotenv_loaded_fn=no_loader,
+                argv0=str(exe_path),
+            )
+            self.assertEqual(resolved, root / "explicit")
+
+    def test_resolve_priority_env_var_beats_inference(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._make_manifest(root)
+            exe_path = root / "Library" / "PackageCache" / "com.txcombo.unity-puer-exec@1.0.0" / "CLI~" / "unity-puer-exec.exe"
+            env_path = root / "from-env"
+            env = {"UNITY_PROJECT_PATH": str(env_path)}
+
+            def no_loader(**kwargs):
+                return False
+
+            resolved = unity_session_env.resolve_project_path(
+                __file__,
+                project_path=None,
+                cwd=str(root / "from-cwd"),
+                env=env,
+                ensure_dotenv_loaded_fn=no_loader,
+                argv0=str(exe_path),
+            )
+            self.assertEqual(resolved, env_path)
+
+    def test_resolve_priority_inference_beats_cwd(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._make_manifest(root)
+            exe_path = root / "Library" / "PackageCache" / "com.txcombo.unity-puer-exec@1.0.0" / "CLI~" / "unity-puer-exec.exe"
+            env = {}
+
+            def no_loader(**kwargs):
+                return False
+
+            resolved = unity_session_env.resolve_project_path(
+                __file__,
+                project_path=None,
+                cwd=str(root / "from-cwd"),
+                env=env,
+                ensure_dotenv_loaded_fn=no_loader,
+                argv0=str(exe_path),
+            )
+            self.assertEqual(resolved, root.resolve())
+
+    def test_resolve_priority_cwd_fallback_when_no_inference(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            exe_path = root / "some" / "path" / "unity-puer-exec.exe"
+            env = {}
+            cwd = str(root / "from-cwd")
+
+            def no_loader(**kwargs):
+                return False
+
+            resolved = unity_session_env.resolve_project_path(
+                __file__,
+                project_path=None,
+                cwd=cwd,
+                env=env,
+                ensure_dotenv_loaded_fn=no_loader,
+                argv0=str(exe_path),
+            )
+            self.assertEqual(resolved, Path(cwd))
+
+
 if __name__ == "__main__":
     unittest.main()

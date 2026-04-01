@@ -216,7 +216,7 @@ def run_command(args):
         return 1, emit_payload(payload), ""
 
 
-def run_cli(argv, surface):
+def run_cli(argv, surface, argv0=None):
     filtered_argv = [a for a in argv if a != "--suppress-guidance"]
     help_result = surface.handle_top_level_help(filtered_argv)
     if help_result is not None:
@@ -226,6 +226,7 @@ def run_cli(argv, surface):
         return help_result
     parser = surface.build_parser()
     args = parser.parse_args(argv)
+    args.argv0 = argv0
     return run_command(args)
 
 
@@ -239,7 +240,7 @@ def read_exec_code(args):
 
 
 def _project_path_arg(args):
-    return str(unity_session.resolve_project_path(getattr(args, "project_path", None)))
+    return str(unity_session.resolve_project_path(getattr(args, "project_path", None), argv0=getattr(args, "argv0", None)))
 
 
 def _build_guidance_context(args, request_id=None):
@@ -458,6 +459,7 @@ def _ensure_project_session_ready_after_refresh(args):
         unity_exe_path=args.unity_exe_path,
         unity_log_path=args.unity_log_path,
         ready_timeout_seconds=_post_refresh_ready_timeout_seconds(args),
+        argv0=getattr(args, "argv0", None),
     )
 
 
@@ -622,6 +624,7 @@ def run_exec(args):
                 project_path=args.project_path,
                 unity_exe_path=args.unity_exe_path,
                 unity_log_path=args.unity_log_path,
+                argv0=getattr(args, "argv0", None),
             )
         except (unity_session.UnityStalledError, unity_session.UnityNotReadyError) as exc:
             _write_pending_exec(
@@ -786,6 +789,7 @@ def run_wait_for_exec(args):
                 project_path=args.project_path,
                 unity_exe_path=args.unity_exe_path,
                 unity_log_path=args.unity_log_path,
+                argv0=getattr(args, "argv0", None),
             )
         except (unity_session.UnityStalledError, unity_session.UnityNotReadyError) as exc:
             if pending is not None:
@@ -952,7 +956,7 @@ def run_wait_for_log_pattern(args):
         raise ValueError("invalid regex: {}".format(exc))
 
     if selector == "project_path":
-        session = unity_session.create_observation_session(project_path=args.project_path, unity_log_path=args.unity_log_path)
+        session = unity_session.create_observation_session(project_path=args.project_path, unity_log_path=args.unity_log_path, argv0=getattr(args, "argv0", None))
     else:
         session = unity_session.create_direct_session(args.base_url)
 
@@ -1018,7 +1022,7 @@ def run_wait_for_result_marker(args):
     validate_project_mode_only(selector, "unity-log-path", args.unity_log_path)
 
     if selector == "project_path":
-        session = unity_session.create_observation_session(project_path=args.project_path, unity_log_path=args.unity_log_path)
+        session = unity_session.create_observation_session(project_path=args.project_path, unity_log_path=args.unity_log_path, argv0=getattr(args, "argv0", None))
     else:
         session = unity_session.create_direct_session(args.base_url)
 
@@ -1089,7 +1093,7 @@ def run_get_log_source(args):
     selector = resolve_selector(args)
     validate_project_mode_only(selector, "unity-log-path", args.unity_log_path)
     if selector == "project_path":
-        source = unity_session.get_log_source(project_path=args.project_path, unity_log_path=args.unity_log_path)
+        source = unity_session.get_log_source(project_path=args.project_path, unity_log_path=args.unity_log_path, argv0=getattr(args, "argv0", None))
     else:
         source = unity_session.get_log_source(base_url=args.base_url)
 
@@ -1113,7 +1117,7 @@ def run_get_log_source(args):
 
 
 def run_get_blocker_state(args):
-    session = unity_session.get_blocker_state(project_path=args.project_path)
+    session = unity_session.get_blocker_state(project_path=args.project_path, argv0=getattr(args, "argv0", None))
     blocker = _detect_exec_modal_blocker(session)
     if blocker is None:
         payload = success_payload(
@@ -1145,7 +1149,7 @@ def run_resolve_blocker(args):
         }
         return 1, emit_payload(payload), ""
 
-    session = unity_session.get_blocker_state(project_path=args.project_path)
+    session = unity_session.get_blocker_state(project_path=args.project_path, argv0=getattr(args, "argv0", None))
     result = unity_modal_blockers.resolve_modal_blocker(session.unity_pid, action=args.action)
     if result.get("ok"):
         payload = success_payload(
@@ -1201,7 +1205,7 @@ def run_get_log_briefs(args):
 
     log_path = getattr(args, "unity_log_path", None)
     if log_path is None and getattr(args, "project_path", None):
-        source = unity_session.get_log_source(project_path=args.project_path)
+        source = unity_session.get_log_source(project_path=args.project_path, argv0=getattr(args, "argv0", None))
         if source is not None:
             log_path = source[0].effective_log_path
     if log_path is None:
@@ -1233,7 +1237,7 @@ def run_ensure_stopped(args):
         raise ValueError("immediate-kill is only valid with --project-path")
 
     if selector == "project_path":
-        stopped, session = unity_session.ensure_stopped(project_path=args.project_path, mode=mode, timeout_seconds=args.timeout_seconds)
+        stopped, session = unity_session.ensure_stopped(project_path=args.project_path, mode=mode, timeout_seconds=args.timeout_seconds, argv0=getattr(args, "argv0", None))
     else:
         stopped, session = unity_session.ensure_stopped(base_url=args.base_url, mode="inspect", timeout_seconds=args.timeout_seconds)
 

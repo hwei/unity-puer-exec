@@ -134,7 +134,11 @@ def handle_command_help(argv):
 
 
 def _add_selector_args(parser):
-    parser.add_argument("--project-path", default=None)
+    parser.add_argument(
+        "--project-path",
+        default=None,
+        help="Path to the Unity project root. Optional when the exe is installed inside the target Unity project.",
+    )
     parser.add_argument("--base-url", default=None)
 
 

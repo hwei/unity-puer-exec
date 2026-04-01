@@ -49,13 +49,14 @@ def _ensure_dotenv_loaded(env=None, dotenv_path=None, force=False):
     return unity_session_env.ensure_dotenv_loaded(__file__, env=env, dotenv_file=dotenv_path, force=force)
 
 
-def resolve_project_path(project_path=None, cwd=None, env=None):
+def resolve_project_path(project_path=None, cwd=None, env=None, argv0=None):
     return unity_session_env.resolve_project_path(
         __file__,
         project_path=project_path,
         cwd=cwd,
         env=env,
         ensure_dotenv_loaded_fn=_ensure_dotenv_loaded,
+        argv0=argv0,
     )
 
 
@@ -460,8 +461,9 @@ def ensure_session_ready(
     activity_timeout_seconds=DEFAULT_ACTIVITY_TIMEOUT_SECONDS,
     health_timeout_seconds=DEFAULT_HEALTH_TIMEOUT_SECONDS,
     unity_log_path=None,
+    argv0=None,
 ):
-    project_path = resolve_project_path(project_path)
+    project_path = resolve_project_path(project_path, argv0=argv0)
     session_data = read_session_artifact(project_path)
     log_path = _resolve_effective_log_path(project_path, unity_log_path=unity_log_path, session_data=session_data)
 
@@ -714,8 +716,8 @@ def ensure_session_ready(
             clear_launch_claim(project_path)
 
 
-def get_log_source(project_path=None, base_url=None, unity_log_path=None):
-    resolved_project_path = resolve_project_path(project_path)
+def get_log_source(project_path=None, base_url=None, unity_log_path=None, argv0=None):
+    resolved_project_path = resolve_project_path(project_path, argv0=argv0)
     if base_url is not None:
         log_path = _default_editor_log_path()
         if not log_path.exists():
@@ -746,8 +748,8 @@ def create_direct_session(base_url, project_path=None):
     )
 
 
-def create_observation_session(project_path=None, base_url=None, unity_log_path=None):
-    resolved_project_path = resolve_project_path(project_path)
+def create_observation_session(project_path=None, base_url=None, unity_log_path=None, argv0=None):
+    resolved_project_path = resolve_project_path(project_path, argv0=argv0)
     session_data = read_session_artifact(resolved_project_path)
     unity_pid = None
     effective_base_url = base_url or direct_exec_client.DEFAULT_BASE_URL
@@ -773,8 +775,8 @@ def create_observation_session(project_path=None, base_url=None, unity_log_path=
     return session
 
 
-def get_blocker_state(project_path=None):
-    resolved_project_path = resolve_project_path(project_path)
+def get_blocker_state(project_path=None, argv0=None):
+    resolved_project_path = resolve_project_path(project_path, argv0=argv0)
     session_data = read_session_artifact(resolved_project_path)
     unity_pid = None
     owner = "blocker_observation"
@@ -801,7 +803,7 @@ def inspect_direct_service(base_url, health_timeout_seconds=DEFAULT_HEALTH_TIMEO
     return False, None, error
 
 
-def ensure_stopped(project_path=None, base_url=None, mode="inspect", timeout_seconds=DEFAULT_STOP_TIMEOUT_SECONDS):
+def ensure_stopped(project_path=None, base_url=None, mode="inspect", timeout_seconds=DEFAULT_STOP_TIMEOUT_SECONDS, argv0=None):
     if base_url:
         is_ready, payload, error = inspect_direct_service(base_url)
         session = create_direct_session(base_url)
@@ -815,7 +817,7 @@ def ensure_stopped(project_path=None, base_url=None, mode="inspect", timeout_sec
         project_path=project_path,
         mode=mode,
         timeout_seconds=timeout_seconds,
-        resolve_project_path_fn=resolve_project_path,
+        resolve_project_path_fn=lambda p: resolve_project_path(p, argv0=argv0),
         read_session_artifact_fn=read_session_artifact,
         session_artifact_path_fn=_session_artifact_path,
         list_unity_pids_fn=_list_unity_pids,

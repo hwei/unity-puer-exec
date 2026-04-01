@@ -24,12 +24,12 @@ def _build_parser():
     return surface.build_parser()
 
 
-def run_cli(argv):
-    return runtime.run_cli(argv, surface)
+def run_cli(argv, argv0=None):
+    return runtime.run_cli(argv, surface, argv0=argv0)
 
 
 def main():
-    exit_code, stdout_text, stderr_text = run_cli(sys.argv[1:])
+    exit_code, stdout_text, stderr_text = run_cli(sys.argv[1:], argv0=sys.argv[0])
     if stdout_text:
         print(stdout_text)
     if stderr_text:
