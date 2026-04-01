@@ -1,7 +1,7 @@
 {
   "name": "com.txcombo.unity-puer-exec",
   "displayName": "Unity Puer Exec",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "unity": "2022.3",
   "description": "Unity Editor package for driving a Puerts host from an external CLI.",
   "license": "MIT",
