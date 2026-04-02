@@ -81,20 +81,18 @@ class PackageLayoutTests(unittest.TestCase):
         self.assertNotIn("public static class UnityPuerExecBatch", content)
         self.assertNotIn("private static string BuildStringArrayJson", content)
 
-    def test_compile_trigger_compatibility_moves_to_dedicated_file(self):
+    def test_compile_trigger_compatibility_residue_is_removed(self):
         server_path = PACKAGE_ROOT / "Editor" / "UnityPuerExecServer.cs"
         bridge_path = PACKAGE_ROOT / "Editor" / "UnityPuerExecBridge.cs"
         compat_path = PACKAGE_ROOT / "Editor" / "UnityPuerExecCompileCompat.cs"
+        compat_meta_path = PACKAGE_ROOT / "Editor" / "UnityPuerExecCompileCompat.cs.meta"
         server_content = server_path.read_text(encoding="utf-8")
         bridge_content = bridge_path.read_text(encoding="utf-8")
-        compat_content = compat_path.read_text(encoding="utf-8")
 
-        self.assertTrue(compat_path.exists())
+        self.assertFalse(compat_path.exists())
+        self.assertFalse(compat_meta_path.exists())
         self.assertNotIn("private const string CompileTriggerDirectory", server_content)
         self.assertNotIn("TriggerValidationCompile", bridge_content)
-        self.assertIn("internal static class UnityPuerExecCompileCompat", compat_content)
-        self.assertIn("public static class UnityPuerExecCompileCompatBridge", compat_content)
-        self.assertIn("TriggerValidationCompile", compat_content)
 
     def test_editor_runtime_split_moves_job_protocol_and_bridge_out_of_server_file(self):
         server_path = PACKAGE_ROOT / "Editor" / "UnityPuerExecServer.cs"
