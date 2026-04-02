@@ -3,9 +3,7 @@
 ## Purpose
 
 Define durable repository expectations for pruning dead transitional runtime code, isolating compatibility shims, and keeping runtime modules aligned to explicit responsibilities.
-
 ## Requirements
-
 ### Requirement: Confirmed-dead transitional runtime code is removed instead of migrated
 
 Repository-owned runtime code that has no repository callers, no authoritative documentation dependency, and no required validation role SHALL be removed rather than carried into a new structure as historical residue.
@@ -34,3 +32,12 @@ Repository-owned runtime code SHALL be organized so major responsibilities are s
 - **WHEN** the repository refactors Python or Unity runtime code
 - **THEN** session/runtime control, CLI command wiring, help metadata, server lifecycle, job state, and bridge compatibility concerns are assigned to deliberate module boundaries
 - **AND** the repository does not preserve monolithic files solely to avoid moving code
+
+### Requirement: Temporarily isolated compatibility shims are removed once confirmed dead
+If repository-owned runtime cleanup isolates a compatibility shim for later verification, that shim SHALL be removed in a follow-up change once repository inspection confirms it has no remaining repository callers, no authoritative documentation dependency, and no required validation role.
+
+#### Scenario: Previously isolated shim is later confirmed dead
+- **WHEN** a follow-up cleanup inspects an isolated compatibility shim and finds no remaining repository callers, no formal spec or README dependency, and no required validation workflow that depends on it
+- **THEN** the repository removes the shim instead of preserving it indefinitely as package residue
+- **AND** related tests and package-layout assertions stop treating the shim as required structure
+
