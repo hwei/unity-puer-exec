@@ -3,9 +3,7 @@
 ## Purpose
 
 Define the durable contract for ES module import support in `unity-puer-exec`, including import resolution behavior for file, code, and stdin execution paths and the JsEnv reset workflow used to clear the module cache.
-
 ## Requirements
-
 ### Requirement: Exec entry scripts may use static ES module imports
 The exec execution model SHALL support ES module context. Entry scripts MAY contain static `import` declarations. The runtime SHALL resolve imported modules according to the entry specifier and the active base URL. Scripts without `import` statements SHALL continue to execute unchanged.
 
@@ -89,3 +87,15 @@ The Unity-side HTTP server SHALL expose a `/reset-jsenv` endpoint. Calling it SH
 - **THEN** the current JsEnv singleton is disposed
 - **AND** a new JsEnv is created with a fresh ILoader instance
 - **AND** the response reports `status = "completed"`
+
+### Requirement: Staleness detection is the entry-point guard; reset is the remedy
+
+The mtime-based staleness detection (see `cache-staleness-detection`) SHALL act as the entry-point guard that alerts users when `--reset-jsenv-before-exec` is needed. When staleness is detected, the server SHALL reject the request before job creation. The user SHALL then re-submit with `--reset-jsenv-before-exec` to clear the module cache and proceed.
+
+#### Scenario: Staleness detection prompts the user to use reset
+
+- **WHEN** `exec --file entry.js` returns `module_cache_stale`
+- **THEN** the CLI guidance directs the user to re-run with `--reset-jsenv-before-exec`
+- **AND** re-running with `--reset-jsenv-before-exec` clears both the JsEnv module cache and the mtime tracking state
+- **AND** the updated file content is loaded
+
