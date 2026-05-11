@@ -343,12 +343,23 @@ def persist_ready_session_artifact(
         session_marker = session_marker_from_payload_fn(session.diagnostics.get("last_health_payload"))
     if not session_marker:
         return
+    port = None
+    if isinstance(payload, dict) and "port" in payload:
+        port = payload["port"]
+    if port is None and session.diagnostics:
+        last_payload = session.diagnostics.get("last_health_payload")
+        if isinstance(last_payload, dict) and "port" in last_payload:
+            port = last_payload["port"]
+    artifact = {
+        "base_url": session.base_url,
+        "unity_pid": session.unity_pid,
+        "session_marker": session_marker,
+        "effective_log_path": str(effective_log_path),
+        "project_path": session.project_path,
+    }
+    if port is not None:
+        artifact["port"] = port
     write_session_artifact_fn(
         session.project_path,
-        {
-            "base_url": session.base_url,
-            "unity_pid": session.unity_pid,
-            "session_marker": session_marker,
-            "effective_log_path": str(effective_log_path),
-        },
+        artifact,
     )

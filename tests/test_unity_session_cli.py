@@ -1758,5 +1758,106 @@ class UnityPuerExecCliTests(unittest.TestCase):
             self.assertIn("log_range", body)
             self.assertIn("brief_sequence", body)
 
+class DynamicEndpointRoutingTests(unittest.TestCase):
+    """Project mode routes to non-default validated endpoint; direct base-url stays literal."""
+
+    def test_project_mode_routes_to_validated_endpoint_non_default_port(self):
+        """Project-scoped exec uses the base_url from ensure_session_ready, which may differ from 55231."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_path = Path(temp_dir) / "Project"
+            project_path.mkdir()
+            script_path = Path(temp_dir) / "script.js"
+            script_path.write_text("export default function run(ctx) { return 1; }", encoding="utf-8")
+
+            session = unity_session.UnitySession(
+                owner="validated_artifact",
+                base_url="http://127.0.0.1:55235",
+                project_path=str(project_path),
+                unity_pid=1234,
+            )
+
+            with mock.patch.object(
+                unity_session,
+                "ensure_session_ready",
+                return_value=session,
+            ), mock.patch.object(
+                unity_puer_exec.direct_exec_client,
+                "invoke_command",
+                return_value=(0, json.dumps({"ok": True, "status": "completed", "request_id": "req-1"}), ""),
+            ) as invoke_command:
+                exit_code, stdout, stderr = unity_puer_exec.run_cli(
+                    ["exec", "--project-path", str(project_path), "--file", str(script_path)]
+                )
+
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(stderr, "")
+            # The invoke was to the session's base_url (non-default port), not the default
+            self.assertEqual(invoke_command.call_args.args[1], "http://127.0.0.1:55235")
+
+    def test_direct_base_url_mode_remains_literal(self):
+        """Direct --base-url uses the provided URL literally, never rewrites from artifact."""
+        with mock.patch.object(
+            unity_puer_exec.direct_exec_client,
+            "invoke_command",
+            return_value=(0, json.dumps({"ok": True, "status": "completed", "request_id": "req-direct"}), ""),
+        ) as invoke_command:
+            exit_code, stdout, stderr = unity_puer_exec.run_cli(
+                ["exec", "--base-url", "http://127.0.0.1:55999", "--code", "export default function run(ctx) { return 1; }"]
+            )
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(stderr, "")
+        self.assertEqual(invoke_command.call_args.args[1], "http://127.0.0.1:55999")
+        body = json.loads(stdout)
+        self.assertNotIn("session", body)
+
+    def test_direct_base_url_does_not_call_ensure_session_ready(self):
+        """Direct --base-url bypasses project session readiness entirely."""
+        with mock.patch.object(
+            unity_session,
+            "ensure_session_ready",
+        ) as ensure_session_ready, mock.patch.object(
+            unity_puer_exec.direct_exec_client,
+            "invoke_command",
+            return_value=(0, json.dumps({"ok": True, "status": "completed"}), ""),
+        ):
+            unity_puer_exec.run_cli(
+                ["exec", "--base-url", "http://127.0.0.1:55999", "--code", "export default function run(ctx) { return 1; }"]
+            )
+
+        ensure_session_ready.assert_not_called()
+
+    def test_project_mode_ensure_session_ready_defaults_to_standard_preferred_port(self):
+        """When run_exec calls ensure_session_ready without base_url, it defaults to the preferred port."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_path = Path(temp_dir) / "Project"
+            project_path.mkdir()
+            script_path = Path(temp_dir) / "script.js"
+            script_path.write_text("export default function run(ctx) { return 1; }", encoding="utf-8")
+
+            session = unity_session.UnitySession(
+                owner="existing_service",
+                base_url="http://127.0.0.1:55231",
+                project_path=str(project_path),
+                unity_pid=1234,
+            )
+
+            with mock.patch.object(
+                unity_session,
+                "ensure_session_ready",
+                return_value=session,
+            ) as ensure_session_ready, mock.patch.object(
+                unity_puer_exec.direct_exec_client,
+                "invoke_command",
+                return_value=(0, json.dumps({"ok": True, "status": "completed"}), ""),
+            ):
+                unity_puer_exec.run_cli(
+                    ["exec", "--project-path", str(project_path), "--file", str(script_path)]
+                )
+
+            # ensure_session_ready uses the default base_url (preferred port) as fallback
+            self.assertEqual(ensure_session_ready.call_count, 1)
+
+
 if __name__ == "__main__":
     unittest.main()

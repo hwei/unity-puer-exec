@@ -468,16 +468,19 @@ def ensure_session_ready(
     log_path = _resolve_effective_log_path(project_path, unity_log_path=unity_log_path, session_data=session_data)
 
     initial_pids = _list_unity_pids()
-    payload, error = _probe_health(base_url, health_timeout_seconds)
-    if payload is not None and payload.get("ok") and payload.get("status") == "ready":
-        project_lock = _project_lock_details(project_path)
-        launch_claim = read_launch_claim(project_path)
-        artifact_pid, artifact_pid_running = _artifact_pid_running(session_data)
+
+    # Phase 1: Try artifact endpoint with project identity validation first.
+    is_valid, artifact_base_url, artifact_payload, artifact_error = validate_artifact_endpoint(
+        session_data,
+        project_path,
+        health_timeout_seconds=health_timeout_seconds,
+    )
+    if is_valid:
         session = UnitySession(
-            owner="existing_service",
-            base_url=base_url,
+            owner="validated_artifact",
+            base_url=artifact_base_url,
             project_path=project_path,
-            unity_pid=initial_pids[0] if initial_pids else None,
+            unity_pid=artifact_payload.get("unity_pid") or (initial_pids[0] if initial_pids else None),
             launched=False,
             effective_log_path=log_path,
         )
@@ -486,8 +489,11 @@ def ensure_session_ready(
             "last_activity_time": _format_wall_time(time.time()),
             "idle_seconds": 0.0,
         }
-        session.diagnostics = _collect_diagnostics(base_url, log_path, None, activity_state)
-        session.diagnostics["last_health_payload"] = payload
+        project_lock = _project_lock_details(project_path)
+        launch_claim = read_launch_claim(project_path)
+        artifact_pid, artifact_pid_running = _artifact_pid_running(session_data)
+        session.diagnostics = _collect_diagnostics(artifact_base_url, log_path, None, activity_state)
+        session.diagnostics["last_health_payload"] = artifact_payload
         session.diagnostics.update(
             _build_launch_coordination_diagnostics(
                 project_path,
@@ -497,11 +503,53 @@ def ensure_session_ready(
                 initial_pids,
                 artifact_pid,
                 artifact_pid_running,
-                "initial_ready",
+                "artifact_validated",
             )
         )
-        _persist_ready_session_artifact(session, log_path, payload=payload)
+        _persist_ready_session_artifact(session, log_path, payload=artifact_payload)
         return session
+
+    # Phase 2: Try preferred port with project identity validation.
+    payload, error = _probe_health(base_url, health_timeout_seconds)
+    if payload is not None and payload.get("ok") and payload.get("status") == "ready":
+        health_project_path = payload.get("project_path")
+        if isinstance(health_project_path, str) and health_project_path:
+            health_matches = os.path.normcase(os.path.normpath(health_project_path)) == os.path.normcase(os.path.normpath(str(project_path)))
+        else:
+            health_matches = False
+        if health_matches:
+            project_lock = _project_lock_details(project_path)
+            launch_claim = read_launch_claim(project_path)
+            artifact_pid, artifact_pid_running = _artifact_pid_running(session_data)
+            session = UnitySession(
+                owner="existing_service",
+                base_url=base_url,
+                project_path=project_path,
+                unity_pid=initial_pids[0] if initial_pids else None,
+                launched=False,
+                effective_log_path=log_path,
+            )
+            activity_state = {
+                "last_log_size": _read_editor_log_size(log_path),
+                "last_activity_time": _format_wall_time(time.time()),
+                "idle_seconds": 0.0,
+            }
+            session.diagnostics = _collect_diagnostics(base_url, log_path, None, activity_state)
+            session.diagnostics["last_health_payload"] = payload
+            session.diagnostics.update(
+                _build_launch_coordination_diagnostics(
+                    project_path,
+                    session_data,
+                    project_lock,
+                    launch_claim,
+                    initial_pids,
+                    artifact_pid,
+                    artifact_pid_running,
+                    "initial_ready",
+                )
+            )
+            _persist_ready_session_artifact(session, log_path, payload=payload)
+            return session
 
     project_lock = _project_lock_details(project_path)
     launch_claim = read_launch_claim(project_path)
@@ -561,30 +609,36 @@ def ensure_session_ready(
         artifact_pid, artifact_pid_running = _artifact_pid_running(session_data)
 
         if followup_payload is not None and followup_payload.get("ok") and followup_payload.get("status") == "ready":
-            session = _build_ready_service_session(project_path, base_url, log_path, followup_pids)
-            if artifact_pid_running:
-                session.unity_pid = artifact_pid
-            activity_state = {
-                "last_log_size": _read_editor_log_size(log_path),
-                "last_activity_time": _format_wall_time(time.time()),
-                "idle_seconds": 0.0,
-            }
-            session.diagnostics = _collect_diagnostics(base_url, log_path, None, activity_state)
-            session.diagnostics["last_health_payload"] = followup_payload
-            session.diagnostics.update(
-                _build_launch_coordination_diagnostics(
-                    project_path,
-                    session_data,
-                    followup_lock,
-                    claim_payload,
-                    followup_pids,
-                    artifact_pid,
-                    artifact_pid_running,
-                    "post_claim_ready",
+            health_project_path = followup_payload.get("project_path")
+            if isinstance(health_project_path, str) and health_project_path:
+                health_matches = os.path.normcase(os.path.normpath(health_project_path)) == os.path.normcase(os.path.normpath(str(project_path)))
+            else:
+                health_matches = False
+            if health_matches:
+                session = _build_ready_service_session(project_path, base_url, log_path, followup_pids)
+                if artifact_pid_running:
+                    session.unity_pid = artifact_pid
+                activity_state = {
+                    "last_log_size": _read_editor_log_size(log_path),
+                    "last_activity_time": _format_wall_time(time.time()),
+                    "idle_seconds": 0.0,
+                }
+                session.diagnostics = _collect_diagnostics(base_url, log_path, None, activity_state)
+                session.diagnostics["last_health_payload"] = followup_payload
+                session.diagnostics.update(
+                    _build_launch_coordination_diagnostics(
+                        project_path,
+                        session_data,
+                        followup_lock,
+                        claim_payload,
+                        followup_pids,
+                        artifact_pid,
+                        artifact_pid_running,
+                        "post_claim_ready",
+                    )
                 )
-            )
-            _persist_ready_session_artifact(session, log_path, payload=followup_payload)
-            return session
+                _persist_ready_session_artifact(session, log_path, payload=followup_payload)
+                return session
 
         if _has_recoverable_editor_signal(artifact_pid_running, followup_pids):
             owner = "session_artifact" if artifact_pid_running else "project_recovery"
@@ -614,6 +668,7 @@ def ensure_session_ready(
 
         resolved_unity_exe_path = _resolve_unity_exe_path(project_path, unity_exe_path)
         process = _launch_unity(project_path, resolved_unity_exe_path, unity_log_path=unity_log_path)
+        # Cold start: old artifact is not authoritative; the new endpoint is the source of truth.
         session = UnitySession(
             owner="launched",
             base_url=base_url,
@@ -652,30 +707,36 @@ def ensure_session_ready(
                 recovery_lock = _project_lock_details(project_path)
                 artifact_pid, artifact_pid_running = _artifact_pid_running(session_data)
                 if recovery_payload is not None and recovery_payload.get("ok") and recovery_payload.get("status") == "ready":
-                    session = _build_ready_service_session(project_path, base_url, log_path, recovery_pids, owner="recovered_service")
-                    if artifact_pid_running:
-                        session.unity_pid = artifact_pid
-                    activity_state = {
-                        "last_log_size": _read_editor_log_size(log_path),
-                        "last_activity_time": _format_wall_time(time.time()),
-                        "idle_seconds": 0.0,
-                    }
-                    session.diagnostics = _collect_diagnostics(base_url, log_path, None, activity_state)
-                    session.diagnostics["last_health_payload"] = recovery_payload
-                    session.diagnostics.update(
-                        _build_launch_coordination_diagnostics(
-                            project_path,
-                            session_data,
-                            recovery_lock,
-                            claim_payload,
-                            recovery_pids,
-                            artifact_pid,
-                            artifact_pid_running,
-                            "post_launch_exit_ready",
+                    health_project_path = recovery_payload.get("project_path")
+                    if isinstance(health_project_path, str) and health_project_path:
+                        health_matches = os.path.normcase(os.path.normpath(health_project_path)) == os.path.normcase(os.path.normpath(str(project_path)))
+                    else:
+                        health_matches = False
+                    if health_matches:
+                        session = _build_ready_service_session(project_path, base_url, log_path, recovery_pids, owner="recovered_service")
+                        if artifact_pid_running:
+                            session.unity_pid = artifact_pid
+                        activity_state = {
+                            "last_log_size": _read_editor_log_size(log_path),
+                            "last_activity_time": _format_wall_time(time.time()),
+                            "idle_seconds": 0.0,
+                        }
+                        session.diagnostics = _collect_diagnostics(base_url, log_path, None, activity_state)
+                        session.diagnostics["last_health_payload"] = recovery_payload
+                        session.diagnostics.update(
+                            _build_launch_coordination_diagnostics(
+                                project_path,
+                                session_data,
+                                recovery_lock,
+                                claim_payload,
+                                recovery_pids,
+                                artifact_pid,
+                                artifact_pid_running,
+                                "post_launch_exit_ready",
+                            )
                         )
-                    )
-                    _persist_ready_session_artifact(session, log_path, payload=recovery_payload)
-                    return session
+                        _persist_ready_session_artifact(session, log_path, payload=recovery_payload)
+                        return session
                 if _has_recoverable_editor_signal(artifact_pid_running, recovery_pids):
                     recovery_session = _build_recovery_session(
                         project_path,
@@ -801,6 +862,45 @@ def inspect_direct_service(base_url, health_timeout_seconds=DEFAULT_HEALTH_TIMEO
     if payload is not None:
         return payload.get("ok") and payload.get("status") == "ready", payload, error
     return False, None, error
+
+
+def validate_endpoint_identity(base_url, project_path, health_timeout_seconds=DEFAULT_HEALTH_TIMEOUT_SECONDS):
+    """Probe a candidate endpoint and verify it belongs to the target project.
+
+    Returns (is_valid, payload, error).
+    A valid endpoint is reachable, reports healthy status, and its health
+    project_path matches the expected project_path.
+    """
+    payload, error = _probe_health(base_url, health_timeout_seconds)
+    if payload is None:
+        return False, None, error
+    if not payload.get("ok") or payload.get("status") != "ready":
+        return False, payload, None
+    health_project_path = payload.get("project_path")
+    if not isinstance(health_project_path, str) or not health_project_path:
+        return False, payload, None
+    if os.path.normcase(os.path.normpath(health_project_path)) != os.path.normcase(os.path.normpath(project_path)):
+        return False, payload, None
+    return True, payload, None
+
+
+def validate_artifact_endpoint(session_data, project_path, health_timeout_seconds=DEFAULT_HEALTH_TIMEOUT_SECONDS):
+    """Validate a session artifact's endpoint against a target project.
+
+    Returns (is_valid, effective_base_url, payload, error).
+    Handles missing or incomplete session_data gracefully.
+    """
+    if not isinstance(session_data, dict):
+        return False, None, None, None
+    base_url = session_data.get("base_url")
+    if not isinstance(base_url, str) or not base_url:
+        return False, None, None, None
+    is_valid, payload, error = validate_endpoint_identity(
+        base_url,
+        project_path,
+        health_timeout_seconds=health_timeout_seconds,
+    )
+    return is_valid, base_url, payload, error
 
 
 def ensure_stopped(project_path=None, base_url=None, mode="inspect", timeout_seconds=DEFAULT_STOP_TIMEOUT_SECONDS, argv0=None):

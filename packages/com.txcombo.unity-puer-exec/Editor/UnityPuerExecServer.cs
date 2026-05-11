@@ -134,7 +134,8 @@ namespace UnityPuerExec
     [InitializeOnLoad]
     internal static class UnityPuerExecServer
     {
-        internal const int Port = 55231;
+        internal const int PreferredPort = 55231;
+        internal const int MaxPortAttempts = 20;
         private const string ReadyLogPrefix = "[UnityPuerExec] Ready on port";
         private const string HarnessModulePrefix = "puer-exec://harness/";
 
@@ -142,7 +143,6 @@ namespace UnityPuerExec
             new ConcurrentDictionary<string, UnityPuerExecJob>();
         private static readonly object RequestGate = new object();
         private static readonly ConcurrentQueue<Action> MainThreadActions = new ConcurrentQueue<Action>();
-        private static readonly string ListenerPrefix = $"http://127.0.0.1:{Port}/";
         private static readonly object TempFileGate = new object();
         private static readonly HashSet<string> PendingTempEntryPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
@@ -155,6 +155,8 @@ namespace UnityPuerExec
         private static string cachedConsoleLogPath = "";
         private static string activeRequestId = "";
         private static int mainThreadId;
+        private static int selectedPort;
+        private static string listenerBaseUrl = "";
         private static readonly Dictionary<string, DateTime> SourceFileTimestamps = new Dictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
         private static volatile bool isCompiling;
         private static volatile bool isUpdating;
@@ -197,21 +199,51 @@ namespace UnityPuerExec
             RefreshConsoleLogPathCache();
 
             listenerCancellation = new CancellationTokenSource();
-            listener = new HttpListener();
-            listener.Prefixes.Add(ListenerPrefix);
+            selectedPort = 0;
+            listenerBaseUrl = "";
+            Exception lastBindError = null;
 
-            try
+            for (int port = PreferredPort; port < PreferredPort + MaxPortAttempts; port++)
             {
-                listener.Start();
+                var prefix = $"http://127.0.0.1:{port}/";
+                var candidate = new HttpListener();
+                candidate.Prefixes.Add(prefix);
+
+                try
+                {
+                    candidate.Start();
+                    listener = candidate;
+                    selectedPort = port;
+                    listenerBaseUrl = $"http://127.0.0.1:{port}";
+                    break;
+                }
+                catch (HttpListenerException ex)
+                {
+                    lastBindError = ex;
+                    try { candidate.Close(); } catch { }
+                    Debug.LogWarning($"[UnityPuerExec] Port {port} unavailable: {ex.Message}");
+                }
+                catch (Exception ex)
+                {
+                    lastBindError = ex;
+                    try { candidate.Close(); } catch { }
+                    Debug.LogError($"[UnityPuerExec] Unexpected error binding port {port}: {ex}");
+                    break;
+                }
             }
-            catch (Exception ex)
+
+            if (listener == null)
             {
-                Debug.LogError($"[UnityPuerExec] Failed to start listener: {ex}");
+                var rangeEnd = PreferredPort + MaxPortAttempts - 1;
+                Debug.LogError(
+                    $"[UnityPuerExec] Failed to bind any port in range {PreferredPort}-{rangeEnd}. "
+                    + $"Last error: {lastBindError?.Message ?? "unknown"}"
+                );
                 return;
             }
 
             _ = Task.Run(() => AcceptLoopAsync(listenerCancellation.Token));
-            Debug.Log($"{ReadyLogPrefix} {Port}");
+            Debug.Log($"{ReadyLogPrefix} {selectedPort}");
         }
 
         private static void Stop()
@@ -280,13 +312,25 @@ namespace UnityPuerExec
 
                 if (path.Equals("/health", StringComparison.OrdinalIgnoreCase))
                 {
+                    var unityPid = 0;
+                    var projectPath = "";
+                    try
+                    {
+                        unityPid = System.Diagnostics.Process.GetCurrentProcess().Id;
+                        projectPath = Path.GetDirectoryName(Application.dataPath) ?? "";
+                    }
+                    catch { }
+
                     await WriteJsonAsync(
                         context,
                         UnityPuerExecProtocol.BuildHealthResponseJson(
                             IsCompilingOrReloading(),
                             jsEnv == null ? envInitError : "",
                             sessionMarker,
-                            Port
+                            selectedPort,
+                            baseUrl: listenerBaseUrl,
+                            unityPid: unityPid,
+                            projectPath: projectPath
                         )
                     );
                     return;

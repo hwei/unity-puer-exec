@@ -452,5 +452,215 @@ class ExeOriginProjectInferenceTests(unittest.TestCase):
             self.assertEqual(resolved, Path(cwd))
 
 
+class HealthIdentityProtocolTests(unittest.TestCase):
+    """Protocol-level tests for health identity fields and dynamic port reporting.
+
+    These tests validate the health response shape as defined by the
+    project-control-endpoint spec, without requiring a live Unity process.
+    """
+
+    def test_build_health_snapshot_includes_port_when_present(self):
+        payload = {"ok": True, "status": "ready", "port": 55232, "session_marker": "abc123"}
+        snapshot = unity_session_wait.build_health_snapshot(payload, None)
+        self.assertEqual(snapshot["ok"], True)
+        self.assertEqual(snapshot["status"], "ready")
+        self.assertEqual(snapshot["port"], 55232)
+
+    def test_build_health_snapshot_omits_port_when_absent(self):
+        payload = {"ok": True, "status": "ready"}
+        snapshot = unity_session_wait.build_health_snapshot(payload, None)
+        self.assertEqual(snapshot["ok"], True)
+        self.assertNotIn("port", snapshot)
+
+    def test_build_health_snapshot_handles_transport_error(self):
+        snapshot = unity_session_wait.build_health_snapshot(None, "connection refused")
+        self.assertEqual(snapshot["ok"], False)
+        self.assertEqual(snapshot["status"], "transport_error")
+        self.assertEqual(snapshot["error"], "connection refused")
+
+    def test_health_payload_contains_all_identity_fields(self):
+        """Verify a complete ready health response can be parsed with all identity fields."""
+        payload = {
+            "ok": True,
+            "status": "ready",
+            "port": 55235,
+            "base_url": "http://127.0.0.1:55235",
+            "unity_pid": 12345,
+            "project_path": "C:/MyProject",
+            "session_marker": "deadbeef1234",
+        }
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["status"], "ready")
+        self.assertEqual(payload["port"], 55235)
+        self.assertEqual(payload["base_url"], "http://127.0.0.1:55235")
+        self.assertEqual(payload["unity_pid"], 12345)
+        self.assertEqual(payload["project_path"], "C:/MyProject")
+        self.assertEqual(payload["session_marker"], "deadbeef1234")
+
+    def test_health_payload_non_default_port_is_reported(self):
+        """Verify a non-default port (> 55231) is correctly reported."""
+        payload = {
+            "ok": True,
+            "status": "ready",
+            "port": 55240,
+            "base_url": "http://127.0.0.1:55240",
+            "session_marker": "xyz",
+        }
+        self.assertEqual(payload["port"], 55240)
+        self.assertNotEqual(payload["port"], 55231)
+
+    def test_persist_ready_session_artifact_includes_port_from_payload(self):
+        import json as _json
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_path = Path(temp_dir)
+            session = unity_session_common.UnitySession(
+                owner="test",
+                base_url="http://127.0.0.1:55233",
+                project_path=str(project_path),
+                unity_pid=1234,
+            )
+            payload = {
+                "ok": True,
+                "status": "ready",
+                "port": 55233,
+                "session_marker": "marker-1",
+                "project_path": str(project_path),
+            }
+            unity_session_logs.persist_ready_session_artifact(
+                session,
+                Path("X:/Logs/Editor.log"),
+                payload=payload,
+                session_marker_from_payload_fn=unity_session_logs.session_marker_from_payload,
+                write_session_artifact_fn=unity_session_logs.write_session_artifact,
+            )
+            artifact = unity_session_logs.read_session_artifact(project_path)
+            self.assertEqual(artifact["port"], 55233)
+            self.assertEqual(artifact["project_path"], str(project_path))
+            self.assertEqual(artifact["session_marker"], "marker-1")
+
+
+class ArtifactIdentityValidationTests(unittest.TestCase):
+    """Tests for validate_endpoint_identity and validate_artifact_endpoint."""
+
+    def test_validate_endpoint_identity_matching_project_returns_true(self):
+        def fake_probe(base_url, timeout_seconds):
+            return {
+                "ok": True,
+                "status": "ready",
+                "project_path": "X:/unity-project",
+            }, None
+
+        # We need to test via the session module; patch _probe_health
+        import unity_session as us
+        with mock.patch.object(us, "_probe_health", side_effect=fake_probe):
+            is_valid, payload, error = us.validate_endpoint_identity(
+                "http://127.0.0.1:55231",
+                "X:/unity-project",
+            )
+        self.assertTrue(is_valid)
+        self.assertIsNotNone(payload)
+        self.assertIsNone(error)
+
+    def test_validate_endpoint_identity_different_project_returns_false(self):
+        def fake_probe(base_url, timeout_seconds):
+            return {
+                "ok": True,
+                "status": "ready",
+                "project_path": "X:/other-project",
+            }, None
+
+        import unity_session as us
+        with mock.patch.object(us, "_probe_health", side_effect=fake_probe):
+            is_valid, payload, error = us.validate_endpoint_identity(
+                "http://127.0.0.1:55231",
+                "X:/unity-project",
+            )
+        self.assertFalse(is_valid)
+        self.assertIsNotNone(payload)
+        self.assertIsNone(error)
+
+    def test_validate_endpoint_identity_unreachable_returns_false(self):
+        def fake_probe(base_url, timeout_seconds):
+            return None, "connection refused"
+
+        import unity_session as us
+        with mock.patch.object(us, "_probe_health", side_effect=fake_probe):
+            is_valid, payload, error = us.validate_endpoint_identity(
+                "http://127.0.0.1:55231",
+                "X:/unity-project",
+            )
+        self.assertFalse(is_valid)
+        self.assertIsNone(payload)
+        self.assertEqual(error, "connection refused")
+
+    def test_validate_endpoint_identity_not_ready_returns_false(self):
+        def fake_probe(base_url, timeout_seconds):
+            return {"ok": False, "status": "compiling"}, None
+
+        import unity_session as us
+        with mock.patch.object(us, "_probe_health", side_effect=fake_probe):
+            is_valid, payload, error = us.validate_endpoint_identity(
+                "http://127.0.0.1:55231",
+                "X:/unity-project",
+            )
+        self.assertFalse(is_valid)
+        self.assertIsNotNone(payload)
+        self.assertEqual(payload["status"], "compiling")
+
+    def test_validate_endpoint_identity_missing_project_path_returns_false(self):
+        """Old fixed-port artifacts won't have project_path in health."""
+        def fake_probe(base_url, timeout_seconds):
+            return {
+                "ok": True,
+                "status": "ready",
+                "port": 55231,
+            }, None
+
+        import unity_session as us
+        with mock.patch.object(us, "_probe_health", side_effect=fake_probe):
+            is_valid, payload, error = us.validate_endpoint_identity(
+                "http://127.0.0.1:55231",
+                "X:/unity-project",
+            )
+        self.assertFalse(is_valid)
+        self.assertIsNotNone(payload)
+
+    def test_validate_artifact_endpoint_empty_artifact_returns_false(self):
+        import unity_session as us
+        is_valid, base_url, payload, error = us.validate_artifact_endpoint(
+            None,
+            "X:/unity-project",
+        )
+        self.assertFalse(is_valid)
+        self.assertIsNone(base_url)
+        self.assertIsNone(payload)
+        self.assertIsNone(error)
+
+    def test_validate_artifact_endpoint_missing_base_url_returns_false(self):
+        import unity_session as us
+        is_valid, base_url, payload, error = us.validate_artifact_endpoint(
+            {"session_marker": "abc"},
+            "X:/unity-project",
+        )
+        self.assertFalse(is_valid)
+        self.assertIsNone(base_url)
+
+    def test_logs_session_artifact_includes_project_path_and_port(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_path = Path(temp_dir)
+            payload = {
+                "base_url": "http://127.0.0.1:55235",
+                "unity_pid": 1234,
+                "session_marker": "marker-1",
+                "effective_log_path": "X:/artifact/Editor.log",
+                "project_path": str(project_path),
+                "port": 55235,
+            }
+            unity_session_logs.write_session_artifact(project_path, payload)
+            restored = unity_session_logs.read_session_artifact(project_path)
+            self.assertEqual(restored["project_path"], str(project_path))
+            self.assertEqual(restored["port"], 55235)
+
+
 if __name__ == "__main__":
     unittest.main()

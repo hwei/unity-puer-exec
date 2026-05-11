@@ -231,7 +231,15 @@ namespace UnityPuerExec
             return string.Empty;
         }
 
-        internal static string BuildHealthResponseJson(bool isCompilingOrReloading, string envInitError, string sessionMarker, int port)
+        internal static string BuildHealthResponseJson(
+            bool isCompilingOrReloading,
+            string envInitError,
+            string sessionMarker,
+            int port,
+            string baseUrl = "",
+            int unityPid = 0,
+            string projectPath = ""
+        )
         {
             if (isCompilingOrReloading)
             {
@@ -240,8 +248,19 @@ namespace UnityPuerExec
 
             if (string.IsNullOrEmpty(envInitError))
             {
+                var unityPidJson = unityPid > 0 ? ",\"unity_pid\":" + unityPid : "";
+                var projectPathJson = string.IsNullOrEmpty(projectPath)
+                    ? ""
+                    : ",\"project_path\":\"" + JsonEscape(projectPath) + "\"";
+                var baseUrlJson = string.IsNullOrEmpty(baseUrl)
+                    ? ""
+                    : ",\"base_url\":\"" + JsonEscape(baseUrl) + "\"";
                 return "{\"ok\":true,\"status\":\"ready\",\"port\":" + port +
-                       ",\"session_marker\":\"" + JsonEscape(sessionMarker) + "\"}";
+                       ",\"session_marker\":\"" + JsonEscape(sessionMarker) + "\"" +
+                       baseUrlJson +
+                       unityPidJson +
+                       projectPathJson +
+                       "}";
             }
 
             return "{\"ok\":false,\"status\":\"not_available\",\"session_marker\":\"" + JsonEscape(sessionMarker) +
