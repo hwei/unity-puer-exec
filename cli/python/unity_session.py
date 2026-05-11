@@ -511,45 +511,39 @@ def ensure_session_ready(
 
     # Phase 2: Try preferred port with project identity validation.
     payload, error = _probe_health(base_url, health_timeout_seconds)
-    if payload is not None and payload.get("ok") and payload.get("status") == "ready":
-        health_project_path = payload.get("project_path")
-        if isinstance(health_project_path, str) and health_project_path:
-            health_matches = os.path.normcase(os.path.normpath(health_project_path)) == os.path.normcase(os.path.normpath(str(project_path)))
-        else:
-            health_matches = False
-        if health_matches:
-            project_lock = _project_lock_details(project_path)
-            launch_claim = read_launch_claim(project_path)
-            artifact_pid, artifact_pid_running = _artifact_pid_running(session_data)
-            session = UnitySession(
-                owner="existing_service",
-                base_url=base_url,
-                project_path=project_path,
-                unity_pid=initial_pids[0] if initial_pids else None,
-                launched=False,
-                effective_log_path=log_path,
+    if payload is not None and payload.get("ok") and payload.get("status") == "ready" and _payload_matches_project(payload, project_path):
+        project_lock = _project_lock_details(project_path)
+        launch_claim = read_launch_claim(project_path)
+        artifact_pid, artifact_pid_running = _artifact_pid_running(session_data)
+        session = UnitySession(
+            owner="existing_service",
+            base_url=base_url,
+            project_path=project_path,
+            unity_pid=initial_pids[0] if initial_pids else None,
+            launched=False,
+            effective_log_path=log_path,
+        )
+        activity_state = {
+            "last_log_size": _read_editor_log_size(log_path),
+            "last_activity_time": _format_wall_time(time.time()),
+            "idle_seconds": 0.0,
+        }
+        session.diagnostics = _collect_diagnostics(base_url, log_path, None, activity_state)
+        session.diagnostics["last_health_payload"] = payload
+        session.diagnostics.update(
+            _build_launch_coordination_diagnostics(
+                project_path,
+                session_data,
+                project_lock,
+                launch_claim,
+                initial_pids,
+                artifact_pid,
+                artifact_pid_running,
+                "initial_ready",
             )
-            activity_state = {
-                "last_log_size": _read_editor_log_size(log_path),
-                "last_activity_time": _format_wall_time(time.time()),
-                "idle_seconds": 0.0,
-            }
-            session.diagnostics = _collect_diagnostics(base_url, log_path, None, activity_state)
-            session.diagnostics["last_health_payload"] = payload
-            session.diagnostics.update(
-                _build_launch_coordination_diagnostics(
-                    project_path,
-                    session_data,
-                    project_lock,
-                    launch_claim,
-                    initial_pids,
-                    artifact_pid,
-                    artifact_pid_running,
-                    "initial_ready",
-                )
-            )
-            _persist_ready_session_artifact(session, log_path, payload=payload)
-            return session
+        )
+        _persist_ready_session_artifact(session, log_path, payload=payload)
+        return session
 
     project_lock = _project_lock_details(project_path)
     launch_claim = read_launch_claim(project_path)
@@ -608,37 +602,31 @@ def ensure_session_ready(
         followup_lock = _project_lock_details(project_path)
         artifact_pid, artifact_pid_running = _artifact_pid_running(session_data)
 
-        if followup_payload is not None and followup_payload.get("ok") and followup_payload.get("status") == "ready":
-            health_project_path = followup_payload.get("project_path")
-            if isinstance(health_project_path, str) and health_project_path:
-                health_matches = os.path.normcase(os.path.normpath(health_project_path)) == os.path.normcase(os.path.normpath(str(project_path)))
-            else:
-                health_matches = False
-            if health_matches:
-                session = _build_ready_service_session(project_path, base_url, log_path, followup_pids)
-                if artifact_pid_running:
-                    session.unity_pid = artifact_pid
-                activity_state = {
-                    "last_log_size": _read_editor_log_size(log_path),
-                    "last_activity_time": _format_wall_time(time.time()),
-                    "idle_seconds": 0.0,
-                }
-                session.diagnostics = _collect_diagnostics(base_url, log_path, None, activity_state)
-                session.diagnostics["last_health_payload"] = followup_payload
-                session.diagnostics.update(
-                    _build_launch_coordination_diagnostics(
-                        project_path,
-                        session_data,
-                        followup_lock,
-                        claim_payload,
-                        followup_pids,
-                        artifact_pid,
-                        artifact_pid_running,
-                        "post_claim_ready",
-                    )
+        if followup_payload is not None and followup_payload.get("ok") and followup_payload.get("status") == "ready" and _payload_matches_project(followup_payload, project_path):
+            session = _build_ready_service_session(project_path, base_url, log_path, followup_pids)
+            if artifact_pid_running:
+                session.unity_pid = artifact_pid
+            activity_state = {
+                "last_log_size": _read_editor_log_size(log_path),
+                "last_activity_time": _format_wall_time(time.time()),
+                "idle_seconds": 0.0,
+            }
+            session.diagnostics = _collect_diagnostics(base_url, log_path, None, activity_state)
+            session.diagnostics["last_health_payload"] = followup_payload
+            session.diagnostics.update(
+                _build_launch_coordination_diagnostics(
+                    project_path,
+                    session_data,
+                    followup_lock,
+                    claim_payload,
+                    followup_pids,
+                    artifact_pid,
+                    artifact_pid_running,
+                    "post_claim_ready",
                 )
-                _persist_ready_session_artifact(session, log_path, payload=followup_payload)
-                return session
+            )
+            _persist_ready_session_artifact(session, log_path, payload=followup_payload)
+            return session
 
         if _has_recoverable_editor_signal(artifact_pid_running, followup_pids):
             owner = "session_artifact" if artifact_pid_running else "project_recovery"
@@ -706,37 +694,31 @@ def ensure_session_ready(
                 recovery_payload, recovery_error = _probe_health(base_url, health_timeout_seconds)
                 recovery_lock = _project_lock_details(project_path)
                 artifact_pid, artifact_pid_running = _artifact_pid_running(session_data)
-                if recovery_payload is not None and recovery_payload.get("ok") and recovery_payload.get("status") == "ready":
-                    health_project_path = recovery_payload.get("project_path")
-                    if isinstance(health_project_path, str) and health_project_path:
-                        health_matches = os.path.normcase(os.path.normpath(health_project_path)) == os.path.normcase(os.path.normpath(str(project_path)))
-                    else:
-                        health_matches = False
-                    if health_matches:
-                        session = _build_ready_service_session(project_path, base_url, log_path, recovery_pids, owner="recovered_service")
-                        if artifact_pid_running:
-                            session.unity_pid = artifact_pid
-                        activity_state = {
-                            "last_log_size": _read_editor_log_size(log_path),
-                            "last_activity_time": _format_wall_time(time.time()),
-                            "idle_seconds": 0.0,
-                        }
-                        session.diagnostics = _collect_diagnostics(base_url, log_path, None, activity_state)
-                        session.diagnostics["last_health_payload"] = recovery_payload
-                        session.diagnostics.update(
-                            _build_launch_coordination_diagnostics(
-                                project_path,
-                                session_data,
-                                recovery_lock,
-                                claim_payload,
-                                recovery_pids,
-                                artifact_pid,
-                                artifact_pid_running,
-                                "post_launch_exit_ready",
-                            )
+                if recovery_payload is not None and recovery_payload.get("ok") and recovery_payload.get("status") == "ready" and _payload_matches_project(recovery_payload, project_path):
+                    session = _build_ready_service_session(project_path, base_url, log_path, recovery_pids, owner="recovered_service")
+                    if artifact_pid_running:
+                        session.unity_pid = artifact_pid
+                    activity_state = {
+                        "last_log_size": _read_editor_log_size(log_path),
+                        "last_activity_time": _format_wall_time(time.time()),
+                        "idle_seconds": 0.0,
+                    }
+                    session.diagnostics = _collect_diagnostics(base_url, log_path, None, activity_state)
+                    session.diagnostics["last_health_payload"] = recovery_payload
+                    session.diagnostics.update(
+                        _build_launch_coordination_diagnostics(
+                            project_path,
+                            session_data,
+                            recovery_lock,
+                            claim_payload,
+                            recovery_pids,
+                            artifact_pid,
+                            artifact_pid_running,
+                            "post_launch_exit_ready",
                         )
-                        _persist_ready_session_artifact(session, log_path, payload=recovery_payload)
-                        return session
+                    )
+                    _persist_ready_session_artifact(session, log_path, payload=recovery_payload)
+                    return session
                 if _has_recoverable_editor_signal(artifact_pid_running, recovery_pids):
                     recovery_session = _build_recovery_session(
                         project_path,
@@ -864,6 +846,14 @@ def inspect_direct_service(base_url, health_timeout_seconds=DEFAULT_HEALTH_TIMEO
     return False, None, error
 
 
+def _payload_matches_project(payload, project_path):
+    """Check whether a health payload belongs to the target project."""
+    health_project_path = payload.get("project_path")
+    if not isinstance(health_project_path, str) or not health_project_path:
+        return False
+    return os.path.normcase(os.path.normpath(health_project_path)) == os.path.normcase(os.path.normpath(str(project_path)))
+
+
 def validate_endpoint_identity(base_url, project_path, health_timeout_seconds=DEFAULT_HEALTH_TIMEOUT_SECONDS):
     """Probe a candidate endpoint and verify it belongs to the target project.
 
@@ -876,10 +866,7 @@ def validate_endpoint_identity(base_url, project_path, health_timeout_seconds=DE
         return False, None, error
     if not payload.get("ok") or payload.get("status") != "ready":
         return False, payload, None
-    health_project_path = payload.get("project_path")
-    if not isinstance(health_project_path, str) or not health_project_path:
-        return False, payload, None
-    if os.path.normcase(os.path.normpath(health_project_path)) != os.path.normcase(os.path.normpath(project_path)):
+    if not _payload_matches_project(payload, project_path):
         return False, payload, None
     return True, payload, None
 

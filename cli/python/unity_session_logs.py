@@ -357,7 +357,7 @@ def persist_ready_session_artifact(
         "effective_log_path": str(effective_log_path),
         "project_path": session.project_path,
     }
-    if port is not None:
+    if port is not None and port != 0:
         artifact["port"] = port
     write_session_artifact_fn(
         session.project_path,
