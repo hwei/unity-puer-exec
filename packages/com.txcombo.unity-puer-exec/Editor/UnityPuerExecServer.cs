@@ -155,6 +155,7 @@ namespace UnityPuerExec
         private static string cachedConsoleLogPath = "";
         private static string activeRequestId = "";
         private static int mainThreadId;
+        private static readonly Dictionary<string, DateTime> SourceFileTimestamps = new Dictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
         private static volatile bool isCompiling;
         private static volatile bool isUpdating;
 
@@ -327,6 +328,20 @@ namespace UnityPuerExec
                 await WriteJsonAsync(
                     context,
                     "{\"ok\":false,\"status\":\"failed\",\"error\":\"invalid_exec_request\"}"
+                );
+                return;
+            }
+
+            var stalenessError = request.reset_jsenv_before_exec ? null : CheckSourceStaleness(request.source_path);
+            if (stalenessError != null)
+            {
+                await WriteJsonAsync(
+                    context,
+                    UnityPuerExecProtocol.BuildSimpleErrorJson(
+                        "module_cache_stale",
+                        "source file has been modified since last execution; use --reset-jsenv-before-exec or rename the file",
+                        request.request_id
+                    )
                 );
                 return;
             }
@@ -697,6 +712,7 @@ namespace UnityPuerExec
 
             jsEnv = null;
             execLoader = null;
+            SourceFileTimestamps.Clear();
             SweepPendingTempEntryFiles();
         }
 
@@ -730,6 +746,44 @@ namespace UnityPuerExec
             {
                 Debug.LogError($"[UnityPuerExec] JsEnv tick failed: {ex}");
             }
+        }
+
+        private static string CheckSourceStaleness(string sourcePath)
+        {
+            if (string.IsNullOrEmpty(sourcePath))
+            {
+                return null;
+            }
+
+            DateTime currentMtime;
+            try
+            {
+                if (!File.Exists(sourcePath))
+                {
+                    SourceFileTimestamps.Remove(sourcePath);
+                    return null;
+                }
+
+                currentMtime = File.GetLastWriteTimeUtc(sourcePath);
+            }
+            catch
+            {
+                return null;
+            }
+
+            if (SourceFileTimestamps.TryGetValue(sourcePath, out var storedMtime))
+            {
+                if (currentMtime != storedMtime)
+                {
+                    return "module_cache_stale";
+                }
+            }
+            else
+            {
+                SourceFileTimestamps[sourcePath] = currentMtime;
+            }
+
+            return null;
         }
 
         private static bool IsCompilingOrReloading()

@@ -21,6 +21,7 @@ EXIT_MISSING = direct_exec_client.EXIT_MISSING
 EXIT_BUSY = direct_exec_client.EXIT_BUSY
 EXIT_REQUEST_ID_CONFLICT = direct_exec_client.EXIT_REQUEST_ID_CONFLICT
 EXIT_MODAL_BLOCKED = direct_exec_client.EXIT_MODAL_BLOCKED
+EXIT_MODULE_CACHE_STALE = direct_exec_client.EXIT_MODULE_CACHE_STALE
 EXIT_SESSION_STATE = 14
 EXIT_NO_OBSERVATION_TARGET = 15
 EXIT_NOT_STOPPED = 16
@@ -256,6 +257,8 @@ def _build_guidance_context(args, request_id=None):
         context["unity_exe_path"] = args.unity_exe_path
     if getattr(args, "unity_log_path", None):
         context["unity_log_path"] = args.unity_log_path
+    if getattr(args, "file_path", None):
+        context["file_path"] = str(args.file_path)
     if getattr(args, "include_diagnostics", False):
         context["include_diagnostics"] = True
     return context

@@ -42,6 +42,7 @@ WORKFLOW_IDS = (
     "load-and-call-csharp-type",
     "derive-project-path-from-unity-api",
     "request-editor-exit-via-exec",
+    "component-detection",
 )
 
 
@@ -83,6 +84,7 @@ TOP_LEVEL_WORKFLOWS = {
     "load-and-call-csharp-type": "learn the normal PuerTS-style bridge path for loading and calling Unity or C# types from JavaScript.",
     "derive-project-path-from-unity-api": "derive project-local paths through Unity APIs instead of assuming undocumented `ctx` fields.",
     "request-editor-exit-via-exec": "request a normal Unity Editor exit through `exec` instead of using `ensure-stopped`.",
+    "component-detection": "use the standard PuerTS pattern for scene-inspection: $typeof + $ref + TryGetComponent + get_Item.",
 }
 
 
@@ -282,6 +284,7 @@ COMMAND_HELP = {
             "load-and-call-csharp-type",
             "derive-project-path-from-unity-api",
             "request-editor-exit-via-exec",
+            "component-detection",
         ),
         "args": {
             "Arguments": [
@@ -296,7 +299,7 @@ COMMAND_HELP = {
                 "`--include-diagnostics`: include top-level debug diagnostics in the machine-readable response.",
                 "`--file <path>`: preferred script input for multi-line or AI-generated scripts; the file must export `default function (ctx) { ... }`.",
                 "`--stdin`: read script content from standard input; stdin content must export `default function (ctx) { ... }`.",
-                "`--code <inline-js>`: inline module-shaped source that still must export `default function (ctx) { ... }`; compatibility path with quoting and multiline drawbacks.",
+                "`--code <inline-js>`: inline module-shaped source that still must export `default function (ctx) { ... }`; compatibility path with quoting and multiline drawbacks. PowerShell users: use single quotes (`'...'`) around `--code` values containing `$` (e.g., `$typeof`) to prevent variable expansion, or use `--file` instead.",
             ],
             "Selector Rules": [
                 "Use at most one selector: `--project-path` or `--base-url`. Supplying both is a usage error.",
@@ -346,6 +349,7 @@ COMMAND_HELP = {
                 ("unity_stalled", EXIT_UNITY_NOT_READY, "readiness stopped making progress before execution could proceed."),
                 ("unity_not_ready", EXIT_UNITY_NOT_READY, "Unity did not become ready before execution could proceed."),
                 ("failed", 1, "execution failed unexpectedly, the module entry shape was invalid, or Promise return values are rejected because only immediate JSON-serializable results are supported."),
+                ("module_cache_stale", direct_exec_client.EXIT_MODULE_CACHE_STALE, "the source file has been modified since its last execution but the PuerTS module cache is stale; re-run with --reset-jsenv-before-exec or rename the file."),
             ],
         },
     },
@@ -605,6 +609,45 @@ WORKFLOW_EXAMPLES = {
             "For deeper bridge rules such as generics, `CS.*`, or collection behavior, consult the official JS-to-C# reference: https://puerts.github.io/docs/puerts/unity/tutorial/js2cs",
         ],
     },
+    "component-detection": {
+        "goal": "Use the standard PuerTS pattern for scene-inspection scripts: `puer.$typeof(CS.UnityEngine.X)` to resolve component types, `puer.$ref()` for out-parameter references, `TryGetComponent` for component probing, and `get_Item()` for C# indexer access on bridged collections.",
+        "steps": [
+            {
+                "command": "`unity-puer-exec exec --project-path X:/project --file X:/scripts/inspect-scene.js --script-args '{\"scenePath\":\"Assets/Scenes/Main.unity\"}' --wait-timeout-ms 1000`",
+                "script_body": [
+                    "export default function run(ctx) {",
+                    "  const SceneManager = puer.$typeof(CS.UnityEngine.SceneManagement.SceneManager);",
+                    "  const scene = SceneManager.GetActiveScene();",
+                    "  const rootGOs = scene.GetRootGameObjects();",
+                    "",
+                    "  const results = [];",
+                    "  for (let i = 0; i < rootGOs.Length; i++) {",
+                    "    const go = rootGOs.get_Item(i);",
+                    "    const mf = puer.$ref();",
+                    "    const hasMF = go.TryGetComponent(",
+                    "      puer.$typeof(CS.UnityEngine.MeshFilter), mf",
+                    "    );",
+                    "    results.push({",
+                    "      name: go.name,",
+                    "      hasMeshFilter: hasMF,",
+                    "      meshName: hasMF ? mf.value.sharedMesh.name : null,",
+                    "    });",
+                    "  }",
+                    "  return { request_id: ctx.request_id, rootCount: results.length, results };",
+                    "}",
+                ],
+                "observation": "Expected observation: stdout returns machine-readable JSON with the immediate `result`; `results` is a JS array of per-GameObject inspection data using the standard component-detection pattern.",
+            },
+        ],
+        "notice": [
+            "Use `puer.$typeof(CS.UnityEngine.X)` instead of `puer.loadType('UnityEngine.X')` for component types; `$typeof` is more reliable across the Unity API surface.",
+            "Generic instance methods like `go.GetComponents(MeshFilter)` are not supported by PuerTS; use the non-generic `TryGetComponent(type, puer.$ref())` instead.",
+            "C# indexers must be called as `get_Item(i)` in PuerTS; the JS bracket syntax `roots[i]` does not work on bridged .NET collections.",
+            "`puer.$ref()` creates an out-parameter placeholder; after calling `TryGetComponent`, read the resolved value via `.value` on the ref object.",
+            "For runtime type introspection, note that `comp.GetType().Name` is not available in the PuerTS bridge; use explicit type-by-type probing with `TryGetComponent` as shown.",
+            "`scene.GetRootGameObjects()` returns a bridged C# array, not a plain JS array; use `.Length` and `get_Item(i)` for enumeration.",
+        ],
+    },
     "derive-project-path-from-unity-api": {
         "goal": "Derive project-local paths through supported Unity APIs instead of assuming undocumented script-context fields.",
         "steps": [
@@ -773,6 +816,25 @@ GUIDANCE_MATRIX = {
     },
     ("exec", "failed"): {
         "situation": "An unexpected execution failure occurred. Check the error field for details.",
+    },
+    ("exec", "module_cache_stale"): {
+        "situation": "The source file has been modified since its last execution but the PuerTS module cache still holds the old compiled version. The script was not executed.",
+        "next_steps": [
+            {
+                "command": "exec",
+                "when": "re-run with --reset-jsenv-before-exec to clear the module cache and execute the updated file",
+                "argv_template": [
+                    "unity-puer-exec", "exec",
+                    "--project-path", "{project_path}",
+                    "--file", "{file_path}",
+                    "--reset-jsenv-before-exec",
+                ],
+            },
+            {
+                "command": "exec",
+                "when": "rename the script file (e.g., script_v2.js) and exec with the new filename to bypass the module cache",
+            },
+        ],
     },
     # --- wait-for-exec ---
     ("wait-for-exec", "running"): {
