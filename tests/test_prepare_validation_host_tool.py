@@ -3,6 +3,8 @@ import os
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stdout
+from io import StringIO
 from pathlib import Path
 from unittest import mock
 
@@ -96,6 +98,72 @@ class PrepareValidationHostTests(unittest.TestCase):
         self.assertFalse(changed)
         self.assertEqual(rewritten["dependencies"]["com.txcombo.unity-puer-exec"], expected_dependency)
         self.assertEqual(dependency, expected_dependency)
+
+    def test_detect_embedded_package_shadowing_reports_distinct_embedded_package(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_path = Path(temp_dir) / "Project"
+            manifest_path = project_path / "Packages" / "manifest.json"
+            embedded_path = project_path / "Packages" / "com.txcombo.unity-puer-exec"
+            package_root = Path(temp_dir) / "repo" / "packages" / "com.txcombo.unity-puer-exec"
+            embedded_path.mkdir(parents=True)
+            package_root.mkdir(parents=True)
+
+            shadowing, path = prepare_validation_host.detect_embedded_package_shadowing(
+                manifest_path,
+                package_root=package_root,
+            )
+
+            self.assertTrue(shadowing)
+            self.assertEqual(path, str(embedded_path))
+
+    def test_detect_embedded_package_shadowing_is_false_when_embedded_package_absent(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            manifest_path = Path(temp_dir) / "Project" / "Packages" / "manifest.json"
+            package_root = Path(temp_dir) / "repo" / "packages" / "com.txcombo.unity-puer-exec"
+
+            shadowing, path = prepare_validation_host.detect_embedded_package_shadowing(
+                manifest_path,
+                package_root=package_root,
+            )
+
+            self.assertFalse(shadowing)
+            self.assertIsNone(path)
+
+    def test_detect_embedded_package_shadowing_is_false_when_embedded_path_is_package_root(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            manifest_path = Path(temp_dir) / "Project" / "Packages" / "manifest.json"
+            package_root = manifest_path.parent / "com.txcombo.unity-puer-exec"
+            package_root.mkdir(parents=True)
+
+            shadowing, path = prepare_validation_host.detect_embedded_package_shadowing(
+                manifest_path,
+                package_root=package_root,
+            )
+
+            self.assertFalse(shadowing)
+            self.assertEqual(path, str(package_root))
+
+    def test_main_reports_embedded_package_shadowing(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_path = Path(temp_dir) / "Project"
+            packages_path = project_path / "Packages"
+            embedded_path = packages_path / "com.txcombo.unity-puer-exec"
+            package_root = Path(temp_dir) / "repo" / "packages" / "com.txcombo.unity-puer-exec"
+            packages_path.mkdir(parents=True)
+            embedded_path.mkdir()
+            package_root.mkdir(parents=True)
+            manifest_path = packages_path / "manifest.json"
+            manifest_path.write_text(json.dumps({"dependencies": {}}), encoding="utf-8")
+
+            with mock.patch.object(prepare_validation_host, "FORMAL_PACKAGE_ROOT", package_root):
+                stdout = StringIO()
+                with redirect_stdout(stdout):
+                    exit_code = prepare_validation_host.main(["--project-path", str(project_path)])
+
+            self.assertEqual(exit_code, 0)
+            payload = json.loads(stdout.getvalue())
+            self.assertTrue(payload["embedded_package_shadowing"])
+            self.assertTrue(payload["embedded_package_path"].endswith("Project\\Packages\\com.txcombo.unity-puer-exec"))
 
     def test_main_supports_dry_run_with_explicit_manifest(self):
         with tempfile.TemporaryDirectory() as temp_dir:

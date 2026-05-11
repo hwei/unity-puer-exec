@@ -21,6 +21,7 @@ Prerequisites:
 - `UNITY_PROJECT_PATH` points to the validation host Unity `Project/` directory (set in environment or `.env`)
 - Unity Editor is resolvable on this machine
 - Validation host has been wired to the local package via `tools/prepare_validation_host.py`
+- The helper output reports `"embedded_package_shadowing": false`. If it reports `true`, the host contains `Project/Packages/com.txcombo.unity-puer-exec`, which can cause Unity to load that embedded copy instead of the repository-local package path in `manifest.json`; resolve or intentionally account for that before treating the run as evidence for current repository code.
 
 Run command:
 ```

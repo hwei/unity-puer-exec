@@ -47,6 +47,28 @@ def project_path_to_manifest_path(project_path):
     return project_path / "Packages" / "manifest.json"
 
 
+def detect_embedded_package_shadowing(manifest_path, package_root=None):
+    package_root = FORMAL_PACKAGE_ROOT if package_root is None else Path(package_root)
+    embedded_package_path = Path(manifest_path).parent / FORMAL_PACKAGE_NAME
+    if not embedded_package_path.exists():
+        return False, None
+
+    try:
+        embedded_resolved = embedded_package_path.resolve()
+    except OSError:
+        embedded_resolved = embedded_package_path.absolute()
+
+    try:
+        package_root_resolved = package_root.resolve()
+    except OSError:
+        package_root_resolved = package_root.absolute()
+
+    if embedded_resolved == package_root_resolved:
+        return False, str(embedded_package_path)
+
+    return True, str(embedded_package_path)
+
+
 def _normalized_anchor(path):
     return str(path.anchor).rstrip("\\/").lower()
 
@@ -141,6 +163,7 @@ def main(argv=None):
 
     manifest_data = json.loads(manifest_path.read_text(encoding="utf-8"))
     rewritten_manifest, changed, dependency_value = rewrite_manifest(manifest_data, manifest_path)
+    shadowing, embedded_package_path = detect_embedded_package_shadowing(manifest_path)
 
     if not args.dry_run and changed:
         write_manifest(manifest_path, rewritten_manifest)
@@ -153,6 +176,8 @@ def main(argv=None):
                 "manifest_path": str(manifest_path),
                 "package_name": FORMAL_PACKAGE_NAME,
                 "dependency": dependency_value,
+                "embedded_package_shadowing": shadowing,
+                "embedded_package_path": embedded_package_path,
             },
             ensure_ascii=False,
         )
