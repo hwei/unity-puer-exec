@@ -17,6 +17,7 @@ if str(TOOLS_DIR) not in sys.path:
 import prepare_validation_host  # type: ignore
 import cleanup_validation_host  # type: ignore
 import unity_puer_exec  # type: ignore
+import unity_puer_exec_runtime  # type: ignore
 import unity_session  # type: ignore
 import unity_session_logs  # type: ignore
 
@@ -76,7 +77,9 @@ def _warm_up_project_exec(project_path, unity_exe_path, include_diagnostics=Fals
     if include_diagnostics:
         argv.append("--include-diagnostics")
     exit_code, payload, stdout, stderr = _run_cli(argv)
-    if payload is not None and payload.get("status") == "running":
+    if payload is not None and unity_puer_exec_runtime._running_or_timed_out_response(
+        exit_code, json.dumps(payload)
+    ):
         exit_code, payload, stdout, stderr = _run_cli(
             [
                 "wait-for-exec",
