@@ -11,5 +11,10 @@ namespace UnityPuerExec
         {
             UnityPuerExecServer.FailJob(jobId, error, stack);
         }
+
+        public static void CompleteJobWithWarning(string jobId, string warningCode, string warningDetail)
+        {
+            UnityPuerExecServer.CompleteJobWithWarning(jobId, warningCode, warningDetail);
+        }
     }
 }

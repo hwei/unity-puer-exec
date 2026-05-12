@@ -10,7 +10,6 @@ The problem: `__entry(__ctx)` has already been called before the thenable check.
 - Introduce a `CompletedWithWarning` terminal job state that distinguishes "script ran, result not captured" from genuine failures.
 - The protocol response for Promise returns uses `ok:true, status:"warning"` with `warning` code and human-readable `warning_detail`.
 - CLI maps `warning` → exit code 0, response on stdout (same as `completed`).
-- `BuildErrorDetailJson` extended to cover `async_result_not_supported` so the response JSON itself is self-explanatory.
 - Help text and guidance matrix updated to reflect the distinction.
 
 **Non-Goals:**

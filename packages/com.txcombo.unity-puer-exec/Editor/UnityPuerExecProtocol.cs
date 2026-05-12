@@ -81,18 +81,19 @@ namespace UnityPuerExec
             builder.AppendLine("  const __result = __entry(__ctx);");
             builder.AppendLine("  const __isThenable = __result !== null && (typeof __result === 'object' || typeof __result === 'function') && typeof __result.then === 'function';");
             builder.AppendLine("  if (__isThenable) {");
-            builder.AppendLine("    throw new Error('async_result_not_supported');");
+            builder.AppendLine("    __bridge.CompleteJobWithWarning(__jobId, 'async_result_not_supported', 'The entry function body executed successfully, but the return value was a Promise and cannot be serialized to JSON. Use console.log() with wait-for-result-marker for async result observation.');");
+            builder.AppendLine("  } else {");
+            builder.AppendLine("    let __resultJson;");
+            builder.AppendLine("    try {");
+            builder.AppendLine("      __resultJson = JSON.stringify(__result === undefined ? null : __result);");
+            builder.AppendLine("    } catch (__jsonError) {");
+            builder.AppendLine("      throw new Error('result_not_json_serializable');");
+            builder.AppendLine("    }");
+            builder.AppendLine("    if (__resultJson === undefined) {");
+            builder.AppendLine("      throw new Error('result_not_json_serializable');");
+            builder.AppendLine("    }");
+            builder.AppendLine("    __bridge.CompleteJob(__jobId, __resultJson);");
             builder.AppendLine("  }");
-            builder.AppendLine("  let __resultJson;");
-            builder.AppendLine("  try {");
-            builder.AppendLine("    __resultJson = JSON.stringify(__result === undefined ? null : __result);");
-            builder.AppendLine("  } catch (__jsonError) {");
-            builder.AppendLine("    throw new Error('result_not_json_serializable');");
-            builder.AppendLine("  }");
-            builder.AppendLine("  if (__resultJson === undefined) {");
-            builder.AppendLine("    throw new Error('result_not_json_serializable');");
-            builder.AppendLine("  }");
-            builder.AppendLine("  __bridge.CompleteJob(__jobId, __resultJson);");
             builder.AppendLine("} catch (__error) {");
             builder.AppendLine("  const __errorText = String(__error);");
             builder.AppendLine("  const __stackText = __error && __error.stack ? String(__error.stack) : '';");
@@ -182,6 +183,16 @@ namespace UnityPuerExec
                            "\"request_id\":\"" + JsonEscape(snapshot.RequestId) + "\"," +
                            "\"session_marker\":\"" + JsonEscape(sessionMarker) + "\"," +
                            "\"result\":" + (snapshot.ResultJson ?? "null") +
+                           "}";
+                case UnityPuerExecJobStatus.CompletedWithWarning:
+                    return "{" +
+                           "\"ok\":true," +
+                           "\"status\":\"warning\"," +
+                           "\"request_id\":\"" + JsonEscape(snapshot.RequestId) + "\"," +
+                           "\"session_marker\":\"" + JsonEscape(sessionMarker) + "\"," +
+                           "\"warning\":\"" + JsonEscape(snapshot.WarningCode) + "\"," +
+                           "\"warning_detail\":\"" + JsonEscape(snapshot.WarningDetail) + "\"," +
+                           "\"result\":null" +
                            "}";
                 case UnityPuerExecJobStatus.Failed:
                     var errorDetailJson = BuildErrorDetailJson(snapshot.Error);

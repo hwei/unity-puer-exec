@@ -196,7 +196,7 @@ The formal CLI SHALL provide a dedicated `wait-for-exec` follow-up surface that 
 
 Long-running execution SHALL remain machine-usable without token-driven continuation. `exec` SHALL return `log_range` and `brief_sequence` in every response so callers can observe the operation window without an opt-in flag. `log_range.start` SHALL be the authoritative observation checkpoint for `wait-for-log-pattern` and `wait-for-result-marker`, replacing the former `log_offset` field. Any response that includes `brief_sequence` SHALL use the compact run encoding defined by `log-brief` rather than a fully expanded repeated-character string. `wait-for-log-pattern` SHALL remain the regex-oriented observation primitive and SHALL support extraction modes including parsed JSON group extraction for structured markers. The extraction modes that return plain text and parsed JSON SHALL be mutually exclusive. The CLI SHALL provide a higher-level `wait-for-result-marker` path for the recommended single-line JSON result-marker workflow so callers do not need to author brittle full-JSON regexes themselves.
 
-The `exec` entry function SHALL return an immediate JSON-serializable value for top-level `result`. The runtime SHALL NOT automatically await Promise or thenable return values from the default-exported entry function. Promise- or thenable-returning entry functions MUST fail explicitly so long-running async work continues to use result-marker observation instead of implicit return awaiting.
+The `exec` entry function SHALL return an immediate JSON-serializable value for top-level `result`. The runtime SHALL NOT automatically await Promise or thenable return values from the default-exported entry function. Promise- or thenable-returning entry functions MUST complete with a `warning` terminal status (code `async_result_not_supported`) so callers understand the function body executed but the return value could not be captured. Long-running async work continues to use result-marker observation instead of implicit return awaiting.
 
 #### Scenario: Long-running script uses a correlation-aware result marker
 
@@ -225,7 +225,8 @@ The `exec` entry function SHALL return an immediate JSON-serializable value for 
 #### Scenario: Entry function returns a Promise
 
 - **WHEN** the default-exported exec entry function returns a Promise or thenable
-- **THEN** `exec` fails explicitly with a machine-readable error
+- **THEN** `exec` completes with `ok: true`, `status: "warning"`, and `warning: "async_result_not_supported"`
+- **AND** the response includes `warning_detail` explaining that the function body executed but the return value could not be serialized
 - **AND** the contract does not treat Promise return values as an implicit long-running completion channel
 
 ### Requirement: Session identity is not tied only to result continuation
@@ -309,7 +310,7 @@ The CLI SHALL preserve the baseline exit-code model for successful completion, e
 ### Requirement: Help is sufficient for agent discovery
 Top-level and per-command help SHALL describe the single-entry model, the flat command list, selector exclusivity, workflow examples, key success states, expected non-success states, and minimal invocation examples without requiring repository skill docs as the primary discovery path. When a workflow may return `running`, help SHALL not imply that machine-usable correlation metadata is always present immediately; examples SHALL describe the accepted script-driven way to make correlation ids available when earlier observation is needed. Help for common project-scoped tasks SHALL prioritize the shortest effective workflow so medium-capability agents can identify the preferred path with minimal unnecessary exploration.
 
-Help for `exec` SHALL describe the new module-shaped entry contract, the required default export, the synchronous immediate-result rule, and the fact that Promise-returning entry functions fail explicitly. Help SHALL not continue presenting fragment-style `return ...;` snippets or validation-specific helper APIs as the normal public script surface.
+Help for `exec` SHALL describe the new module-shaped entry contract, the required default export, the synchronous immediate-result rule, and the fact that Promise-returning entry functions complete with warning status instead of being implicitly awaited. Help SHALL not continue presenting fragment-style `return ...;` snippets or validation-specific helper APIs as the normal public script surface.
 
 Per-command `--help-status` output SHALL include situation-level explanations for each non-success status so agents can query status meanings independently of runtime guidance.
 
@@ -338,7 +339,7 @@ Per-command `--help-status` output SHALL include situation-level explanations fo
 - **WHEN** an agent reads `exec --help` or an exec authoring example
 - **THEN** help shows the required default-exported module entry shape
 - **AND** help explains that immediate return values populate top-level `result`
-- **AND** help explains that Promise return values are rejected instead of implicitly awaited
+- **AND** help explains that Promise return values complete with warning status (the function body still executes but the return value cannot be serialized) instead of being implicitly awaited
 
 ### Requirement: Exec Quick Start surfaces ctx-contract limitation before first script attempt
 

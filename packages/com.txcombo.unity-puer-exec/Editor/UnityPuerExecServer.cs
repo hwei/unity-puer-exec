@@ -192,6 +192,16 @@ namespace UnityPuerExec
             }
         }
 
+        internal static void CompleteJobWithWarning(string jobId, string warningCode, string warningDetail)
+        {
+            if (Requests.TryGetValue(jobId, out var job))
+            {
+                Debug.LogWarning($"[UnityPuerExec] CompleteWithWarning request={jobId} warning={warningCode}: {warningDetail}");
+                job.CompleteWithWarning(warningCode, warningDetail);
+                ReleaseActiveRequest(jobId);
+            }
+        }
+
         private static void Start()
         {
             StopListener();

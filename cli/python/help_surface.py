@@ -329,7 +329,7 @@ COMMAND_HELP = {
                 "`--wait-timeout-ms` must be a positive integer.",
                 "The command may return `running` when the wait budget ends before the request finishes.",
                 "Reusing the same `--request-id` with equivalent execution content and equivalent canonical `--script-args` is recovery, not a duplicate execution attempt.",
-                "The default-exported entry function must return an immediate JSON-serializable value; Promise return values are rejected.",
+                "The default-exported entry function must return an immediate JSON-serializable value; Promise return values complete with warning status (the function body still executes but the return value is not captured).",
             ],
         },
         "status": {
@@ -348,7 +348,8 @@ COMMAND_HELP = {
                 ("unity_start_failed", EXIT_UNITY_START_FAILED, "Unity could not be launched for the selected project."),
                 ("unity_stalled", EXIT_UNITY_NOT_READY, "readiness stopped making progress before execution could proceed."),
                 ("unity_not_ready", EXIT_UNITY_NOT_READY, "Unity did not become ready before execution could proceed."),
-                ("failed", 1, "execution failed unexpectedly, the module entry shape was invalid, or Promise return values are rejected because only immediate JSON-serializable results are supported."),
+                ("failed", 1, "execution failed unexpectedly, the module entry shape was invalid, or another non-warning execution error occurred."),
+                ("warning", 0, "the script body executed successfully but the entry function returned a Promise; the return value could not be serialized. Use console.log() with wait-for-result-marker for async result observation."),
                 ("module_cache_stale", direct_exec_client.EXIT_MODULE_CACHE_STALE, "the source file has been modified since its last execution but the PuerTS module cache is stale; re-run with --reset-jsenv-before-exec or rename the file."),
             ],
         },
@@ -815,7 +816,16 @@ GUIDANCE_MATRIX = {
         ],
     },
     ("exec", "failed"): {
-        "situation": "An unexpected execution failure occurred. Check the error field for details.",
+        "situation": "An unexpected execution failure occurred. Check the error field for details. Note: if the error is async_result_not_supported, the script body executed but returned a Promise - use exec --help-status to see the warning status.",
+    },
+    ("exec", "warning"): {
+        "situation": "The script body executed successfully, but the entry function returned a Promise (async_result_not_supported). Any synchronous side effects have already taken effect. Use console.log() with wait-for-result-marker for async result observation.",
+        "next_steps": [
+            {
+                "command": "wait-for-result-marker",
+                "when": "the script uses a correlation_id and you want to observe the terminal result marker",
+            },
+        ],
     },
     ("exec", "module_cache_stale"): {
         "situation": "The source file has been modified since its last execution but the PuerTS module cache still holds the old compiled version. The script was not executed.",

@@ -273,7 +273,7 @@ class UnityPuerExecCliTests(unittest.TestCase):
         self.assertIn("wait-for-exec --request-id", stdout)
         self.assertIn("`refreshing`", stdout)
         self.assertIn("`compiling`", stdout)
-        self.assertIn("Promise return values are rejected", stdout)
+        self.assertIn("entry function returned a Promise", stdout)
         self.assertIn("`modal_blocked` -> exit 19", stdout)
 
     def test_exit_help_example_renders_inline_request_exit_script(self):

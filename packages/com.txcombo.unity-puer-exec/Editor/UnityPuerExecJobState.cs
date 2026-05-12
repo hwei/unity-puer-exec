@@ -8,6 +8,7 @@ namespace UnityPuerExec
         Running,
         Completed,
         Failed,
+        CompletedWithWarning,
     }
 
     internal sealed class UnityPuerExecJob
@@ -18,6 +19,8 @@ namespace UnityPuerExec
         private string resultJson = "null";
         private string error = "";
         private string stack = "";
+        private string warningCode = "";
+        private string warningDetail = "";
 
         public UnityPuerExecJob(string requestId, string normalizedCode, string normalizedScriptArgsJson)
         {
@@ -42,7 +45,9 @@ namespace UnityPuerExec
                     status,
                     resultJson,
                     error,
-                    stack
+                    stack,
+                    warningCode,
+                    warningDetail
                 );
             }
         }
@@ -71,6 +76,19 @@ namespace UnityPuerExec
 
             completionSource.TrySetResult(true);
         }
+
+        public void CompleteWithWarning(string warning, string detail)
+        {
+            lock (syncRoot)
+            {
+                status = UnityPuerExecJobStatus.CompletedWithWarning;
+                warningCode = warning ?? "";
+                warningDetail = detail ?? "";
+                UpdatedAtUtc = DateTime.UtcNow;
+            }
+
+            completionSource.TrySetResult(true);
+        }
     }
 
     internal readonly struct UnityPuerExecJobSnapshot
@@ -80,7 +98,9 @@ namespace UnityPuerExec
             UnityPuerExecJobStatus status,
             string resultJson,
             string error,
-            string stack
+            string stack,
+            string warningCode = "",
+            string warningDetail = ""
         )
         {
             RequestId = requestId;
@@ -88,6 +108,8 @@ namespace UnityPuerExec
             ResultJson = resultJson;
             Error = error;
             Stack = stack;
+            WarningCode = warningCode ?? "";
+            WarningDetail = warningDetail ?? "";
         }
 
         public string RequestId { get; }
@@ -95,5 +117,7 @@ namespace UnityPuerExec
         public string ResultJson { get; }
         public string Error { get; }
         public string Stack { get; }
+        public string WarningCode { get; }
+        public string WarningDetail { get; }
     }
 }

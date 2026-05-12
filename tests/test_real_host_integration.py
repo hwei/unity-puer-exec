@@ -287,9 +287,11 @@ class RealHostIntegrationTests(unittest.TestCase):
             ]
         )
 
-        self.assertEqual(exec_exit_code, 1, exec_payload)
-        self.assertEqual(exec_payload["status"], "failed")
-        self.assertIn("async_result_not_supported", exec_payload["error"])
+        self.assertEqual(exec_exit_code, 0, exec_payload)
+        self.assertEqual(exec_payload["status"], "warning")
+        self.assertEqual(exec_payload["warning"], "async_result_not_supported")
+        self.assertIn("warning_detail", exec_payload)
+        self.assertTrue(len(exec_payload["warning_detail"]) > 0)
 
     def test_exec_globals_are_visible_across_requests_against_real_host(self):
         ready_exit_code, ready_payload, _, _ = _warm_up_project_exec(self.project_path, self.unity_exe_path)
