@@ -6,7 +6,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PACKAGE_ROOT = REPO_ROOT / "packages" / "com.txcombo.unity-puer-exec"
 RELEASE_WORKFLOW_PATH = REPO_ROOT / ".github" / "workflows" / "release.yml"
-UNITY_IMPORTED_PUBLISHABLE_ASSETS = ("Editor", "package.json", "LICENSE")
+UNITY_IMPORTED_PUBLISHABLE_ASSETS = ("Editor", "package.json", "LICENSE", "README.md")
 
 
 class PackageLayoutTests(unittest.TestCase):
@@ -40,6 +40,10 @@ class PackageLayoutTests(unittest.TestCase):
         self.assertIn("MIT License", license_text)
         self.assertIn("Will Huang", license_text)
 
+    def test_published_package_includes_readme(self):
+        readme_path = PACKAGE_ROOT / "README.md"
+        self.assertTrue(readme_path.exists())
+
     def test_publishable_unity_assets_keep_committed_meta_files(self):
         for relative_path in UNITY_IMPORTED_PUBLISHABLE_ASSETS:
             asset_path = PACKAGE_ROOT / relative_path
@@ -53,6 +57,7 @@ class PackageLayoutTests(unittest.TestCase):
         self.assertIn('Copy-Item "packages/com.txcombo.unity-puer-exec/Editor.meta"', workflow)
         self.assertIn('Copy-Item "packages/com.txcombo.unity-puer-exec/package.json.meta"', workflow)
         self.assertIn('Copy-Item "packages/com.txcombo.unity-puer-exec/LICENSE.meta"', workflow)
+        self.assertIn('Copy-Item "packages/com.txcombo.unity-puer-exec/README.md.meta"', workflow)
         self.assertNotIn('CLI~.meta', workflow)
 
     def test_editor_assembly_uses_formal_identity(self):

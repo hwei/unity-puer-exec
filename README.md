@@ -1,4 +1,4 @@
-[English](ReadMe.md) | [中文](ReadMe.zh-CN.md)
+[English](README.md) | [中文](README.zh-CN.md)
 
 [![OpenUPM](https://img.shields.io/npm/v/com.txcombo.unity-puer-exec?label=openupm&registry_uri=https://package.openupm.com)](https://openupm.com/packages/com.txcombo.unity-puer-exec/)
 [![Agentic AI Project](https://img.shields.io/badge/Agentic%20AI-Project-0a7ea4)](https://github.com/hwei/unity-puer-exec)
@@ -74,4 +74,4 @@ For the maintainer release-preparation workflow and the local `tools/release_ope
 
 MIT
 
-Chinese version: [ReadMe.zh-CN.md](ReadMe.zh-CN.md)
+Chinese version: [README.zh-CN.md](README.zh-CN.md)

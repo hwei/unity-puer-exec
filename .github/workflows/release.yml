@@ -66,6 +66,8 @@ jobs:
           Copy-Item "packages/com.txcombo.unity-puer-exec/package.json.meta" -Destination $stageDir
           Copy-Item "packages/com.txcombo.unity-puer-exec/LICENSE" -Destination $stageDir
           Copy-Item "packages/com.txcombo.unity-puer-exec/LICENSE.meta" -Destination $stageDir
+          Copy-Item "packages/com.txcombo.unity-puer-exec/README.md" -Destination $stageDir
+          Copy-Item "packages/com.txcombo.unity-puer-exec/README.md.meta" -Destination $stageDir
           Copy-Item "dist/unity-puer-exec.exe" -Destination (Join-Path $stageDir "CLI~/unity-puer-exec.exe")
 
           "UPM_STAGE_DIR=$stageDir" >> $env:GITHUB_ENV

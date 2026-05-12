@@ -11,5 +11,5 @@ topics:
   - utilities
 gitTagPrefix: "upm/"
 gitTagIgnore: "-master$"
-readme: "main:ReadMe.md"
+readme: "main:README.md"
 hunter: hwei
