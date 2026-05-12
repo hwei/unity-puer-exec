@@ -12,6 +12,11 @@ WINDOWS_DIALOG_SPECS = {
         "type": "save_scene_dialog",
         "cancel_labels": ("&Cancel", "Cancel", "取消"),
     },
+    "Enter Safe Mode?": {
+        "type": "safe_mode_dialog",
+        "cancel_labels": ("&Enter Safe Mode", "Enter Safe Mode"),
+        "click_method": "mouse_event",
+    },
 }
 
 IDCANCEL = 2
@@ -39,6 +44,12 @@ def list_supported_modal_blockers(unity_pid, scope="exec"):
         if scope is not None:
             blocker["scope"] = scope
         blockers.append(blocker)
+    # Also check Unity main window title for SAFE MODE state (after dialog dismissed)
+    main_title = _get_unity_main_window_title(unity_pid)
+    if main_title and "SAFE MODE" in main_title.upper():
+        # Avoid duplicate if already detected via dialog
+        if not any(b["type"] == "safe_mode_dialog" for b in blockers):
+            blockers.append({"type": "safe_mode_dialog", "scope": scope})
     return blockers
 
 
@@ -92,6 +103,72 @@ def resolve_modal_blocker(unity_pid, action="cancel", timeout_ms=1500, poll_inte
     }
 
 
+
+
+
+def _foreground_unity_window(unity_pid):
+    """Bring the main Unity window to foreground."""
+    if not unity_pid or sys.platform != "win32":
+        return
+    user32, wintypes, ctypes = _load_win32_modules()
+    found = [None]
+
+    def callback(hwnd, _l_param):
+        proc_id = wintypes.DWORD()
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(proc_id))
+        if proc_id.value != unity_pid:
+            return True
+        if not user32.IsWindowVisible(hwnd):
+            return True
+        buf = ctypes.create_unicode_buffer(256)
+        user32.GetWindowTextW(hwnd, buf, 256)
+        title = buf.value
+        if title and ("Unity" in title or "SAFE MODE" in title.upper()):
+            rect = wintypes.RECT()
+            if user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+                w = rect.right - rect.left
+                h = rect.bottom - rect.top
+                if w > 200 and h > 200:
+                    found[0] = hwnd
+                    return False
+        return True
+
+    enum_proc = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)(callback)
+    user32.EnumWindows(enum_proc, 0)
+    if found[0]:
+        user32.SetForegroundWindow(found[0])
+
+def _get_unity_main_window_title(unity_pid):
+    """Return the main Unity window title for the given PID, or None."""
+    user32, wintypes, ctypes = _load_win32_modules()
+    result = [None]
+
+    def callback(hwnd, _l_param):
+        proc_id = wintypes.DWORD()
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(proc_id))
+        if proc_id.value != unity_pid:
+            return True
+        if not user32.IsWindowVisible(hwnd):
+            return True
+        # Main Unity window has a large size and a title containing "Unity"
+        buf = ctypes.create_unicode_buffer(256)
+        user32.GetWindowTextW(hwnd, buf, 256)
+        title = buf.value
+        if title and ("Unity" in title or "SAFE MODE" in title.upper()):
+            # Check it is a main window (has size > 100x100)
+            rect = wintypes.RECT()
+            if user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+                w = rect.right - rect.left
+                h = rect.bottom - rect.top
+                if w > 200 and h > 200:
+                    result[0] = title
+                    return False
+        return True
+
+    enum_proc = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)(callback)
+    user32.EnumWindows(enum_proc, 0)
+    return result[0]
+
 def _list_supported_windows_dialogs(unity_pid):
     dialogs = []
     for dialog in _list_windows_dialogs(unity_pid):
@@ -141,8 +218,7 @@ def _list_windows_dialogs(unity_pid):
         get_window_thread_process_id(hwnd, ctypes.byref(process_id))
         if process_id.value != unity_pid:
             return True
-        if not get_window(hwnd, GW_OWNER):
-            return True
+        # Note: some dialogs (e.g. Safe Mode) appear before the main window and have no owner
         title = _get_window_text(hwnd, get_window_text_length, get_window_text, ctypes)
         if title:
             dialogs.append({"hwnd": hwnd, "title": title})
@@ -157,11 +233,43 @@ def _click_cancel_button(dialog):
     cancel_hwnd = _find_cancel_button(dialog["hwnd"], dialog["cancel_labels"])
     if not cancel_hwnd:
         return False
+    click_method = dialog.get("click_method", "bm_click")
+    if click_method == "mouse_event":
+        return _click_via_mouse_event(cancel_hwnd)
     user32, wintypes, ctypes = _load_win32_modules()
     send_message = user32.SendMessageW
     send_message.restype = wintypes.LPARAM
     send_message.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
     send_message(cancel_hwnd, BM_CLICK, 0, 0)
+    return True
+
+
+def _click_via_mouse_event(hwnd):
+    """Click a button using hardware-level mouse_event (for custom UI that ignores BM_CLICK)."""
+    user32, wintypes, ctypes = _load_win32_modules()
+    get_window_rect = user32.GetWindowRect
+    get_window_rect.restype = wintypes.BOOL
+    get_window_rect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
+    set_cursor_pos = user32.SetCursorPos
+    set_cursor_pos.restype = wintypes.BOOL
+    set_cursor_pos.argtypes = [ctypes.c_int, ctypes.c_int]
+    mouse_event = user32.mouse_event
+    mouse_event.restype = None
+    mouse_event.argtypes = [wintypes.DWORD, wintypes.DWORD, wintypes.DWORD, wintypes.DWORD, wintypes.DWORD]
+
+    rect = wintypes.RECT()
+    if not get_window_rect(hwnd, ctypes.byref(rect)):
+        return False
+    x = (rect.left + rect.right) // 2
+    y = (rect.top + rect.bottom) // 2
+    set_cursor_pos(x, y)
+    import time
+    time.sleep(0.1)
+    MOUSEEVENTF_LEFTDOWN = 0x0002
+    MOUSEEVENTF_LEFTUP = 0x0004
+    mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
+    time.sleep(0.08)
+    mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
     return True
 
 
@@ -195,12 +303,12 @@ def _find_cancel_button(dialog_hwnd, cancel_labels):
         class_name = _get_window_text(hwnd, None, get_class_name, ctypes, buffer_size=256)
         if class_name != "Button":
             return True
-        ctrl_id = get_dlg_ctrl_id(hwnd)
-        if ctrl_id == IDCANCEL:
-            matched_hwnd[0] = hwnd
-            return False
         text = _get_window_text(hwnd, get_window_text_length, get_window_text, ctypes)
         if text in label_set:
+            matched_hwnd[0] = hwnd
+            return False
+        ctrl_id = get_dlg_ctrl_id(hwnd)
+        if ctrl_id == IDCANCEL:
             matched_hwnd[0] = hwnd
             return False
         return True

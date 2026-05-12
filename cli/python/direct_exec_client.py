@@ -14,6 +14,7 @@ EXIT_BUSY = 17
 EXIT_REQUEST_ID_CONFLICT = 18
 EXIT_MODAL_BLOCKED = 19
 EXIT_MODULE_CACHE_STALE = 22
+EXIT_UNITY_COMPILE_ERROR = 23
 
 DEFAULT_BASE_URL = "http://127.0.0.1:55231"
 DEFAULT_WAIT_TIMEOUT_MS = 1000
@@ -57,6 +58,8 @@ def _status_to_exit_code(payload):
         return EXIT_MODAL_BLOCKED
     if status == "module_cache_stale":
         return EXIT_MODULE_CACHE_STALE
+    if status == "unity_compile_error":
+        return EXIT_UNITY_COMPILE_ERROR
     if status in ("session_missing", "session_stale"):
         return EXIT_SESSION_STATE
     return 1
@@ -113,6 +116,7 @@ def invoke_command(command, base_url, payload, wait_timeout_ms, transport=None):
         EXIT_REQUEST_ID_CONFLICT,
         EXIT_MODAL_BLOCKED,
         EXIT_MODULE_CACHE_STALE,
+        EXIT_UNITY_COMPILE_ERROR,
     ):
         return exit_code, json.dumps(response, ensure_ascii=True), ""
     return exit_code, "", json.dumps(response, ensure_ascii=True)

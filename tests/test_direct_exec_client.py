@@ -290,6 +290,33 @@ class DirectExecClientTests(unittest.TestCase):
         self.assertEqual(body["status"], "modal_blocked")
         self.assertEqual(body["blocker"]["type"], "save_scene_dialog")
 
+    def test_compile_error_status_maps_to_exit_code(self):
+        transport = FakeTransport([
+            {
+                "ok": False,
+                "status": "unity_compile_error",
+                "request_id": "req-ce",
+                "compile_errors_total": 3,
+                "compile_warnings_total": 0,
+                "compile_messages": ["error1", "error2"],
+            }
+        ])
+
+        exit_code, stdout, stderr = direct_exec_client.invoke_command(
+            "exec",
+            "http://127.0.0.1:55231",
+            {"request_id": "req-ce", "code": "export default function(ctx) {}", "wait_timeout_ms": 1000},
+            500,
+            transport=transport,
+        )
+
+        self.assertEqual(exit_code, direct_exec_client.EXIT_UNITY_COMPILE_ERROR)
+        self.assertEqual(stderr, "")
+        body = json.loads(stdout)
+        self.assertEqual(body["status"], "unity_compile_error")
+        self.assertEqual(body["compile_errors_total"], 3)
+        self.assertEqual(body["compile_warnings_total"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()

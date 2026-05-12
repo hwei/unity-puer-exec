@@ -351,6 +351,7 @@ COMMAND_HELP = {
                 ("failed", 1, "execution failed unexpectedly, the module entry shape was invalid, or another non-warning execution error occurred."),
                 ("warning", 0, "the script body executed successfully but the entry function returned a Promise; the return value could not be serialized. Use console.log() with wait-for-result-marker for async result observation."),
                 ("module_cache_stale", direct_exec_client.EXIT_MODULE_CACHE_STALE, "the source file has been modified since its last execution but the PuerTS module cache is stale; re-run with --reset-jsenv-before-exec or rename the file."),
+                ("unity_compile_error", direct_exec_client.EXIT_UNITY_COMPILE_ERROR, "C# compilation has errors; the script was not executed. Fix the C# errors and re-run with --refresh-before-exec to trigger recompilation."),
             ],
         },
     },
@@ -846,6 +847,37 @@ GUIDANCE_MATRIX = {
             },
         ],
     },
+    ("exec", "unity_compile_error"): {
+        "situation": "C# compilation has errors that must be fixed before executing scripts. The script was not executed. Check compile_errors_total and compile_messages in this response for immediate context, or use get-compile-errors for the full list.",
+        "next_steps": [
+            {
+                "command": "exec",
+                "when": "after fixing the C# errors, re-run with --refresh-before-exec to trigger recompilation",
+                "argv_template": [
+                    "unity-puer-exec", "exec",
+                    "--project-path", "{project_path}",
+                    "--file", "{file_path}",
+                    "--refresh-before-exec",
+                ],
+            },
+            {
+                "command": "get-compile-errors",
+                "when": "you need the full list of compile errors to understand what needs fixing",
+                "argv_template": [
+                    "unity-puer-exec", "get-compile-errors",
+                    "--project-path", "{project_path}",
+                ],
+            },
+            {
+                "command": "get-compile-warnings",
+                "when": "you want to inspect compile warnings separately",
+                "argv_template": [
+                    "unity-puer-exec", "get-compile-warnings",
+                    "--project-path", "{project_path}",
+                ],
+            },
+        ],
+    },
     # --- wait-for-exec ---
     ("wait-for-exec", "running"): {
         "next_steps": [
@@ -961,6 +993,29 @@ GUIDANCE_MATRIX = {
                     "unity-puer-exec", "wait-for-exec",
                     "--project-path", "{project_path}",
                     "--request-id", "{request_id}",
+                ],
+            },
+        ],
+    },
+    ("wait-for-exec", "unity_compile_error"): {
+        "situation": "C# compilation has errors that must be fixed before the pending exec request can proceed. The script has not been executed.",
+        "next_steps": [
+            {
+                "command": "exec",
+                "when": "after fixing the C# errors, re-run exec with --refresh-before-exec to trigger recompilation",
+                "argv_template": [
+                    "unity-puer-exec", "exec",
+                    "--project-path", "{project_path}",
+                    "--file", "{file_path}",
+                    "--refresh-before-exec",
+                ],
+            },
+            {
+                "command": "get-compile-errors",
+                "when": "you need the full list of compile errors to understand what needs fixing",
+                "argv_template": [
+                    "unity-puer-exec", "get-compile-errors",
+                    "--project-path", "{project_path}",
                 ],
             },
         ],

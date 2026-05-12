@@ -1757,6 +1757,85 @@ class UnityPuerExecCliTests(unittest.TestCase):
             self.assertEqual(body["operation"], "wait-for-result-marker")
             self.assertIn("log_range", body)
             self.assertIn("brief_sequence", body)
+    def test_get_compile_errors_rejects_negative_start(self):
+        """get-compile-errors rejects negative --start values."""
+        # argparse accepts -1 as a valid integer; the runtime handler validates it
+        args = unity_puer_exec._build_parser().parse_args([
+            "get-compile-errors",
+            "--project-path", "X:/proj",
+            "--start", "-1",
+        ])
+        self.assertEqual(args.start, -1)
+        # Runtime validation rejects negative start
+        with self.assertRaises(ValueError):
+            unity_puer_exec_runtime.validate_non_negative(-1, "start")
+
+    def test_get_compile_errors_rejects_out_of_range_count(self):
+        """get-compile-errors rejects --count values outside [1, 100]."""
+        # argparse accepts 0 and 101 as valid integers; the runtime handler validates
+        args = unity_puer_exec._build_parser().parse_args([
+            "get-compile-errors",
+            "--project-path", "X:/proj",
+            "--count", "0",
+        ])
+        self.assertEqual(args.count, 0)
+        args = unity_puer_exec._build_parser().parse_args([
+            "get-compile-errors",
+            "--project-path", "X:/proj",
+            "--count", "101",
+        ])
+        self.assertEqual(args.count, 101)
+
+    def test_get_compile_warnings_accepts_valid_args(self):
+        """get-compile-warnings accepts valid range arguments."""
+        args = unity_puer_exec._build_parser().parse_args([
+            "get-compile-warnings",
+            "--project-path", "X:/proj",
+            "--start", "5",
+            "--count", "10",
+        ])
+        self.assertEqual(args.command, "get-compile-warnings")
+        self.assertEqual(args.start, 5)
+        self.assertEqual(args.count, 10)
+
+    def test_get_compile_errors_in_command_tree(self):
+        """get-compile-errors and get-compile-warnings are in the command tree."""
+        parser = unity_puer_exec._build_parser()
+        args = parser.parse_args(["get-compile-errors", "--project-path", "X:/proj"])
+        self.assertEqual(args.command, "get-compile-errors")
+        self.assertEqual(args.start, 0)
+        self.assertEqual(args.count, 3)
+
+        args = parser.parse_args(["get-compile-warnings", "--base-url", "http://127.0.0.1:55231"])
+        self.assertEqual(args.command, "get-compile-warnings")
+
+    def test_exec_help_status_includes_unity_compile_error(self):
+        exit_code, stdout, stderr = unity_puer_exec.run_cli(["exec", "--help-status"])
+        self.assertEqual(exit_code, 0)
+        self.assertIn("unity_compile_error", stdout)
+        self.assertIn("23", stdout)
+
+    def test_guidance_matrix_has_unity_compile_error_for_exec(self):
+        import help_surface
+        entry = help_surface.GUIDANCE_MATRIX.get(("exec", "unity_compile_error"))
+        self.assertIsNotNone(entry, "GUIDANCE_MATRIX missing (exec, unity_compile_error)")
+        self.assertIn("situation", entry)
+        self.assertIn("next_steps", entry)
+        # Primary next_step should be exec with --refresh-before-exec
+        next_steps = entry["next_steps"]
+        exec_step = next((s for s in next_steps if s["command"] == "exec"), None)
+        self.assertIsNotNone(exec_step, "next_steps missing exec candidate")
+        self.assertIn("argv_template", exec_step)
+        self.assertIn("--refresh-before-exec", exec_step["argv_template"])
+
+    def test_guidance_matrix_has_unity_compile_error_for_wait_for_exec(self):
+        import help_surface
+        entry = help_surface.GUIDANCE_MATRIX.get(("wait-for-exec", "unity_compile_error"))
+        self.assertIsNotNone(entry, "GUIDANCE_MATRIX missing (wait-for-exec, unity_compile_error)")
+        self.assertIn("situation", entry)
+        self.assertIn("next_steps", entry)
+
+
 
 class DynamicEndpointRoutingTests(unittest.TestCase):
     """Project mode routes to non-default validated endpoint; direct base-url stays literal."""

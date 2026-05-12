@@ -2,16 +2,26 @@ using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Net;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using Puerts;
 using UnityEditor;
+using UnityEditor.Compilation;
 using UnityEngine;
 
 namespace UnityPuerExec
 {
+
+        [System.Serializable]
+    internal class GetCompileMessagesRequest
+    {
+        public int start = 0;
+        public int count = 3;
+    }
+
     internal sealed class PuerExecLoader : ILoader
     {
         internal sealed class RequestContext
@@ -161,12 +171,22 @@ namespace UnityPuerExec
         private static volatile bool isCompiling;
         private static volatile bool isUpdating;
 
+
+        private static volatile bool _lastCompilationHadErrors;
+        private static int _compileErrorCount;
+        private static int _compileWarningCount;
+        private static readonly List<CompilerMessage> _compileErrors = new List<CompilerMessage>();
+        private static readonly List<CompilerMessage> _compileWarnings = new List<CompilerMessage>();
+        private static readonly object _compileMessagesLock = new object();
+
         static UnityPuerExecServer()
         {
             mainThreadId = Thread.CurrentThread.ManagedThreadId;
             EditorApplication.update += OnEditorUpdate;
             AssemblyReloadEvents.beforeAssemblyReload += Stop;
             EditorApplication.quitting += Stop;
+            CompilationPipeline.compilationStarted += OnCompilationStarted;
+            CompilationPipeline.assemblyCompilationFinished += OnAssemblyCompilationFinished;
             Start();
         }
 
@@ -254,6 +274,48 @@ namespace UnityPuerExec
 
             _ = Task.Run(() => AcceptLoopAsync(listenerCancellation.Token));
             Debug.Log($"{ReadyLogPrefix} {selectedPort}");
+        }
+
+
+        private static void OnCompilationStarted(object obj)
+        {
+            _lastCompilationHadErrors = false;
+            lock (_compileMessagesLock)
+            {
+                _compileErrorCount = 0;
+                _compileWarningCount = 0;
+                _compileErrors.Clear();
+                _compileWarnings.Clear();
+            }
+        }
+
+        private static void OnAssemblyCompilationFinished(string assembly, CompilerMessage[] messages)
+        {
+            if (messages == null || messages.Length == 0)
+            {
+                return;
+            }
+
+            foreach (var msg in messages)
+            {
+                if (msg.type == CompilerMessageType.Error)
+                {
+                    Interlocked.Increment(ref _compileErrorCount);
+                    _lastCompilationHadErrors = true;
+                    lock (_compileMessagesLock)
+                    {
+                        _compileErrors.Add(msg);
+                    }
+                }
+                else if (msg.type == CompilerMessageType.Warning)
+                {
+                    Interlocked.Increment(ref _compileWarningCount);
+                    lock (_compileMessagesLock)
+                    {
+                        _compileWarnings.Add(msg);
+                    }
+                }
+            }
         }
 
         private static void Stop()
@@ -352,6 +414,19 @@ namespace UnityPuerExec
                     return;
                 }
 
+                
+                if (path.Equals("/get-compile-errors", StringComparison.OrdinalIgnoreCase))
+                {
+                    await HandleGetCompileErrorsAsync(context);
+                    return;
+                }
+
+                if (path.Equals("/get-compile-warnings", StringComparison.OrdinalIgnoreCase))
+                {
+                    await HandleGetCompileWarningsAsync(context);
+                    return;
+                }
+
                 context.Response.StatusCode = 404;
                 await WriteJsonAsync(context, "{\"ok\":false,\"status\":\"not_found\"}");
             }
@@ -383,6 +458,58 @@ namespace UnityPuerExec
                     context,
                     "{\"ok\":false,\"status\":\"failed\",\"error\":\"invalid_exec_request\"}"
                 );
+                return;
+            }
+
+            if (request.refresh_before_exec)
+            {
+                var refreshCompletion = new TaskCompletionSource<bool>();
+                MainThreadActions.Enqueue(() =>
+                {
+                    try
+                    {
+                        AssetDatabase.Refresh();
+                        refreshCompletion.TrySetResult(true);
+                    }
+                    catch (Exception ex)
+                    {
+                        Debug.LogError($"[UnityPuerExec] AssetDatabase.Refresh failed: {ex}");
+                        refreshCompletion.TrySetResult(false);
+                    }
+                });
+
+                await refreshCompletion.Task;
+                await WriteJsonAsync(
+                    context,
+                    "{\"ok\":true,\"status\":\"completed\",\"request_id\":\"" + UnityPuerExecProtocol.JsonEscape(request.request_id) + "\",\"result\":{\"refreshed\":true}}"
+                );
+                return;
+            }
+
+            if (_lastCompilationHadErrors && !request.refresh_before_exec)
+            {
+                List<CompilerMessage> errorsSnapshot;
+                List<CompilerMessage> warningsSnapshot;
+                int errorCountSnapshot;
+                int warningCountSnapshot;
+                lock (_compileMessagesLock)
+                {
+                    errorCountSnapshot = _compileErrors.Count;
+                    warningCountSnapshot = _compileWarnings.Count;
+                    errorsSnapshot = new List<CompilerMessage>(_compileErrors);
+                    warningsSnapshot = new List<CompilerMessage>(_compileWarnings);
+                }
+
+                var compilePayload = UnityPuerExecProtocol.BuildCompileErrorResponseJson(
+                    request.request_id,
+                    hasErrors: true,
+                    errorCount: errorCountSnapshot,
+                    warningCount: warningCountSnapshot,
+                    errors: errorsSnapshot,
+                    warnings: warningsSnapshot,
+                    sessionMarker: sessionMarker
+                );
+                await WriteJsonAsync(context, compilePayload);
                 return;
             }
 
@@ -504,6 +631,45 @@ namespace UnityPuerExec
             await WriteJsonAsync(context, "{\"ok\":true,\"status\":\"completed\"}");
         }
 
+
+        private static async Task HandleGetCompileErrorsAsync(HttpListenerContext context)
+        {
+            var requestJson = await ReadRequestBodyAsync(context.Request);
+            var request = JsonUtility.FromJson<GetCompileMessagesRequest>(requestJson) ?? new GetCompileMessagesRequest();
+            var start = Math.Max(0, request.start);
+            var count = Math.Min(Math.Max(1, request.count <= 0 ? 3 : request.count), 100);
+
+            List<CompilerMessage> snapshot;
+            int total;
+            lock (_compileMessagesLock)
+            {
+                total = _compileErrors.Count;
+                snapshot = _compileErrors.Skip(start).Take(count).ToList();
+            }
+
+            var payload = UnityPuerExecProtocol.BuildCompileMessagesResponseJson(snapshot, total, start, snapshot.Count);
+            await WriteJsonAsync(context, payload);
+        }
+
+        private static async Task HandleGetCompileWarningsAsync(HttpListenerContext context)
+        {
+            var requestJson = await ReadRequestBodyAsync(context.Request);
+            var request = JsonUtility.FromJson<GetCompileMessagesRequest>(requestJson) ?? new GetCompileMessagesRequest();
+            var start = Math.Max(0, request.start);
+            var count = Math.Min(Math.Max(1, request.count <= 0 ? 3 : request.count), 100);
+
+            List<CompilerMessage> snapshot;
+            int total;
+            lock (_compileMessagesLock)
+            {
+                total = _compileWarnings.Count;
+                snapshot = _compileWarnings.Skip(start).Take(count).ToList();
+            }
+
+            var payload = UnityPuerExecProtocol.BuildCompileMessagesResponseJson(snapshot, total, start, snapshot.Count);
+            await WriteJsonAsync(context, payload);
+        }
+
         private static async Task HandleWaitForExecAsync(HttpListenerContext context)
         {
             var requestJson = await ReadRequestBodyAsync(context.Request);
@@ -515,6 +681,34 @@ namespace UnityPuerExec
                     context,
                     "{\"ok\":false,\"status\":\"failed\",\"error\":\"invalid_wait_for_exec_request\"}"
                 );
+                return;
+            }
+
+
+            if (_lastCompilationHadErrors)
+            {
+                List<CompilerMessage> errorsSnapshot;
+                List<CompilerMessage> warningsSnapshot;
+                int errorCountSnapshot;
+                int warningCountSnapshot;
+                lock (_compileMessagesLock)
+                {
+                    errorCountSnapshot = _compileErrors.Count;
+                    warningCountSnapshot = _compileWarnings.Count;
+                    errorsSnapshot = new List<CompilerMessage>(_compileErrors);
+                    warningsSnapshot = new List<CompilerMessage>(_compileWarnings);
+                }
+
+                var compilePayload = UnityPuerExecProtocol.BuildCompileErrorResponseJson(
+                    request.request_id,
+                    hasErrors: true,
+                    errorCount: errorCountSnapshot,
+                    warningCount: warningCountSnapshot,
+                    errors: errorsSnapshot,
+                    warnings: warningsSnapshot,
+                    sessionMarker: sessionMarker
+                );
+                await WriteJsonAsync(context, compilePayload);
                 return;
             }
 

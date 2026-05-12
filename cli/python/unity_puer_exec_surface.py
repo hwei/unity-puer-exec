@@ -96,6 +96,19 @@ def build_parser():
     stop_mode.add_argument("--inspect-only", action="store_true")
     stop_mode.add_argument("--immediate-kill", action="store_true")
 
+    get_compile_errors_parser = subparsers.add_parser("get-compile-errors", add_help=False)
+    _add_selector_args(get_compile_errors_parser)
+    get_compile_errors_parser.add_argument("--start", type=int, default=0)
+    get_compile_errors_parser.add_argument("--count", type=int, default=3)
+    _add_diagnostics_arg(get_compile_errors_parser)
+
+    get_compile_warnings_parser = subparsers.add_parser("get-compile-warnings", add_help=False)
+    _add_selector_args(get_compile_warnings_parser)
+    get_compile_warnings_parser.add_argument("--start", type=int, default=0)
+    get_compile_warnings_parser.add_argument("--count", type=int, default=3)
+    _add_diagnostics_arg(get_compile_warnings_parser)
+
+
     return parser
 
 

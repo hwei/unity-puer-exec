@@ -160,6 +160,10 @@ def run_command(args):
             return run_resolve_blocker(args)
         if args.command == "get-log-briefs":
             return run_get_log_briefs(args)
+        if args.command == "get-compile-errors":
+            return run_get_compile_errors(args)
+        if args.command == "get-compile-warnings":
+            return run_get_compile_warnings(args)
         return run_ensure_stopped(args)
     except ValueError as exc:
         if len(exc.args) >= 2 and isinstance(exc.args[1], str):
@@ -407,6 +411,7 @@ def _build_exec_payload(
     args,
     source_path=None,
     import_base_url=None,
+    refresh_before_exec=False,
     reset_jsenv_before_exec=False,
 ):
     payload = {
@@ -422,6 +427,8 @@ def _build_exec_payload(
         payload["import_base_url"] = import_base_url
     if reset_jsenv_before_exec:
         payload["reset_jsenv_before_exec"] = True
+    if refresh_before_exec:
+        payload["refresh_before_exec"] = True
     return payload
 
 
@@ -434,6 +441,7 @@ def _invoke_exec(
     source_path=None,
     import_base_url=None,
     reset_jsenv_before_exec=False,
+    refresh_before_exec=False,
 ):
     payload = _build_exec_payload(
         request_id,
@@ -443,6 +451,7 @@ def _invoke_exec(
         source_path=source_path,
         import_base_url=import_base_url,
         reset_jsenv_before_exec=reset_jsenv_before_exec,
+        refresh_before_exec=refresh_before_exec,
     )
     return direct_exec_client.invoke_command(
         "exec",
@@ -471,7 +480,7 @@ def _refresh_exec_code():
 
 
 def _invoke_refresh_exec(base_url, request_id, args):
-    return _invoke_exec(base_url, request_id, _refresh_exec_code(), "{}", args)
+    return _invoke_exec(base_url, request_id, _refresh_exec_code(), "{}", args, refresh_before_exec=True)
 
 
 def _invoke_reset_jsenv(base_url, args):
@@ -653,6 +662,7 @@ def run_exec(args):
 
     log_path = _resolve_log_path(args, session)
     log_start = _capture_log_offset(log_path)
+    _bring_unity_to_foreground(session)
 
     if selector == "project_path" and args.refresh_before_exec:
         refresh_request_id = _refresh_request_id(request_id)
@@ -675,6 +685,7 @@ def run_exec(args):
             stdout_text,
             stderr_text,
             session,
+            log_path=log_path,
         )
         if _running_or_timed_out_response(exit_code, stdout_text):
             _refresh_pending_exec(args, request_id, _read_pending_exec(args, request_id), PHASE_REFRESHING)
@@ -755,6 +766,7 @@ def run_exec(args):
         stdout_text,
         stderr_text,
         session if selector == "project_path" else None,
+        log_path=log_path if selector == "project_path" else None,
     )
     if selector == "project_path":
         pending = _read_pending_exec(args, request_id)
@@ -809,6 +821,7 @@ def run_wait_for_exec(args):
                 return EXIT_RUNNING, emit_payload(payload), ""
             raise
         base_url = session.base_url
+        _bring_unity_to_foreground(session)
     else:
         session = None
         base_url = args.base_url
@@ -833,6 +846,7 @@ def run_wait_for_exec(args):
                 stdout_text,
                 stderr_text,
                 session if selector == "project_path" else None,
+                log_path=_wfe_refresh_log_path if selector == "project_path" else None,
             )
             if _running_or_timed_out_response(exit_code, stdout_text):
                 pending = _refresh_pending_exec(args, args.request_id, pending, PHASE_REFRESHING)
@@ -928,6 +942,7 @@ def run_wait_for_exec(args):
         stdout_text,
         stderr_text,
         session if selector == "project_path" else None,
+        log_path=_wfe_log_path_early if selector == "project_path" else None,
     )
     if selector == "project_path" and pending is not None:
         pending = _finalize_pending_after_submit(args, args.request_id, pending, exit_code, stdout_text)
@@ -1226,6 +1241,57 @@ def run_get_log_briefs(args):
     return 0, emit_payload(payload), ""
 
 
+def _run_get_compile_messages(args, command_name):
+    """Shared implementation for get-compile-errors / get-compile-warnings."""
+    selector = resolve_selector(args)
+    validate_non_negative(args.start, "start")
+    if args.count < 1 or args.count > 100:
+        raise ValueError("count must be between 1 and 100")
+    if selector == "project_path":
+        session = unity_session.ensure_session_ready(
+            project_path=args.project_path,
+            unity_exe_path=getattr(args, "unity_exe_path", None),
+            unity_log_path=getattr(args, "unity_log_path", None),
+            argv0=getattr(args, "argv0", None),
+        )
+        base_url = session.base_url
+    else:
+        session = None
+        base_url = args.base_url
+
+    payload = {"start": args.start, "count": args.count}
+    exit_code, stdout_text, stderr_text = direct_exec_client.invoke_command(
+        command_name,
+        base_url,
+        payload,
+        5000,
+    )
+    if exit_code != 0:
+        return exit_code, stdout_text, stderr_text
+    body = json.loads(stdout_text)
+    result = {
+        "total": body.get("total", 0),
+        "start": body.get("start", 0),
+        "returned": body.get("returned", 0),
+        "messages": body.get("messages", []),
+    }
+    response = success_payload(
+        command_name,
+        session=session,
+        result=result,
+        include_diagnostics=args.include_diagnostics,
+    )
+    return 0, emit_payload(response), ""
+
+
+def run_get_compile_errors(args):
+    return _run_get_compile_messages(args, "get-compile-errors")
+
+
+def run_get_compile_warnings(args):
+    return _run_get_compile_messages(args, "get-compile-warnings")
+
+
 def run_ensure_stopped(args):
     selector = resolve_selector(args)
     validate_positive(args.timeout_seconds, "timeout-seconds")
@@ -1278,7 +1344,56 @@ def attach_diagnostics(payload, include_diagnostics=False, session=None, diagnos
     return payload
 
 
-def _normalize_exec_blocker_result(exit_code, stdout_text, stderr_text, session):
+
+
+def _extract_compile_errors_from_log(log_path, max_errors=20):
+    """Extract C# compile errors from a Unity Editor log file."""
+    import re
+    if not log_path:
+        return None
+    try:
+        with open(log_path, "r", encoding="utf-8", errors="replace") as f:
+            lines = f.readlines()
+    except (OSError, IOError):
+        return None
+    error_pattern = re.compile(
+        r"^(.+?)\((\d+),(\d+)\):\s*error\s+CS(\d+):\s*(.+)$"
+    )
+    errors = []
+    warnings = []
+    for line in lines:
+        m = error_pattern.match(line.strip())
+        if m:
+            errors.append({
+                "file": m.group(1),
+                "line": int(m.group(2)),
+                "column": int(m.group(3)),
+                "code": "CS" + m.group(4),
+                "message": m.group(5),
+            })
+        elif " warning CS" in line and line.strip().endswith(")"):
+            # Simpler warning pattern
+            pass
+    if not errors:
+        return None
+    return {
+        "total_errors": len(errors),
+        "errors": errors[:max_errors],
+    }
+
+
+def _bring_unity_to_foreground(session):
+    """Bring the Unity Editor main window to foreground so it detects file changes."""
+    if session is None or not session.unity_pid:
+        return
+    if sys.platform != "win32":
+        return
+    try:
+        unity_modal_blockers._foreground_unity_window(session.unity_pid)
+    except Exception:
+        pass
+
+def _normalize_exec_blocker_result(exit_code, stdout_text, stderr_text, session, log_path=None):
     if session is None or not stdout_text:
         return exit_code, stdout_text, stderr_text
     body = json.loads(stdout_text)
@@ -1287,6 +1402,31 @@ def _normalize_exec_blocker_result(exit_code, stdout_text, stderr_text, session)
     blocker = _detect_exec_modal_blocker(session)
     if blocker is None:
         return exit_code, stdout_text, stderr_text
+
+    # Safe Mode: auto-dismiss and return as compile errors so Agent never sees modal_blocked
+    if blocker.get("type") == "safe_mode_dialog":
+        # Auto-click "Enter Safe Mode" if the dialog is still showing
+        try:
+            resolve_result = unity_modal_blockers.resolve_modal_blocker(
+                session.unity_pid, action="cancel", timeout_ms=3000
+            )
+        except Exception:
+            resolve_result = {"ok": False}
+        # Extract compile errors from log
+        compile_info = _extract_compile_errors_from_log(log_path) if log_path else None
+        normalized = {
+            "ok": False,
+            "status": "unity_compile_error",
+            "request_id": body.get("request_id"),
+        }
+        if compile_info:
+            normalized["compile_errors_total"] = compile_info["total_errors"]
+            normalized["compile_messages"] = compile_info["errors"]
+        if "diagnostics" in body:
+            normalized["diagnostics"] = body["diagnostics"]
+        return direct_exec_client.EXIT_UNITY_COMPILE_ERROR, emit_payload(normalized), ""
+
+    # Other modal blockers: report as before
     normalized = {
         "ok": False,
         "status": "modal_blocked",

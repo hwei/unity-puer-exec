@@ -2,6 +2,8 @@ using System;
 using System.IO;
 using System.Text;
 using System.Text.RegularExpressions;
+using System.Linq;
+using UnityEditor.Compilation;
 
 namespace UnityPuerExec
 {
@@ -16,6 +18,7 @@ namespace UnityPuerExec
         public int wait_timeout_ms = 1000;
         public bool include_diagnostics = false;
         public bool reset_jsenv_before_exec = false;
+        public bool refresh_before_exec = false;
     }
 
     [System.Serializable]
@@ -301,6 +304,91 @@ namespace UnityPuerExec
         private static string EscapeModuleSpecifier(string value)
         {
             return NormalizeModulePath(value).Replace("\\", "\\\\").Replace("'", "\\'");
+        }
+
+        internal static string BuildCompileErrorResponseJson(
+            string requestId,
+            bool hasErrors,
+            int errorCount,
+            int warningCount,
+            System.Collections.Generic.List<CompilerMessage> errors,
+            System.Collections.Generic.List<CompilerMessage> warnings,
+            string sessionMarker
+        )
+        {
+            if (!hasErrors)
+            {
+                return "{" +
+                       "\"ok\":true," +
+                       "\"status\":\"ready\"," +
+                       "\"request_id\":\"" + JsonEscape(requestId) + "\"," +
+                       "\"session_marker\":\"" + JsonEscape(sessionMarker) + "\"" +
+                       "}";
+            }
+
+            var messages = new System.Collections.Generic.List<CompilerMessage>();
+            if (errors != null)
+            {
+                messages.AddRange(errors.Take(3));
+            }
+
+            int remaining = 3 - messages.Count;
+            if (remaining > 0 && warnings != null)
+            {
+                messages.AddRange(warnings.Take(remaining));
+            }
+
+            var messagesJson = BuildCompileMessagesJson(messages);
+            return "{" +
+                   "\"ok\":false," +
+                   "\"status\":\"unity_compile_error\"," +
+                   "\"request_id\":\"" + JsonEscape(requestId) + "\"," +
+                   "\"session_marker\":\"" + JsonEscape(sessionMarker) + "\"," +
+                   "\"compile_errors_total\":" + errorCount + "," +
+                   "\"compile_warnings_total\":" + warningCount + "," +
+                   "\"compile_messages\":" + messagesJson +
+                   "}";
+        }
+
+        internal static string BuildCompileMessagesResponseJson(
+            System.Collections.Generic.List<CompilerMessage> messages,
+            int total,
+            int start,
+            int returned
+        )
+        {
+            return "{" +
+                   "\"ok\":true," +
+                   "\"status\":\"completed\"," +
+                   "\"total\":" + total + "," +
+                   "\"start\":" + start + "," +
+                   "\"returned\":" + returned + "," +
+                   "\"messages\":" + BuildCompileMessagesJson(messages ?? new System.Collections.Generic.List<CompilerMessage>()) +
+                   "}";
+        }
+
+        private static string BuildCompileMessagesJson(System.Collections.Generic.List<CompilerMessage> messages)
+        {
+            if (messages == null || messages.Count == 0)
+            {
+                return "[]";
+            }
+
+            var parts = new System.Collections.Generic.List<string>();
+            foreach (var msg in messages)
+            {
+                parts.Add(
+                    "{" +
+                    "\"type\":\"" + JsonEscape(msg.type == CompilerMessageType.Error ? "error" : "warning") + "\"," +
+                    "\"message\":\"" + JsonEscape(msg.message ?? "") + "\"," +
+                    "\"file\":\"" + JsonEscape(msg.file ?? "") + "\"," +
+                    "\"line\":" + msg.line + "," +
+                    "\"column\":" + msg.column +
+                    "}"
+                );
+            }
+
+            return "[" + string.Join(",", parts) + "]";
         }
     }
 }
