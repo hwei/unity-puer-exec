@@ -6,7 +6,7 @@ Define the durable machine-facing contract for the `unity-puer-exec` CLI, includ
 ## Requirements
 ### Requirement: The CLI has one primary entry and flat command tree
 
-The formal CLI SHALL use `unity-puer-exec` as its single primary entry. The authoritative flat command tree SHALL include `wait-for-log-pattern`, `wait-for-exec`, `wait-for-result-marker`, `get-log-source`, `get-log-briefs`, `exec`, `ensure-stopped`, and `resolve-blocker`.
+The formal CLI SHALL use `unity-puer-exec` as its single primary entry. The authoritative flat command tree SHALL include `wait-for-log-pattern`, `wait-for-exec`, `wait-for-result-marker`, `get-log-source`, `get-log-briefs`, `exec`, `ensure-stopped`, `resolve-blocker`, `get-blocker-state`, `get-compile-errors`, and `get-compile-warnings`.
 
 When distributed as a binary, the entry SHALL be `unity-puer-exec.exe` on Windows. The executable name (without extension) SHALL match the package name style. Agents and callers SHALL discover the binary by searching for `unity-puer-exec.exe` within the consuming Unity project's package cache, at the path `<PackageCache>/com.txcombo.unity-puer-exec@<version>/CLI~/unity-puer-exec.exe`.
 
@@ -640,3 +640,72 @@ The `--code` argument help text SHALL include a note that PowerShell users shoul
 - **THEN** the argument help for `--code` mentions PowerShell single-quote usage for code containing `$`
 - **AND** the help points to `--file` as the preferred alternative for multi-line or `$`-containing scripts
 
+
+
+### Requirement: get-compile-errors command retrieves compile error details
+
+The CLI SHALL expose a `get-compile-errors` command accepting `--project-path`/`--base-url` selectors and optional `--start` (int, default 0) and `--count` (int, default 3, range [1, 100]). The command SHALL post to `/get-compile-errors` and return the server response as structured JSON with `result.total`, `result.returned`, `result.messages`, and `result.session_marker`.
+
+#### Scenario: Retrieve compile errors for a project
+
+- **WHEN** a caller invokes `get-compile-errors --project-path X:/proj --start 0 --count 10`
+- **AND** the server has recorded compile errors
+- **THEN** the command returns `ok: true` with `result` containing `total`, `returned`, `messages`, and `session_marker`
+
+#### Scenario: get-compile-errors with no errors recorded
+
+- **WHEN** a caller invokes `get-compile-errors --project-path X:/proj`
+- **AND** no compile errors are recorded
+- **THEN** the command returns `result.total: 0` and `result.messages: []`
+
+#### Scenario: Count validated before network call
+
+- **WHEN** a caller invokes `get-compile-errors --count 0` or `--count 101`
+- **THEN** the command raises a usage error before contacting the server
+
+#### Scenario: Start validated before network call
+
+- **WHEN** a caller invokes `get-compile-errors --start -1`
+- **THEN** the command raises a usage error before contacting the server
+
+### Requirement: get-compile-warnings command retrieves compile warning details
+
+The CLI SHALL expose a `get-compile-warnings` command with the same argument structure, validation, and response format as `get-compile-errors`, posting to `/get-compile-warnings`.
+
+#### Scenario: Retrieve compile warnings for a project
+
+- **WHEN** a caller invokes `get-compile-warnings --project-path X:/proj --start 0 --count 5`
+- **AND** the last compilation produced warnings
+- **THEN** the command returns `result.messages` containing warning message objects with `type`, `message`, `file`, `line`, and `column`
+
+### Requirement: Exit code 23 represents unity_compile_error
+
+The CLI SHALL define `EXIT_UNITY_COMPILE_ERROR = 23`. When the Unity execution service returns `status: "unity_compile_error"` for `/exec` or `/wait-for-exec`, the CLI SHALL map this to exit code 23 and SHALL include the inline compile diagnostics (`compile_errors_total`, `compile_warnings_total`, `compile_messages`) in the stdout payload.
+
+#### Scenario: exec returns exit code 23 for compile errors
+
+- **WHEN** the Unity server returns `status: "unity_compile_error"` for an `/exec` request
+- **THEN** the CLI exits with code 23
+- **AND** stdout includes the compile diagnostics from the server response
+
+#### Scenario: wait-for-exec returns exit code 23 for compile errors
+
+- **WHEN** the Unity server returns `status: "unity_compile_error"` for a `/wait-for-exec` request
+- **THEN** the CLI exits with code 23
+- **AND** stdout includes the compile diagnostics
+
+#### Scenario: unity_compile_error status appears in --help-status
+
+- **WHEN** an agent invokes `exec --help-status` or `wait-for-exec --help-status`
+- **THEN** `unity_compile_error` is listed with exit code 23 and a description
+
+### Requirement: Safe Mode dialog is dismissed via keyboard Enter key
+
+The `resolve-blocker` command SHALL support dismissing the "Enter Safe Mode?" dialog by sending an Enter key press (`VK_RETURN`) via `keybd_event` after bringing the dialog to the foreground with `SetForegroundWindow`. This `keyboard` click method SHALL be DPI-independent and SHALL replace the earlier `mouse_event` approach for Safe Mode.
+
+#### Scenario: Keyboard dismiss is used for Safe Mode dialog
+
+- **WHEN** `resolve-blocker --action cancel` targets the "Enter Safe Mode?" dialog
+- **THEN** the dialog spec dictionary includes `click_method: "keyboard"`
+- **AND** `_click_cancel_button` dispatches to `_click_via_keyboard` which sends Enter
+- **AND** the resolution follows the existing confirmation and timeout contract
