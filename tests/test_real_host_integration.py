@@ -660,5 +660,172 @@ class RealHostIntegrationTests(unittest.TestCase):
         self.assertEqual(wait_payload["result"]["request_id"], request_id)
 
 
+
+    def test_compile_error_gate_blocks_exec_against_real_host(self):
+        ready_exit_code, ready_payload, _, _ = _warm_up_project_exec(self.project_path, self.unity_exe_path)
+        self.assertEqual(ready_exit_code, 0, ready_payload)
+
+        # Write a deliberately broken C# file to trigger compile errors
+        temp_dir = self.project_path / "Assets" / "__codex_validation_temp"
+        temp_dir.mkdir(parents=True, exist_ok=True)
+        broken_cs = temp_dir / "BrokenCompileErrorTest.cs"
+        broken_cs.write_text(
+            "// Deliberate compile error for integration test\n"
+            "public class BrokenCompileErrorTest {\n"
+            "    public void Broken() {\n"
+            "        ThisTypeDoesNotExist x = null;\n"
+            "    }\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        try:
+            # Trigger recompilation via refresh-before-exec
+            exec_exit_code, exec_payload, _, _ = _run_cli(
+                [
+                    "exec",
+                    "--project-path", str(self.project_path),
+                    "--unity-exe-path", str(self.unity_exe_path),
+                    "--wait-timeout-ms", str(WAIT_TIMEOUT_MS),
+                    "--refresh-before-exec",
+                    "--code", "export default function run(ctx) { return { ok: true }; }",
+                ]
+            )
+            # The refresh path: CLI does refresh-exec, then polls for readiness,
+            # then does actual exec which hits the compile-error gate.
+            if unity_puer_exec_runtime._running_or_timed_out_response(
+                exec_exit_code, json.dumps(exec_payload) if exec_payload else ""
+            ):
+                exec_exit_code, exec_payload, _, _ = _run_cli(
+                    [
+                        "wait-for-exec",
+                        "--project-path", str(self.project_path),
+                        "--unity-exe-path", str(self.unity_exe_path),
+                        "--request-id", exec_payload["request_id"],
+                        "--wait-timeout-ms", str(READY_TIMEOUT_SECONDS * 1000),
+                    ]
+                )
+
+            self.assertEqual(exec_exit_code, unity_puer_exec.EXIT_UNITY_COMPILE_ERROR, exec_payload)
+            self.assertEqual(exec_payload["status"], "unity_compile_error")
+            self.assertIn("session_marker", exec_payload)
+            self.assertGreater(exec_payload["compile_errors_total"], 0)
+            self.assertIsInstance(exec_payload["compile_messages"], list)
+            self.assertGreater(len(exec_payload["compile_messages"]), 0)
+            msg = exec_payload["compile_messages"][0]
+            self.assertIn("file", msg)
+            self.assertIn("line", msg)
+            self.assertIn("message", msg)
+            self.assertIn("type", msg)
+
+            # get-compile-errors should return matching session_marker
+            ce_exit_code, ce_payload, _, _ = _run_cli(
+                [
+                    "get-compile-errors",
+                    "--project-path", str(self.project_path),
+                    "--start", "0",
+                    "--count", "5",
+                ]
+            )
+            self.assertEqual(ce_exit_code, 0, ce_payload)
+            self.assertIn("result", ce_payload)
+            self.assertEqual(
+                ce_payload["result"]["session_marker"],
+                exec_payload["session_marker"],
+                "session_marker must match between exec and get-compile-errors",
+            )
+            self.assertGreater(ce_payload["result"]["total"], 0)
+
+            # get-compile-warnings should also work
+            cw_exit_code, cw_payload, _, _ = _run_cli(
+                [
+                    "get-compile-warnings",
+                    "--project-path", str(self.project_path),
+                    "--start", "0",
+                    "--count", "5",
+                ]
+            )
+            self.assertEqual(cw_exit_code, 0, cw_payload)
+            self.assertIn("result", cw_payload)
+            self.assertIn("session_marker", cw_payload["result"])
+
+        finally:
+            # Clean up the broken file and recompile to restore clean state
+            broken_cs.unlink(missing_ok=True)
+            _run_cli(
+                [
+                    "exec",
+                    "--project-path", str(self.project_path),
+                    "--unity-exe-path", str(self.unity_exe_path),
+                    "--wait-timeout-ms", str(WAIT_TIMEOUT_MS),
+                    "--refresh-before-exec",
+                    "--code", "export default function run(ctx) { return { ok: true }; }",
+                ]
+            )
+
+    def test_compile_error_safe_mode_is_transparent_against_real_host(self):
+        """When Unity enters Safe Mode, exec surfaces compile errors (not modal_blocked)."""
+        ready_exit_code, ready_payload, _, _ = _warm_up_project_exec(self.project_path, self.unity_exe_path)
+        self.assertEqual(ready_exit_code, 0, ready_payload)
+
+        temp_dir = self.project_path / "Assets" / "__codex_validation_temp"
+        temp_dir.mkdir(parents=True, exist_ok=True)
+        broken_cs = temp_dir / "SafeModeTriggerTest.cs"
+        broken_cs.write_text(
+            "// Two deliberate errors to increase Safe Mode likelihood\n"
+            "public class SafeModeTriggerTest : NonExistentBase {\n"
+            "    public void Broken1() { UndeclaredVariable; }\n"
+            "    public void Broken2() { AnotherMissing + = 1; }\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        try:
+            exec_exit_code, exec_payload, _, _ = _run_cli(
+                [
+                    "exec",
+                    "--project-path", str(self.project_path),
+                    "--unity-exe-path", str(self.unity_exe_path),
+                    "--wait-timeout-ms", str(WAIT_TIMEOUT_MS),
+                    "--refresh-before-exec",
+                    "--code", "export default function run(ctx) { return { ok: true }; }",
+                ]
+            )
+            if unity_puer_exec_runtime._running_or_timed_out_response(
+                exec_exit_code, json.dumps(exec_payload) if exec_payload else ""
+            ):
+                exec_exit_code, exec_payload, _, _ = _run_cli(
+                    [
+                        "wait-for-exec",
+                        "--project-path", str(self.project_path),
+                        "--unity-exe-path", str(self.unity_exe_path),
+                        "--request-id", exec_payload["request_id"],
+                        "--wait-timeout-ms", str(READY_TIMEOUT_SECONDS * 1000),
+                    ]
+                )
+
+            # The response should be unity_compile_error, never modal_blocked
+            self.assertIn(
+                exec_exit_code,
+                {unity_puer_exec.EXIT_UNITY_COMPILE_ERROR, 0},
+                "Safe Mode should surface as unity_compile_error, not modal_blocked."
+                " Payload: {}".format(exec_payload),
+            )
+            if exec_exit_code == unity_puer_exec.EXIT_UNITY_COMPILE_ERROR:
+                self.assertEqual(exec_payload["status"], "unity_compile_error")
+                self.assertGreater(exec_payload["compile_errors_total"], 0)
+
+        finally:
+            broken_cs.unlink(missing_ok=True)
+            _run_cli(
+                [
+                    "exec",
+                    "--project-path", str(self.project_path),
+                    "--unity-exe-path", str(self.unity_exe_path),
+                    "--wait-timeout-ms", str(WAIT_TIMEOUT_MS),
+                    "--refresh-before-exec",
+                    "--code", "export default function run(ctx) { return { ok: true }; }",
+                ]
+            )
+
+
 if __name__ == "__main__":
     unittest.main()
