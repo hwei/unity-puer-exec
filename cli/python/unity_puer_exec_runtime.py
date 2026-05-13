@@ -1374,6 +1374,9 @@ def _extract_compile_errors_from_log(log_path, max_errors=20):
             col = int(m.group(3))
             code = m.group(4)  # may be None for uncoded errors
             msg = m.group(5)
+            # Strip leading ": " when no error code was matched
+            if msg and msg.startswith(": "):
+                msg = msg[2:]
             # Collect continuation lines (indented, not a new error)
             i += 1
             while i < len(lines) and lines[i].startswith((" ", "\t")) and not error_pattern.match(lines[i].strip()):

@@ -6,11 +6,11 @@ import time
 WINDOWS_DIALOG_SPECS = {
     "Scene(s) Have Been Modified": {
         "type": "save_modified_scenes_prompt",
-        "cancel_labels": ("&Cancel", "Cancel", "取消"),
+        "cancel_labels": ("&Cancel", "Cancel", "鍙栨秷"),
     },
     "Save Scene": {
         "type": "save_scene_dialog",
-        "cancel_labels": ("&Cancel", "Cancel", "取消"),
+        "cancel_labels": ("&Cancel", "Cancel", "鍙栨秷"),
     },
     "Enter Safe Mode?": {
         "type": "safe_mode_dialog",
