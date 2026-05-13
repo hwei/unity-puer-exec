@@ -1757,6 +1757,7 @@ class UnityPuerExecCliTests(unittest.TestCase):
             self.assertEqual(body["operation"], "wait-for-result-marker")
             self.assertIn("log_range", body)
             self.assertIn("brief_sequence", body)
+
     def test_get_compile_errors_rejects_negative_start(self):
         """get-compile-errors rejects negative --start values."""
         # argparse accepts -1 as a valid integer; the runtime handler validates it
@@ -1768,7 +1769,7 @@ class UnityPuerExecCliTests(unittest.TestCase):
         self.assertEqual(args.start, -1)
         # Runtime validation rejects negative start
         with self.assertRaises(ValueError):
-            unity_puer_exec_runtime.validate_non_negative(-1, "start")
+            unity_puer_exec_runtime.run_get_compile_errors(args)
 
     def test_get_compile_errors_rejects_out_of_range_count(self):
         """get-compile-errors rejects --count values outside [1, 100]."""
@@ -1813,85 +1814,6 @@ class UnityPuerExecCliTests(unittest.TestCase):
 
         args = parser.parse_args(["get-compile-warnings", "--base-url", "http://127.0.0.1:55231"])
         self.assertEqual(args.command, "get-compile-warnings")
-
-    # --- _extract_compile_errors_from_log ---
-
-    def test_extract_compile_errors_standard_csharp_error(self):
-        import tempfile, os
-        content = "Assets/Scripts/Foo.cs(10,5): error CS1003: Syntax error, ',' expected\n"
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".log", delete=False, encoding="utf-8") as f:
-            f.write(content)
-            f.flush()
-            result = unity_puer_exec_runtime._extract_compile_errors_from_log(f.name)
-        os.unlink(f.name)
-        self.assertIsNotNone(result)
-        self.assertEqual(result["total_errors"], 1)
-        self.assertEqual(result["errors"][0]["file"], "Assets/Scripts/Foo.cs")
-        self.assertEqual(result["errors"][0]["line"], 10)
-        self.assertEqual(result["errors"][0]["column"], 5)
-        self.assertEqual(result["errors"][0]["code"], "CS1003")
-        self.assertIn("Syntax error", result["errors"][0]["message"])
-
-    def test_extract_compile_errors_uncoded_error(self):
-        import tempfile, os
-        content = "Packages/com.x/Editor/Foo.cs(3,1): error : Some message\n"
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".log", delete=False, encoding="utf-8") as f:
-            f.write(content)
-            f.flush()
-            result = unity_puer_exec_runtime._extract_compile_errors_from_log(f.name)
-        os.unlink(f.name)
-        self.assertIsNotNone(result)
-        self.assertEqual(result["total_errors"], 1)
-        self.assertEqual(result["errors"][0]["file"], "Packages/com.x/Editor/Foo.cs")
-        self.assertEqual(result["errors"][0]["code"], None)
-        self.assertEqual(result["errors"][0]["message"], "Some message")
-
-    def test_extract_compile_errors_windows_absolute_path(self):
-        import tempfile, os
-        content = "C:\\Project\\Assets\\Foo.cs(10,5): error CS1003: Syntax error\n"
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".log", delete=False, encoding="utf-8") as f:
-            f.write(content)
-            f.flush()
-            result = unity_puer_exec_runtime._extract_compile_errors_from_log(f.name)
-        os.unlink(f.name)
-        self.assertIsNotNone(result)
-        self.assertIn("C:", result["errors"][0]["file"])
-        self.assertTrue(result["errors"][0]["file"].endswith("Foo.cs"))
-
-    def test_extract_compile_errors_multiline(self):
-        import tempfile, os
-        content = (
-            "Assets/Foo.cs(5,1): error CS1234: First line\n"
-            "  Second line continuation\n"
-            "  Third line continuation\n"
-        )
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".log", delete=False, encoding="utf-8") as f:
-            f.write(content)
-            f.flush()
-            result = unity_puer_exec_runtime._extract_compile_errors_from_log(f.name)
-        os.unlink(f.name)
-        self.assertIsNotNone(result)
-        self.assertEqual(result["total_errors"], 1)
-        self.assertIn("Second line continuation", result["errors"][0]["message"])
-        self.assertIn("Third line continuation", result["errors"][0]["message"])
-
-    def test_extract_compile_errors_no_errors(self):
-        import tempfile, os
-        content = "Some random log line\nAnother line with warning CS1234: blah\n"
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".log", delete=False, encoding="utf-8") as f:
-            f.write(content)
-            f.flush()
-            result = unity_puer_exec_runtime._extract_compile_errors_from_log(f.name)
-        os.unlink(f.name)
-        self.assertIsNone(result)
-
-    def test_extract_compile_errors_nonexistent_file(self):
-        result = unity_puer_exec_runtime._extract_compile_errors_from_log("/nonexistent/path.log")
-        self.assertIsNone(result)
-
-    def test_extract_compile_errors_none_path(self):
-        result = unity_puer_exec_runtime._extract_compile_errors_from_log(None)
-        self.assertIsNone(result)
 
     # --- _extract_compile_errors_from_log ---
 
