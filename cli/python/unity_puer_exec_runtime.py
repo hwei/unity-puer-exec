@@ -1274,6 +1274,7 @@ def _run_get_compile_messages(args, command_name):
         "start": body.get("start", 0),
         "returned": body.get("returned", 0),
         "messages": body.get("messages", []),
+        "session_marker": body.get("session_marker", ""),
     }
     response = success_payload(
         command_name,
@@ -1356,24 +1357,39 @@ def _extract_compile_errors_from_log(log_path, max_errors=20):
             lines = f.readlines()
     except (OSError, IOError):
         return None
+    # Matches: file(line,col): error [CODE]: message
+    # Error code (e.g. CS1003) is optional; some Unity errors omit it.
+    # The +? on the file path is non-greedy so paths with parentheses still match.
     error_pattern = re.compile(
-        r"^(.+?)\((\d+),(\d+)\):\s*error\s+CS(\d+):\s*(.+)$"
+        r"^(.+?)\((\d+),(\d+)\):\s*error\s+(?:([A-Z]+\d+):\s*)?(.+)$"
     )
     errors = []
-    warnings = []
-    for line in lines:
-        m = error_pattern.match(line.strip())
+    i = 0
+    while i < len(lines):
+        line = lines[i].rstrip("\n\r")
+        m = error_pattern.match(line)
         if m:
+            filepath = m.group(1)
+            line_no = int(m.group(2))
+            col = int(m.group(3))
+            code = m.group(4)  # may be None for uncoded errors
+            msg = m.group(5)
+            # Collect continuation lines (indented, not a new error)
+            i += 1
+            while i < len(lines) and lines[i].startswith((" ", "\t")) and not error_pattern.match(lines[i].strip()):
+                continuation = lines[i].rstrip("\n\r")
+                if continuation.strip():
+                    msg += "\n" + continuation.strip()
+                i += 1
             errors.append({
-                "file": m.group(1),
-                "line": int(m.group(2)),
-                "column": int(m.group(3)),
-                "code": "CS" + m.group(4),
-                "message": m.group(5),
+                "file": filepath,
+                "line": line_no,
+                "column": col,
+                "code": code or None,
+                "message": msg,
             })
-        elif " warning CS" in line and line.strip().endswith(")"):
-            # Simpler warning pattern
-            pass
+        else:
+            i += 1
     if not errors:
         return None
     return {

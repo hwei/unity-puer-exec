@@ -647,7 +647,7 @@ namespace UnityPuerExec
                 snapshot = _compileErrors.Skip(start).Take(count).ToList();
             }
 
-            var payload = UnityPuerExecProtocol.BuildCompileMessagesResponseJson(snapshot, total, start, snapshot.Count);
+            var payload = UnityPuerExecProtocol.BuildCompileMessagesResponseJson(snapshot, total, start, snapshot.Count, sessionMarker);
             await WriteJsonAsync(context, payload);
         }
 
@@ -666,7 +666,7 @@ namespace UnityPuerExec
                 snapshot = _compileWarnings.Skip(start).Take(count).ToList();
             }
 
-            var payload = UnityPuerExecProtocol.BuildCompileMessagesResponseJson(snapshot, total, start, snapshot.Count);
+            var payload = UnityPuerExecProtocol.BuildCompileMessagesResponseJson(snapshot, total, start, snapshot.Count, sessionMarker);
             await WriteJsonAsync(context, payload);
         }
 

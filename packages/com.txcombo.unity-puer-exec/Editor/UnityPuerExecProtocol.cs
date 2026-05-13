@@ -355,6 +355,7 @@ namespace UnityPuerExec
             int total,
             int start,
             int returned
+            , string sessionMarker = ""
         )
         {
             return "{" +
@@ -363,6 +364,7 @@ namespace UnityPuerExec
                    "\"total\":" + total + "," +
                    "\"start\":" + start + "," +
                    "\"returned\":" + returned + "," +
+                   "\"session_marker\":\"" + JsonEscape(sessionMarker) + "\"," +
                    "\"messages\":" + BuildCompileMessagesJson(messages ?? new System.Collections.Generic.List<CompilerMessage>()) +
                    "}";
         }

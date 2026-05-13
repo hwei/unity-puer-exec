@@ -6,16 +6,16 @@ import time
 WINDOWS_DIALOG_SPECS = {
     "Scene(s) Have Been Modified": {
         "type": "save_modified_scenes_prompt",
-        "cancel_labels": ("&Cancel", "Cancel", "鍙栨秷"),
+        "cancel_labels": ("&Cancel", "Cancel", "取消"),
     },
     "Save Scene": {
         "type": "save_scene_dialog",
-        "cancel_labels": ("&Cancel", "Cancel", "鍙栨秷"),
+        "cancel_labels": ("&Cancel", "Cancel", "取消"),
     },
     "Enter Safe Mode?": {
         "type": "safe_mode_dialog",
         "cancel_labels": ("&Enter Safe Mode", "Enter Safe Mode"),
-        "click_method": "mouse_event",
+        "click_method": "keyboard",
     },
 }
 
@@ -236,6 +236,8 @@ def _click_cancel_button(dialog):
     click_method = dialog.get("click_method", "bm_click")
     if click_method == "mouse_event":
         return _click_via_mouse_event(cancel_hwnd)
+    if click_method == "keyboard":
+        return _click_via_keyboard(dialog["hwnd"])
     user32, wintypes, ctypes = _load_win32_modules()
     send_message = user32.SendMessageW
     send_message.restype = wintypes.LPARAM
@@ -270,6 +272,27 @@ def _click_via_mouse_event(hwnd):
     mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
     time.sleep(0.08)
     mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+    return True
+
+
+def _click_via_keyboard(dialog_hwnd):
+    """Dismiss a dialog by sending Enter key to activate the default button."""
+    user32, wintypes, ctypes = _load_win32_modules()
+    set_foreground = user32.SetForegroundWindow
+    set_foreground.restype = wintypes.BOOL
+    set_foreground.argtypes = [wintypes.HWND]
+    keybd_event = user32.keybd_event
+    keybd_event.restype = None
+    keybd_event.argtypes = [wintypes.BYTE, wintypes.BYTE, wintypes.DWORD, wintypes.DWORD]
+    # Bring dialog to foreground so it receives keyboard input
+    set_foreground(dialog_hwnd)
+    import time
+    time.sleep(0.15)
+    VK_RETURN = 0x0D
+    KEYEVENTF_KEYUP = 0x0002
+    keybd_event(VK_RETURN, 0, 0, 0)
+    time.sleep(0.05)
+    keybd_event(VK_RETURN, 0, KEYEVENTF_KEYUP, 0)
     return True
 
 
