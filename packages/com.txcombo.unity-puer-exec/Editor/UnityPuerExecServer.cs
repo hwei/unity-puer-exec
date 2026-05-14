@@ -279,9 +279,9 @@ namespace UnityPuerExec
 
         private static void OnCompilationStarted(object obj)
         {
-            _lastCompilationHadErrors = false;
             lock (_compileMessagesLock)
             {
+                _lastCompilationHadErrors = false;
                 _compileErrorCount = 0;
                 _compileWarningCount = 0;
                 _compileErrors.Clear();
@@ -296,25 +296,65 @@ namespace UnityPuerExec
                 return;
             }
 
+            var errors = new List<CompilerMessage>();
+            var warnings = new List<CompilerMessage>();
             foreach (var msg in messages)
             {
                 if (msg.type == CompilerMessageType.Error)
                 {
-                    Interlocked.Increment(ref _compileErrorCount);
-                    _lastCompilationHadErrors = true;
-                    lock (_compileMessagesLock)
-                    {
-                        _compileErrors.Add(msg);
-                    }
+                    errors.Add(msg);
                 }
                 else if (msg.type == CompilerMessageType.Warning)
                 {
-                    Interlocked.Increment(ref _compileWarningCount);
-                    lock (_compileMessagesLock)
-                    {
-                        _compileWarnings.Add(msg);
-                    }
+                    warnings.Add(msg);
                 }
+            }
+
+            if (errors.Count == 0 && warnings.Count == 0)
+            {
+                return;
+            }
+
+            lock (_compileMessagesLock)
+            {
+                if (errors.Count > 0)
+                {
+                    _compileErrors.AddRange(errors);
+                    _compileErrorCount += errors.Count;
+                    _lastCompilationHadErrors = true;
+                }
+
+                if (warnings.Count > 0)
+                {
+                    _compileWarnings.AddRange(warnings);
+                    _compileWarningCount += warnings.Count;
+                }
+            }
+        }
+
+        private static bool TrySnapshotCompileErrors(
+            out List<CompilerMessage> errorsSnapshot,
+            out List<CompilerMessage> warningsSnapshot,
+            out int errorCountSnapshot,
+            out int warningCountSnapshot
+        )
+        {
+            lock (_compileMessagesLock)
+            {
+                if (!_lastCompilationHadErrors)
+                {
+                    errorsSnapshot = null;
+                    warningsSnapshot = null;
+                    errorCountSnapshot = 0;
+                    warningCountSnapshot = 0;
+                    return false;
+                }
+
+                errorCountSnapshot = _compileErrors.Count;
+                warningCountSnapshot = _compileWarnings.Count;
+                errorsSnapshot = new List<CompilerMessage>(_compileErrors);
+                warningsSnapshot = new List<CompilerMessage>(_compileWarnings);
+                return true;
             }
         }
 
@@ -486,20 +526,13 @@ namespace UnityPuerExec
                 return;
             }
 
-            if (_lastCompilationHadErrors && !request.refresh_before_exec)
+            if (!request.refresh_before_exec && TrySnapshotCompileErrors(
+                out var errorsSnapshot,
+                out var warningsSnapshot,
+                out var errorCountSnapshot,
+                out var warningCountSnapshot
+            ))
             {
-                List<CompilerMessage> errorsSnapshot;
-                List<CompilerMessage> warningsSnapshot;
-                int errorCountSnapshot;
-                int warningCountSnapshot;
-                lock (_compileMessagesLock)
-                {
-                    errorCountSnapshot = _compileErrors.Count;
-                    warningCountSnapshot = _compileWarnings.Count;
-                    errorsSnapshot = new List<CompilerMessage>(_compileErrors);
-                    warningsSnapshot = new List<CompilerMessage>(_compileWarnings);
-                }
-
                 var compilePayload = UnityPuerExecProtocol.BuildCompileErrorResponseJson(
                     request.request_id,
                     hasErrors: true,
@@ -685,20 +718,13 @@ namespace UnityPuerExec
             }
 
 
-            if (_lastCompilationHadErrors)
+            if (TrySnapshotCompileErrors(
+                out var errorsSnapshot,
+                out var warningsSnapshot,
+                out var errorCountSnapshot,
+                out var warningCountSnapshot
+            ))
             {
-                List<CompilerMessage> errorsSnapshot;
-                List<CompilerMessage> warningsSnapshot;
-                int errorCountSnapshot;
-                int warningCountSnapshot;
-                lock (_compileMessagesLock)
-                {
-                    errorCountSnapshot = _compileErrors.Count;
-                    warningCountSnapshot = _compileWarnings.Count;
-                    errorsSnapshot = new List<CompilerMessage>(_compileErrors);
-                    warningsSnapshot = new List<CompilerMessage>(_compileWarnings);
-                }
-
                 var compilePayload = UnityPuerExecProtocol.BuildCompileErrorResponseJson(
                     request.request_id,
                     hasErrors: true,
