@@ -1437,6 +1437,9 @@ def _normalize_exec_blocker_result(exit_code, stdout_text, stderr_text, session,
             "ok": False,
             "status": "unity_compile_error",
             "request_id": body.get("request_id"),
+            "compile_errors_total": 0,
+            "compile_warnings_total": 0,
+            "compile_messages": [],
         }
         if compile_info:
             normalized["compile_errors_total"] = compile_info["total_errors"]

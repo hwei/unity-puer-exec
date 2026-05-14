@@ -1214,6 +1214,39 @@ class UnityPuerExecCliTests(unittest.TestCase):
         self.assertEqual(body["status"], "modal_blocked")
         self.assertEqual(body["blocker"]["type"], "save_modified_scenes_prompt")
 
+    def test_safe_mode_compile_error_shape_is_stable_without_log_matches(self):
+        session = _make_session()
+        stdout_text = json.dumps({"ok": True, "status": "running", "request_id": "req-safe"})
+        with mock.patch.object(
+            unity_puer_exec_runtime.unity_modal_blockers,
+            "detect_modal_blocker",
+            return_value={"type": "safe_mode_dialog", "scope": "exec"},
+        ), mock.patch.object(
+            unity_puer_exec_runtime.unity_modal_blockers,
+            "resolve_modal_blocker",
+            return_value={"ok": True, "status": "completed"},
+        ), mock.patch.object(
+            unity_puer_exec_runtime,
+            "_extract_compile_errors_from_log",
+            return_value=None,
+        ):
+            exit_code, stdout, stderr = unity_puer_exec_runtime._normalize_exec_blocker_result(
+                unity_puer_exec.EXIT_RUNNING,
+                stdout_text,
+                "",
+                session,
+                log_path="Editor.log",
+            )
+
+        self.assertEqual(exit_code, unity_puer_exec.direct_exec_client.EXIT_UNITY_COMPILE_ERROR)
+        self.assertEqual(stderr, "")
+        body = json.loads(stdout)
+        self.assertEqual(body["status"], "unity_compile_error")
+        self.assertEqual(body["request_id"], "req-safe")
+        self.assertEqual(body["compile_errors_total"], 0)
+        self.assertEqual(body["compile_warnings_total"], 0)
+        self.assertEqual(body["compile_messages"], [])
+
     def test_get_blocker_state_reports_no_blocker(self):
         with mock.patch.object(unity_session, "get_blocker_state", return_value=_make_session()), mock.patch.object(
             unity_puer_exec_runtime.unity_modal_blockers,
