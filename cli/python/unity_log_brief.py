@@ -5,6 +5,7 @@ Parses a byte range of the Unity Editor log into structured brief entries.
 Briefs are compact summaries of log entries with level (info/warning/error/unknown),
 line count, byte offsets, and a short text preview.
 """
+import re
 from pathlib import Path
 
 
@@ -32,12 +33,49 @@ def _compiler_line_level(line):
     return LEVEL_INFO
 
 
-def _runtime_entry_level(header_line):
+# Unity always emits a fully-qualified `UnityEngine.Debug:Log*` managed frame for
+# every Debug.Log* call (when stack-trace logging is enabled). The `UnityEngine.Debug`
+# + `:`/`.` separator anchor is what excludes the per-entry internal frames that are NOT
+# the level signal: `UnityEngine.DebugLogHandler:LogFormat` (no separator after `Debug`)
+# and `UnityEngine.Logger:Log` (not `Debug`). It also excludes user frames such as
+# `MyGame.Debug:LogError`. The optional `(?:Format)?` absorbs the `*Format` overloads.
+_DEBUG_FRAME_RE = re.compile(
+    r"UnityEngine\.Debug[:.]Log(Error|Warning|Exception|Assertion)?(?:Format)?\b"
+)
+# Uncaught exceptions surface with a bare `<Type>Exception:` header and no level marker.
+_EXCEPTION_HEADER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.]*Exception:")
+
+
+def _runtime_entry_level(header_line, entry_lines=None):
+    """Derive a runtime entry level, in priority order.
+
+    1. Explicit header marker (`[Error]`/`[Exception]`/`[Warning]`).
+    2. The entry's `UnityEngine.Debug:Log*` stack frame — the level the GUI
+       Editor.log carries when the header has no marker. Real GUI logs never
+       prefix the header, so without this the runtime path collapses to all-info.
+    3. A bare uncaught-exception header (`<Type>Exception:`).
+    4. Default `info`.
+
+    `entry_lines`, when provided, is the full raw-line span of the entry so the
+    frame scan stays bounded to this entry and cannot read a neighbor's frame.
+    """
     stripped = header_line.lstrip()
     if stripped.startswith("[Error]") or stripped.startswith("[Exception]"):
         return LEVEL_ERROR
     if stripped.startswith("[Warning]"):
         return LEVEL_WARNING
+    if entry_lines:
+        for entry_line in entry_lines:
+            match = _DEBUG_FRAME_RE.search(entry_line)
+            if match:
+                variant = match.group(1)
+                if variant in ("Error", "Exception", "Assertion"):
+                    return LEVEL_ERROR
+                if variant == "Warning":
+                    return LEVEL_WARNING
+                return LEVEL_INFO
+    if _EXCEPTION_HEADER_RE.match(stripped):
+        return LEVEL_ERROR
     return LEVEL_INFO
 
 
@@ -160,6 +198,12 @@ def _parse_chunk(chunk, base_offset):
         # (see openspec/specs/log-brief and Console > Stack Trace Logging) and
         # surfaced as a brief_sequence sentinel + hint in the exec/wait flow.
         # Unknown: lines that don't fit this pattern.
+        #
+        # Entry LEVEL is derived once the entry span is finalized (see
+        # _runtime_entry_level): header marker first, then the anchored
+        # UnityEngine.Debug:Log* frame inside the entry (GUI Editor.log carries no
+        # header prefix, so the frame is the level signal there), then a bare
+        # <Type>Exception: header, else info.
 
         if not stripped:
             # Blank line: check if it starts a new entry boundary
@@ -191,7 +235,7 @@ def _parse_chunk(chunk, base_offset):
         # Non-blank, non-indented line: start of a runtime log entry
         flush_unknown()
         entry_start = i
-        level = _runtime_entry_level(line)
+        header_line = line
         i += 1
         # Consume continuation lines: indented continuations, non-indented Unity stack
         # frames (which start at column 0), and the trailing "(Filename: ...)" footer
@@ -227,6 +271,10 @@ def _parse_chunk(chunk, base_offset):
                 i += 1
                 continue
         entry_end = i - 1
+        # Level is computed from the finalized entry span so the Debug:Log* frame
+        # (often below the header, e.g. under JS/native frames) is in scope, while
+        # the scan stays bounded to this entry's own lines.
+        level = _runtime_entry_level(header_line, raw_lines[entry_start:entry_end + 1])
         add_brief(level, entry_start, entry_end)
 
     flush_unknown()

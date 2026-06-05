@@ -252,6 +252,131 @@ class ParseLogBriefsTests(unittest.TestCase):
         finally:
             os.unlink(path)
 
+    def test_level_from_debug_frame_on_bare_header(self):
+        # GUI Editor.log carries no [Error]/[Warning] header prefix; the level
+        # lives in the UnityEngine.Debug:Log* frame. Each of the three maps.
+        for frame, expected in (
+            ("UnityEngine.Debug:LogError (object)", "error"),
+            ("UnityEngine.Debug:LogWarning (object)", "warning"),
+            ("UnityEngine.Debug:Log (object)", "info"),
+        ):
+            content = (
+                "bare header with no marker\n"
+                "UnityEngine.StackTraceUtility:ExtractStackTrace ()\n"
+                "UnityEngine.DebugLogHandler:LogFormat (UnityEngine.LogType,UnityEngine.Object,string,object[])\n"
+                "UnityEngine.Logger:Log (UnityEngine.LogType,object)\n"
+                f"{frame}\n"
+                "\n"
+                "(Filename: Assets/Foo.cs Line: 42)\n"
+            )
+            path = _write_log(content)
+            try:
+                size = os.path.getsize(path)
+                briefs = unity_log_brief.parse_log_briefs(path, 0, size)
+                self.assertEqual(len(briefs), 1)
+                self.assertEqual(briefs[0]["level"], expected, frame)
+            finally:
+                os.unlink(path)
+
+    def test_level_from_debug_frame_real_puer_shape(self):
+        # Real Puer/TS shape: bare header, indented JS frames carrying <a href>
+        # tags, then the non-indented C# frames with Debug:LogError below them.
+        # Level is error; grouping/line_count are unaffected by the inference.
+        content = (
+            "CurGuide already exists \n"
+            '    at Object.console.error (<a href="F:/g/log.ts" line="37" column="63">F:\\g\\log.ts:37:63</a>)\n'
+            '    at MgrGuide.EnterGuide (<a href="F:/g/guide.ts" line="320" column="21">F:\\g\\guide.ts:320:21</a>)\n'
+            "UnityEngine.StackTraceUtility:ExtractStackTrace ()\n"
+            "UnityEngine.DebugLogHandler:LogFormat (UnityEngine.LogType,UnityEngine.Object,string,object[])\n"
+            "UnityEngine.Logger:Log (UnityEngine.LogType,object)\n"
+            "UnityEngine.Debug:LogError (object)\n"
+            "(wrapper dynamic-method) object:Debug_m_LogError (System.Runtime.CompilerServices.Closure,intptr,intptr)\n"
+            "UnityEngine.AsyncOperation:InvokeCompletionEvent ()\n"
+        )
+        path = _write_log(content)
+        try:
+            size = os.path.getsize(path)
+            briefs = unity_log_brief.parse_log_briefs(path, 0, size)
+            self.assertEqual(len(briefs), 1)
+            self.assertEqual(briefs[0]["level"], "error")
+            # header + 2 JS frames + 3 internal frames + Debug:LogError + 2 trailing = 9
+            self.assertEqual(briefs[0]["line_count"], 9)
+        finally:
+            os.unlink(path)
+
+    def test_level_not_flipped_by_message_text_or_user_frame(self):
+        # No UnityEngine.Debug:Log* frame anywhere: a message that merely contains
+        # the word "Error" and a user-defined `MyGame.Debug:LogError` frame must
+        # NOT raise the level. The full-qualifier anchor is what protects this.
+        content = (
+            "Loaded resource without Error after retry\n"
+            "MyGame.Debug:LogError (string)\n"
+            "GameManager:Start () (at Assets/GameManager.cs:10)\n"
+            "\n"
+            "(Filename: Assets/GameManager.cs Line: 10)\n"
+        )
+        path = _write_log(content)
+        try:
+            size = os.path.getsize(path)
+            briefs = unity_log_brief.parse_log_briefs(path, 0, size)
+            self.assertEqual(len(briefs), 1)
+            self.assertEqual(briefs[0]["level"], "info")
+        finally:
+            os.unlink(path)
+
+    def test_uncaught_exception_header_is_error(self):
+        # A bare <Type>Exception: header with no Debug frame is classified error.
+        content = (
+            "NullReferenceException: Object reference not set to an instance of an object\n"
+            "GameManager:Start () (at Assets/GameManager.cs:10)\n"
+            "\n"
+            "(Filename: Assets/GameManager.cs Line: 10)\n"
+        )
+        path = _write_log(content)
+        try:
+            size = os.path.getsize(path)
+            briefs = unity_log_brief.parse_log_briefs(path, 0, size)
+            self.assertEqual(len(briefs), 1)
+            self.assertEqual(briefs[0]["level"], "error")
+        finally:
+            os.unlink(path)
+
+    def test_header_marker_still_takes_priority(self):
+        # An explicit [Warning] header wins even if a Debug:LogError frame is
+        # present (the header-marker path is checked first).
+        content = (
+            "[Warning] something\n"
+            "UnityEngine.Debug:LogError (object)\n"
+            "\n"
+            "(Filename: Assets/Foo.cs Line: 1)\n"
+        )
+        path = _write_log(content)
+        try:
+            size = os.path.getsize(path)
+            briefs = unity_log_brief.parse_log_briefs(path, 0, size)
+            self.assertEqual(len(briefs), 1)
+            self.assertEqual(briefs[0]["level"], "warning")
+        finally:
+            os.unlink(path)
+
+    def test_native_noise_block_stays_info(self):
+        # Domain-reload native noise has no Debug:Log* frame -> stays info,
+        # guarding against spurious flips from the inference.
+        content = (
+            "Mono: successfully reloaded assembly\n"
+            "- Finished resetting the current domain, in  3.694 seconds\n"
+            "Domain Reload Profiling: 4602ms\n"
+            "\tBeginReloadAssembly (192ms)"
+        )
+        path = _write_log(content)
+        try:
+            size = os.path.getsize(path)
+            briefs = unity_log_brief.parse_log_briefs(path, 0, size)
+            self.assertEqual(len(briefs), 1)
+            self.assertEqual(briefs[0]["level"], "info")
+        finally:
+            os.unlink(path)
+
     def test_multiple_entries(self):
         content = (
             "First info entry\n"

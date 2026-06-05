@@ -49,6 +49,7 @@ A bare header matching `^[A-Za-z_][A-Za-z0-9_.]*Exception:` is `error`, covering
 - [A user logs via a custom wrapper that bypasses `UnityEngine.Debug`] → No frame, falls back to `info` — same as today, no regression. The tool's own server and the observed JS path both route through `UnityEngine.Debug`.
 - [Stack-trace logging disabled] → No frame to read; entry defaults to `info`, and the existing `!stacktrace-off` sentinel already flags the whole window. No new blind spot.
 - [Exception-signature false positive on a message that legitimately starts `SomethingException:`] → Bounded: only the header line is tested and only the `…Exception:` shape; worst case an `info` line that genuinely names an exception reads as `error`, which is the conservative direction for a health indicator.
+- [A log *message* embeds the literal token `UnityEngine.Debug:LogError`] → It would match on the message line before the real frame. Documented, not engineered against: it never fired on the 1.5 MB validation log (recovered `error`/`warning` counts equalled the raw frame counts exactly, so no message text leaked), and an info→error read is the safe direction for a health indicator.
 
 ## Open Questions
 
