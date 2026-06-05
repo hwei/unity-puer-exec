@@ -281,6 +281,16 @@ namespace UnityPuerExec
                    "\",\"error\":\"" + JsonEscape(envInitError) + "\"}";
         }
 
+        internal static string BuildStackTraceLoggingJson(bool degraded, string log, string warning, string error)
+        {
+            return "\"stack_trace_logging\":{" +
+                   "\"degraded\":" + (degraded ? "true" : "false") + "," +
+                   "\"log\":\"" + JsonEscape(log) + "\"," +
+                   "\"warning\":\"" + JsonEscape(warning) + "\"," +
+                   "\"error\":\"" + JsonEscape(error) + "\"" +
+                   "}";
+        }
+
         internal static string JsonEscape(string value)
         {
             if (string.IsNullOrEmpty(value))

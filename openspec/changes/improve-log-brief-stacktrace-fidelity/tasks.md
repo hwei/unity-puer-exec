@@ -13,19 +13,19 @@
 
 ## 3. Stack-trace-disabled detection (C# side)
 
-- [ ] 3.1 Verify `Application.GetStackTraceLogType(LogType)` compiles on the validation host; confirm the `StackTraceLogType.{None,ScriptOnly,Full}` enum surface. Record the result and flip `meta.yaml` `assumption_state` to `valid` (or capture the blocker).
-- [ ] 3.2 In `UnityPuerExecServer.cs`, read `GetStackTraceLogType` for `LogType.Log`, `LogType.Warning`, `LogType.Error` and include them in the exec / wait-for-exec response payload (field name/shape finalized here per design Open Questions).
-- [ ] 3.3 Define the degraded condition as "any of the three == `None`" in one place so Python can consume a single boolean or derive it from the reported values.
+- [x] 3.1 Verify `Application.GetStackTraceLogType(LogType)` compiles on the validation host; confirm the `StackTraceLogType.{None,ScriptOnly,Full}` enum surface. Record the result and flip `meta.yaml` `assumption_state` to `valid` (or capture the blocker). — Verified on c3-client-tree2 (Unity 2022.3.62f2): batch compile green, only pre-existing JsEnv-obsolete warnings. `assumption_state` → `valid`, `evidence` → `host-validation`.
+- [x] 3.2 In `UnityPuerExecServer.cs`, read `GetStackTraceLogType` for `LogType.Log`, `LogType.Warning`, `LogType.Error` and include them in the exec / wait-for-exec response payload (field name/shape finalized here per design Open Questions). — Sampled on main thread in `OnEditorUpdate`/static-ctor, spliced centrally in `WriteJsonAsync` as `stack_trace_logging`.
+- [x] 3.3 Define the degraded condition as "any of the three == `None`" in one place so Python can consume a single boolean or derive it from the reported values. — `SampleStackTraceLogTypes` computes `_stackTraceLoggingDegraded`; reported as `stack_trace_logging.degraded`.
 
 ## 4. Degraded-state surfacing (Python flow)
 
-- [ ] 4.1 Choose the degraded `brief_sequence` sentinel token (outside the `I/W/E/?`+digits grammar) and the hint field name; document both.
-- [ ] 4.2 In `cli/python/unity_puer_exec_runtime.py` `_inject_log_range_into_payload` / `_inject_log_range_into_stdout`, when the payload reports degraded, set `brief_sequence` to the sentinel and add the hint field (enable `ScriptOnly`/`Full` via `Console ▸ Stack Trace Logging` or `Application.SetStackTraceLogType`).
-- [ ] 4.3 Leave standalone `get-log-briefs --range` unchanged behaviorally; update its help/contract text to note unreliability when stack-trace logging is disabled.
-- [ ] 4.4 Add runtime tests covering both branches: degraded payload → sentinel + hint; non-degraded payload → normal `brief_sequence`, no hint.
+- [x] 4.1 Choose the degraded `brief_sequence` sentinel token (outside the `I/W/E/?`+digits grammar) and the hint field name; document both. — Sentinel `!stacktrace-off`; hint field `brief_hint`.
+- [x] 4.2 In `cli/python/unity_puer_exec_runtime.py` `_inject_log_range_into_payload` / `_inject_log_range_into_stdout`, when the payload reports degraded, set `brief_sequence` to the sentinel and add the hint field (enable `ScriptOnly`/`Full` via `Console ▸ Stack Trace Logging` or `Application.SetStackTraceLogType`). — Shared `_apply_log_range_and_brief_sequence` helper.
+- [x] 4.3 Leave standalone `get-log-briefs --range` unchanged behaviorally; update its help/contract text to note unreliability when stack-trace logging is disabled. — Added a note to the `get-log-briefs` quick_start in `help_surface.py`.
+- [x] 4.4 Add runtime tests covering both branches: degraded payload → sentinel + hint; non-degraded payload → normal `brief_sequence`, no hint. — `StackTraceDegradedBriefSequenceTests` (degraded, not-degraded, missing-field backward-compat, stdout round-trip).
 
 ## 5. Spec sync & closeout
 
-- [ ] 5.1 Ensure the implementation matches `specs/log-brief/spec.md` deltas (modified grouping requirement + added degraded-detection requirement, including the sentinel/hint scenarios).
-- [ ] 5.2 Run the full Python test suite; confirm green.
+- [x] 5.1 Ensure the implementation matches `specs/log-brief/spec.md` deltas (modified grouping requirement + added degraded-detection requirement, including the sentinel/hint scenarios).
+- [x] 5.2 Run the full Python test suite; confirm green. — Default suite: 249 tests OK.
 - [ ] 5.3 Apply closeout: write the explicit finding summary (`No new follow-up work identified` or `New follow-up candidates identified` with categories) per the apply-closeout-review spec, and recommend (do not auto-run) the `git commit` / `openspec archive` / final `git commit` sequence.

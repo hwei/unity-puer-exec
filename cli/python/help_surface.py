@@ -174,6 +174,7 @@ COMMAND_HELP = {
             "`unity-puer-exec get-log-briefs --project-path X:/project --range 12345-18920`",
             "Use the `log_range.start` and `log_range.end` values from an `exec` or `wait-for-exec` response to scope the range.",
             "Check `brief_sequence` in the exec response first; call `get-log-briefs` only when you need structured detail beyond what the sequence string provides.",
+            "Brief grouping relies on Unity stack-trace logging being enabled (ScriptOnly/Full). When it is disabled (StackTraceLogType.None), log entries lose their delimiters and briefs are unreliable; this standalone command parses the raw range and cannot detect that, whereas exec / wait-for-exec report it via `stack_trace_logging.degraded` and a `!stacktrace-off` brief_sequence.",
         ],
         "related_workflows": (),
         "args": {

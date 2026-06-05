@@ -49,7 +49,9 @@ The C# server adds the three `StackTraceLogType` values to its exec/wait respons
 - [Native-noise blocks merge into one coarse brief] → Accepted non-goal. Errors/warnings in the stack-trace-ON format are always preceded by the post-footer blank, so the merge cannot swallow a real `[Error]`/`[Warning]` boundary. The only case where a level is silently lost is precisely stack-trace-OFF — which Decision 2/3 now flags explicitly. A dedicated test pins this boundary.
 - [Sentinel collides with future encoding] → Choose a sentinel outside the `I/W/E/?`+digits grammar and assert it in tests.
 
-## Open Questions
+## Resolved (during apply)
 
-- Final payload field name/shape for the C# report (resolve in apply against the current response schema).
-- Exact sentinel token and hint-field name (resolve in apply; must be covered by spec scenarios + tests).
+- **Payload field shape**: nested `"stack_trace_logging": {"degraded": <bool>, "log": "<None|ScriptOnly|Full>", "warning": "...", "error": "..."}`. C# computes `degraded` (any level == `None`); the per-level values are carried for transparency. Python reads `payload["stack_trace_logging"]["degraded"]`; absent field ⇒ treated as not degraded (backward compatible).
+- **Sentinel + hint**: when degraded, `brief_sequence` is set to the literal `"!stacktrace-off"` (outside the `I/W/E/?`+digits grammar) and a `brief_hint` field carries: "Enable ScriptOnly/Full stack trace logging (Console > Stack Trace Logging or Application.SetStackTraceLogType) for meaningful log briefs."
+- **Injection point (C#)**: `stack_trace_logging` is spliced centrally in `WriteJsonAsync` so every response carries it, avoiding edits to each hand-built JSON branch. Because `Application.GetStackTraceLogType` is treated as main-thread-only, the three values are sampled on the main thread in `OnEditorUpdate` and cached in volatile static fields; `WriteJsonAsync` (listener thread) reads the cached snapshot.
+- **Injection point (Python)**: the degraded check + sentinel/hint live in `_inject_log_range_into_stdout` / `_inject_log_range_into_payload`, the single choke points that already attach `brief_sequence`.

@@ -95,20 +95,42 @@ def _capture_log_offset(log_path):
     return size if size is not None else 0
 
 
+# brief_sequence sentinel + operator hint emitted when the Unity host reports that
+# stack-trace logging is disabled. Without stack traces, runtime log briefs cannot
+# reliably delimit entries (see openspec/specs/log-brief), so a real brief_sequence
+# would be misleading. The C# server reports the condition via stack_trace_logging.degraded.
+_BRIEF_SEQUENCE_STACKTRACE_OFF = "!stacktrace-off"
+_BRIEF_HINT_STACKTRACE_OFF = (
+    "Enable ScriptOnly/Full stack trace logging (Console > Stack Trace Logging or "
+    "Application.SetStackTraceLogType) for meaningful log briefs."
+)
+
+
+def _stack_trace_logging_degraded(container):
+    stack_trace_logging = container.get("stack_trace_logging")
+    return isinstance(stack_trace_logging, dict) and bool(stack_trace_logging.get("degraded"))
+
+
+def _apply_log_range_and_brief_sequence(container, log_path, log_start, log_end):
+    container["log_range"] = {"start": log_start, "end": log_end}
+    if _stack_trace_logging_degraded(container):
+        container["brief_sequence"] = _BRIEF_SEQUENCE_STACKTRACE_OFF
+        container["brief_hint"] = _BRIEF_HINT_STACKTRACE_OFF
+        return
+    briefs = unity_log_brief.parse_log_briefs(log_path, log_start, log_end)
+    container["brief_sequence"] = unity_log_brief.build_brief_sequence(briefs)
+
+
 def _inject_log_range_into_stdout(stdout_text, log_path, log_start, log_end):
     if not stdout_text:
         return stdout_text
     body = json.loads(stdout_text)
-    body["log_range"] = {"start": log_start, "end": log_end}
-    briefs = unity_log_brief.parse_log_briefs(log_path, log_start, log_end)
-    body["brief_sequence"] = unity_log_brief.build_brief_sequence(briefs)
+    _apply_log_range_and_brief_sequence(body, log_path, log_start, log_end)
     return emit_payload(body)
 
 
 def _inject_log_range_into_payload(payload, log_path, log_start, log_end):
-    payload["log_range"] = {"start": log_start, "end": log_end}
-    briefs = unity_log_brief.parse_log_briefs(log_path, log_start, log_end)
-    payload["brief_sequence"] = unity_log_brief.build_brief_sequence(briefs)
+    _apply_log_range_and_brief_sequence(payload, log_path, log_start, log_end)
 
 
 def resolve_selector(args):

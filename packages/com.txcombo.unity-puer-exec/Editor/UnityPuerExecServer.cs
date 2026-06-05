@@ -171,6 +171,15 @@ namespace UnityPuerExec
         private static volatile bool isCompiling;
         private static volatile bool isUpdating;
 
+        // Stack-trace logging snapshot. Application.GetStackTraceLogType is treated as
+        // main-thread-only, so these are sampled in OnEditorUpdate (main thread) and read
+        // from WriteJsonAsync on the listener thread. When any log type is None, runtime
+        // log briefs cannot reliably delimit entries (see openspec/specs/log-brief).
+        private static volatile string _stackTraceLogTypeLog = "Unknown";
+        private static volatile string _stackTraceLogTypeWarning = "Unknown";
+        private static volatile string _stackTraceLogTypeError = "Unknown";
+        private static volatile bool _stackTraceLoggingDegraded;
+
 
         private static volatile bool _lastCompilationHadErrors;
         private static int _compileErrorCount;
@@ -182,6 +191,7 @@ namespace UnityPuerExec
         static UnityPuerExecServer()
         {
             mainThreadId = Thread.CurrentThread.ManagedThreadId;
+            SampleStackTraceLogTypes();
             EditorApplication.update += OnEditorUpdate;
             AssemblyReloadEvents.beforeAssemblyReload += Stop;
             EditorApplication.quitting += Stop;
@@ -762,9 +772,34 @@ namespace UnityPuerExec
             return await reader.ReadToEndAsync();
         }
 
+        // Splice the cached stack_trace_logging snapshot into every JSON object response
+        // so callers (e.g. the CLI brief surface) can detect when stack-trace logging is
+        // disabled. Centralized here to avoid editing each hand-built response branch.
+        private static string InjectStackTraceLogging(string payload)
+        {
+            if (string.IsNullOrEmpty(payload) || payload[0] != '{')
+            {
+                return payload;
+            }
+            if (payload.IndexOf("\"stack_trace_logging\"", StringComparison.Ordinal) >= 0)
+            {
+                return payload;
+            }
+            var field = UnityPuerExecProtocol.BuildStackTraceLoggingJson(
+                _stackTraceLoggingDegraded,
+                _stackTraceLogTypeLog,
+                _stackTraceLogTypeWarning,
+                _stackTraceLogTypeError);
+            if (payload == "{}")
+            {
+                return "{" + field + "}";
+            }
+            return "{" + field + "," + payload.Substring(1);
+        }
+
         private static async Task WriteJsonAsync(HttpListenerContext context, string payload)
         {
-            var bytes = Encoding.UTF8.GetBytes(payload);
+            var bytes = Encoding.UTF8.GetBytes(InjectStackTraceLogging(payload));
             context.Response.ContentType = "application/json; charset=utf-8";
             context.Response.ContentLength64 = bytes.LongLength;
             await context.Response.OutputStream.WriteAsync(bytes, 0, bytes.Length);
@@ -996,10 +1031,28 @@ namespace UnityPuerExec
             EnsureJsEnv();
         }
 
+        // Must be called on the main thread (Application.GetStackTraceLogType is
+        // main-thread-only). Caches the per-LogType stack-trace setting so the listener
+        // thread can report it without touching the Unity API off-thread.
+        private static void SampleStackTraceLogTypes()
+        {
+            var log = Application.GetStackTraceLogType(LogType.Log);
+            var warning = Application.GetStackTraceLogType(LogType.Warning);
+            var error = Application.GetStackTraceLogType(LogType.Error);
+            _stackTraceLogTypeLog = log.ToString();
+            _stackTraceLogTypeWarning = warning.ToString();
+            _stackTraceLogTypeError = error.ToString();
+            _stackTraceLoggingDegraded =
+                log == StackTraceLogType.None
+                || warning == StackTraceLogType.None
+                || error == StackTraceLogType.None;
+        }
+
         private static void OnEditorUpdate()
         {
             isCompiling = EditorApplication.isCompiling;
             isUpdating = EditorApplication.isUpdating;
+            SampleStackTraceLogTypes();
             RefreshConsoleLogPathCache();
 
             while (MainThreadActions.TryDequeue(out var action))

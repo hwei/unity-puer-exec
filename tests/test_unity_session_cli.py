@@ -1608,8 +1608,10 @@ class UnityPuerExecCliTests(unittest.TestCase):
         """Compact brief_sequence stays faithful as observed log activity accumulates."""
         with tempfile.TemporaryDirectory() as temp_dir:
             log_path = Path(temp_dir) / "Editor.log"
+            # Blank lines separate runtime entries (the boundary the parser keys on);
+            # without them consecutive non-indented lines are one merged brief.
             log_path.write_text(
-                "Loading module assembly\nInitializing engine\nCompiling scripts\n",
+                "Loading module assembly\n\nInitializing engine\n\nCompiling scripts\n",
                 encoding="utf-8",
             )
 
@@ -1641,7 +1643,7 @@ class UnityPuerExecCliTests(unittest.TestCase):
                 # Append more log content
                 with log_path.open("a", encoding="utf-8") as f:
                     f.write(
-                        "Refreshing assets\n[Warning] Shader compilation slow\n"
+                        "\nRefreshing assets\n\n[Warning] Shader compilation slow\n\n"
                         "[Error] NullReferenceException\n  at Foo.Bar()\n"
                     )
 
@@ -2054,6 +2056,96 @@ class DynamicEndpointRoutingTests(unittest.TestCase):
 
             # ensure_session_ready uses the default base_url (preferred port) as fallback
             self.assertEqual(ensure_session_ready.call_count, 1)
+
+
+class StackTraceDegradedBriefSequenceTests(unittest.TestCase):
+    """When the host reports stack_trace_logging.degraded, the brief surface emits a
+    sentinel + hint instead of a misleading brief_sequence."""
+
+    def _write_log(self, content):
+        fd, path = tempfile.mkstemp(suffix=".log")
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(content)
+        self.addCleanup(lambda: os.path.exists(path) and os.unlink(path))
+        return path
+
+    def test_payload_degraded_emits_sentinel_and_hint(self):
+        log_path = self._write_log("[UnityPuerExec] one\n[UnityPuerExec] two\n")
+        payload = {
+            "ok": True,
+            "status": "completed",
+            "stack_trace_logging": {
+                "degraded": True,
+                "log": "None",
+                "warning": "ScriptOnly",
+                "error": "ScriptOnly",
+            },
+        }
+        unity_puer_exec_runtime._inject_log_range_into_payload(
+            payload, log_path, 0, os.path.getsize(log_path)
+        )
+        self.assertEqual(
+            payload["brief_sequence"],
+            unity_puer_exec_runtime._BRIEF_SEQUENCE_STACKTRACE_OFF,
+        )
+        self.assertIn("brief_hint", payload)
+        self.assertIn("stack trace logging", payload["brief_hint"].lower())
+        self.assertEqual(payload["log_range"], {"start": 0, "end": os.path.getsize(log_path)})
+
+    def test_payload_not_degraded_computes_normal_sequence(self):
+        log_path = self._write_log("[UnityPuerExec] hello\n")
+        payload = {
+            "ok": True,
+            "status": "completed",
+            "stack_trace_logging": {
+                "degraded": False,
+                "log": "ScriptOnly",
+                "warning": "ScriptOnly",
+                "error": "ScriptOnly",
+            },
+        }
+        unity_puer_exec_runtime._inject_log_range_into_payload(
+            payload, log_path, 0, os.path.getsize(log_path)
+        )
+        self.assertNotEqual(
+            payload["brief_sequence"],
+            unity_puer_exec_runtime._BRIEF_SEQUENCE_STACKTRACE_OFF,
+        )
+        self.assertNotIn("brief_hint", payload)
+
+    def test_missing_field_is_treated_as_not_degraded(self):
+        # Backward compatibility: an older host with no stack_trace_logging field
+        # must still produce a normal brief_sequence, never the sentinel.
+        log_path = self._write_log("[UnityPuerExec] hello\n")
+        payload = {"ok": True, "status": "completed"}
+        unity_puer_exec_runtime._inject_log_range_into_payload(
+            payload, log_path, 0, os.path.getsize(log_path)
+        )
+        self.assertNotEqual(
+            payload["brief_sequence"],
+            unity_puer_exec_runtime._BRIEF_SEQUENCE_STACKTRACE_OFF,
+        )
+        self.assertNotIn("brief_hint", payload)
+
+    def test_stdout_injection_degraded_round_trips_sentinel(self):
+        log_path = self._write_log("[UnityPuerExec] one\n[UnityPuerExec] two\n")
+        stdout_text = json.dumps(
+            {
+                "ok": True,
+                "status": "completed",
+                "stack_trace_logging": {"degraded": True, "log": "None",
+                                        "warning": "None", "error": "None"},
+            }
+        )
+        result = unity_puer_exec_runtime._inject_log_range_into_stdout(
+            stdout_text, log_path, 0, os.path.getsize(log_path)
+        )
+        body = json.loads(result)
+        self.assertEqual(
+            body["brief_sequence"],
+            unity_puer_exec_runtime._BRIEF_SEQUENCE_STACKTRACE_OFF,
+        )
+        self.assertIn("brief_hint", body)
 
 
 if __name__ == "__main__":
