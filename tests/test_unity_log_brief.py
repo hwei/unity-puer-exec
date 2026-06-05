@@ -127,6 +127,52 @@ class ParseLogBriefsTests(unittest.TestCase):
         finally:
             os.unlink(path)
 
+    def test_unity_style_non_indented_stacktrace(self):
+        # Unity Debug.Log format: non-indented stack frames + blank + (Filename:) footer.
+        # Each [Message] line is one logical log entry regardless of how many stack
+        # frame lines follow it.
+        content = (
+            "[UnityPuerExec] Exec accepted\n"
+            "UnityEngine.StackTraceUtility:ExtractStackTrace ()\n"
+            "UnityEngine.Debug:Log (object)\n"
+            "\n"
+            "(Filename: ExecServer.cs Line: 42)\n"
+            "\n"
+            "[UnityPuerExec] Exec starting\n"
+            "UnityEngine.StackTraceUtility:ExtractStackTrace ()\n"
+            "UnityEngine.Debug:Log (object)\n"
+            "\n"
+            "(Filename: ExecServer.cs Line: 88)\n"
+        )
+        path = _write_log(content)
+        try:
+            size = os.path.getsize(path)
+            briefs = unity_log_brief.parse_log_briefs(path, 0, size)
+            info_briefs = [b for b in briefs if b["level"] == "info"]
+            self.assertEqual(len(info_briefs), 2)
+            self.assertTrue(info_briefs[0]["text"].startswith("[UnityPuerExec] Exec accepted"))
+            self.assertTrue(info_briefs[1]["text"].startswith("[UnityPuerExec] Exec starting"))
+            # Each brief covers message + stack frames + blank + (Filename:) footer
+            self.assertGreater(info_briefs[0]["line_count"], 1)
+        finally:
+            os.unlink(path)
+
+    def test_unity_style_blank_separated_entries_do_not_merge(self):
+        # Two entries separated only by a blank line must NOT be merged.
+        content = (
+            "Message one\n"
+            "\n"
+            "Message two\n"
+        )
+        path = _write_log(content)
+        try:
+            size = os.path.getsize(path)
+            briefs = unity_log_brief.parse_log_briefs(path, 0, size)
+            info_briefs = [b for b in briefs if b["level"] == "info"]
+            self.assertEqual(len(info_briefs), 2)
+        finally:
+            os.unlink(path)
+
     def test_multiple_entries(self):
         content = (
             "First info entry\n"

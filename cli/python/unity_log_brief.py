@@ -176,32 +176,39 @@ def _parse_chunk(chunk, base_offset):
         entry_start = i
         level = _runtime_entry_level(line)
         i += 1
-        # Consume continuation lines (indented or blank-then-indented)
+        # Consume continuation lines: indented continuations, non-indented Unity stack
+        # frames (which start at column 0), and the trailing "(Filename: ...)" footer
+        # that Unity appends after a blank separator.
         while i < len(raw_lines):
             next_line = raw_lines[i]
             next_stripped = next_line.strip()
             if not next_stripped:
-                # Blank line: peek ahead to see if next non-blank is indented
+                # Blank line: peek ahead to see what follows
                 j = i + 1
                 while j < len(raw_lines) and not raw_lines[j].strip():
                     j += 1
-                if j < len(raw_lines) and raw_lines[j] and not raw_lines[j][0].isspace():
-                    # Next entry starts - stop here
-                    break
-                elif j >= len(raw_lines):
+                if j >= len(raw_lines):
                     # Trailing blank - stop (don't include trailing blank in entry)
                     break
-                else:
+                next_non_blank = raw_lines[j]
+                if next_non_blank[0].isspace():
                     # Blank followed by indented = still part of this entry
                     i += 1
                     continue
+                if next_non_blank.strip().startswith("(Filename:"):
+                    # Unity log footer: consume blank(s) + footer line as part of entry
+                    i = j + 1
+                    continue
+                # Blank followed by a new log entry
+                break
             elif next_line[0].isspace():
                 # Indented = continuation of this entry
                 i += 1
                 continue
             else:
-                # Non-indented non-blank = new entry
-                break
+                # Non-indented non-blank = Unity stack frame continuation
+                i += 1
+                continue
         entry_end = i - 1
         add_brief(level, entry_start, entry_end)
 
