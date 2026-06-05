@@ -158,7 +158,7 @@ namespace UnityPuerExec
 
         private static HttpListener listener;
         private static CancellationTokenSource listenerCancellation;
-        private static JsEnv jsEnv;
+        private static ScriptEnv jsEnv;
         private static PuerExecLoader execLoader;
         private static string envInitError = "";
         private static string sessionMarker = Guid.NewGuid().ToString("N");
@@ -993,7 +993,7 @@ namespace UnityPuerExec
             try
             {
                 execLoader = new PuerExecLoader();
-                jsEnv = new JsEnv(execLoader);
+                jsEnv = CreateScriptEnv(execLoader);
                 envInitError = "";
             }
             catch (Exception ex)
@@ -1001,6 +1001,52 @@ namespace UnityPuerExec
                 envInitError = ex.ToString();
                 Debug.LogError($"[UnityPuerExec] Failed to initialize JsEnv: {ex}");
             }
+        }
+
+        // Puerts 3.0 deprecated JsEnv in favor of ScriptEnv, but ScriptEnv requires an
+        // explicit Backend whose concrete type (e.g. Puerts.BackendV8) lives in a separate,
+        // backend-specific assembly such as com.tencent.puerts.v8. This package intentionally
+        // depends only on com.tencent.puerts.core, so we resolve an available JavaScript
+        // backend by name at runtime -- mirroring what JsEnv did internally via reflection --
+        // instead of taking a hard assembly reference. If the host only has a non-JavaScript
+        // scripting backend, no JS backend resolves and we fail with a clear message: this
+        // package can only run JavaScript.
+        private static readonly string[] JsBackendTypeNames =
+        {
+            "Puerts.BackendV8",
+            "Puerts.BackendNodeJS",
+            "Puerts.BackendQuickJS",
+        };
+
+        private static ScriptEnv CreateScriptEnv(ILoader loader)
+        {
+            var failures = new List<string>();
+            foreach (var typeName in JsBackendTypeNames)
+            {
+                var backendType = PuertsIl2cpp.TypeUtils.GetType(typeName);
+                if (backendType == null)
+                {
+                    continue;
+                }
+
+                try
+                {
+                    var backend = (Backend)Activator.CreateInstance(backendType, loader);
+                    return new ScriptEnv(backend);
+                }
+                catch (Exception ex)
+                {
+                    var inner = (ex as System.Reflection.TargetInvocationException)?.InnerException ?? ex;
+                    failures.Add($"{typeName}: {inner.Message}");
+                }
+            }
+
+            var detail = failures.Count > 0
+                ? string.Join("; ", failures)
+                : "no JavaScript backend assembly (e.g. com.tencent.puerts.v8) is installed";
+            throw new InvalidOperationException(
+                "UnityPuerExec requires a Puerts JavaScript backend (V8/Node/QuickJS), but none could be initialized: "
+                + detail);
         }
 
         private static void DisposeJsEnv()
