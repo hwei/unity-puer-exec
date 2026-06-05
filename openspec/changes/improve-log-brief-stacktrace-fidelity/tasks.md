@@ -32,8 +32,16 @@
 
 ### Closeout finding summary
 
-**New follow-up candidates identified.**
+**No new follow-up work identified.**
 
-- `validation-gap` — End-to-end detection round-trip is not yet observed on a live host. Both sides are green against the `stack_trace_logging.degraded` contract (C# compiles + server inits without throwing; Python unit tests cover degraded / not-degraded / missing-field / stdout round-trip), and the C# static-ctor sampling is runtime-confirmed via the server `Ready` line — but no real response has been observed emitting `stack_trace_logging`, nor the `!stacktrace-off` path firing with `StackTraceLogType.None` actually set. Recommended check: launch a non-batch editor on c3-client-tree2, `Application.SetStackTraceLogType(LogType.Log, StackTraceLogType.None)`, run one `exec`, and confirm `stack_trace_logging.degraded == true` and `brief_sequence == "!stacktrace-off"` in the response. Requires human-discussion per apply-closeout-review before acting.
+The end-to-end validation-gap was closed in this session. Live e2e on c3-client-tree2 (Unity 2022.3.62f2), driving the CLI against a launched editor:
 
-**Recommended close sequence (not auto-run):** `git commit` (already staged incrementally) → `openspec archive improve-log-brief-stacktrace-fidelity` → final `git commit`. Defer archive if the human wants the live e2e validation done first under this change rather than as a follow-up.
+| Phase | `stack_trace_logging` | `brief_sequence` | `brief_hint` |
+|---|---|---|---|
+| baseline (ScriptOnly) | `degraded:false`, all `ScriptOnly` | `I4?` | absent |
+| after `SetStackTraceLogType(...,None)` x3 | `degraded:true`, all `None` | `!stacktrace-off` | present |
+| after restore to `ScriptOnly` | `degraded:false`, all `ScriptOnly` | `I5?` | absent |
+
+This confirms, on real responses: the C# `WriteJsonAsync` splice emits `stack_trace_logging`; main-thread sampling tracks live setting changes; the Python degrade path fires and recovers; the normal path is unaffected. Compile + 249 unit tests + live e2e all green.
+
+**Recommended close sequence:** `openspec archive improve-log-brief-stacktrace-fidelity` → final `git commit`. (The launched validation-host editor was intentionally left running for ongoing real-project testing; `ensure-stopped --immediate-kill` can stop pid if desired.)
