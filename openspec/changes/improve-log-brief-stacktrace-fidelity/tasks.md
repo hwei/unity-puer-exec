@@ -1,0 +1,31 @@
+## 1. Runtime grouping fix (already applied — confirm & document)
+
+- [ ] 1.1 Confirm the `_parse_chunk` continuation loop in `cli/python/unity_log_brief.py` honors the blank-line boundary rule (non-indented frames + footer absorbed; level from header only) and matches the modified `log-brief` spec.
+- [ ] 1.2 Add source comments at the parsing site documenting the boundary rule AND the stack-trace-enabled assumption (what Unity emits with `ScriptOnly`/`Full` vs `None`, and why grouping depends on the post-footer blank). Reference `Application.GetStackTraceLogType` / `Console ▸ Stack Trace Logging`.
+
+## 2. Test hardening against real-log shapes
+
+- [ ] 2.1 Strengthen `test_unity_style_non_indented_stacktrace` to assert the exact `line_count` (header + all frames + blank + footer, excluding the trailing blank before the next entry) instead of `> 1`.
+- [ ] 2.2 Add a multi-frame entry test using realistic frames with `(at ./path:line)` suffixes (≈8 frames) + blank + `(Filename: … Line: N)` footer; assert one brief with the correct level and `line_count`.
+- [ ] 2.3 Add a `Domain Reload Profiling` block test (non-indented header → back-to-back non-indented siblings → tab-indented children) asserting it collapses into one merged brief with a pinned `line_count`.
+- [ ] 2.4 Add a level-loss boundary test: an `[Error]` (and `[Warning]`) line directly following a non-blank non-indented line with no blank separator is merged into the prior brief and its level is NOT surfaced — pinning the stack-trace-OFF failure mode that motivates Section 3.
+- [ ] 2.5 Keep the existing `test_unity_style_blank_separated_entries_do_not_merge`; ensure all `tests/test_unity_log_brief.py` pass via `python -m unittest tests.test_unity_log_brief`.
+
+## 3. Stack-trace-disabled detection (C# side)
+
+- [ ] 3.1 Verify `Application.GetStackTraceLogType(LogType)` compiles on the validation host; confirm the `StackTraceLogType.{None,ScriptOnly,Full}` enum surface. Record the result and flip `meta.yaml` `assumption_state` to `valid` (or capture the blocker).
+- [ ] 3.2 In `UnityPuerExecServer.cs`, read `GetStackTraceLogType` for `LogType.Log`, `LogType.Warning`, `LogType.Error` and include them in the exec / wait-for-exec response payload (field name/shape finalized here per design Open Questions).
+- [ ] 3.3 Define the degraded condition as "any of the three == `None`" in one place so Python can consume a single boolean or derive it from the reported values.
+
+## 4. Degraded-state surfacing (Python flow)
+
+- [ ] 4.1 Choose the degraded `brief_sequence` sentinel token (outside the `I/W/E/?`+digits grammar) and the hint field name; document both.
+- [ ] 4.2 In `cli/python/unity_puer_exec_runtime.py` `_inject_log_range_into_payload` / `_inject_log_range_into_stdout`, when the payload reports degraded, set `brief_sequence` to the sentinel and add the hint field (enable `ScriptOnly`/`Full` via `Console ▸ Stack Trace Logging` or `Application.SetStackTraceLogType`).
+- [ ] 4.3 Leave standalone `get-log-briefs --range` unchanged behaviorally; update its help/contract text to note unreliability when stack-trace logging is disabled.
+- [ ] 4.4 Add runtime tests covering both branches: degraded payload → sentinel + hint; non-degraded payload → normal `brief_sequence`, no hint.
+
+## 5. Spec sync & closeout
+
+- [ ] 5.1 Ensure the implementation matches `specs/log-brief/spec.md` deltas (modified grouping requirement + added degraded-detection requirement, including the sentinel/hint scenarios).
+- [ ] 5.2 Run the full Python test suite; confirm green.
+- [ ] 5.3 Apply closeout: write the explicit finding summary (`No new follow-up work identified` or `New follow-up candidates identified` with categories) per the apply-closeout-review spec, and recommend (do not auto-run) the `git commit` / `openspec archive` / final `git commit` sequence.
