@@ -13,7 +13,7 @@
 
 ## 3. Stack-trace-disabled detection (C# side)
 
-- [x] 3.1 Verify `Application.GetStackTraceLogType(LogType)` compiles on the validation host; confirm the `StackTraceLogType.{None,ScriptOnly,Full}` enum surface. Record the result and flip `meta.yaml` `assumption_state` to `valid` (or capture the blocker). — Verified on c3-client-tree2 (Unity 2022.3.62f2): batch compile green, only pre-existing JsEnv-obsolete warnings. `assumption_state` → `valid`, `evidence` → `host-validation`.
+- [x] 3.1 Verify `Application.GetStackTraceLogType(LogType)` compiles on the validation host; confirm the `StackTraceLogType.{None,ScriptOnly,Full}` enum surface. Record the result and flip `meta.yaml` `assumption_state` to `valid` (or capture the blocker). — Verified on c3-client-tree2 (Unity 2022.3.62f2): batch compile green, only pre-existing JsEnv-obsolete warnings. Runtime init also confirmed: server logged `[UnityPuerExec] Ready on port 55231` with the new assembly and no exception, so `Application.GetStackTraceLogType` in the static ctor / OnEditorUpdate (main thread) does not throw. `assumption_state` → `valid`, `evidence` → `host-validation`.
 - [x] 3.2 In `UnityPuerExecServer.cs`, read `GetStackTraceLogType` for `LogType.Log`, `LogType.Warning`, `LogType.Error` and include them in the exec / wait-for-exec response payload (field name/shape finalized here per design Open Questions). — Sampled on main thread in `OnEditorUpdate`/static-ctor, spliced centrally in `WriteJsonAsync` as `stack_trace_logging`.
 - [x] 3.3 Define the degraded condition as "any of the three == `None`" in one place so Python can consume a single boolean or derive it from the reported values. — `SampleStackTraceLogTypes` computes `_stackTraceLoggingDegraded`; reported as `stack_trace_logging.degraded`.
 
@@ -28,4 +28,12 @@
 
 - [x] 5.1 Ensure the implementation matches `specs/log-brief/spec.md` deltas (modified grouping requirement + added degraded-detection requirement, including the sentinel/hint scenarios).
 - [x] 5.2 Run the full Python test suite; confirm green. — Default suite: 249 tests OK.
-- [ ] 5.3 Apply closeout: write the explicit finding summary (`No new follow-up work identified` or `New follow-up candidates identified` with categories) per the apply-closeout-review spec, and recommend (do not auto-run) the `git commit` / `openspec archive` / final `git commit` sequence.
+- [x] 5.3 Apply closeout: write the explicit finding summary (`No new follow-up work identified` or `New follow-up candidates identified` with categories) per the apply-closeout-review spec, and recommend (do not auto-run) the `git commit` / `openspec archive` / final `git commit` sequence.
+
+### Closeout finding summary
+
+**New follow-up candidates identified.**
+
+- `validation-gap` — End-to-end detection round-trip is not yet observed on a live host. Both sides are green against the `stack_trace_logging.degraded` contract (C# compiles + server inits without throwing; Python unit tests cover degraded / not-degraded / missing-field / stdout round-trip), and the C# static-ctor sampling is runtime-confirmed via the server `Ready` line — but no real response has been observed emitting `stack_trace_logging`, nor the `!stacktrace-off` path firing with `StackTraceLogType.None` actually set. Recommended check: launch a non-batch editor on c3-client-tree2, `Application.SetStackTraceLogType(LogType.Log, StackTraceLogType.None)`, run one `exec`, and confirm `stack_trace_logging.degraded == true` and `brief_sequence == "!stacktrace-off"` in the response. Requires human-discussion per apply-closeout-review before acting.
+
+**Recommended close sequence (not auto-run):** `git commit` (already staged incrementally) → `openspec archive improve-log-brief-stacktrace-fidelity` → final `git commit`. Defer archive if the human wants the live e2e validation done first under this change rather than as a follow-up.

@@ -51,7 +51,7 @@ The degraded condition SHALL be detected via the Unity Editor API on the C# side
 
 The C# server SHALL report the current `StackTraceLogType` for `LogType.Log`, `LogType.Warning`, and `LogType.Error` in its exec / wait-for-exec response. The condition SHALL be treated as degraded when **any** of those three is `None`.
 
-When the response reports a degraded condition, the `exec` and `wait-for-exec` flows SHALL set `brief_sequence` to a documented sentinel value (distinct from any real brief encoding) and SHALL include an operator-facing hint that stack-trace logging must be enabled (`ScriptOnly` or `Full`) for log briefs to be meaningful.
+When the response reports a degraded condition, the `exec` and `wait-for-exec` flows SHALL set `brief_sequence` to a documented sentinel value (distinct from any real brief encoding) and SHALL include an operator-facing hint that stack-trace logging must be enabled (`ScriptOnly` or `Full`) for log briefs to be meaningful. In the degraded state the sentinel supersedes the observation-consistency / prefix-extension property that normal `brief_sequence` values guarantee across successive calls: a degraded sentinel signals "briefs are not trustworthy" and is not a prefix extension of any prior sequence.
 
 The standalone `get-log-briefs --range` command has no C# context and SHALL NOT attempt heuristic detection; its documented contract notes that brief output is unreliable when stack-trace logging is disabled.
 
