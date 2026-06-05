@@ -152,8 +152,10 @@ class ParseLogBriefsTests(unittest.TestCase):
             self.assertEqual(len(info_briefs), 2)
             self.assertTrue(info_briefs[0]["text"].startswith("[UnityPuerExec] Exec accepted"))
             self.assertTrue(info_briefs[1]["text"].startswith("[UnityPuerExec] Exec starting"))
-            # Each brief covers message + stack frames + blank + (Filename:) footer
-            self.assertGreater(info_briefs[0]["line_count"], 1)
+            # Each brief spans header + 2 stack frames + blank + (Filename:) footer = 5
+            # lines, and stops BEFORE the trailing blank that separates the next entry.
+            self.assertEqual(info_briefs[0]["line_count"], 5)
+            self.assertEqual(info_briefs[1]["line_count"], 5)
         finally:
             os.unlink(path)
 
@@ -170,6 +172,83 @@ class ParseLogBriefsTests(unittest.TestCase):
             briefs = unity_log_brief.parse_log_briefs(path, 0, size)
             info_briefs = [b for b in briefs if b["level"] == "info"]
             self.assertEqual(len(info_briefs), 2)
+        finally:
+            os.unlink(path)
+
+    def test_unity_real_multiframe_entry_with_footer(self):
+        # Shape taken from a real Editor.log: a header followed by 8 non-indented
+        # stack frames (some with "(at ./path:line)" suffixes), a blank, and the
+        # "(Filename: ... Line: N)" footer. The whole block is one brief.
+        content = (
+            "[UnityPuerExec] Ready on port 55231\n"
+            "UnityEngine.StackTraceUtility:ExtractStackTrace ()\n"
+            "UnityEngine.DebugLogHandler:LogFormat (UnityEngine.LogType,UnityEngine.Object,string,object[])\n"
+            "UnityEngine.Logger:Log (UnityEngine.LogType,object)\n"
+            "UnityEngine.Debug:Log (object)\n"
+            "UnityPuerExec.UnityPuerExecServer:Start () (at ./Library/PackageCache/com.txcombo.unity-puer-exec@0.4.0/Editor/UnityPuerExecServer.cs:276)\n"
+            "UnityPuerExec.UnityPuerExecServer:.cctor () (at ./Library/PackageCache/com.txcombo.unity-puer-exec@0.4.0/Editor/UnityPuerExecServer.cs:190)\n"
+            "System.Runtime.CompilerServices.RuntimeHelpers:RunClassConstructor (System.RuntimeTypeHandle)\n"
+            "UnityEditor.EditorAssemblies:ProcessInitializeOnLoadAttributes (System.Type[])\n"
+            "\n"
+            "(Filename: ./Library/PackageCache/com.txcombo.unity-puer-exec@0.4.0/Editor/UnityPuerExecServer.cs Line: 276)\n"
+        )
+        path = _write_log(content)
+        try:
+            size = os.path.getsize(path)
+            briefs = unity_log_brief.parse_log_briefs(path, 0, size)
+            self.assertEqual(len(briefs), 1)
+            self.assertEqual(briefs[0]["level"], "info")
+            self.assertTrue(briefs[0]["text"].startswith("[UnityPuerExec] Ready on port"))
+            # header + 8 frames + blank + footer = 11 lines.
+            self.assertEqual(briefs[0]["line_count"], 11)
+        finally:
+            os.unlink(path)
+
+    def test_unity_domain_reload_block_collapses_to_one_brief(self):
+        # Real Editor.log emits back-to-back non-indented native lines (no blank
+        # separators) followed by tab-indented children. Under the blank-line
+        # boundary rule these all collapse into ONE coarse brief. Pin that so a
+        # future change does not silently re-split native noise.
+        content = (
+            "Mono: successfully reloaded assembly\n"
+            "- Finished resetting the current domain, in  3.694 seconds\n"
+            "Domain Reload Profiling: 4602ms\n"
+            "\tBeginReloadAssembly (192ms)\n"
+            "\t\tExecutionOrderSort (0ms)\n"
+            "\tFinalizeReload (3694ms)"  # no trailing newline -> exactly 6 lines
+        )
+        path = _write_log(content)
+        try:
+            size = os.path.getsize(path)
+            briefs = unity_log_brief.parse_log_briefs(path, 0, size)
+            self.assertEqual(len(briefs), 1)
+            self.assertEqual(briefs[0]["level"], "info")
+            self.assertTrue(briefs[0]["text"].startswith("Mono: successfully reloaded"))
+            self.assertEqual(briefs[0]["line_count"], 6)
+        finally:
+            os.unlink(path)
+
+    def test_level_lost_when_entries_lack_blank_separator(self):
+        # Stack-trace-OFF failure mode: without the blank separators that a stack
+        # trace + (Filename:) footer normally provide, consecutive non-indented
+        # lines merge into the first entry and their levels are silently lost.
+        # This is exactly the degraded condition the C#-side GetStackTraceLogType
+        # detection exists to flag; pinning it keeps that motivation legible.
+        content = (
+            "Plain status line\n"
+            "[Error] boom\n"
+            "[Warning] careful"  # no trailing newline -> exactly 3 lines
+        )
+        path = _write_log(content)
+        try:
+            size = os.path.getsize(path)
+            briefs = unity_log_brief.parse_log_briefs(path, 0, size)
+            self.assertEqual(len(briefs), 1)
+            # Level comes from the first line only; the Error/Warning are absorbed.
+            self.assertEqual(briefs[0]["level"], "info")
+            self.assertEqual([b["level"] for b in briefs].count("error"), 0)
+            self.assertEqual([b["level"] for b in briefs].count("warning"), 0)
+            self.assertEqual(briefs[0]["line_count"], 3)
         finally:
             os.unlink(path)
 

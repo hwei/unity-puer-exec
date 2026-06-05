@@ -137,11 +137,28 @@ def _parse_chunk(chunk, base_offset):
             i += 1
             continue
 
-        # Outside compiler section: runtime traceback-based grouping
-        # An entry starts with a non-blank, non-indented line.
-        # It continues with subsequent lines (blank or indented) until we hit:
-        #   a blank line followed by a non-indented non-blank line (new entry starts)
-        #   or end of input.
+        # Outside compiler section: runtime traceback-based grouping.
+        # An entry starts with a non-blank, non-indented line. It continues with
+        # subsequent lines until the next entry BOUNDARY, where a boundary is a
+        # non-blank, non-indented line that FOLLOWS a blank line. A non-indented
+        # line that is NOT preceded by a blank is a continuation (e.g. a Unity
+        # stack-frame line, which begins at column 0); the "(Filename: ...)" footer
+        # after a blank separator is absorbed as the entry's trailing footer.
+        #
+        # ASSUMPTION — this grouping only delimits entries correctly when Unity
+        # stack-trace logging is ENABLED (StackTraceLogType.ScriptOnly or .Full).
+        # With stack traces on, each Debug.Log emits:
+        #     <header>\n<stack frames...>\n\n(Filename: X.cs Line: N)\n\n
+        # so the blank line after the footer is the boundary the rule keys on.
+        # When stack-trace logging is disabled (StackTraceLogType.None), Debug.Log
+        # output collapses to bare back-to-back header lines with no blank
+        # separators, so this rule MERGES distinct entries and silently loses the
+        # levels of all but the first. That degraded condition is NOT detectable
+        # here by structure (real Editor.log has back-to-back non-indented native
+        # noise — Mono reload, Domain Reload Profiling — even when stack traces are
+        # on); it is detected on the C# side via Application.GetStackTraceLogType
+        # (see openspec/specs/log-brief and Console > Stack Trace Logging) and
+        # surfaced as a brief_sequence sentinel + hint in the exec/wait flow.
         # Unknown: lines that don't fit this pattern.
 
         if not stripped:

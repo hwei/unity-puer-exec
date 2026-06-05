@@ -1,15 +1,15 @@
 ## 1. Runtime grouping fix (already applied — confirm & document)
 
-- [ ] 1.1 Confirm the `_parse_chunk` continuation loop in `cli/python/unity_log_brief.py` honors the blank-line boundary rule (non-indented frames + footer absorbed; level from header only) and matches the modified `log-brief` spec.
-- [ ] 1.2 Add source comments at the parsing site documenting the boundary rule AND the stack-trace-enabled assumption (what Unity emits with `ScriptOnly`/`Full` vs `None`, and why grouping depends on the post-footer blank). Reference `Application.GetStackTraceLogType` / `Console ▸ Stack Trace Logging`.
+- [x] 1.1 Confirm the `_parse_chunk` continuation loop in `cli/python/unity_log_brief.py` honors the blank-line boundary rule (non-indented frames + footer absorbed; level from header only) and matches the modified `log-brief` spec.
+- [x] 1.2 Add source comments at the parsing site documenting the boundary rule AND the stack-trace-enabled assumption (what Unity emits with `ScriptOnly`/`Full` vs `None`, and why grouping depends on the post-footer blank). Reference `Application.GetStackTraceLogType` / `Console ▸ Stack Trace Logging`.
 
 ## 2. Test hardening against real-log shapes
 
-- [ ] 2.1 Strengthen `test_unity_style_non_indented_stacktrace` to assert the exact `line_count` (header + all frames + blank + footer, excluding the trailing blank before the next entry) instead of `> 1`.
-- [ ] 2.2 Add a multi-frame entry test using realistic frames with `(at ./path:line)` suffixes (≈8 frames) + blank + `(Filename: … Line: N)` footer; assert one brief with the correct level and `line_count`.
-- [ ] 2.3 Add a `Domain Reload Profiling` block test (non-indented header → back-to-back non-indented siblings → tab-indented children) asserting it collapses into one merged brief with a pinned `line_count`.
-- [ ] 2.4 Add a level-loss boundary test: an `[Error]` (and `[Warning]`) line directly following a non-blank non-indented line with no blank separator is merged into the prior brief and its level is NOT surfaced — pinning the stack-trace-OFF failure mode that motivates Section 3.
-- [ ] 2.5 Keep the existing `test_unity_style_blank_separated_entries_do_not_merge`; ensure all `tests/test_unity_log_brief.py` pass via `python -m unittest tests.test_unity_log_brief`.
+- [x] 2.1 Strengthen `test_unity_style_non_indented_stacktrace` to assert the exact `line_count` (header + all frames + blank + footer, excluding the trailing blank before the next entry) instead of `> 1`.
+- [x] 2.2 Add a multi-frame entry test using realistic frames with `(at ./path:line)` suffixes (≈8 frames) + blank + `(Filename: … Line: N)` footer; assert one brief with the correct level and `line_count`.
+- [x] 2.3 Add a `Domain Reload Profiling` block test (non-indented header → back-to-back non-indented siblings → tab-indented children) asserting it collapses into one merged brief with a pinned `line_count`.
+- [x] 2.4 Add a level-loss boundary test: an `[Error]` (and `[Warning]`) line directly following a non-blank non-indented line with no blank separator is merged into the prior brief and its level is NOT surfaced — pinning the stack-trace-OFF failure mode that motivates Section 3.
+- [x] 2.5 Keep the existing `test_unity_style_blank_separated_entries_do_not_merge`; ensure all `tests/test_unity_log_brief.py` pass via `python -m unittest tests.test_unity_log_brief`.
 
 ## 3. Stack-trace-disabled detection (C# side)
 
