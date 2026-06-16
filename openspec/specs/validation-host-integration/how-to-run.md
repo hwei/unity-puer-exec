@@ -28,6 +28,28 @@ Run command:
 UNITY_PUER_EXEC_RUN_REAL_HOST_TESTS=1 python -m unittest tests.test_real_host_integration
 ```
 
+### Control-port binding coverage prerequisites
+
+Two cases in this suite assert control-port binding behavior and have extra
+process-state prerequisites beyond the shared ones above:
+
+- **Batch-mode service suppression**
+  (`test_batch_mode_process_suppresses_control_service_against_real_host`):
+  the host project must **not** be open in an interactive Editor. This case
+  launches its own one-shot `Unity.exe -batchMode -nographics -quit` process,
+  which needs the exclusive project lock; it `skip`s (does not fail) when any
+  Unity process is already running. The suite's setUp force-stops the host
+  Editor, so this normally holds — but if you keep the project open in your own
+  Editor it will skip.
+- **Occupied-preferred-port rollover**
+  (`test_control_port_rolls_over_when_preferred_port_occupied_against_real_host`):
+  needs an interactive Editor on the preferred control port (`55231`). The test
+  is autonomous — it runs a retry-binder for `55231` and forces a domain reload
+  (via `exec` of `UnityEditor.EditorUtility.RequestScriptReload()`, with a
+  touched-script + `--refresh-before-exec` fallback) so the binder wins the
+  port in the `Stop()`→`Start()` window. No operator step is required. It
+  `skip`s when `55231` is held by an unrelated process at start.
+
 ## Result Interpretation
 
 | Result | Meaning |

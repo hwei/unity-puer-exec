@@ -1,7 +1,11 @@
 import json
 import os
-import time
+import socket
+import subprocess
 import sys
+import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 
@@ -27,6 +31,18 @@ WAIT_TIMEOUT_MS = 1000
 READY_TIMEOUT_SECONDS = 240
 ACTIVITY_TIMEOUT_SECONDS = 60
 MARKER_PATTERN = r"(?m)^\[UnityPuerExecResult\] (.+)$"
+
+# Control-port binding constants. These mirror UnityPuerExecServer.cs
+# (PreferredPort / MaxPortAttempts) and the exact log lines the server emits at
+# Start(). Keep them in sync with the package if those values change.
+PREFERRED_CONTROL_PORT = 55231
+CONTROL_PORT_ATTEMPTS = 20
+CONTROL_PORT_RANGE_END = PREFERRED_CONTROL_PORT + CONTROL_PORT_ATTEMPTS  # exclusive
+BATCH_SKIP_LOG_LINE = "[UnityPuerExec] Skipping control service start in batch-mode process"
+READY_LOG_PREFIX = "[UnityPuerExec] Ready on port"
+BIND_FAILURE_LOG_PREFIX = "[UnityPuerExec] Failed to bind any port"
+BATCH_RUN_TIMEOUT_SECONDS = 600
+ROLLOVER_OBSERVE_TIMEOUT_SECONDS = 180
 
 
 def _real_host_tests_enabled():
@@ -126,6 +142,237 @@ def _ensure_clean_test_boundary(project_path):
             )
         time.sleep(1.0)
     raise AssertionError("failed to establish a clean real-host boundary: {}".format(payload))
+
+
+def _probe_control_health(port, timeout_seconds=1.5):
+    """Probe /health on a loopback control port; return (payload, error)."""
+    return unity_session._probe_health("http://127.0.0.1:{}".format(port), timeout_seconds)
+
+
+def _health_is_ready_for_project(payload, project_path):
+    return bool(
+        payload
+        and payload.get("ok")
+        and payload.get("status") == "ready"
+        and unity_session._payload_matches_project(payload, project_path)
+    )
+
+
+def _scan_ready_control_endpoint(project_path, exclude_ports=(), timeout_seconds=1.5):
+    """Scan the bounded control-port range for a ready endpoint owned by project_path.
+
+    Returns (base_url, payload) for the first match, else (None, None). The CLI's
+    own resolution only probes the preferred port and the (possibly stale) session
+    artifact, so a rolled-over service is discovered by scanning here.
+    """
+    for port in range(PREFERRED_CONTROL_PORT, CONTROL_PORT_RANGE_END):
+        if port in exclude_ports:
+            continue
+        base_url = "http://127.0.0.1:{}".format(port)
+        payload, _ = _probe_control_health(port, timeout_seconds)
+        if _health_is_ready_for_project(payload, project_path):
+            return base_url, payload
+    return None, None
+
+
+def _preferred_port_is_free():
+    """True if the preferred control port can be bound right now (i.e. nobody holds it)."""
+    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        probe.bind(("127.0.0.1", PREFERRED_CONTROL_PORT))
+        return True
+    except OSError:
+        return False
+    finally:
+        probe.close()
+
+
+def _run_batch_mode_unity(unity_exe_path, project_path, timeout_seconds=BATCH_RUN_TIMEOUT_SECONDS):
+    """Launch a one-shot batch-mode Unity process and capture its log.
+
+    Returns (exit_code, log_path, log_text). The caller owns deleting log_path.
+    Raises subprocess.TimeoutExpired if the process does not exit in time.
+    """
+    handle = tempfile.NamedTemporaryFile(prefix="upe-batch-", suffix=".log", delete=False)
+    log_path = Path(handle.name)
+    handle.close()
+    process = subprocess.Popen(
+        [
+            str(unity_exe_path),
+            "-batchMode",
+            "-nographics",
+            "-quit",
+            "-projectPath",
+            str(project_path),
+            "-logFile",
+            str(log_path),
+        ]
+    )
+    try:
+        exit_code = process.wait(timeout=timeout_seconds)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait(timeout=30)
+        raise
+    text = log_path.read_text(encoding="utf-8", errors="replace")
+    return exit_code, log_path, text
+
+
+class _PreferredPortBinder:
+    """A retry-binder that races to hold the preferred control port.
+
+    It continuously attempts to bind 127.0.0.1:<preferred port> from a daemon
+    thread. At steady state the interactive Editor holds the port, so binds fail
+    and retry; during a domain reload the Editor's Stop() releases the port and
+    the binder wins it before the post-reload Start() runs, forcing Start() to
+    roll over to a later port. Once won, the port is held until stop().
+    """
+
+    def __init__(self, port=PREFERRED_CONTROL_PORT, poll_interval=0.005):
+        self.port = port
+        self.poll_interval = poll_interval
+        self._stop = threading.Event()
+        self._bound = threading.Event()
+        self._thread = None
+        self._sock = None
+
+    def _run(self):
+        while not self._stop.is_set():
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            try:
+                sock.bind(("127.0.0.1", self.port))
+                sock.listen(1)
+            except OSError:
+                sock.close()
+                time.sleep(self.poll_interval)
+                continue
+            self._sock = sock
+            self._bound.set()
+            # Hold the port until asked to release it.
+            while not self._stop.is_set():
+                time.sleep(0.02)
+            try:
+                sock.close()
+            finally:
+                self._sock = None
+            return
+
+    def start(self):
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    @property
+    def bound(self):
+        return self._bound.is_set() and self._sock is not None
+
+    def stop(self):
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=5)
+
+
+def _nudge_editor_foreground_win32():
+    """Best-effort: bring a Unity Editor window to the foreground on win32.
+
+    Only needed as a focus nudge for the touched-script reload fallback when
+    Unity's auto-refresh is focus-gated. Returns True if a window was nudged.
+    Failures are swallowed -- the server-side refresh path does not require focus.
+    """
+    if sys.platform != "win32":
+        return False
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        unity_pids = set(unity_session._list_unity_pids())
+        if not unity_pids:
+            return False
+        user32 = ctypes.windll.user32
+        nudged = {"hwnd": None}
+
+        WNDENUMPROC = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+
+        def _callback(hwnd, _lparam):
+            if not user32.IsWindowVisible(hwnd):
+                return True
+            pid = wintypes.DWORD()
+            user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+            if pid.value in unity_pids:
+                nudged["hwnd"] = hwnd
+                return False
+            return True
+
+        user32.EnumWindows(WNDENUMPROC(_callback), 0)
+        if nudged["hwnd"] is not None:
+            user32.SetForegroundWindow(nudged["hwnd"])
+            return True
+    except Exception:
+        return False
+    return False
+
+
+def _trigger_domain_reload_via_exec(base_url):
+    """Force a domain reload by exec-ing RequestScriptReload against base_url.
+
+    The reload tears down the ScriptEnv mid-request, so the exec response may be a
+    benign disconnect/not_available -- the caller keys off post-reload health, not
+    this return value.
+    """
+    code = "\n".join(
+        [
+            "export default function run(ctx) {",
+            "  const EditorUtility = puer.loadType('UnityEditor.EditorUtility');",
+            "  EditorUtility.RequestScriptReload();",
+            "  return { requested: true };",
+            "}",
+        ]
+    )
+    return _run_cli(
+        [
+            "exec",
+            "--base-url",
+            base_url,
+            "--wait-timeout-ms",
+            str(WAIT_TIMEOUT_MS),
+            "--code",
+            code,
+        ]
+    )
+
+
+def _trigger_domain_reload_via_touched_script(project_path, unity_exe_path):
+    """Fallback reload trigger: touch a host script and force a recompile+reload.
+
+    Writes a uniquely-changing C# file under the validation temp directory and
+    runs refresh-before-exec, which drives AssetDatabase.Refresh server-side and
+    therefore does not require Editor focus. A best-effort win32 foreground nudge
+    is attempted first for environments where auto-refresh is focus-gated.
+    """
+    _nudge_editor_foreground_win32()
+    temp_dir = project_path / "Assets" / "__codex_validation_temp"
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    marker = temp_dir / "ControlPortReloadNudge.cs"
+    marker.write_text(
+        "// Auto-generated reload nudge for control-port rollover regression.\n"
+        "internal static class ControlPortReloadNudge {{ internal const long Stamp = {}L; }}\n".format(
+            time.time_ns()
+        ),
+        encoding="utf-8",
+    )
+    return _run_cli(
+        [
+            "exec",
+            "--project-path",
+            str(project_path),
+            "--unity-exe-path",
+            str(unity_exe_path),
+            "--wait-timeout-ms",
+            str(WAIT_TIMEOUT_MS),
+            "--refresh-before-exec",
+            "--code",
+            "export default function run(ctx) { return { ok: true }; }",
+        ]
+    )
 
 
 class RealHostIntegrationTests(unittest.TestCase):
@@ -825,6 +1072,128 @@ class RealHostIntegrationTests(unittest.TestCase):
                     "--code", "export default function run(ctx) { return { ok: true }; }",
                 ]
             )
+
+    def test_batch_mode_process_suppresses_control_service_against_real_host(self):
+        """A batch-mode Unity process must skip the control service.
+
+        Prerequisite: the host project must NOT be open in an interactive Editor.
+        A batch-mode launch needs the exclusive project lock, so this test skips
+        (rather than fails) when any Unity process is already running. The
+        inherited setUp force-stops the host Editor, so this normally holds.
+        """
+        running_pids = unity_session._list_unity_pids()
+        if running_pids:
+            self.skipTest(
+                "host project appears open in an interactive Editor (unity pids={}); "
+                "batch-mode launch needs the exclusive project lock".format(running_pids)
+            )
+
+        try:
+            exit_code, log_path, log_text = _run_batch_mode_unity(
+                self.unity_exe_path, self.project_path
+            )
+        except subprocess.TimeoutExpired:
+            self.skipTest("batch-mode Unity did not exit within the timeout")
+            return
+
+        try:
+            self.assertIn(
+                BATCH_SKIP_LOG_LINE,
+                log_text,
+                "batch-mode log did not record the control-service skip line; "
+                "exit_code={} log={}".format(exit_code, log_path),
+            )
+            self.assertNotIn(
+                READY_LOG_PREFIX,
+                log_text,
+                "batch-mode process unexpectedly reported a control-port bind; log={}".format(log_path),
+            )
+            self.assertNotIn(
+                BIND_FAILURE_LOG_PREFIX,
+                log_text,
+                "batch-mode process reported a whole-range bind failure; log={}".format(log_path),
+            )
+        finally:
+            log_path.unlink(missing_ok=True)
+
+    def test_control_port_rolls_over_when_preferred_port_occupied_against_real_host(self):
+        """An occupied preferred control port must roll over, not fail the scan.
+
+        Stages the exact procedure proven during fix-control-port-bind-fallback
+        manual validation: run a retry-binder for the preferred port, force a
+        domain reload so the binder wins the port in the Stop()->Start() window,
+        then assert the interactive service became ready on a later port.
+        """
+        ready_exit_code, ready_payload, _, _ = _warm_up_project_exec(self.project_path, self.unity_exe_path)
+        self.assertEqual(ready_exit_code, 0, ready_payload)
+
+        editor_base_url, _ = _scan_ready_control_endpoint(self.project_path)
+        if editor_base_url is None:
+            self.skipTest("no ready control endpoint for host project; cannot stage rollover")
+            return
+
+        # Skip if the preferred port is held by something that is NOT our Editor.
+        pre_payload, _ = _probe_control_health(PREFERRED_CONTROL_PORT)
+        if pre_payload is not None:
+            if not _health_is_ready_for_project(pre_payload, self.project_path):
+                self.skipTest(
+                    "preferred control port {} is held by an unrelated service".format(PREFERRED_CONTROL_PORT)
+                )
+                return
+        elif not _preferred_port_is_free():
+            self.skipTest(
+                "preferred control port {} is held by an unrelated process".format(PREFERRED_CONTROL_PORT)
+            )
+            return
+
+        binder = _PreferredPortBinder()
+        binder.start()
+        try:
+            rolled = self._stage_rollover(binder, editor_base_url, use_touch_fallback=False)
+            if rolled is None:
+                # Retry once: the Editor may have reclaimed the preferred port if
+                # the binder lost the first race. Use the touched-script trigger.
+                rolled = self._stage_rollover(binder, editor_base_url, use_touch_fallback=True)
+
+            self.assertIsNotNone(
+                rolled,
+                "interactive service did not roll over to a later port; it may have "
+                "reclaimed {} (binder.bound={})".format(PREFERRED_CONTROL_PORT, binder.bound),
+            )
+            rolled_base_url, rolled_payload = rolled
+            self.assertGreater(rolled_payload["port"], PREFERRED_CONTROL_PORT)
+            self.assertLess(rolled_payload["port"], CONTROL_PORT_RANGE_END)
+            self.assertEqual(rolled_base_url, "http://127.0.0.1:{}".format(rolled_payload["port"]))
+            self.assertEqual(rolled_payload.get("base_url"), rolled_base_url)
+        finally:
+            # Release the preferred port so the Editor can reclaim it on its next reload.
+            binder.stop()
+
+    def _stage_rollover(self, binder, editor_base_url, use_touch_fallback):
+        """Trigger a reload and watch for a rolled-over ready endpoint.
+
+        Returns (base_url, payload) on a later port, or None if the interactive
+        service came back on the preferred port (binder lost the race).
+        """
+        if use_touch_fallback:
+            _trigger_domain_reload_via_touched_script(self.project_path, self.unity_exe_path)
+        else:
+            _trigger_domain_reload_via_exec(editor_base_url)
+
+        deadline = time.time() + ROLLOVER_OBSERVE_TIMEOUT_SECONDS
+        while time.time() < deadline:
+            base_url, payload = _scan_ready_control_endpoint(
+                self.project_path, exclude_ports=(PREFERRED_CONTROL_PORT,)
+            )
+            if base_url is not None:
+                return base_url, payload
+            # If the service is back on the preferred port and the binder is not
+            # holding it, the Editor reclaimed it -- abandon and let the caller retry.
+            pref_payload, _ = _probe_control_health(PREFERRED_CONTROL_PORT)
+            if _health_is_ready_for_project(pref_payload, self.project_path) and not binder.bound:
+                return None
+            time.sleep(1.0)
+        return None
 
 
 if __name__ == "__main__":
