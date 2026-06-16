@@ -110,6 +110,54 @@ class UnitySessionModuleTests(unittest.TestCase):
         self.assertEqual(session.diagnostics["taskkill_exit_code"], 0)
         self.assertEqual(sleep_calls, [unity_session_common.POLL_INTERVAL_SECONDS])
 
+    def test_pid_present_in_tasklist_csv_is_locale_independent(self):
+        # A real PID-row match.
+        match_csv = '"Unity.exe","1234","Console","1","2,000,000 K"\r\n'
+        self.assertTrue(unity_session_process._pid_present_in_tasklist_csv(match_csv, 1234))
+        self.assertFalse(unity_session_process._pid_present_in_tasklist_csv(match_csv, 9999))
+
+        # English "no tasks" line -> not running.
+        english_none = "INFO: No tasks are running which match the specified criteria.\r\n"
+        self.assertFalse(unity_session_process._pid_present_in_tasklist_csv(english_none, 1234))
+
+        # Localized (Chinese) "no tasks" line -> must also read as not running.
+        chinese_none = "信息: 没有运行的任务与指定的标准匹配。\r\n"
+        self.assertFalse(unity_session_process._pid_present_in_tasklist_csv(chinese_none, 1234))
+
+        # Empty output -> not running.
+        self.assertFalse(unity_session_process._pid_present_in_tasklist_csv("", 1234))
+
+    def test_is_pid_running_handles_localized_no_match_output(self):
+        chinese_none = "信息: 没有运行的任务与指定的标准匹配。"
+        with mock.patch.object(
+            unity_session_process.subprocess,
+            "run",
+            return_value=subprocess.CompletedProcess(
+                args=["tasklist", "/FI", "PID eq 104136", "/NH", "/FO", "CSV"],
+                returncode=0,
+                stdout=chinese_none,
+                stderr="",
+            ),
+        ):
+            # The dead PID must read as not running even when tasklist emits a
+            # localized no-match line (the locale-dependent regression).
+            self.assertFalse(unity_session_process.is_pid_running(104136))
+
+        match_csv = '"Unity.exe","104136","Console","1","2,000,000 K"'
+        with mock.patch.object(
+            unity_session_process.subprocess,
+            "run",
+            return_value=subprocess.CompletedProcess(
+                args=["tasklist", "/FI", "PID eq 104136", "/NH", "/FO", "CSV"],
+                returncode=0,
+                stdout=match_csv,
+                stderr="",
+            ),
+        ):
+            self.assertTrue(unity_session_process.is_pid_running(104136))
+
+        self.assertFalse(unity_session_process.is_pid_running(None))
+
     def test_wait_wait_until_healthy_uses_wait_for_session_injection(self):
         session = unity_session_common.UnitySession(
             owner="test",

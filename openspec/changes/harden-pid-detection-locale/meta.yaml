@@ -2,5 +2,5 @@ change_type: refactor
 priority: P2
 blocked_by: []
 assumption_state: valid
-evidence: tests
+evidence: host-validation
 updated_at: 2026-06-16

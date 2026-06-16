@@ -30,6 +30,27 @@ def list_unity_pids():
     return rows
 
 
+def _pid_present_in_tasklist_csv(output, pid):
+    # Decide liveness from the parsed CSV rather than from the absence of an
+    # English "No tasks are running" string: tasklist localizes that
+    # informational line, so a sentinel check reports every PID as alive on
+    # non-English Windows. A real match is a CSV data row whose PID column
+    # (index 1) equals the queried PID; the localized no-match line is not a
+    # valid CSV row with an integer PID column and is skipped. Mirrors the
+    # locale-robust parsing already used by list_unity_pids.
+    reader = csv.reader(io.StringIO(output))
+    for row in reader:
+        if len(row) < 2:
+            continue
+        try:
+            row_pid = int(row[1])
+        except ValueError:
+            continue
+        if row_pid == pid:
+            return True
+    return False
+
+
 def is_pid_running(pid):
     if pid is None:
         return False
@@ -40,8 +61,7 @@ def is_pid_running(pid):
         universal_newlines=True,
         check=False,
     )
-    output = result.stdout.strip()
-    return bool(output) and "No tasks are running" not in output
+    return _pid_present_in_tasklist_csv(result.stdout, pid)
 
 
 def detach_session_process(session):
