@@ -247,7 +247,7 @@ If session identity checking is needed for safe execution or observation, the fo
 
 ### Requirement: Observation and stop commands keep their boundary
 
-`wait-for-log-pattern` and `get-log-source` SHALL remain observation commands. `ensure-stopped` SHALL remain the stopped-state command. Observation commands MUST NOT imply Unity launch ownership, and `ensure-stopped` in base-url mode MUST NOT kill the target.
+`wait-for-log-pattern` and `get-log-source` SHALL remain observation commands. `ensure-stopped` SHALL remain the stopped-state command. Observation commands MUST NOT imply Unity launch ownership, and `ensure-stopped` in base-url mode MUST NOT kill the target. Process-liveness detection used by `ensure-stopped` SHALL be independent of the host operating system's display language, so that a recorded session PID that is no longer running is reported as stopped regardless of locale.
 
 #### Scenario: Agent checks observable log source
 
@@ -260,6 +260,12 @@ If session identity checking is needed for safe execution or observation, the fo
 - **WHEN** `ensure-stopped --base-url ...` is invoked
 - **THEN** the command may inspect state only
 - **AND** it does not perform kill behavior against that direct-service target
+
+#### Scenario: Stopped detection does not depend on OS display language
+
+- **WHEN** `ensure-stopped` (project-path mode) evaluates a recorded session PID that is no longer running on a non-English Windows host
+- **THEN** the command reports the target as `stopped`
+- **AND** it does not classify the dead PID as still running because of a localized process-listing message
 
 ### Requirement: Log source resolution supports custom project-scoped paths
 
@@ -640,8 +646,6 @@ The `--code` argument help text SHALL include a note that PowerShell users shoul
 - **THEN** the argument help for `--code` mentions PowerShell single-quote usage for code containing `$`
 - **AND** the help points to `--file` as the preferred alternative for multi-line or `$`-containing scripts
 
-
-
 ### Requirement: get-compile-errors command retrieves compile error details
 
 The CLI SHALL expose a `get-compile-errors` command accepting `--project-path`/`--base-url` selectors and optional `--start` (int, default 0) and `--count` (int, default 3, range [1, 100]). The command SHALL post to `/get-compile-errors` and return the server response as structured JSON with `result.total`, `result.returned`, `result.messages`, and `result.session_marker`.
@@ -709,3 +713,4 @@ The `resolve-blocker` command SHALL support dismissing the "Enter Safe Mode?" di
 - **THEN** the dialog spec dictionary includes `click_method: "keyboard"`
 - **AND** `_click_cancel_button` dispatches to `_click_via_keyboard` which sends Enter
 - **AND** the resolution follows the existing confirmation and timeout contract
+
