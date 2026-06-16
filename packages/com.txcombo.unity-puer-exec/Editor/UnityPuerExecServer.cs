@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Net;
+using System.Net.Sockets;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -234,6 +235,16 @@ namespace UnityPuerExec
 
         private static void Start()
         {
+            // The control endpoint targets interactive Editor sessions only. Batch-mode
+            // Unity subprocesses -- notably AssetImportWorker workers, which also run this
+            // [InitializeOnLoad] type -- must not start the listener, or a transient worker
+            // can win and squat the preferred port that the interactive Editor needs.
+            if (Application.isBatchMode)
+            {
+                Debug.Log("[UnityPuerExec] Skipping control service start in batch-mode process");
+                return;
+            }
+
             StopListener();
             sessionMarker = Guid.NewGuid().ToString("N");
             RefreshConsoleLogPathCache();
@@ -263,8 +274,20 @@ namespace UnityPuerExec
                     try { candidate.Close(); } catch { }
                     Debug.LogWarning($"[UnityPuerExec] Port {port} unavailable: {ex.Message}");
                 }
+                catch (SocketException ex)
+                {
+                    // Unity's Mono runtime implements HttpListener over managed sockets, so a
+                    // port-in-use conflict surfaces here as SocketException (e.g.
+                    // AddressAlreadyInUse) rather than HttpListenerException. Treat any failed
+                    // candidate as "try the next port" -- each attempt uses a fresh listener.
+                    lastBindError = ex;
+                    try { candidate.Close(); } catch { }
+                    Debug.LogWarning($"[UnityPuerExec] Port {port} unavailable: {ex.Message}");
+                }
                 catch (Exception ex)
                 {
+                    // Reserve hard-abort for genuinely fatal, non-port-in-use errors so that a
+                    // single occupied port never aborts the bounded scan.
                     lastBindError = ex;
                     try { candidate.Close(); } catch { }
                     Debug.LogError($"[UnityPuerExec] Unexpected error binding port {port}: {ex}");
