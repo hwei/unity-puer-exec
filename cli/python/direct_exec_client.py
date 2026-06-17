@@ -16,7 +16,31 @@ EXIT_MODAL_BLOCKED = 19
 EXIT_MODULE_CACHE_STALE = 22
 EXIT_UNITY_COMPILE_ERROR = 23
 
-DEFAULT_BASE_URL = "http://127.0.0.1:55231"
+# Control-port range contract. The Unity control service binds the preferred port
+# first and rolls over to later ports in [CONTROL_PORT_PREFERRED, CONTROL_PORT_END)
+# when the preferred port is occupied, so multiple Editors can run concurrently.
+# The CLI mirrors this same range when discovering a project's live endpoint.
+CONTROL_PORT_HOST = "127.0.0.1"
+CONTROL_PORT_PREFERRED = 55231
+CONTROL_PORT_END = 55250  # exclusive upper bound: ports [55231, 55250)
+CONTROL_PORT_COUNT = CONTROL_PORT_END - CONTROL_PORT_PREFERRED
+
+
+def base_url_for_port(port):
+    return "http://{}:{}".format(CONTROL_PORT_HOST, port)
+
+
+def control_port_candidates():
+    """Control ports in preferred-first order."""
+    return list(range(CONTROL_PORT_PREFERRED, CONTROL_PORT_END))
+
+
+def candidate_base_urls():
+    """Loopback control-endpoint base URLs in preferred-first order."""
+    return [base_url_for_port(port) for port in control_port_candidates()]
+
+
+DEFAULT_BASE_URL = base_url_for_port(CONTROL_PORT_PREFERRED)
 DEFAULT_WAIT_TIMEOUT_MS = 1000
 HTTP_TIMEOUT_BUFFER_SECONDS = 5.0
 

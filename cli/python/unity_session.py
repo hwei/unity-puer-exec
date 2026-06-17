@@ -348,6 +348,7 @@ def _wait_for_session(
     completion_predicate=None,
     timeout_message=None,
     iteration_observer=None,
+    endpoint_resolver=None,
 ):
     return unity_session_wait.wait_for_session(
         session,
@@ -358,6 +359,7 @@ def _wait_for_session(
         completion_predicate=completion_predicate,
         timeout_message=timeout_message,
         iteration_observer=iteration_observer,
+        endpoint_resolver=endpoint_resolver,
         default_editor_log_path_fn=_default_editor_log_path,
         probe_health_fn=_probe_health,
         create_activity_tracker_fn=_create_activity_tracker,
@@ -373,6 +375,7 @@ def wait_until_healthy(
     activity_timeout_seconds=DEFAULT_ACTIVITY_TIMEOUT_SECONDS,
     health_timeout_seconds=DEFAULT_HEALTH_TIMEOUT_SECONDS,
     log_path=None,
+    endpoint_resolver=None,
 ):
     return unity_session_wait.wait_until_healthy(
         session,
@@ -380,6 +383,7 @@ def wait_until_healthy(
         activity_timeout_seconds=activity_timeout_seconds,
         health_timeout_seconds=health_timeout_seconds,
         log_path=log_path,
+        endpoint_resolver=endpoint_resolver,
         wait_for_session_fn=_wait_for_session,
     )
 
@@ -443,6 +447,7 @@ def wait_ready_with_activity(
     activity_timeout_seconds=DEFAULT_ACTIVITY_TIMEOUT_SECONDS,
     health_timeout_seconds=DEFAULT_HEALTH_TIMEOUT_SECONDS,
     log_path=None,
+    endpoint_resolver=None,
 ):
     return wait_until_healthy(
         session,
@@ -450,6 +455,7 @@ def wait_ready_with_activity(
         activity_timeout_seconds=activity_timeout_seconds,
         health_timeout_seconds=health_timeout_seconds,
         log_path=log_path,
+        endpoint_resolver=endpoint_resolver,
     )
 
 
@@ -509,9 +515,12 @@ def ensure_session_ready(
         _persist_ready_session_artifact(session, log_path, payload=artifact_payload)
         return session
 
-    # Phase 2: Try preferred port with project identity validation.
-    payload, error = _probe_health(base_url, health_timeout_seconds)
-    if payload is not None and payload.get("ok") and payload.get("status") == "ready" and _payload_matches_project(payload, project_path):
+    # Phase 2: Scan the control-port range for a ready endpoint owned by this project.
+    # The preferred port is tried first, so the single-instance case keeps its fast
+    # path; a target Editor on a rolled-over port is discovered instead of timing out.
+    scanned_base_url, payload, error, saw_other_project = discover_project_endpoint(project_path, health_timeout_seconds)
+    if payload is not None:
+        base_url = scanned_base_url
         project_lock = _project_lock_details(project_path)
         launch_claim = read_launch_claim(project_path)
         artifact_pid, artifact_pid_running = _artifact_pid_running(session_data)
@@ -568,6 +577,7 @@ def ensure_session_ready(
         owner = "session_artifact" if artifact_pid_running else "project_recovery"
         session = _build_recovery_session(project_path, base_url, log_path, session_data, initial_pids, owner)
         session.diagnostics = _collect_diagnostics(base_url, log_path, error)
+        session.diagnostics["discovery_saw_other_project"] = saw_other_project
         session.diagnostics.update(
             _build_launch_coordination_diagnostics(
                 project_path,
@@ -586,6 +596,7 @@ def ensure_session_ready(
             activity_timeout_seconds=activity_timeout_seconds,
             health_timeout_seconds=health_timeout_seconds,
             log_path=log_path,
+            endpoint_resolver=_make_recovery_endpoint_resolver(project_path, health_timeout_seconds),
         )
         _persist_ready_session_artifact(session, log_path)
         return _detach_session_process(session)
@@ -598,11 +609,12 @@ def ensure_session_ready(
     write_launch_claim(project_path, claim_payload)
     try:
         followup_pids = _list_unity_pids()
-        followup_payload, followup_error = _probe_health(base_url, health_timeout_seconds)
+        followup_base_url, followup_payload, followup_error, followup_saw_other = discover_project_endpoint(project_path, health_timeout_seconds)
         followup_lock = _project_lock_details(project_path)
         artifact_pid, artifact_pid_running = _artifact_pid_running(session_data)
 
-        if followup_payload is not None and followup_payload.get("ok") and followup_payload.get("status") == "ready" and _payload_matches_project(followup_payload, project_path):
+        if followup_payload is not None:
+            base_url = followup_base_url
             session = _build_ready_service_session(project_path, base_url, log_path, followup_pids)
             if artifact_pid_running:
                 session.unity_pid = artifact_pid
@@ -632,6 +644,7 @@ def ensure_session_ready(
             owner = "session_artifact" if artifact_pid_running else "project_recovery"
             session = _build_recovery_session(project_path, base_url, log_path, session_data, followup_pids, owner)
             session.diagnostics = _collect_diagnostics(base_url, log_path, followup_error)
+            session.diagnostics["discovery_saw_other_project"] = followup_saw_other
             session.diagnostics.update(
                 _build_launch_coordination_diagnostics(
                     project_path,
@@ -650,6 +663,7 @@ def ensure_session_ready(
                 activity_timeout_seconds=activity_timeout_seconds,
                 health_timeout_seconds=health_timeout_seconds,
                 log_path=log_path,
+                endpoint_resolver=_make_recovery_endpoint_resolver(project_path, health_timeout_seconds),
             )
             _persist_ready_session_artifact(session, log_path)
             return _detach_session_process(session)
@@ -687,14 +701,16 @@ def ensure_session_ready(
                 activity_timeout_seconds=activity_timeout_seconds,
                 health_timeout_seconds=health_timeout_seconds,
                 log_path=log_path,
+                endpoint_resolver=_make_recovery_endpoint_resolver(project_path, health_timeout_seconds),
             )
         except UnityLaunchError as exc:
             if exc.session is session and session.process is not None and session.process.returncode == 0:
                 recovery_pids = _list_unity_pids()
-                recovery_payload, recovery_error = _probe_health(base_url, health_timeout_seconds)
+                recovery_base_url, recovery_payload, recovery_error, _recovery_saw_other = discover_project_endpoint(project_path, health_timeout_seconds)
                 recovery_lock = _project_lock_details(project_path)
                 artifact_pid, artifact_pid_running = _artifact_pid_running(session_data)
-                if recovery_payload is not None and recovery_payload.get("ok") and recovery_payload.get("status") == "ready" and _payload_matches_project(recovery_payload, project_path):
+                if recovery_payload is not None:
+                    base_url = recovery_base_url
                     session = _build_ready_service_session(project_path, base_url, log_path, recovery_pids, owner="recovered_service")
                     if artifact_pid_running:
                         session.unity_pid = artifact_pid
@@ -747,6 +763,7 @@ def ensure_session_ready(
                         activity_timeout_seconds=activity_timeout_seconds,
                         health_timeout_seconds=health_timeout_seconds,
                         log_path=log_path,
+                        endpoint_resolver=_make_recovery_endpoint_resolver(project_path, health_timeout_seconds),
                     )
                     _persist_ready_session_artifact(recovery_session, log_path)
                     return _detach_session_process(recovery_session)
@@ -888,6 +905,76 @@ def validate_artifact_endpoint(session_data, project_path, health_timeout_second
         health_timeout_seconds=health_timeout_seconds,
     )
     return is_valid, base_url, payload, error
+
+
+def discover_project_endpoint(project_path, health_timeout_seconds=DEFAULT_HEALTH_TIMEOUT_SECONDS, candidate_base_urls=None):
+    """Scan the control-port range for a ready endpoint owned by the target project.
+
+    Candidates are probed in preferred-first order and the scan stops at the first
+    ready endpoint whose health identity matches ``project_path``. A ready endpoint
+    owned by a different project is never claimed; it only flips ``saw_other_project``
+    so callers can distinguish "nothing answered" from "another project answered".
+
+    Returns ``(base_url, payload, last_error, saw_other_project)`` where ``payload`` is
+    ``None`` when no project-matched endpoint was found.
+    """
+    if candidate_base_urls is None:
+        candidate_base_urls = direct_exec_client.candidate_base_urls()
+    last_error = None
+    saw_other_project = False
+    for candidate in candidate_base_urls:
+        is_valid, payload, error = validate_endpoint_identity(
+            candidate,
+            project_path,
+            health_timeout_seconds=health_timeout_seconds,
+        )
+        if is_valid:
+            return candidate, payload, None, saw_other_project
+        if error is not None:
+            last_error = error
+        elif payload is not None and payload.get("ok") and payload.get("status") == "ready":
+            saw_other_project = True
+    return None, None, last_error, saw_other_project
+
+
+def _scan_for_project_endpoint_any_status(project_path, health_timeout_seconds, candidate_base_urls=None):
+    """Find a candidate whose health identity matches the project at any status.
+
+    Unlike :func:`discover_project_endpoint`, this matches a starting, compiling, or
+    reloading Editor that reports the target ``project_path`` but is not yet ``ready``,
+    so a readiness wait can lock onto the actually-bound port before it goes ready.
+    """
+    if candidate_base_urls is None:
+        candidate_base_urls = direct_exec_client.candidate_base_urls()
+    for candidate in candidate_base_urls:
+        payload, _error = _probe_health(candidate, health_timeout_seconds)
+        if payload is not None and _payload_matches_project(payload, project_path):
+            return candidate
+    return None
+
+
+def _make_recovery_endpoint_resolver(project_path, health_timeout_seconds):
+    """Build a stateful resolver that keeps a wait loop pointed at the project's port.
+
+    While unlocked it scans the control-port range for a project-matched endpoint
+    (any status). Once locked it re-probes only the locked port and re-scans solely
+    if that port stops matching, so steady-state waiting stays a single probe per poll.
+    """
+    state = {"locked": None}
+
+    def resolve():
+        locked = state["locked"]
+        if locked is not None:
+            payload, _error = _probe_health(locked, health_timeout_seconds)
+            if payload is not None and _payload_matches_project(payload, project_path):
+                return locked
+            state["locked"] = None
+        found = _scan_for_project_endpoint_any_status(project_path, health_timeout_seconds)
+        if found is not None:
+            state["locked"] = found
+        return found
+
+    return resolve
 
 
 def ensure_stopped(project_path=None, base_url=None, mode="inspect", timeout_seconds=DEFAULT_STOP_TIMEOUT_SECONDS, argv0=None):

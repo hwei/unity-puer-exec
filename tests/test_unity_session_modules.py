@@ -189,6 +189,39 @@ class UnitySessionModuleTests(unittest.TestCase):
         self.assertEqual(captured["kwargs"]["timeout_message"], "Unity did not become healthy within 5.0 seconds")
         self.assertTrue(captured["kwargs"]["completion_predicate"]({"ok": True, "status": "ready"}))
 
+    def test_wait_for_session_redirects_base_url_via_endpoint_resolver(self):
+        session = unity_session_common.UnitySession(
+            owner="test",
+            base_url="http://127.0.0.1:55231",
+            project_path="X:/unity-project",
+        )
+        log_path = Path("X:/Logs/Editor.log")
+        fake_time = SimpleNamespace(time=lambda: 0.0, sleep=lambda _seconds: None)
+        rolled_over = "http://127.0.0.1:55233"
+
+        def probe(base_url, _timeout):
+            # Only the rolled-over endpoint is ready; the preferred port never is.
+            if base_url == rolled_over:
+                return {"ok": True, "status": "ready", "project_path": "X:/unity-project"}, None
+            return {"ok": False, "status": "compiling"}, None
+
+        result = unity_session_wait.wait_for_session(
+            session,
+            timeout_seconds=5.0,
+            log_path=log_path,
+            endpoint_resolver=lambda: rolled_over,
+            default_editor_log_path_fn=lambda: log_path,
+            probe_health_fn=probe,
+            create_activity_tracker_fn=lambda _path: {"idle_seconds": 0.0},
+            update_activity_tracker_fn=lambda tracker, _path: tracker,
+            finalize_session_diagnostics_fn=lambda *_args, **_kwargs: None,
+            time_ref=fake_time,
+        )
+
+        self.assertIs(result, session)
+        # The wait loop adopted the resolver's endpoint before completing.
+        self.assertEqual(session.base_url, rolled_over)
+
     def test_wait_wait_for_log_pattern_extracts_json_group(self):
         session = unity_session_common.UnitySession(
             owner="test",

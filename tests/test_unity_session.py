@@ -453,7 +453,7 @@ class UnitySessionTests(unittest.TestCase):
         ), mock.patch.object(
             unity_session, "_list_unity_pids", return_value=[]
         ), mock.patch.object(
-            unity_session, "_probe_health", side_effect=[(None, "connection refused"), (None, "still starting")]
+            unity_session, "_probe_health", return_value=(None, "connection refused")
         ), mock.patch.object(
             unity_session, "_project_lock_details", side_effect=[
                 {"path": "X:/unity-project/Temp/UnityLockfile", "exists": True, "fresh": True},
@@ -527,7 +527,7 @@ class UnitySessionTests(unittest.TestCase):
         ), mock.patch.object(
             unity_session, "_list_unity_pids", side_effect=[[], [9999], [9999]]
         ), mock.patch.object(
-            unity_session, "_probe_health", side_effect=[(None, "connection refused"), (None, "still starting")]
+            unity_session, "_probe_health", return_value=(None, "connection refused")
         ), mock.patch.object(
             unity_session, "_project_lock_details", side_effect=[
                 {"path": "X:/unity-project/Temp/UnityLockfile", "exists": False, "fresh": False},
@@ -584,7 +584,7 @@ class UnitySessionTests(unittest.TestCase):
         ), mock.patch.object(
             unity_session, "_list_unity_pids", side_effect=[[], [], [7777], [7777], [7777]]
         ), mock.patch.object(
-            unity_session, "_probe_health", side_effect=[(None, "connection refused"), (None, "still starting"), (None, "handoff")]
+            unity_session, "_probe_health", return_value=(None, "connection refused")
         ), mock.patch.object(
             unity_session, "_project_lock_details", side_effect=[
                 {"path": "X:/unity-project/Temp/UnityLockfile", "exists": False, "fresh": False},
@@ -628,6 +628,108 @@ class UnitySessionTests(unittest.TestCase):
         self.assertIs(result, session)
         self.assertIsNone(session.process)
         self.assertEqual(process.returncode, 0)
+
+
+def _ready_payload(project_path):
+    return {"ok": True, "status": "ready", "project_path": str(project_path)}
+
+
+def _probe_by_url(mapping, default=(None, "connection refused")):
+    """Build a _probe_health side_effect keyed by base_url.
+
+    mapping: {base_url: (payload, error)}. Unlisted URLs return ``default``.
+    """
+
+    def probe(base_url, _timeout):
+        return mapping.get(base_url, default)
+
+    return probe
+
+
+class RangeAwareDiscoveryTests(unittest.TestCase):
+    PREFERRED = "http://127.0.0.1:55231"
+    ROLLED_OVER = "http://127.0.0.1:55233"
+
+    def test_discover_project_endpoint_hits_preferred_port_first(self):
+        probe = mock.Mock(side_effect=_probe_by_url({self.PREFERRED: (_ready_payload(SAMPLE_PROJECT_PATH), None)}))
+        with mock.patch.object(unity_session, "_probe_health", probe):
+            base_url, payload, error, saw_other = unity_session.discover_project_endpoint(SAMPLE_PROJECT_PATH)
+
+        self.assertEqual(base_url, self.PREFERRED)
+        self.assertEqual(payload["project_path"], SAMPLE_PROJECT_PATH)
+        self.assertIsNone(error)
+        self.assertFalse(saw_other)
+        # Short-circuits on the first candidate; no extra probes.
+        self.assertEqual(probe.call_count, 1)
+
+    def test_discover_project_endpoint_matches_non_preferred_port(self):
+        probe = mock.Mock(side_effect=_probe_by_url({
+            self.PREFERRED: (_ready_payload("X:/other-project"), None),
+            self.ROLLED_OVER: (_ready_payload(SAMPLE_PROJECT_PATH), None),
+        }))
+        with mock.patch.object(unity_session, "_probe_health", probe):
+            base_url, payload, error, saw_other = unity_session.discover_project_endpoint(SAMPLE_PROJECT_PATH)
+
+        self.assertEqual(base_url, self.ROLLED_OVER)
+        self.assertEqual(payload["project_path"], SAMPLE_PROJECT_PATH)
+        self.assertTrue(saw_other)
+
+    def test_discover_project_endpoint_skips_other_project_endpoints(self):
+        probe = mock.Mock(side_effect=_probe_by_url({
+            self.PREFERRED: (_ready_payload("X:/other-project"), None),
+        }))
+        with mock.patch.object(unity_session, "_probe_health", probe):
+            base_url, payload, error, saw_other = unity_session.discover_project_endpoint(SAMPLE_PROJECT_PATH)
+
+        self.assertIsNone(base_url)
+        self.assertIsNone(payload)
+        self.assertTrue(saw_other)
+
+    def test_discover_project_endpoint_reports_no_match_when_nothing_reachable(self):
+        probe = mock.Mock(return_value=(None, "connection refused"))
+        with mock.patch.object(unity_session, "_probe_health", probe):
+            base_url, payload, error, saw_other = unity_session.discover_project_endpoint(SAMPLE_PROJECT_PATH)
+
+        self.assertIsNone(base_url)
+        self.assertIsNone(payload)
+        self.assertEqual(error, "connection refused")
+        self.assertFalse(saw_other)
+        # The full range was scanned when nothing matched.
+        self.assertEqual(probe.call_count, len(unity_session.direct_exec_client.control_port_candidates()))
+
+    def test_recovery_resolver_locks_onto_non_preferred_bound_port(self):
+        # A starting/compiling Editor for our project is bound on a non-preferred port.
+        compiling = {"ok": True, "status": "compiling", "project_path": SAMPLE_PROJECT_PATH}
+        probe = mock.Mock(side_effect=_probe_by_url({self.ROLLED_OVER: (compiling, None)}))
+        with mock.patch.object(unity_session, "_probe_health", probe):
+            resolve = unity_session._make_recovery_endpoint_resolver(SAMPLE_PROJECT_PATH, 1.0)
+            first = resolve()
+            calls_after_scan = probe.call_count
+            second = resolve()
+
+        self.assertEqual(first, self.ROLLED_OVER)
+        self.assertEqual(second, self.ROLLED_OVER)
+        # Once locked, the resolver re-probes only the locked port instead of re-scanning.
+        self.assertEqual(probe.call_count - calls_after_scan, 1)
+
+    def test_recovery_resolver_returns_none_until_project_endpoint_appears(self):
+        probe = mock.Mock(return_value=(None, "connection refused"))
+        with mock.patch.object(unity_session, "_probe_health", probe):
+            resolve = unity_session._make_recovery_endpoint_resolver(SAMPLE_PROJECT_PATH, 1.0)
+            self.assertIsNone(resolve())
+
+    def test_scan_any_status_finds_rolled_over_cold_start_editor(self):
+        # Cold-start launch rolled over off the preferred port; Editor is still compiling.
+        compiling = {"ok": True, "status": "compiling", "project_path": SAMPLE_PROJECT_PATH}
+        other = _ready_payload("X:/other-project")
+        probe = mock.Mock(side_effect=_probe_by_url({
+            self.PREFERRED: (other, None),
+            self.ROLLED_OVER: (compiling, None),
+        }))
+        with mock.patch.object(unity_session, "_probe_health", probe):
+            found = unity_session._scan_for_project_endpoint_any_status(SAMPLE_PROJECT_PATH, 1.0)
+
+        self.assertEqual(found, self.ROLLED_OVER)
 
 
 if __name__ == "__main__":

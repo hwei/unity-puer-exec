@@ -137,6 +137,7 @@ def wait_for_session(
     completion_predicate=None,
     timeout_message=None,
     iteration_observer=None,
+    endpoint_resolver=None,
     default_editor_log_path_fn=None,
     probe_health_fn=None,
     create_activity_tracker_fn=None,
@@ -153,6 +154,10 @@ def wait_for_session(
     completion_predicate = completion_predicate or (lambda payload: payload.get("ok") and payload.get("status") == "ready")
 
     while time_ref.time() < deadline:
+        if endpoint_resolver is not None:
+            resolved_base_url = endpoint_resolver()
+            if resolved_base_url is not None:
+                session.base_url = resolved_base_url
         payload, error = probe_health_fn(session.base_url, health_timeout_seconds)
         if iteration_observer is not None:
             iteration_observer(payload, error)
@@ -199,6 +204,7 @@ def wait_until_healthy(
     activity_timeout_seconds=DEFAULT_ACTIVITY_TIMEOUT_SECONDS,
     health_timeout_seconds=DEFAULT_HEALTH_TIMEOUT_SECONDS,
     log_path=None,
+    endpoint_resolver=None,
     wait_for_session_fn=None,
 ):
     return wait_for_session_fn(
@@ -209,6 +215,7 @@ def wait_until_healthy(
         log_path=log_path,
         completion_predicate=lambda payload: payload.get("ok") and payload.get("status") == "ready",
         timeout_message="Unity did not become healthy within {} seconds".format(timeout_seconds),
+        endpoint_resolver=endpoint_resolver,
     )
 
 

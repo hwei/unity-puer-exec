@@ -161,9 +161,10 @@ def _health_is_ready_for_project(payload, project_path):
 def _scan_ready_control_endpoint(project_path, exclude_ports=(), timeout_seconds=1.5):
     """Scan the bounded control-port range for a ready endpoint owned by project_path.
 
-    Returns (base_url, payload) for the first match, else (None, None). The CLI's
-    own resolution only probes the preferred port and the (possibly stale) session
-    artifact, so a rolled-over service is discovered by scanning here.
+    Returns (base_url, payload) for the first match, else (None, None). This is the
+    test's own independent oracle for where the interactive service actually bound,
+    used to stage and confirm rollover conditions regardless of the CLI's own
+    range-aware resolution.
     """
     for port in range(PREFERRED_CONTROL_PORT, CONTROL_PORT_RANGE_END):
         if port in exclude_ports:
@@ -1194,6 +1195,66 @@ class RealHostIntegrationTests(unittest.TestCase):
                 return None
             time.sleep(1.0)
         return None
+
+    def test_exec_discovers_rolled_over_control_port_against_real_host(self):
+        """exec --project-path must reach an Editor that rolled over to a non-preferred port.
+
+        Stages the same rollover as the control-port rollover test, then -- while
+        the preferred port is still held by the binder -- runs exec --project-path
+        with no --base-url. Range-aware session discovery must find the rolled-over
+        endpoint instead of waiting on the preferred port. Before this change the
+        CLI only probed the preferred port and the session artifact, so it would
+        fail or time out staging exactly this multi-instance condition.
+        """
+        ready_exit_code, ready_payload, _, _ = _warm_up_project_exec(self.project_path, self.unity_exe_path)
+        self.assertEqual(ready_exit_code, 0, ready_payload)
+
+        editor_base_url, _ = _scan_ready_control_endpoint(self.project_path)
+        if editor_base_url is None:
+            self.skipTest("no ready control endpoint for host project; cannot stage rollover")
+            return
+
+        pre_payload, _ = _probe_control_health(PREFERRED_CONTROL_PORT)
+        if pre_payload is not None:
+            if not _health_is_ready_for_project(pre_payload, self.project_path):
+                self.skipTest(
+                    "preferred control port {} is held by an unrelated service".format(PREFERRED_CONTROL_PORT)
+                )
+                return
+        elif not _preferred_port_is_free():
+            self.skipTest(
+                "preferred control port {} is held by an unrelated process".format(PREFERRED_CONTROL_PORT)
+            )
+            return
+
+        binder = _PreferredPortBinder()
+        binder.start()
+        try:
+            rolled = self._stage_rollover(binder, editor_base_url, use_touch_fallback=False)
+            if rolled is None:
+                rolled = self._stage_rollover(binder, editor_base_url, use_touch_fallback=True)
+            if rolled is None:
+                self.skipTest("could not stage a control-port rollover; binder lost the race")
+                return
+
+            rolled_base_url, rolled_payload = rolled
+            self.assertGreater(rolled_payload["port"], PREFERRED_CONTROL_PORT)
+
+            # The Editor is now on a non-preferred port and the binder still holds
+            # the preferred port. exec --project-path (no --base-url) must discover
+            # the rolled-over endpoint via the range scan.
+            self.assertTrue(binder.bound, "binder no longer holds the preferred port; precondition lost")
+            exec_exit_code, exec_payload, _, _ = _warm_up_project_exec(self.project_path, self.unity_exe_path)
+            self.assertEqual(
+                exec_exit_code,
+                0,
+                "exec --project-path failed to discover the rolled-over endpoint {}: {}".format(
+                    rolled_base_url, exec_payload
+                ),
+            )
+        finally:
+            # Release the preferred port so the Editor can reclaim it on its next reload.
+            binder.stop()
 
 
 if __name__ == "__main__":
