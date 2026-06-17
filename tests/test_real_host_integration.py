@@ -1010,6 +1010,65 @@ class RealHostIntegrationTests(unittest.TestCase):
                 ]
             )
 
+    def test_base_url_refresh_before_exec_and_wait_for_compile_against_real_host(self):
+        """compile-loop-tooling regression: base-url --refresh-before-exec is accepted
+        (no longer project-only) and runs the user script after settling, and
+        wait-for-compile brackets the cycle over the same endpoint without staleness."""
+        ready_exit_code, ready_payload, _, _ = _warm_up_project_exec(self.project_path, self.unity_exe_path)
+        self.assertEqual(ready_exit_code, 0, ready_payload)
+
+        base_url, _ = _scan_ready_control_endpoint(self.project_path)
+        self.assertIsNotNone(base_url, "could not resolve a ready control endpoint for the base-url regression")
+
+        # 1. Base-url refresh-before-exec must no longer be rejected as project-only,
+        #    and the terminal response carries the user script result, not {refreshed: true}.
+        _nudge_editor_foreground_win32()
+        exec_exit_code, exec_payload, _, _ = _run_cli(
+            [
+                "exec",
+                "--base-url", base_url,
+                "--wait-timeout-ms", str(WAIT_TIMEOUT_MS),
+                "--refresh-before-exec",
+                "--code", "export default function run(ctx) { return { loop: 'base-url-ok' }; }",
+            ]
+        )
+        if exec_payload and unity_puer_exec_runtime._running_or_timed_out_response(
+            exec_exit_code, json.dumps(exec_payload)
+        ):
+            exec_exit_code, exec_payload, _, _ = _run_cli(
+                [
+                    "wait-for-exec",
+                    "--base-url", base_url,
+                    "--request-id", exec_payload["request_id"],
+                    "--wait-timeout-ms", str(READY_TIMEOUT_SECONDS * 1000),
+                ]
+            )
+        self.assertNotEqual(
+            (exec_payload or {}).get("error", ""),
+            "refresh-before-exec is only valid with --project-path",
+            "base-url refresh-before-exec must no longer be rejected",
+        )
+        self.assertEqual(exec_exit_code, 0, exec_payload)
+        self.assertEqual(exec_payload["status"], "completed")
+        self.assertEqual(exec_payload["result"]["loop"], "base-url-ok")
+        self.assertNotIn("refreshed", exec_payload["result"])
+
+        # 2. wait-for-compile over the same endpoint returns a well-formed terminal
+        #    outcome and reports the observed /health sequence.
+        wfc_exit_code, wfc_payload, _, _ = _run_cli(
+            [
+                "wait-for-compile",
+                "--base-url", base_url,
+                "--appear-timeout-seconds", "5",
+                "--settle-timeout-seconds", str(READY_TIMEOUT_SECONDS),
+                "--include-diagnostics",
+            ]
+        )
+        self.assertEqual(wfc_exit_code, 0, wfc_payload)
+        self.assertEqual(wfc_payload["operation"], "wait-for-compile")
+        self.assertIn(wfc_payload["result"]["status"], ("compile_settled", "no_compile_observed"))
+        self.assertIn("observed_health", wfc_payload.get("diagnostics", {}))
+
     def test_compile_error_safe_mode_is_transparent_against_real_host(self):
         """When Unity enters Safe Mode, exec surfaces compile errors (not modal_blocked)."""
         ready_exit_code, ready_payload, _, _ = _warm_up_project_exec(self.project_path, self.unity_exe_path)

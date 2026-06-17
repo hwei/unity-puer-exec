@@ -14,6 +14,7 @@ COMMAND_GROUPS = (
             "wait-for-exec",
             "wait-for-result-marker",
             "wait-for-log-pattern",
+            "wait-for-compile",
         ),
     ),
         (
@@ -58,6 +59,7 @@ TOP_LEVEL_COMMANDS = {
     "wait-for-log-pattern": "observe logs until a regular-expression pattern appears. See `wait-for-log-pattern --help`.",
     "wait-for-exec": "continue waiting on an accepted exec request by `request_id`. See `wait-for-exec --help`.",
     "wait-for-result-marker": "wait for the standard single-line JSON result marker emitted by a long-running script. See `wait-for-result-marker --help`.",
+    "wait-for-compile": "edge-aware wait that brackets one Unity compile cycle (`compiling` appears, then returns to `ready`); use it after a refresh to defeat the async-compile race before reading compile errors. See `wait-for-compile --help`.",
     "get-log-source": "report the observable Unity log source for the selected target. See `get-log-source --help`.",
     "get-log-briefs": "return structured log brief entries for a byte range; use `log_range` from exec or wait-for-exec responses to specify the range. See `get-log-briefs --help`.",
     "get-blocker-state": "report whether a supported Unity modal blocker is currently detected for the target project. See `get-blocker-state --help`.",
@@ -134,6 +136,48 @@ COMMAND_HELP = {
                 ("unity_stalled", EXIT_UNITY_NOT_READY, "observation lost forward progress before the pattern appeared."),
                 ("unity_not_ready", EXIT_UNITY_NOT_READY, "the observed target stopped being ready while waiting."),
                 ("failed", 1, "the regex was invalid or another unexpected command failure occurred."),
+            ],
+        },
+    },
+    "wait-for-compile": {
+        "quick_start": [
+            "Supporting observation command that brackets a single Unity compilation cycle.",
+            "`unity-puer-exec wait-for-compile --project-path X:/project`",
+            "A refresh (`AssetDatabase.Refresh()` or `--refresh-before-exec`) starts compilation asynchronously, so polling `/health` immediately can read `ready` before `compiling` ever appears and `get-compile-errors` then returns the previous compilation's stale messages. This command is edge-aware: it first waits, within a bounded appear window, for `compiling` to appear (or detects a compile already in progress), then waits for the editor to return to `ready` -- so a just-issued recompile is observed instead of racing a stale `ready`.",
+            "Trigger the recompile yourself, then call `wait-for-compile` before `get-compile-errors`; or use `exec --refresh-before-exec`, which performs the same refresh -> compile-settle -> execute lifecycle in one step.",
+            "Trade-off: `AssetDatabase.Refresh()` only recompiles when it detects changed assets, so an unchanged project yields `no_compile_observed`. `CompilationPipeline.RequestScriptCompilation()` forces a recompile more deterministically; if a refresh reports `no_compile_observed` when you expected a rebuild, trigger compilation with `RequestScriptCompilation()` instead.",
+        ],
+        "related_workflows": (),
+        "args": {
+            "Arguments": [
+                "`--project-path <path>`: resolve the project's control endpoint through the normal project-scoped discovery path.",
+                "`--base-url <url>`: poll the supplied endpoint's `/health` directly, without project-identity validation or launch ownership.",
+                "`--appear-timeout-seconds <seconds>`: bounded window to wait for `compiling` to appear after a refresh before concluding no compile was triggered; distinct from the settle timeout.",
+                "`--settle-timeout-seconds <seconds>`: total budget for an observed compile to return to `ready`.",
+                "`--health-timeout-seconds <seconds>`: timeout for each `/health` probe.",
+                "`--include-diagnostics`: include top-level debug diagnostics (including the observed `/health` status sequence) in the machine-readable response.",
+            ],
+            "Selector Rules": [
+                "Use exactly one selector: `--project-path` or `--base-url`.",
+                "`--base-url` polls that endpoint directly; transient connection failures during a domain reload are tolerated as still-in-progress until the ready/timeout boundary.",
+            ],
+            "Timeout Rules": [
+                "All timeout values must be positive numbers.",
+                "The appear window bounds how long an unchanged project waits before returning `no_compile_observed`; keep it short.",
+                "An observed compile that does not return to `ready` within the settle timeout yields a non-terminal `running` result, not a false completion.",
+            ],
+        },
+        "status": {
+            "success": [
+                "`completed` with `result.status` `compile_settled` (`compile_observed` true): a compile cycle was observed and the editor is `ready` again.",
+                "`completed` with `result.status` `no_compile_observed` (`compile_observed` false): no compilation appeared within the appear window and none was in progress; retry, or trigger compilation with `RequestScriptCompilation()` if you expected a rebuild.",
+            ],
+            "failure": [
+                ("address_conflict", 2, "both selectors were provided; choose exactly one."),
+                ("running", direct_exec_client.EXIT_RUNNING, "an observed compile did not return to ready within the settle timeout; re-run wait-for-compile to keep waiting."),
+                ("unity_stalled", EXIT_UNITY_NOT_READY, "the project endpoint lost forward progress before a compile could be observed."),
+                ("unity_not_ready", EXIT_UNITY_NOT_READY, "the project endpoint did not become ready while resolving the session."),
+                ("failed", 1, "an unexpected wait-for-compile failure occurred."),
             ],
         },
     },
@@ -296,7 +340,7 @@ COMMAND_HELP = {
                 "`--wait-timeout-ms <ms>`: how long to wait before returning the current execution state.",
                 "`--request-id <id>`: optional caller-owned exec identity for recovery or idempotent replay; omitted values are generated automatically.",
                 "`--script-args <json-object>`: optional caller-supplied JSON object that becomes `ctx.args`; malformed JSON or non-object values fail before runtime execution.",
-                "`--refresh-before-exec`: for project-scoped execution, refresh the Unity project before running this script and keep any resulting recovery inside the same request lifecycle instead of a separate recovery command.",
+                "`--refresh-before-exec`: refresh the Unity project before running this script, settle on the resulting (asynchronously started) compile cycle, then run the script in the reloaded environment -- a single refresh -> compile-settle -> execute request lifecycle. Works in both `--project-path` and `--base-url` mode; in base-url mode the settle re-probes the same endpoint. The intermediate refreshing/compiling phase is non-terminal, and the terminal response carries the script result, not the `{refreshed: true}` refresh confirmation.",
                 "`--include-diagnostics`: include top-level debug diagnostics in the machine-readable response.",
                 "`--file <path>`: preferred script input for multi-line or AI-generated scripts; the file must export `default function (ctx) { ... }`.",
                 "`--stdin`: read script content from standard input; stdin content must export `default function (ctx) { ... }`.",
@@ -305,7 +349,7 @@ COMMAND_HELP = {
             "Selector Rules": [
                 "Use at most one selector: `--project-path` or `--base-url`. Supplying both is a usage error.",
                 "`--project-path` is the normal choice when the CLI should prepare Unity for the project before execution. When the exe is installed inside the target Unity project and invoked by its installed path, `--project-path` may be omitted; the CLI infers the project root from the exe location.",
-                "`--refresh-before-exec` is only valid with `--project-path` and is intended for the next step after changing project assets or C# code.",
+                "`--refresh-before-exec` is valid with either selector and is intended for the next step after changing project assets or C# code. Because a refresh starts compilation asynchronously, the standalone `wait-for-compile` command is the supported way to bridge that race when you trigger the recompile separately.",
                 "After a script writes C# or other import-triggering assets, prefer the next task `exec --refresh-before-exec` and stay on `wait-for-exec` for accepted continuation.",
                 "`--base-url` is for a direct service that is already known.",
                 "`--unity-exe-path` is only valid with `--project-path`.",
@@ -1172,6 +1216,41 @@ GUIDANCE_MATRIX = {
         "situation": "The brief retrieval failed. The range may be invalid or the log file could not be read.",
     },
     # --- get-log-source: no guidance (task 1.7) ---
+    # --- wait-for-compile ---
+    ("wait-for-compile", "running"): {
+        "situation": "An observed compile has not returned to ready within the settle timeout. This is a non-terminal compiling phase, not a completed compile cycle; do not read compile errors yet.",
+        "next_steps": [
+            {
+                "command": "wait-for-compile",
+                "when": "you want to keep waiting for the same compile cycle to settle",
+                "argv_template": [
+                    "unity-puer-exec", "wait-for-compile",
+                    "--project-path", "{project_path}",
+                ],
+            },
+            {
+                "command": "get-compile-errors",
+                "when": "the compile has settled to ready and you want to read the fresh results",
+                "argv_template": [
+                    "unity-puer-exec", "get-compile-errors",
+                    "--project-path", "{project_path}",
+                ],
+            },
+        ],
+    },
+    ("wait-for-compile", "no_compile_observed"): {
+        "situation": "No compilation appeared within the appear window and none was in progress. If a refresh ran but no assets changed, AssetDatabase.Refresh() triggers no compile; trigger CompilationPipeline.RequestScriptCompilation() if you expected a rebuild, otherwise proceed.",
+        "next_steps": [
+            {
+                "command": "get-compile-errors",
+                "when": "you are confident the previous compile results are current and want to read them",
+                "argv_template": [
+                    "unity-puer-exec", "get-compile-errors",
+                    "--project-path", "{project_path}",
+                ],
+            },
+        ],
+    },
 }
 
 

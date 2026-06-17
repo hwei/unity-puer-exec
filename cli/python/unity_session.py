@@ -8,7 +8,9 @@ import unity_session_logs
 import unity_session_process
 import unity_session_wait
 from unity_session_common import (
+    COMPILE_APPEAR_POLL_INTERVAL_SECONDS,
     DEFAULT_ACTIVITY_TIMEOUT_SECONDS,
+    DEFAULT_COMPILE_APPEAR_TIMEOUT_SECONDS,
     DEFAULT_EDITOR_LOG_MAX_LINES,
     DEFAULT_HEALTH_TIMEOUT_SECONDS,
     PROJECT_RECOVERY_WINDOW_SECONDS,

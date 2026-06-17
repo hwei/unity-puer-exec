@@ -80,6 +80,25 @@ def build_parser():
     wait_result_parser.add_argument("--health-timeout-seconds", type=float, default=unity_session.DEFAULT_HEALTH_TIMEOUT_SECONDS)
     _add_diagnostics_arg(wait_result_parser)
 
+    wait_compile_parser = subparsers.add_parser("wait-for-compile", add_help=False)
+    _add_selector_args(wait_compile_parser)
+    wait_compile_parser.add_argument(
+        "--appear-timeout-seconds",
+        type=float,
+        default=unity_session.DEFAULT_COMPILE_APPEAR_TIMEOUT_SECONDS,
+    )
+    wait_compile_parser.add_argument(
+        "--settle-timeout-seconds",
+        type=float,
+        default=unity_session.DEFAULT_READY_TIMEOUT_SECONDS,
+    )
+    wait_compile_parser.add_argument(
+        "--health-timeout-seconds",
+        type=float,
+        default=unity_session.DEFAULT_HEALTH_TIMEOUT_SECONDS,
+    )
+    _add_diagnostics_arg(wait_compile_parser)
+
     get_log_briefs_parser = subparsers.add_parser("get-log-briefs", add_help=False)
     get_log_briefs_parser.add_argument("--project-path", default=None)
     get_log_briefs_parser.add_argument("--unity-log-path", default=None)

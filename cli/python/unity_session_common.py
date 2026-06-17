@@ -7,6 +7,13 @@ ENV_FILE_NAME = ".env"
 DEFAULT_READY_TIMEOUT_SECONDS = 180.0
 DEFAULT_HEALTH_TIMEOUT_SECONDS = 2.0
 DEFAULT_ACTIVITY_TIMEOUT_SECONDS = 20.0
+# Bounded window in which wait-for-compile waits for `compiling` to appear after a
+# refresh before concluding that no compilation was triggered. Kept short so the
+# "nothing changed" path does not stall, but long enough to absorb async compile start.
+DEFAULT_COMPILE_APPEAR_TIMEOUT_SECONDS = 10.0
+# Short poll cadence during the appear window so a fast compile edge is not missed
+# between two polls (see compile-loop-tooling design risk note).
+COMPILE_APPEAR_POLL_INTERVAL_SECONDS = 0.25
 DEFAULT_EDITOR_LOG_MAX_LINES = 40
 DEFAULT_STOP_TIMEOUT_SECONDS = 10.0
 POLL_INTERVAL_SECONDS = 1.0

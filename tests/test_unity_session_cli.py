@@ -2148,5 +2148,237 @@ class StackTraceDegradedBriefSequenceTests(unittest.TestCase):
         self.assertIn("brief_hint", body)
 
 
+class _FakeClock:
+    """Deterministic clock: time() advances only when sleep() is called."""
+
+    def __init__(self):
+        self.now = 0.0
+
+    def time(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.now += seconds
+
+
+def _probe_from(statuses):
+    """Build a probe_health_fn returning the given status sequence.
+
+    Each entry is a health status string, or None to simulate a transport error.
+    The final entry repeats once the sequence is exhausted.
+    """
+    seq = list(statuses)
+
+    def probe(base_url, timeout_seconds):
+        item = seq.pop(0) if len(seq) > 1 else seq[0]
+        if item is None:
+            return None, "connection refused"
+        return {"ok": True, "status": item}, None
+
+    return probe
+
+
+class WaitForCompileCycleTests(unittest.TestCase):
+    def _run(self, statuses, appear=10.0, settle=10.0):
+        return unity_puer_exec_runtime.wait_for_compile_cycle(
+            "http://127.0.0.1:55231",
+            appear,
+            settle,
+            unity_session.DEFAULT_HEALTH_TIMEOUT_SECONDS,
+            probe_health_fn=_probe_from(statuses),
+            time_ref=_FakeClock(),
+        )
+
+    def test_compiling_appears_after_ready_then_settles(self):
+        result = self._run(["ready", "ready", "compiling", "ready"])
+        self.assertEqual(result["outcome"], unity_puer_exec_runtime.COMPILE_OUTCOME_READY)
+        self.assertIn("compiling", result["observed_health"])
+        # An initial ready was never treated as terminal before the compile edge.
+        self.assertEqual(result["observed_health"][-1], "ready")
+
+    def test_compile_already_in_progress_settles(self):
+        result = self._run(["compiling", "ready"])
+        self.assertEqual(result["outcome"], unity_puer_exec_runtime.COMPILE_OUTCOME_READY)
+        self.assertEqual(result["observed_health"][0], "compiling")
+
+    def test_no_compile_observed_within_appear_window(self):
+        result = self._run(["ready"], appear=2.0)
+        self.assertEqual(result["outcome"], unity_puer_exec_runtime.COMPILE_OUTCOME_NONE)
+
+    def test_settle_timeout_when_compile_does_not_return_to_ready(self):
+        result = self._run(["compiling"], settle=2.0)
+        self.assertEqual(result["outcome"], unity_puer_exec_runtime.COMPILE_OUTCOME_TIMEOUT)
+
+    def test_transient_transport_errors_tolerated_during_settle(self):
+        result = self._run(["compiling", None, None, "ready"], settle=10.0)
+        self.assertEqual(result["outcome"], unity_puer_exec_runtime.COMPILE_OUTCOME_READY)
+
+    def test_dropped_ready_endpoint_treated_as_compile_edge(self):
+        # A previously-ready endpoint that drops (domain reload) is a compile edge.
+        result = self._run(["ready", None, "ready"], appear=10.0)
+        self.assertEqual(result["outcome"], unity_puer_exec_runtime.COMPILE_OUTCOME_READY)
+
+
+class WaitForCompileCommandTests(unittest.TestCase):
+    def test_base_url_no_compile_observed_returns_distinct_outcome(self):
+        with mock.patch.object(
+            unity_puer_exec_runtime, "time", _FakeClock()
+        ), mock.patch.object(
+            unity_puer_exec_runtime,
+            "_probe_compile_health",
+            _probe_from(["ready"]),
+        ):
+            exit_code, stdout, stderr = unity_puer_exec.run_cli(
+                ["wait-for-compile", "--base-url", "http://127.0.0.1:55231", "--appear-timeout-seconds", "2"]
+            )
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(stderr, "")
+        body = json.loads(stdout)
+        self.assertEqual(body["status"], "completed")
+        self.assertEqual(body["operation"], "wait-for-compile")
+        self.assertEqual(body["result"]["status"], "no_compile_observed")
+        self.assertFalse(body["result"]["compile_observed"])
+
+    def test_base_url_compile_settled_returns_completed(self):
+        with mock.patch.object(
+            unity_puer_exec_runtime, "time", _FakeClock()
+        ), mock.patch.object(
+            unity_puer_exec_runtime,
+            "_probe_compile_health",
+            _probe_from(["compiling", "ready"]),
+        ):
+            exit_code, stdout, stderr = unity_puer_exec.run_cli(
+                ["wait-for-compile", "--base-url", "http://127.0.0.1:55231"]
+            )
+
+        self.assertEqual(exit_code, 0)
+        body = json.loads(stdout)
+        self.assertEqual(body["result"]["status"], "compile_settled")
+        self.assertTrue(body["result"]["compile_observed"])
+
+    def test_base_url_settle_timeout_returns_non_terminal_running(self):
+        with mock.patch.object(
+            unity_puer_exec_runtime, "time", _FakeClock()
+        ), mock.patch.object(
+            unity_puer_exec_runtime,
+            "_probe_compile_health",
+            _probe_from(["compiling"]),
+        ):
+            exit_code, stdout, stderr = unity_puer_exec.run_cli(
+                ["wait-for-compile", "--base-url", "http://127.0.0.1:55231", "--settle-timeout-seconds", "2"]
+            )
+
+        self.assertEqual(exit_code, unity_puer_exec.EXIT_RUNNING)
+        body = json.loads(stdout)
+        self.assertEqual(body["status"], "running")
+        self.assertEqual(body["phase"], "compiling")
+
+    def test_project_path_resolves_through_session_discovery(self):
+        with mock.patch.object(
+            unity_session,
+            "ensure_session_ready",
+            return_value=_make_session(),
+        ) as ensure_ready, mock.patch.object(
+            unity_puer_exec_runtime, "time", _FakeClock()
+        ), mock.patch.object(
+            unity_puer_exec_runtime,
+            "_probe_compile_health",
+            _probe_from(["compiling", "ready"]),
+        ):
+            exit_code, stdout, stderr = unity_puer_exec.run_cli(
+                ["wait-for-compile", "--project-path", SAMPLE_PROJECT_PATH]
+            )
+
+        self.assertEqual(exit_code, 0)
+        self.assertTrue(ensure_ready.called)
+        body = json.loads(stdout)
+        self.assertEqual(body["result"]["status"], "compile_settled")
+
+    def test_help_documents_async_compile_and_trigger_tradeoff(self):
+        exit_code, stdout, stderr = unity_puer_exec.run_cli(["wait-for-compile", "--help"])
+        self.assertEqual(exit_code, 0)
+        self.assertIn("asynchronously", stdout)
+        self.assertIn("RequestScriptCompilation", stdout)
+
+
+class RefreshBeforeExecBaseUrlTests(unittest.TestCase):
+    def test_base_url_refresh_before_exec_runs_user_script_after_settle(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            script_path = Path(temp_dir) / "script.js"
+            script_path.write_text("export default function run(ctx) { return 7; }", encoding="utf-8")
+            with mock.patch.object(
+                unity_puer_exec_runtime,
+                "_settle_base_url_after_refresh",
+                return_value={"outcome": "ready", "observed_health": ["compiling", "ready"]},
+            ) as settle, mock.patch.object(
+                unity_puer_exec.direct_exec_client,
+                "invoke_command",
+                side_effect=[
+                    (0, json.dumps({"ok": True, "status": "completed", "request_id": "req-base-refresh", "result": {"refreshed": True}}), ""),
+                    (0, json.dumps({"ok": True, "status": "completed", "request_id": "req-base", "result": {"value": 7}}), ""),
+                ],
+            ) as invoke_command:
+                exit_code, stdout, stderr = unity_puer_exec.run_cli(
+                    [
+                        "exec",
+                        "--base-url",
+                        "http://127.0.0.1:55231",
+                        "--file",
+                        str(script_path),
+                        "--request-id",
+                        "req-base",
+                        "--refresh-before-exec",
+                    ]
+                )
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(stderr, "")
+        self.assertTrue(settle.called)
+        self.assertEqual(invoke_command.call_count, 2)
+        # First call is the internal refresh, second is the user script.
+        self.assertIn("AssetDatabase.Refresh", invoke_command.call_args_list[0].args[2]["code"])
+        self.assertEqual(invoke_command.call_args_list[0].args[2]["request_id"], "req-base-refresh")
+        self.assertEqual(invoke_command.call_args_list[1].args[2]["request_id"], "req-base")
+        self.assertIn("return 7", invoke_command.call_args_list[1].args[2]["code"])
+        body = json.loads(stdout)
+        # Terminal response carries the script result, not {refreshed: true}.
+        self.assertEqual(body["status"], "completed")
+        self.assertEqual(body["result"]["value"], 7)
+
+    def test_base_url_refresh_before_exec_surfaces_refresh_failure(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            script_path = Path(temp_dir) / "script.js"
+            script_path.write_text("export default function run(ctx) { return 7; }", encoding="utf-8")
+            with mock.patch.object(
+                unity_puer_exec_runtime,
+                "_settle_base_url_after_refresh",
+            ) as settle, mock.patch.object(
+                unity_puer_exec.direct_exec_client,
+                "invoke_command",
+                side_effect=[
+                    (unity_puer_exec.EXIT_UNITY_COMPILE_ERROR, json.dumps({"ok": False, "status": "unity_compile_error", "request_id": "req-base-refresh"}), ""),
+                ],
+            ) as invoke_command:
+                exit_code, stdout, stderr = unity_puer_exec.run_cli(
+                    [
+                        "exec",
+                        "--base-url",
+                        "http://127.0.0.1:55231",
+                        "--file",
+                        str(script_path),
+                        "--request-id",
+                        "req-base",
+                        "--refresh-before-exec",
+                    ]
+                )
+
+        self.assertEqual(exit_code, unity_puer_exec.EXIT_UNITY_COMPILE_ERROR)
+        self.assertFalse(settle.called)
+        self.assertEqual(invoke_command.call_count, 1)
+        body = json.loads(stdout)
+        self.assertEqual(body["status"], "unity_compile_error")
+
+
 if __name__ == "__main__":
     unittest.main()

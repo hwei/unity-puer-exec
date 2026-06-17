@@ -33,6 +33,12 @@ RESULT_MARKER_PATTERN = r"(?m)^\[UnityPuerExecResult\] (.+)$"
 PHASE_REFRESHING = "refreshing"
 PHASE_COMPILING = "compiling"
 PHASE_EXECUTING = "executing"
+HEALTH_STATUS_READY = "ready"
+HEALTH_STATUS_COMPILING = "compiling"
+# Edge-aware wait-for-compile outcomes (see openspec compile-wait spec).
+COMPILE_OUTCOME_READY = "ready"
+COMPILE_OUTCOME_NONE = "no_compile_observed"
+COMPILE_OUTCOME_TIMEOUT = "settle_timeout"
 REFRESH_BEFORE_EXEC_TEMPLATE = """export default function run(ctx) {
   const AssetDatabase = puer.loadType('UnityEditor.AssetDatabase');
   AssetDatabase.Refresh();
@@ -175,6 +181,8 @@ def run_command(args):
             return run_wait_for_log_pattern(args)
         if args.command == "wait-for-result-marker":
             return run_wait_for_result_marker(args)
+        if args.command == "wait-for-compile":
+            return run_wait_for_compile(args)
         if args.command == "get-log-source":
             return run_get_log_source(args)
         if args.command == "get-blocker-state":
@@ -498,6 +506,95 @@ def _ensure_project_session_ready_after_refresh(args):
     )
 
 
+def _probe_compile_health(base_url, health_timeout_seconds):
+    return unity_session._probe_health(base_url, health_timeout_seconds)
+
+
+def _record_observed_status(observed, status):
+    if status is not None and (not observed or observed[-1] != status):
+        observed.append(status)
+
+
+def wait_for_compile_cycle(
+    base_url,
+    appear_timeout_seconds,
+    settle_timeout_seconds,
+    health_timeout_seconds,
+    appear_poll_interval=unity_session.COMPILE_APPEAR_POLL_INTERVAL_SECONDS,
+    settle_poll_interval=unity_session.POLL_INTERVAL_SECONDS,
+    probe_health_fn=None,
+    time_ref=None,
+):
+    """Edge-aware wait for a single Unity compilation cycle over `/health`.
+
+    Phase 1 (appear): within ``appear_timeout_seconds`` wait for the editor to
+    report ``compiling`` (or detect a compile already in progress). An initial
+    ``ready`` is never treated as terminal, defeating the async-refresh race. If a
+    previously-ready endpoint drops (transport error after a healthy probe), that is
+    treated as a domain-reload edge.
+
+    Phase 2 (settle): wait up to ``settle_timeout_seconds`` for the editor to return
+    to ``ready``. Transient transport errors during this phase are tolerated as
+    still-in-progress until the ready/timeout boundary.
+
+    Returns a dict with ``outcome`` in {``ready``, ``no_compile_observed``,
+    ``settle_timeout``} and the ``observed_health`` status sequence.
+    """
+    time_ref = time if time_ref is None else time_ref
+    probe_health_fn = probe_health_fn or _probe_compile_health
+    observed = []
+    seen_healthy = False
+    edge_observed = False
+
+    appear_deadline = time_ref.time() + appear_timeout_seconds
+    while True:
+        payload, _error = probe_health_fn(base_url, health_timeout_seconds)
+        status = payload.get("status") if isinstance(payload, dict) else None
+        _record_observed_status(observed, status)
+        if status == HEALTH_STATUS_COMPILING:
+            edge_observed = True
+            break
+        if status == HEALTH_STATUS_READY:
+            seen_healthy = True
+        elif payload is None and seen_healthy:
+            # Endpoint dropped after being healthy: a refresh-triggered domain reload
+            # tears the control endpoint down, so treat this as the compile edge.
+            edge_observed = True
+            break
+        if time_ref.time() >= appear_deadline:
+            break
+        time_ref.sleep(appear_poll_interval)
+
+    if not edge_observed:
+        return {"outcome": COMPILE_OUTCOME_NONE, "observed_health": observed}
+
+    settle_deadline = time_ref.time() + settle_timeout_seconds
+    while True:
+        payload, _error = probe_health_fn(base_url, health_timeout_seconds)
+        status = payload.get("status") if isinstance(payload, dict) else None
+        _record_observed_status(observed, status)
+        if status == HEALTH_STATUS_READY:
+            return {"outcome": COMPILE_OUTCOME_READY, "observed_health": observed}
+        if time_ref.time() >= settle_deadline:
+            return {"outcome": COMPILE_OUTCOME_TIMEOUT, "observed_health": observed}
+        time_ref.sleep(settle_poll_interval)
+
+
+def _settle_base_url_after_refresh(base_url, args):
+    """Base-url analog of `_ensure_project_session_ready_after_refresh`.
+
+    Re-probes the same caller-supplied endpoint, reusing the compile-wait primitive,
+    so refresh-before-exec settles on the compile cycle before running the script.
+    """
+    settle_timeout_seconds = _post_refresh_ready_timeout_seconds(args)
+    return wait_for_compile_cycle(
+        base_url,
+        getattr(args, "appear_timeout_seconds", unity_session.DEFAULT_COMPILE_APPEAR_TIMEOUT_SECONDS),
+        settle_timeout_seconds,
+        getattr(args, "health_timeout_seconds", unity_session.DEFAULT_HEALTH_TIMEOUT_SECONDS),
+    )
+
+
 def _refresh_exec_code():
     return REFRESH_BEFORE_EXEC_TEMPLATE
 
@@ -650,7 +747,9 @@ def run_exec(args):
     validate_positive(args.wait_timeout_ms, "wait-timeout-ms")
     validate_project_mode_only(selector, "unity-exe-path", args.unity_exe_path)
     validate_project_mode_only(selector, "unity-log-path", args.unity_log_path)
-    validate_project_mode_only(selector, "refresh-before-exec", getattr(args, "refresh_before_exec", False))
+    # refresh-before-exec is now allowed in base-url mode: the server accepts
+    # refresh_before_exec for any selector, and the base-url settle path re-probes the
+    # same endpoint (see _settle_base_url_after_refresh).
 
     if selector == "project_path":
         _sweep_pending_exec(args)
@@ -752,6 +851,49 @@ def run_exec(args):
             _inject_log_range_into_payload(payload, log_path, log_start, _capture_log_offset(log_path))
             return EXIT_RUNNING, emit_payload(payload), ""
         _set_pending_phase(args, request_id, _read_pending_exec(args, request_id), PHASE_EXECUTING)
+
+    if selector == "base_url" and args.refresh_before_exec:
+        refresh_request_id = _refresh_request_id(request_id)
+        refresh_exit_code, refresh_stdout_text, refresh_stderr_text = _invoke_refresh_exec(
+            base_url, refresh_request_id, args
+        )
+        refresh_in_progress = _running_or_timed_out_response(
+            refresh_exit_code, refresh_stdout_text
+        ) or _is_compiling_response(refresh_exit_code, refresh_stdout_text)
+        if refresh_exit_code != 0 and not refresh_in_progress:
+            refresh_stdout_text = _remap_request_id_in_response(
+                refresh_stdout_text,
+                request_id,
+                args,
+                phase=PHASE_REFRESHING,
+                normalize_compiling=False,
+            )
+            refresh_stderr_text = _remap_request_id_in_response(
+                refresh_stderr_text,
+                request_id,
+                args,
+                phase=PHASE_REFRESHING,
+                normalize_compiling=False,
+            )
+            refresh_exit_code, refresh_stdout_text, refresh_stderr_text = _normalize_exec_response(
+                refresh_exit_code,
+                refresh_stdout_text,
+                refresh_stderr_text,
+                args,
+                request_id=request_id,
+                default_phase=PHASE_REFRESHING,
+                normalize_compiling=False,
+            )
+            refresh_stdout_text = _inject_log_range_into_stdout(
+                refresh_stdout_text, log_path, log_start, _capture_log_offset(log_path)
+            )
+            refresh_stdout_text = _inject_guidance_into_stdout(
+                refresh_stdout_text, "exec", args, request_id=request_id
+            )
+            return refresh_exit_code, refresh_stdout_text, refresh_stderr_text
+        # Settle on the compile cycle by re-probing the same endpoint, then run the
+        # user script below so base-url callers get refresh -> compile-settle -> execute.
+        _settle_base_url_after_refresh(base_url, args)
 
     if reset_jsenv_before_exec:
         reset_exit_code, reset_stdout_text, reset_stderr_text = _invoke_reset_jsenv(base_url, args)
@@ -982,6 +1124,75 @@ def run_wait_for_exec(args):
     stdout_text = _inject_log_range_into_stdout(stdout_text, _wfe_final_log_path, _wfe_log_start, _capture_log_offset(_wfe_final_log_path))
     stdout_text = _inject_guidance_into_stdout(stdout_text, "wait-for-exec", args, request_id=args.request_id)
     return exit_code, stdout_text, stderr_text
+
+
+def run_wait_for_compile(args):
+    selector = resolve_selector(args)
+    validate_positive(args.appear_timeout_seconds, "appear-timeout-seconds")
+    validate_positive(args.settle_timeout_seconds, "settle-timeout-seconds")
+    validate_positive(args.health_timeout_seconds, "health-timeout-seconds")
+
+    if selector == "project_path":
+        session = unity_session.ensure_session_ready(
+            project_path=args.project_path,
+            unity_exe_path=getattr(args, "unity_exe_path", None),
+            unity_log_path=getattr(args, "unity_log_path", None),
+            argv0=getattr(args, "argv0", None),
+        )
+        base_url = session.base_url
+    else:
+        session = None
+        base_url = args.base_url
+
+    cycle = wait_for_compile_cycle(
+        base_url,
+        args.appear_timeout_seconds,
+        args.settle_timeout_seconds,
+        args.health_timeout_seconds,
+    )
+    outcome = cycle["outcome"]
+    diagnostics = {"observed_health": cycle["observed_health"]}
+
+    if outcome == COMPILE_OUTCOME_READY:
+        payload = success_payload(
+            "wait-for-compile",
+            session=session,
+            result={"status": "compile_settled", "compile_observed": True},
+            include_diagnostics=args.include_diagnostics,
+            diagnostics=diagnostics,
+        )
+        _attach_guidance(payload, "wait-for-compile", "completed", args)
+        return 0, emit_payload(payload), ""
+
+    if outcome == COMPILE_OUTCOME_NONE:
+        payload = success_payload(
+            "wait-for-compile",
+            session=session,
+            result={"status": "no_compile_observed", "compile_observed": False},
+            include_diagnostics=args.include_diagnostics,
+            diagnostics=diagnostics,
+        )
+        _attach_guidance(payload, "wait-for-compile", "no_compile_observed", args)
+        return 0, emit_payload(payload), ""
+
+    # settle_timeout: an observed compile did not return to ready in time. Surface a
+    # non-terminal running/timeout result rather than falsely reporting completion.
+    payload = {
+        "ok": True,
+        "status": "running",
+        "operation": "wait-for-compile",
+        "phase": PHASE_COMPILING,
+    }
+    if session is not None:
+        payload["session"] = session.to_payload()
+    payload = attach_diagnostics(
+        payload,
+        include_diagnostics=args.include_diagnostics,
+        session=session,
+        diagnostics=diagnostics,
+    )
+    _attach_guidance(payload, "wait-for-compile", "running", args)
+    return EXIT_RUNNING, emit_payload(payload), ""
 
 
 def run_wait_for_log_pattern(args):
