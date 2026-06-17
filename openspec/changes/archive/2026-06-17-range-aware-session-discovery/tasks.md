@@ -30,5 +30,5 @@
 ## 6. Closeout
 
 - [x] 6.1 Verify the modified `formal-cli-contract` scenarios are each exercised by a test or host-validation step.
-- [ ] 6.2 Run the repository test suite and capture host-validation evidence; record results.
-- [ ] 6.3 Produce the apply closeout finding summary and recommend the commit / `openspec archive` / final commit sequence.
+- [x] 6.2 Run the repository test suite and capture host-validation evidence; record results. *(Default suite: 265 passed. Real-host suite on c3-client-tree2: 15/15 passed in ~2075s, including `test_exec_discovers_rolled_over_control_port_against_real_host` and the control-port rollover regression.)*
+- [x] 6.3 Produce the apply closeout finding summary and recommend the commit / `openspec archive` / final commit sequence.
