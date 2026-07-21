@@ -68,7 +68,9 @@ namespace UnityPuerExec
             if (File.Exists(filePath))
             {
                 debugpath = filePath;
-                return File.ReadAllText(filePath, Encoding.UTF8);
+                var contents = File.ReadAllText(filePath, Encoding.UTF8);
+                UnityPuerExecServer.RecordLocalModuleRead(filePath);
+                return contents;
             }
 
             if (TryLoadResourceTextAsset(normalizedPath, out var textAsset))
@@ -168,7 +170,15 @@ namespace UnityPuerExec
         private static int mainThreadId;
         private static int selectedPort;
         private static string listenerBaseUrl = "";
-        private static readonly Dictionary<string, DateTime> SourceFileTimestamps = new Dictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
+        private struct ModuleFingerprint
+        {
+            public bool Exists;
+            public DateTime LastWriteTimeUtc;
+        }
+
+        private static readonly object ModuleFingerprintGate = new object();
+        private static readonly Dictionary<string, ModuleFingerprint> LocalModuleFingerprints =
+            new Dictionary<string, ModuleFingerprint>(StringComparer.OrdinalIgnoreCase);
         private static volatile bool isCompiling;
         private static volatile bool isUpdating;
 
@@ -534,6 +544,16 @@ namespace UnityPuerExec
                 return;
             }
 
+            if (!UnityPuerExecProtocol.TryNormalizeStaleModulePolicy(request, out var policyError))
+            {
+                context.Response.StatusCode = 400;
+                await WriteJsonAsync(
+                    context,
+                    UnityPuerExecProtocol.BuildSimpleErrorJson("failed", policyError, request.request_id)
+                );
+                return;
+            }
+
             if (request.refresh_before_exec)
             {
                 var refreshCompletion = new TaskCompletionSource<bool>();
@@ -579,28 +599,16 @@ namespace UnityPuerExec
                 return;
             }
 
-            var stalenessError = request.reset_jsenv_before_exec ? null : CheckSourceStaleness(request.source_path);
-            if (stalenessError != null)
-            {
-                await WriteJsonAsync(
-                    context,
-                    UnityPuerExecProtocol.BuildSimpleErrorJson(
-                        "module_cache_stale",
-                        "source file has been modified since last execution; use --reset-jsenv-before-exec or rename the file",
-                        request.request_id
-                    )
-                );
-                return;
-            }
-
             var normalizedCode = NormalizeCode(request.code);
             var normalizedScriptArgsJson = NormalizeScriptArgsJson(request.script_args_json);
             var acceptStatus = TryAcceptExecRequest(
                 request.request_id,
                 normalizedCode,
                 normalizedScriptArgsJson,
+                request,
                 out var execJob,
-                out var isNewRequest
+                out var isNewRequest,
+                out var staleModules
             );
             request.code = normalizedCode;
             request.script_args_json = normalizedScriptArgsJson;
@@ -630,6 +638,15 @@ namespace UnityPuerExec
                 return;
             }
 
+            if (acceptStatus == "module_cache_stale")
+            {
+                await WriteJsonAsync(
+                    context,
+                    UnityPuerExecProtocol.BuildModuleCacheStaleErrorJson(request.request_id, staleModules)
+                );
+                return;
+            }
+
             Debug.Log($"[UnityPuerExec] Exec request accepted request={execJob.RequestId} new={isNewRequest}");
             if (isNewRequest)
             {
@@ -639,7 +656,7 @@ namespace UnityPuerExec
                     try
                     {
                         Debug.Log($"[UnityPuerExec] Exec starting request={execJob.RequestId}");
-                        if (request.reset_jsenv_before_exec)
+                        if (execJob.RecoveryPerformed)
                         {
                             ResetJsEnv();
                         }
@@ -911,10 +928,13 @@ namespace UnityPuerExec
             string requestId,
             string normalizedCode,
             string normalizedScriptArgsJson,
+            ExecRequest request,
             out UnityPuerExecJob job,
-            out bool isNewRequest
+            out bool isNewRequest,
+            out List<string> staleModules
         )
         {
+            staleModules = new List<string>();
             lock (RequestGate)
             {
                 if (Requests.TryGetValue(requestId, out job))
@@ -935,7 +955,27 @@ namespace UnityPuerExec
                     return "busy";
                 }
 
-                job = new UnityPuerExecJob(requestId, normalizedCode, normalizedScriptArgsJson);
+                staleModules = CheckModuleStaleness();
+                var shouldReset = request.reset_jsenv_before_exec ||
+                    (staleModules.Count > 0 && request.stale_module_policy == "auto-reset");
+                if (staleModules.Count > 0 && !request.reset_jsenv_before_exec && request.stale_module_policy == "error")
+                {
+                    job = null;
+                    isNewRequest = false;
+                    return "module_cache_stale";
+                }
+
+                var recoveryReason = request.reset_jsenv_before_exec
+                    ? "explicit_request"
+                    : (shouldReset ? "module_cache_stale" : "");
+                job = new UnityPuerExecJob(
+                    requestId,
+                    normalizedCode,
+                    normalizedScriptArgsJson,
+                    recoveryReason,
+                    request.stale_module_policy,
+                    staleModules
+                );
                 Requests[requestId] = job;
                 activeRequestId = requestId;
                 isNewRequest = true;
@@ -1074,6 +1114,11 @@ namespace UnityPuerExec
 
         private static void DisposeJsEnv()
         {
+            lock (ModuleFingerprintGate)
+            {
+                LocalModuleFingerprints.Clear();
+            }
+
             if (jsEnv == null)
             {
                 return;
@@ -1090,7 +1135,6 @@ namespace UnityPuerExec
 
             jsEnv = null;
             execLoader = null;
-            SourceFileTimestamps.Clear();
             SweepPendingTempEntryFiles();
         }
 
@@ -1144,42 +1188,73 @@ namespace UnityPuerExec
             }
         }
 
-        private static string CheckSourceStaleness(string sourcePath)
+        internal static void RecordLocalModuleRead(string filePath)
         {
-            if (string.IsNullOrEmpty(sourcePath))
+            if (string.IsNullOrEmpty(filePath))
             {
-                return null;
+                return;
             }
 
-            DateTime currentMtime;
             try
             {
-                if (!File.Exists(sourcePath))
+                var normalizedPath = NormalizeLocalModulePath(filePath);
+                if (string.IsNullOrEmpty(normalizedPath) || !File.Exists(normalizedPath))
                 {
-                    SourceFileTimestamps.Remove(sourcePath);
-                    return null;
+                    return;
                 }
 
-                currentMtime = File.GetLastWriteTimeUtc(sourcePath);
+                var fingerprint = new ModuleFingerprint
+                {
+                    Exists = true,
+                    LastWriteTimeUtc = File.GetLastWriteTimeUtc(normalizedPath),
+                };
+                lock (ModuleFingerprintGate)
+                {
+                    LocalModuleFingerprints[normalizedPath] = fingerprint;
+                }
             }
             catch
             {
-                return null;
             }
+        }
 
-            if (SourceFileTimestamps.TryGetValue(sourcePath, out var storedMtime))
+        private static List<string> CheckModuleStaleness()
+        {
+            var stale = new List<string>();
+            lock (ModuleFingerprintGate)
             {
-                if (currentMtime != storedMtime)
+                foreach (var entry in LocalModuleFingerprints)
                 {
-                    return "module_cache_stale";
+                    try
+                    {
+                        if (!File.Exists(entry.Key)
+                            || File.GetLastWriteTimeUtc(entry.Key) != entry.Value.LastWriteTimeUtc)
+                        {
+                            stale.Add(entry.Key);
+                        }
+                    }
+                    catch
+                    {
+                        stale.Add(entry.Key);
+                    }
                 }
             }
-            else
+
+            return stale
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+        }
+
+        private static string NormalizeLocalModulePath(string filePath)
+        {
+            var path = filePath;
+            if (path.StartsWith("file://", StringComparison.OrdinalIgnoreCase))
             {
-                SourceFileTimestamps[sourcePath] = currentMtime;
+                path = new Uri(path).LocalPath;
             }
 
-            return null;
+            return Path.GetFullPath(path).Replace('\\', '/');
         }
 
         private static bool IsCompilingOrReloading()

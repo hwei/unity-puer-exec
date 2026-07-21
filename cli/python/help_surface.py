@@ -326,6 +326,7 @@ COMMAND_HELP = {
             "The function's immediate return value is the machine-readable transport for structured data; it populates top-level `result`. For a result that may be large, add `--response-file X:/work/.tmp/result.json` to persist the complete response and receive a compact verifiable reference instead of routing large data through `console.log`, which remains a diagnostic/async-observation channel, not the preferred large-result transport.",
             "Script `ctx` is intentionally narrow: only `ctx.request_id`, `ctx.globals`, and `ctx.args` are guaranteed. See `exec --help-args` or `--help-example derive-project-path-from-unity-api` before assuming project-path helpers.",
             "With `--project-path`, `exec` owns Unity launch or recovery for the project as part of the main work lifecycle.",
+            "Changed local modules are recovered by a same-invocation server-owned JsEnv reset by default; use `--stale-module-policy error` when `ctx.globals` or module singleton continuity must be preserved.",
             "Scripts use a PuerTS-style JavaScript-to-C# bridge; `puer.loadType(...)` is the normal way to load Unity or C# types inside `exec` scripts.",
             "If an earlier step wrote C# or other import-triggering project assets, make the next project-scoped `exec` use `--refresh-before-exec` and continue with `wait-for-exec` if the request stays non-terminal.",
         ],
@@ -347,6 +348,8 @@ COMMAND_HELP = {
                 "`--request-id <id>`: optional caller-owned exec identity for recovery or idempotent replay; omitted values are generated automatically.",
                 "`--script-args <json-object>`: optional caller-supplied JSON object that becomes `ctx.args`; malformed JSON or non-object values fail before runtime execution.",
                 "`--refresh-before-exec`: refresh the Unity project before running this script, settle on the resulting (asynchronously started) compile cycle, then run the script in the reloaded environment -- a single refresh -> compile-settle -> execute request lifecycle. Works in both `--project-path` and `--base-url` mode; in base-url mode the settle re-probes the same endpoint. The intermediate refreshing/compiling phase is non-terminal, and the terminal response carries the script result, not the `{refreshed: true}` refresh confirmation.",
+                "`--reset-jsenv-before-exec`: ask the Unity server to perform one JsEnv reset immediately before this exec; the CLI does not issue a separate reset request.",
+                "`--stale-module-policy auto-reset|error`: default `auto-reset` recovers changed or removed loaded local modules in the same invocation; `error` withholds reset and returns `module_cache_stale`, preserving JsEnv state. Automatic or explicit recovery reports affected module paths in `recovery`.",
                 "`--include-diagnostics`: include top-level debug diagnostics in the machine-readable response.",
                 "`--file <path>`: preferred script input for multi-line or AI-generated scripts; the file must export `default function (ctx) { ... }`.",
                 "`--stdin`: read script content from standard input; stdin content must export `default function (ctx) { ... }`.",
@@ -401,7 +404,7 @@ COMMAND_HELP = {
                 ("unity_not_ready", EXIT_UNITY_NOT_READY, "Unity did not become ready before execution could proceed."),
                 ("failed", 1, "execution failed unexpectedly, the module entry shape was invalid, or another non-warning execution error occurred."),
                 ("warning", 0, "the script body executed successfully but the entry function returned a Promise; the return value could not be serialized. Use console.log() with wait-for-result-marker for async result observation."),
-                ("module_cache_stale", direct_exec_client.EXIT_MODULE_CACHE_STALE, "the source file has been modified since its last execution but the PuerTS module cache is stale; re-run with --reset-jsenv-before-exec or rename the file."),
+                ("module_cache_stale", direct_exec_client.EXIT_MODULE_CACHE_STALE, "one or more loaded local modules changed or were removed; `--stale-module-policy error` withheld reset so JsEnv state is preserved. Choose explicit reset or omit the error policy for same-invocation auto recovery."),
                 ("unity_compile_error", direct_exec_client.EXIT_UNITY_COMPILE_ERROR, "C# compilation has errors; the script was not executed. Fix the C# errors and re-run with --refresh-before-exec to trigger recompilation."),
             ],
         },
@@ -881,7 +884,7 @@ GUIDANCE_MATRIX = {
         ],
     },
     ("exec", "module_cache_stale"): {
-        "situation": "The source file has been modified since its last execution but the PuerTS module cache still holds the old compiled version. The script was not executed.",
+        "situation": "One or more local modules loaded by the current JsEnv changed or were removed. Reset was withheld because `--stale-module-policy error` was selected, so the script was not executed and existing JsEnv state was preserved.",
         "next_steps": [
             {
                 "command": "exec",
@@ -895,7 +898,13 @@ GUIDANCE_MATRIX = {
             },
             {
                 "command": "exec",
-                "when": "rename the script file (e.g., script_v2.js) and exec with the new filename to bypass the module cache",
+                "when": "use the default same-invocation recovery when preserving JsEnv state is not required",
+                "argv_template": [
+                    "unity-puer-exec", "exec",
+                    "--project-path", "{project_path}",
+                    "--file", "{file_path}",
+                    "--stale-module-policy", "auto-reset",
+                ],
             },
         ],
     },

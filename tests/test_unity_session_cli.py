@@ -66,6 +66,22 @@ class UnityPuerExecCliTests(unittest.TestCase):
         self.assertEqual(args.import_base_url, "http://localhost:3000")
         self.assertTrue(args.reset_jsenv_before_exec)
 
+    def test_exec_parser_defaults_and_accepts_stale_module_policy(self):
+        parser = unity_puer_exec._build_parser()
+        default_args = parser.parse_args(["exec", "--code", "export default function run(ctx) { return 1; }"])
+        error_args = parser.parse_args([
+            "exec", "--code", "export default function run(ctx) { return 1; }",
+            "--stale-module-policy", "error",
+        ])
+
+        self.assertEqual(default_args.stale_module_policy, "auto-reset")
+        self.assertEqual(error_args.stale_module_policy, "error")
+        with self.assertRaises(SystemExit):
+            parser.parse_args([
+                "exec", "--code", "export default function run(ctx) { return 1; }",
+                "--stale-module-policy", "invalid",
+            ])
+
     def test_top_level_help_renders_formal_sections(self):
         exit_code, stdout, stderr = unity_puer_exec.run_cli(["--help"])
 
@@ -309,6 +325,21 @@ class UnityPuerExecCliTests(unittest.TestCase):
         self.assertIn("entry function returned a Promise", stdout)
         self.assertIn("`modal_blocked` -> exit 19", stdout)
 
+    def test_exec_help_describes_stale_module_policy_and_recovery_choices(self):
+        exit_code, stdout, stderr = unity_puer_exec.run_cli(["exec", "--help-args"])
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(stderr, "")
+        self.assertIn("--stale-module-policy auto-reset|error", stdout)
+        self.assertIn("same invocation", stdout)
+        self.assertIn("module_cache_stale", stdout)
+
+    def test_stale_module_guidance_contains_explicit_and_auto_reset_candidates(self):
+        import help_surface
+
+        entry = help_surface.GUIDANCE_MATRIX[("exec", "module_cache_stale")]
+        self.assertIn("--reset-jsenv-before-exec", entry["next_steps"][0]["argv_template"])
+        self.assertIn("--stale-module-policy", entry["next_steps"][1]["argv_template"])
+
     def test_exit_help_example_renders_inline_request_exit_script(self):
         exit_code, stdout, stderr = unity_puer_exec.run_cli(["--help-example", "request-editor-exit-via-exec"])
 
@@ -472,12 +503,14 @@ class UnityPuerExecCliTests(unittest.TestCase):
 
         self.assertEqual(exit_code, 0)
         self.assertEqual(stderr, "")
-        self.assertEqual(invoke_command.call_args_list[0].args[0], "reset-jsenv")
-        payload = invoke_command.call_args_list[1].args[2]
+        self.assertEqual(len(invoke_command.call_args_list), 1)
+        self.assertEqual(invoke_command.call_args_list[0].args[0], "exec")
+        payload = invoke_command.call_args_list[0].args[2]
         self.assertEqual(payload["request_id"], "req-import")
         self.assertEqual(payload["source_path"], os.path.abspath(script_path))
         self.assertEqual(payload["import_base_url"], "http://localhost:3000")
         self.assertTrue(payload["reset_jsenv_before_exec"])
+        self.assertEqual(payload["stale_module_policy"], "auto-reset")
         body = json.loads(stdout)
         self.assertEqual(body["status"], "completed")
 
@@ -760,9 +793,8 @@ class UnityPuerExecCliTests(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         self.assertEqual(stderr, "")
         self.assertEqual(invoke_command.call_args_list[0].args[0], "exec")
-        self.assertEqual(invoke_command.call_args_list[1].args[0], "reset-jsenv")
-        self.assertEqual(invoke_command.call_args_list[2].args[0], "exec")
-        self.assertEqual(invoke_command.call_args_list[2].args[2]["request_id"], "req-refresh-reset")
+        self.assertEqual(invoke_command.call_args_list[1].args[0], "exec")
+        self.assertEqual(invoke_command.call_args_list[1].args[2]["request_id"], "req-refresh-reset")
         body = json.loads(stdout)
         self.assertEqual(body["status"], "completed")
 
@@ -918,9 +950,8 @@ class UnityPuerExecCliTests(unittest.TestCase):
 
         self.assertEqual(exit_code, 0)
         self.assertEqual(stderr, "")
-        self.assertEqual(invoke_command.call_args_list[0].args[0], "reset-jsenv")
-        self.assertEqual(invoke_command.call_args_list[1].args[0], "exec")
-        payload = invoke_command.call_args_list[1].args[2]
+        self.assertEqual(invoke_command.call_args_list[0].args[0], "exec")
+        payload = invoke_command.call_args_list[0].args[2]
         self.assertEqual(payload["source_path"], "C:/scripts/entry.js")
         self.assertEqual(payload["import_base_url"], "http://localhost:3000")
         self.assertTrue(payload["reset_jsenv_before_exec"])

@@ -19,6 +19,7 @@ namespace UnityPuerExec
         public bool include_diagnostics = false;
         public bool reset_jsenv_before_exec = false;
         public bool refresh_before_exec = false;
+        public string stale_module_policy = "auto-reset";
     }
 
     [System.Serializable]
@@ -177,6 +178,7 @@ namespace UnityPuerExec
 
         internal static string BuildExecResponseJson(UnityPuerExecJobSnapshot snapshot, string sessionMarker)
         {
+            var recoveryJson = BuildRecoveryJson(snapshot);
             switch (snapshot.Status)
             {
                 case UnityPuerExecJobStatus.Completed:
@@ -185,7 +187,7 @@ namespace UnityPuerExec
                            "\"status\":\"completed\"," +
                            "\"request_id\":\"" + JsonEscape(snapshot.RequestId) + "\"," +
                            "\"session_marker\":\"" + JsonEscape(sessionMarker) + "\"," +
-                           "\"result\":" + (snapshot.ResultJson ?? "null") +
+                            "\"result\":" + (snapshot.ResultJson ?? "null") + recoveryJson +
                            "}";
                 case UnityPuerExecJobStatus.CompletedWithWarning:
                     return "{" +
@@ -195,7 +197,7 @@ namespace UnityPuerExec
                            "\"session_marker\":\"" + JsonEscape(sessionMarker) + "\"," +
                            "\"warning\":\"" + JsonEscape(snapshot.WarningCode) + "\"," +
                            "\"warning_detail\":\"" + JsonEscape(snapshot.WarningDetail) + "\"," +
-                           "\"result\":null" +
+                            "\"result\":null" + recoveryJson +
                            "}";
                 case UnityPuerExecJobStatus.Failed:
                     var errorDetailJson = BuildErrorDetailJson(snapshot.Error);
@@ -206,7 +208,7 @@ namespace UnityPuerExec
                            "\"session_marker\":\"" + JsonEscape(sessionMarker) + "\"," +
                            "\"error\":\"" + JsonEscape(snapshot.Error) + "\"," +
                            errorDetailJson +
-                           "\"stack\":\"" + JsonEscape(snapshot.Stack) + "\"" +
+                            "\"stack\":\"" + JsonEscape(snapshot.Stack) + "\"" + recoveryJson +
                            "}";
                 default:
                     return "{" +
@@ -214,9 +216,50 @@ namespace UnityPuerExec
                            "\"status\":\"running\"," +
                            "\"request_id\":\"" + JsonEscape(snapshot.RequestId) + "\"," +
                            "\"session_marker\":\"" + JsonEscape(sessionMarker) + "\"," +
-                           "\"result\":null" +
+                            "\"result\":null" + recoveryJson +
                            "}";
             }
+        }
+
+        private static string BuildRecoveryJson(UnityPuerExecJobSnapshot snapshot)
+        {
+            if (!snapshot.RecoveryPerformed)
+            {
+                return string.Empty;
+            }
+
+            var modules = snapshot.AffectedModules ?? new System.Collections.Generic.List<string>();
+            var moduleJson = string.Join(",", modules.Select(path => "\"" + JsonEscape(path) + "\""));
+            return ",\"recovery\":{" +
+                   "\"performed\":true," +
+                   "\"type\":\"jsenv_reset\"," +
+                   "\"reason\":\"" + JsonEscape(snapshot.RecoveryReason) + "\"," +
+                   "\"policy\":\"" + JsonEscape(snapshot.RecoveryPolicy) + "\"," +
+                   "\"affected_modules\":[" + moduleJson + "]" +
+                   "}";
+        }
+
+        internal static bool TryNormalizeStaleModulePolicy(ExecRequest request, out string error)
+        {
+            error = string.Empty;
+            var policy = string.IsNullOrEmpty(request.stale_module_policy)
+                ? "auto-reset"
+                : request.stale_module_policy;
+            if (policy != "auto-reset" && policy != "error")
+            {
+                error = "invalid_stale_module_policy";
+                return false;
+            }
+
+            request.stale_module_policy = policy;
+            return true;
+        }
+
+        internal static string BuildModuleCacheStaleErrorJson(string requestId, System.Collections.Generic.IEnumerable<string> paths)
+        {
+            var orderedPaths = (paths ?? Enumerable.Empty<string>()).Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(path => path, StringComparer.OrdinalIgnoreCase);
+            return "{\"ok\":false,\"status\":\"module_cache_stale\",\"request_id\":\"" + JsonEscape(requestId) + "\",\"stale_modules\":[" +
+                   string.Join(",", orderedPaths.Select(path => "\"" + JsonEscape(path) + "\"")) + "]}";
         }
 
         internal static string BuildSimpleErrorJson(string status, string error, string requestId = "")

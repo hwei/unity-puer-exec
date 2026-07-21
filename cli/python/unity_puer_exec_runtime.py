@@ -30,6 +30,8 @@ EXIT_NO_OBSERVATION_TARGET = 15
 EXIT_NOT_STOPPED = 16
 EXIT_UNITY_START_FAILED = 20
 EXIT_UNITY_NOT_READY = 21
+STALE_MODULE_POLICY_AUTO_RESET = "auto-reset"
+STALE_MODULE_POLICY_ERROR = "error"
 RESULT_MARKER_PREFIX = "[UnityPuerExecResult]"
 RESULT_MARKER_PATTERN = r"(?m)^\[UnityPuerExecResult\] (.+)$"
 PHASE_REFRESHING = "refreshing"
@@ -409,6 +411,7 @@ def _pending_exec_payload(
     source_path=None,
     import_base_url=None,
     reset_jsenv_before_exec=False,
+    stale_module_policy=STALE_MODULE_POLICY_AUTO_RESET,
 ):
     payload = {
         "request_id": request_id,
@@ -417,6 +420,7 @@ def _pending_exec_payload(
         "script_args_json": script_args_json,
         "refresh_before_exec": bool(refresh_before_exec),
         "reset_jsenv_before_exec": bool(reset_jsenv_before_exec),
+        "stale_module_policy": stale_module_policy or STALE_MODULE_POLICY_AUTO_RESET,
     }
     if source_path:
         payload["source_path"] = source_path
@@ -447,6 +451,7 @@ def _write_pending_exec(
     source_path=None,
     import_base_url=None,
     reset_jsenv_before_exec=False,
+    stale_module_policy=STALE_MODULE_POLICY_AUTO_RESET,
 ):
     _sweep_pending_exec(args)
     return unity_session.write_pending_exec_artifact(
@@ -463,6 +468,7 @@ def _write_pending_exec(
             source_path=source_path,
             import_base_url=import_base_url,
             reset_jsenv_before_exec=reset_jsenv_before_exec,
+            stale_module_policy=stale_module_policy,
         ),
     )
 
@@ -518,6 +524,7 @@ def _build_exec_payload(
     import_base_url=None,
     refresh_before_exec=False,
     reset_jsenv_before_exec=False,
+    stale_module_policy=STALE_MODULE_POLICY_AUTO_RESET,
 ):
     payload = {
         "request_id": request_id,
@@ -525,6 +532,7 @@ def _build_exec_payload(
         "script_args_json": script_args_json,
         "wait_timeout_ms": args.wait_timeout_ms,
         "include_diagnostics": args.include_diagnostics,
+        "stale_module_policy": stale_module_policy or STALE_MODULE_POLICY_AUTO_RESET,
     }
     if source_path:
         payload["source_path"] = source_path
@@ -547,6 +555,7 @@ def _invoke_exec(
     import_base_url=None,
     reset_jsenv_before_exec=False,
     refresh_before_exec=False,
+    stale_module_policy=STALE_MODULE_POLICY_AUTO_RESET,
 ):
     payload = _build_exec_payload(
         request_id,
@@ -557,6 +566,7 @@ def _invoke_exec(
         import_base_url=import_base_url,
         reset_jsenv_before_exec=reset_jsenv_before_exec,
         refresh_before_exec=refresh_before_exec,
+        stale_module_policy=stale_module_policy,
     )
     return direct_exec_client.invoke_command(
         "exec",
@@ -808,6 +818,10 @@ def _exec_reset_flag(args):
     return bool(getattr(args, "reset_jsenv_before_exec", False))
 
 
+def _exec_stale_module_policy(args):
+    return getattr(args, "stale_module_policy", None) or STALE_MODULE_POLICY_AUTO_RESET
+
+
 def run_exec(args):
     if getattr(args, "include_log_offset", False):
         return usage_error("--include-log-offset has been removed; use log_range.start from exec response")
@@ -817,6 +831,7 @@ def run_exec(args):
     source_path = _resolve_source_path(args)
     import_base_url = _exec_import_base_url(args)
     reset_jsenv_before_exec = _exec_reset_flag(args)
+    stale_module_policy = _exec_stale_module_policy(args)
     selector = resolve_selector(args)
     validate_positive(args.wait_timeout_ms, "wait-timeout-ms")
     validate_project_mode_only(selector, "unity-exe-path", args.unity_exe_path)
@@ -845,6 +860,7 @@ def run_exec(args):
                 source_path=source_path,
                 import_base_url=import_base_url,
                 reset_jsenv_before_exec=reset_jsenv_before_exec,
+                stale_module_policy=stale_module_policy,
             )
             payload = _emit_running_payload("exec", exc.session, request_id, args)
             _rp1_log_path = _resolve_log_path(args, exc.session)
@@ -874,6 +890,7 @@ def run_exec(args):
             source_path=source_path,
             import_base_url=import_base_url,
             reset_jsenv_before_exec=reset_jsenv_before_exec,
+            stale_module_policy=stale_module_policy,
         )
         exit_code, stdout_text, stderr_text = _invoke_refresh_exec(base_url, refresh_request_id, args)
         exit_code, stdout_text, stderr_text = _normalize_exec_blocker_result(
@@ -969,27 +986,6 @@ def run_exec(args):
         # user script below so base-url callers get refresh -> compile-settle -> execute.
         _settle_base_url_after_refresh(base_url, args)
 
-    if reset_jsenv_before_exec:
-        reset_exit_code, reset_stdout_text, reset_stderr_text = _invoke_reset_jsenv(base_url, args)
-        if reset_exit_code != 0:
-            reset_stdout_text = _remap_request_id_in_response(
-                reset_stdout_text,
-                request_id,
-                args,
-                phase=PHASE_EXECUTING,
-                normalize_compiling=False,
-            )
-            reset_stderr_text = _remap_request_id_in_response(
-                reset_stderr_text,
-                request_id,
-                args,
-                phase=PHASE_EXECUTING,
-                normalize_compiling=False,
-            )
-            reset_stdout_text = _inject_log_range_into_stdout(reset_stdout_text, log_path, log_start, _capture_log_offset(log_path))
-            reset_stdout_text = _inject_guidance_into_stdout(reset_stdout_text, "exec", args, request_id=request_id)
-            return reset_exit_code, reset_stdout_text, reset_stderr_text
-
     exit_code, stdout_text, stderr_text = _invoke_exec(
         base_url,
         request_id,
@@ -999,6 +995,7 @@ def run_exec(args):
         source_path=source_path,
         import_base_url=import_base_url,
         reset_jsenv_before_exec=reset_jsenv_before_exec,
+        stale_module_policy=stale_module_policy,
     )
     exit_code, stdout_text, stderr_text = _normalize_exec_blocker_result(
         exit_code,
@@ -1129,31 +1126,6 @@ def run_wait_for_exec(args):
                 _inject_log_range_into_payload(payload, _wfe_refresh_log_path, _wfe_log_start, _capture_log_offset(_wfe_refresh_log_path))
                 return EXIT_RUNNING, emit_payload(payload), ""
             pending = _refresh_pending_exec(args, args.request_id, pending, PHASE_EXECUTING)
-        if pending.get("reset_jsenv_before_exec"):
-            reset_exit_code, reset_stdout_text, reset_stderr_text = _invoke_reset_jsenv(base_url, args)
-            if reset_exit_code != 0:
-                reset_stdout_text = _remap_request_id_in_response(
-                    reset_stdout_text,
-                    args.request_id,
-                    args,
-                    phase=PHASE_EXECUTING,
-                    normalize_compiling=False,
-                )
-                reset_stderr_text = _remap_request_id_in_response(
-                    reset_stderr_text,
-                    args.request_id,
-                    args,
-                    phase=PHASE_EXECUTING,
-                    normalize_compiling=False,
-                )
-                reset_stdout_text = _inject_log_range_into_stdout(
-                    reset_stdout_text,
-                    _resolve_log_path(args, session),
-                    _wfe_log_start,
-                    _capture_log_offset(_resolve_log_path(args, session)),
-                )
-                reset_stdout_text = _inject_guidance_into_stdout(reset_stdout_text, "wait-for-exec", args, request_id=args.request_id)
-                return reset_exit_code, reset_stdout_text, reset_stderr_text
         exit_code, stdout_text, stderr_text = _invoke_exec(
             base_url,
             args.request_id,
@@ -1163,6 +1135,7 @@ def run_wait_for_exec(args):
             source_path=pending.get("source_path"),
             import_base_url=pending.get("import_base_url"),
             reset_jsenv_before_exec=bool(pending.get("reset_jsenv_before_exec")),
+            stale_module_policy=pending.get("stale_module_policy", STALE_MODULE_POLICY_AUTO_RESET),
         )
     else:
         payload = {

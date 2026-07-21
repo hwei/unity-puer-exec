@@ -22,17 +22,32 @@ namespace UnityPuerExec
         private string warningCode = "";
         private string warningDetail = "";
 
-        public UnityPuerExecJob(string requestId, string normalizedCode, string normalizedScriptArgsJson)
+        public UnityPuerExecJob(
+            string requestId,
+            string normalizedCode,
+            string normalizedScriptArgsJson,
+            string recoveryReason = "",
+            string recoveryPolicy = "auto-reset",
+            System.Collections.Generic.IEnumerable<string> affectedModules = null
+        )
         {
             RequestId = requestId;
             NormalizedCode = normalizedCode;
             NormalizedScriptArgsJson = normalizedScriptArgsJson;
+            RecoveryPerformed = !string.IsNullOrEmpty(recoveryReason);
+            RecoveryReason = recoveryReason ?? "";
+            RecoveryPolicy = recoveryPolicy ?? "auto-reset";
+            AffectedModules = new System.Collections.Generic.List<string>(affectedModules ?? new System.Collections.Generic.List<string>());
             UpdatedAtUtc = DateTime.UtcNow;
         }
 
         public string RequestId { get; }
         public string NormalizedCode { get; }
         public string NormalizedScriptArgsJson { get; }
+        public bool RecoveryPerformed { get; }
+        public string RecoveryReason { get; }
+        public string RecoveryPolicy { get; }
+        public System.Collections.Generic.List<string> AffectedModules { get; }
         public DateTime UpdatedAtUtc { get; private set; }
         public Task Completion => completionSource.Task;
 
@@ -47,7 +62,11 @@ namespace UnityPuerExec
                     error,
                     stack,
                     warningCode,
-                    warningDetail
+                    warningDetail,
+                    RecoveryPerformed,
+                    RecoveryReason,
+                    RecoveryPolicy,
+                    AffectedModules
                 );
             }
         }
@@ -100,7 +119,11 @@ namespace UnityPuerExec
             string error,
             string stack,
             string warningCode = "",
-            string warningDetail = ""
+            string warningDetail = "",
+            bool recoveryPerformed = false,
+            string recoveryReason = "",
+            string recoveryPolicy = "auto-reset",
+            System.Collections.Generic.IEnumerable<string> affectedModules = null
         )
         {
             RequestId = requestId;
@@ -110,6 +133,10 @@ namespace UnityPuerExec
             Stack = stack;
             WarningCode = warningCode ?? "";
             WarningDetail = warningDetail ?? "";
+            RecoveryPerformed = recoveryPerformed;
+            RecoveryReason = recoveryReason ?? "";
+            RecoveryPolicy = recoveryPolicy ?? "auto-reset";
+            AffectedModules = new System.Collections.Generic.List<string>(affectedModules ?? new System.Collections.Generic.List<string>());
         }
 
         public string RequestId { get; }
@@ -119,5 +146,9 @@ namespace UnityPuerExec
         public string Stack { get; }
         public string WarningCode { get; }
         public string WarningDetail { get; }
+        public bool RecoveryPerformed { get; }
+        public string RecoveryReason { get; }
+        public string RecoveryPolicy { get; }
+        public System.Collections.Generic.List<string> AffectedModules { get; }
     }
 }

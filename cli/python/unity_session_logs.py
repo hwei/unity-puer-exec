@@ -129,6 +129,7 @@ def _coerce_pending_exec_artifact(request_id, payload):
         "code": code,
         "refresh_before_exec": bool(payload.get("refresh_before_exec")),
         "reset_jsenv_before_exec": bool(payload.get("reset_jsenv_before_exec")),
+        "stale_module_policy": payload.get("stale_module_policy") if payload.get("stale_module_policy") in ("auto-reset", "error") else "auto-reset",
         "created_at_ms": created_at_ms,
         "updated_at_ms": updated_at_ms,
     }
@@ -245,6 +246,7 @@ def write_pending_exec_artifact(project_path, request_id, payload):
         "code": payload["code"],
         "refresh_before_exec": bool(payload.get("refresh_before_exec")),
         "reset_jsenv_before_exec": bool(payload.get("reset_jsenv_before_exec")),
+        "stale_module_policy": payload.get("stale_module_policy") if payload.get("stale_module_policy") in ("auto-reset", "error") else "auto-reset",
         "created_at_ms": existing.get("created_at_ms", now_ms) if existing else now_ms,
         "updated_at_ms": now_ms,
         "script_args": script_args,

@@ -147,6 +147,33 @@ class PackageLayoutTests(unittest.TestCase):
         self.assertIn("StringAndCommentPattern", protocol_content)
         self.assertIn("new string(' ', match.Value.Length)", protocol_content)
 
+    def test_exec_protocol_supports_stale_module_policy_and_recovery_contract(self):
+        protocol_path = PACKAGE_ROOT / "Editor" / "UnityPuerExecProtocol.cs"
+        protocol_content = protocol_path.read_text(encoding="utf-8")
+        server_content = (PACKAGE_ROOT / "Editor" / "UnityPuerExecServer.cs").read_text(encoding="utf-8")
+        job_content = (PACKAGE_ROOT / "Editor" / "UnityPuerExecJobState.cs").read_text(encoding="utf-8")
+
+        self.assertIn("stale_module_policy", protocol_content)
+        self.assertIn("TryNormalizeStaleModulePolicy", protocol_content)
+        self.assertIn("BuildModuleCacheStaleErrorJson", protocol_content)
+        self.assertIn("affected_modules", protocol_content)
+        self.assertIn("RecordLocalModuleRead", server_content)
+        self.assertIn("LocalModuleFingerprints", server_content)
+        self.assertIn("CheckModuleStaleness", server_content)
+        self.assertNotIn("SourceFileTimestamps", server_content)
+        self.assertIn("RecoveryPerformed", job_content)
+
+    def test_exec_server_owns_single_recovery_point_and_admission_order(self):
+        server_content = (PACKAGE_ROOT / "Editor" / "UnityPuerExecServer.cs").read_text(encoding="utf-8")
+
+        self.assertIn("if (execJob.RecoveryPerformed)", server_content)
+        self.assertIn("ResetJsEnv();", server_content)
+        self.assertIn('return "module_cache_stale";', server_content)
+        self.assertIn('return "busy";', server_content)
+        self.assertIn('"request_id_conflict"', server_content)
+        self.assertLess(server_content.index('return "busy";'), server_content.index("staleModules = CheckModuleStaleness();"))
+        self.assertLess(server_content.index('"request_id_conflict"'), server_content.index("staleModules = CheckModuleStaleness();"))
+
     def test_completion_log_reports_bounded_metadata_not_result_content(self):
         server_path = PACKAGE_ROOT / "Editor" / "UnityPuerExecServer.cs"
         content = server_path.read_text(encoding="utf-8")

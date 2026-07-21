@@ -404,6 +404,7 @@ class UnitySessionModuleTests(unittest.TestCase):
         self.assertEqual(first["source_path"], "C:/scripts/entry.js")
         self.assertEqual(first["import_base_url"], "http://localhost:3000")
         self.assertTrue(first["reset_jsenv_before_exec"])
+        self.assertEqual(first["stale_module_policy"], "auto-reset")
         self.assertEqual(second["created_at_ms"], 100000)
         self.assertEqual(second["updated_at_ms"], 125000)
         self.assertEqual(restored["phase"], "compiling")
@@ -411,6 +412,7 @@ class UnitySessionModuleTests(unittest.TestCase):
         self.assertEqual(restored["source_path"], "C:/scripts/entry.js")
         self.assertEqual(restored["import_base_url"], "http://localhost:3000")
         self.assertTrue(restored["reset_jsenv_before_exec"])
+        self.assertEqual(restored["stale_module_policy"], "auto-reset")
 
     def test_logs_read_pending_exec_artifact_cleans_expired_file(self):
         with tempfile.TemporaryDirectory() as temp_dir:
