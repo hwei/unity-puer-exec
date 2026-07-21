@@ -207,7 +207,7 @@ namespace UnityPuerExec
         {
             if (Requests.TryGetValue(jobId, out var job))
             {
-                Debug.Log($"[UnityPuerExec] Complete request={jobId} result={resultJson}");
+                Debug.Log($"[UnityPuerExec] Complete request={jobId} result_bytes={Encoding.UTF8.GetByteCount(resultJson)}");
                 job.Complete(resultJson);
                 ReleaseActiveRequest(jobId);
             }

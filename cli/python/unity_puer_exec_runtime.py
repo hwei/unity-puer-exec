@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
+import hashlib
 import json
 import os
 import re
 import sys
+import tempfile
 import time
 import uuid
 
@@ -56,6 +58,77 @@ def usage_error(message, status="failed"):
     if status == "address_conflict":
         return 2, emit_payload(payload), ""
     return 2, "", emit_payload(payload)
+
+
+_RESPONSE_FILE_ROUTING_FIELDS = ("ok", "status", "operation", "request_id", "phase", "session_marker")
+
+
+def _atomic_write_bytes(path, data):
+    parent = os.path.dirname(path) or "."
+    os.makedirs(parent, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(prefix=".unity-puer-exec-response-", dir=parent)
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp_path, path)
+    except Exception:
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
+def _project_response_file(response_file_path, exit_code, stdout_text, stderr_text):
+    """Persist the exact unprojected JSON response to `response_file_path` and emit a
+    compact verifiable reference on the same stream in its place (see design.md #2/#3).
+    """
+    if not response_file_path:
+        return exit_code, stdout_text, stderr_text
+    if stdout_text:
+        stream, target_text = "stdout", stdout_text
+    elif stderr_text:
+        stream, target_text = "stderr", stderr_text
+    else:
+        return exit_code, stdout_text, stderr_text
+
+    try:
+        body = json.loads(target_text)
+    except ValueError:
+        return exit_code, stdout_text, stderr_text
+
+    data = target_text.encode("utf-8")
+    abs_path = os.path.abspath(response_file_path)
+
+    try:
+        _atomic_write_bytes(abs_path, data)
+    except OSError as exc:
+        if isinstance(body, dict):
+            body["response_file_error"] = str(exc)
+            new_text = emit_payload(body)
+        else:
+            new_text = target_text
+        if stream == "stdout":
+            return exit_code, new_text, stderr_text
+        return exit_code, stdout_text, new_text
+
+    reference = {}
+    if isinstance(body, dict):
+        for key in _RESPONSE_FILE_ROUTING_FIELDS:
+            if key in body:
+                reference[key] = body[key]
+    reference["response_file"] = {
+        "path": abs_path,
+        "encoding": "utf-8",
+        "byte_count": len(data),
+        "sha256": hashlib.sha256(data).hexdigest(),
+    }
+    ref_text = emit_payload(reference)
+    if stream == "stdout":
+        return exit_code, ref_text, stderr_text
+    return exit_code, stdout_text, ref_text
 
 
 def _canonicalize_script_args(raw_text):
@@ -263,7 +336,8 @@ def run_cli(argv, surface, argv0=None):
     parser = surface.build_parser()
     args = parser.parse_args(argv)
     args.argv0 = argv0
-    return run_command(args)
+    exit_code, stdout_text, stderr_text = run_command(args)
+    return _project_response_file(getattr(args, "response_file", None), exit_code, stdout_text, stderr_text)
 
 
 def read_exec_code(args):
@@ -1455,6 +1529,13 @@ def run_get_log_briefs(args):
         except ValueError:
             raise ValueError("--include must be comma-separated integers")
 
+    full_text = getattr(args, "full_text", False)
+    if full_text and not include_indices:
+        raise ValueError(
+            "--full-text requires --include with one or more explicit 1-based brief indices",
+            "full_text_requires_include",
+        )
+
     log_path = getattr(args, "unity_log_path", None)
     if log_path is None and getattr(args, "project_path", None):
         source = unity_session.get_log_source(project_path=args.project_path, argv0=getattr(args, "argv0", None))
@@ -1465,6 +1546,11 @@ def run_get_log_briefs(args):
 
     briefs = unity_log_brief.parse_log_briefs(log_path, range_start, range_end)
     filtered = unity_log_brief.filter_briefs(briefs, levels=levels, include_indices=include_indices)
+    if full_text:
+        selected_indices = set(include_indices or ())
+        for brief in filtered:
+            if brief.get("index") in selected_indices:
+                brief["full_text"] = unity_log_brief.full_text_for_brief(log_path, brief)
 
     payload = success_payload(
         "get-log-briefs",

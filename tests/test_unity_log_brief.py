@@ -438,6 +438,81 @@ class ParseLogBriefsTests(unittest.TestCase):
             os.unlink(path)
 
 
+class ExactByteBoundaryTests(unittest.TestCase):
+    def test_crlf_offsets_are_byte_exact(self):
+        content = "First entry\r\n\r\n[Warning] Second entry\r\n"
+        path = _write_log(content)
+        try:
+            size = os.path.getsize(path)
+            briefs = unity_log_brief.parse_log_briefs(path, 0, size)
+            self.assertEqual(len(briefs), 2)
+            self.assertEqual(briefs[-1]["end_offset"], size)
+            with open(path, "rb") as handle:
+                raw = handle.read()
+            for brief in briefs:
+                span = raw[brief["start_offset"]:brief["end_offset"]]
+                self.assertTrue(span)
+        finally:
+            os.unlink(path)
+
+    def test_multibyte_utf8_offsets_do_not_cut_characters(self):
+        # Multi-byte UTF-8 content (CJK + emoji) must not desync byte offsets.
+        content = "日本語ログ \U0001F600 entry one\n\n[Error] 错误信息\n"
+        path = _write_log(content)
+        try:
+            size = os.path.getsize(path)
+            self.assertEqual(size, len(content.encode("utf-8")))
+            briefs = unity_log_brief.parse_log_briefs(path, 0, size)
+            self.assertEqual(len(briefs), 2)
+            self.assertEqual(briefs[-1]["end_offset"], size)
+            with open(path, "rb") as handle:
+                raw = handle.read()
+            for brief in briefs:
+                span = raw[brief["start_offset"]:brief["end_offset"]]
+                # A byte-exact span must always decode cleanly as UTF-8.
+                span.decode("utf-8")
+        finally:
+            os.unlink(path)
+
+    def test_offsets_survive_malformed_bytes_mid_range(self):
+        # A dangling multibyte lead byte (as if a range read started mid-character)
+        # must not desync subsequent byte accounting (regression for the old
+        # decode-then-reencode approach, which could shift lengths after a
+        # replacement character absorbs a different number of raw bytes).
+        malformed = b"\xe4before entry\n\n[Warning] after entry\n"
+        f = tempfile.NamedTemporaryFile(mode="wb", suffix=".log", delete=False)
+        f.write(malformed)
+        f.close()
+        try:
+            size = os.path.getsize(f.name)
+            briefs = unity_log_brief.parse_log_briefs(f.name, 0, size)
+            self.assertEqual(briefs[-1]["end_offset"], size)
+        finally:
+            os.unlink(f.name)
+
+
+class FullTextForBriefTests(unittest.TestCase):
+    def test_full_text_matches_exact_byte_span(self):
+        content = "[Error] boom\n  at Foo\n\n(Filename: X.cs Line: 1)\n\nInfo line two\n"
+        path = _write_log(content)
+        try:
+            size = os.path.getsize(path)
+            briefs = unity_log_brief.parse_log_briefs(path, 0, size)
+            first = briefs[0]
+            full_text = unity_log_brief.full_text_for_brief(path, first)
+            with open(path, "rb") as handle:
+                raw = handle.read()
+            expected = raw[first["start_offset"]:first["end_offset"]].decode("utf-8", errors="replace")
+            self.assertEqual(full_text, expected)
+            self.assertIn("at Foo", full_text)
+        finally:
+            os.unlink(path)
+
+    def test_full_text_nonexistent_file_returns_none(self):
+        brief = {"start_offset": 0, "end_offset": 10}
+        self.assertIsNone(unity_log_brief.full_text_for_brief("/nonexistent/path.log", brief))
+
+
 class BuildBriefSequenceTests(unittest.TestCase):
     def test_sequence_chars(self):
         briefs = [
@@ -616,6 +691,130 @@ class GetLogBriefsCliTests(unittest.TestCase):
             "--range", "notanumber",
         ])
         self.assertEqual(exit_code, 2)
+
+    def test_get_log_briefs_full_text_requires_include(self):
+        content = "Info entry\n\n[Error] Error entry\n"
+        path = self._make_log(content)
+        try:
+            size = os.path.getsize(path)
+            exit_code, stdout, stderr = self._run([
+                "get-log-briefs",
+                "--unity-log-path", path,
+                "--range", "0-{}".format(size),
+                "--full-text",
+            ])
+            self.assertEqual(exit_code, 2)
+            body = json.loads(stderr)
+            self.assertFalse(body["ok"])
+            self.assertEqual(body["status"], "full_text_requires_include")
+        finally:
+            os.unlink(path)
+
+    def test_get_log_briefs_full_text_attaches_only_to_selected_indices(self):
+        content = (
+            "Info entry one\n"
+            "\n"
+            "[Warning] Warning entry\n"
+            "\n"
+            "[Error] Error entry\n"
+        )
+        path = self._make_log(content)
+        try:
+            size = os.path.getsize(path)
+            exit_code, stdout, _ = self._run([
+                "get-log-briefs",
+                "--unity-log-path", path,
+                "--range", "0-{}".format(size),
+                "--include", "2",
+                "--full-text",
+            ])
+            self.assertEqual(exit_code, 0)
+            body = json.loads(stdout)
+            self.assertEqual(len(body["result"]), 1)
+            brief = body["result"][0]
+            self.assertEqual(brief["index"], 2)
+            self.assertIn("full_text", brief)
+            self.assertIn("Warning entry", brief["full_text"])
+            # Existing 100-char preview stays present alongside full_text.
+            self.assertIn("text", brief)
+        finally:
+            os.unlink(path)
+
+    def test_get_log_briefs_full_text_multiple_indices(self):
+        content = (
+            "Info entry one\n"
+            "\n"
+            "[Warning] Warning entry\n"
+            "\n"
+            "[Error] Error entry\n"
+        )
+        path = self._make_log(content)
+        try:
+            size = os.path.getsize(path)
+            exit_code, stdout, _ = self._run([
+                "get-log-briefs",
+                "--unity-log-path", path,
+                "--range", "0-{}".format(size),
+                "--include", "1,3",
+                "--full-text",
+            ])
+            self.assertEqual(exit_code, 0)
+            body = json.loads(stdout)
+            self.assertEqual(len(body["result"]), 2)
+            for brief in body["result"]:
+                self.assertIn("full_text", brief)
+            self.assertIn("Info entry one", body["result"][0]["full_text"])
+            self.assertIn("Error entry", body["result"][1]["full_text"])
+        finally:
+            os.unlink(path)
+
+    def test_get_log_briefs_full_text_union_with_levels_only_selects_include_indices(self):
+        content = (
+            "Info entry one\n"
+            "\n"
+            "[Warning] Warning entry\n"
+            "\n"
+            "[Error] Error entry\n"
+        )
+        path = self._make_log(content)
+        try:
+            size = os.path.getsize(path)
+            exit_code, stdout, _ = self._run([
+                "get-log-briefs",
+                "--unity-log-path", path,
+                "--range", "0-{}".format(size),
+                "--levels", "error",
+                "--include", "1",
+                "--full-text",
+            ])
+            self.assertEqual(exit_code, 0)
+            body = json.loads(stdout)
+            by_index = {b["index"]: b for b in body["result"]}
+            self.assertIn(1, by_index)
+            self.assertIn("full_text", by_index[1])
+            # index 3 (error) arrived only via --levels, not via --include, so it
+            # must not gain full_text.
+            self.assertIn(3, by_index)
+            self.assertNotIn("full_text", by_index[3])
+        finally:
+            os.unlink(path)
+
+    def test_get_log_briefs_default_shape_has_no_full_text(self):
+        content = "Info entry\n\n[Error] Error entry\n"
+        path = self._make_log(content)
+        try:
+            size = os.path.getsize(path)
+            exit_code, stdout, _ = self._run([
+                "get-log-briefs",
+                "--unity-log-path", path,
+                "--range", "0-{}".format(size),
+            ])
+            self.assertEqual(exit_code, 0)
+            body = json.loads(stdout)
+            for brief in body["result"]:
+                self.assertNotIn("full_text", brief)
+        finally:
+            os.unlink(path)
 
     def test_get_log_briefs_empty_range_returns_empty_result(self):
         content = "Some content\n"

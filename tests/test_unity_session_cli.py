@@ -91,6 +91,9 @@ class UnityPuerExecCliTests(unittest.TestCase):
         self.assertIn("not the normal first step", stdout)
         self.assertIn("PuerTS-style JavaScript-to-C# bridge", stdout)
         self.assertIn("do not assume bridged C# arrays or `List<T>` values behave exactly like native JS arrays", stdout)
+        self.assertIn("`--response-file <path>`", stdout)
+        self.assertIn("byte_count", stdout)
+        self.assertIn("sha256", stdout)
 
     def test_empty_invocation_matches_top_level_help_contract(self):
         empty_exit_code, empty_stdout, empty_stderr = unity_puer_exec.run_cli([])
@@ -123,6 +126,8 @@ class UnityPuerExecCliTests(unittest.TestCase):
         self.assertIn("Every script source (`--file`, `--stdin`, `--code`) must use this module entry template", stdout)
         self.assertIn("only `ctx.request_id`, `ctx.globals`, and `ctx.args` are guaranteed", stdout)
         self.assertIn("`--help-example derive-project-path-from-unity-api`", stdout)
+        self.assertIn("--response-file X:/work/.tmp/result.json", stdout)
+        self.assertIn("not the preferred large-result transport", stdout)
 
     def test_exec_help_args_renders_argument_template(self):
         exit_code, stdout, stderr = unity_puer_exec.run_cli(["exec", "--help-args"])
@@ -160,6 +165,34 @@ class UnityPuerExecCliTests(unittest.TestCase):
         self.assertEqual(stderr, "")
         self.assertIn("Preferred follow-up", stdout)
         self.assertIn("accepted exec `request_id`", stdout)
+        self.assertIn("--response-file X:/work/.tmp/recovered.json` recovers the retained completed response", stdout)
+        self.assertIn("without re-running the script", stdout)
+
+    def test_get_log_briefs_help_documents_full_text_and_response_file_composition(self):
+        exit_code, stdout, stderr = unity_puer_exec.run_cli(["get-log-briefs", "--help"])
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(stderr, "")
+        self.assertIn("`--full-text`", stdout)
+        self.assertIn("`--response-file`", stdout)
+
+    def test_get_log_briefs_help_args_documents_full_text_selection_rule(self):
+        exit_code, stdout, stderr = unity_puer_exec.run_cli(["get-log-briefs", "--help-args"])
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(stderr, "")
+        self.assertIn("`--full-text`: attach the complete decoded text", stdout)
+        self.assertIn("requires `--include`", stdout)
+        self.assertIn("`--full-text` without `--include` is a usage error", stdout)
+        self.assertIn("`--response-file <path>`", stdout)
+
+    def test_get_log_briefs_help_status_documents_full_text_usage_error(self):
+        exit_code, stdout, stderr = unity_puer_exec.run_cli(["get-log-briefs", "--help-status"])
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(stderr, "")
+        self.assertIn("`full_text_requires_include` -> exit 2", stdout)
+        self.assertIn("full_text", stdout)
 
     def test_wait_for_log_pattern_help_mentions_log_workflow_example(self):
         exit_code, stdout, stderr = unity_puer_exec.run_cli(["wait-for-log-pattern", "--help"])

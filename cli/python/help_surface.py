@@ -219,6 +219,7 @@ COMMAND_HELP = {
             "Use the `log_range.start` and `log_range.end` values from an `exec` or `wait-for-exec` response to scope the range.",
             "Check `brief_sequence` in the exec response first; call `get-log-briefs` only when you need structured detail beyond what the sequence string provides.",
             "Brief grouping relies on Unity stack-trace logging being enabled (ScriptOnly/Full). When it is disabled (StackTraceLogType.None), log entries lose their delimiters and briefs are unreliable; this standalone command parses the raw range and cannot detect that, whereas exec / wait-for-exec report it via `stack_trace_logging.degraded` and a `!stacktrace-off` brief_sequence.",
+            "To read one complete long entry instead of its 100-character preview, add `--full-text` together with `--include <index>`; combine with `--response-file` when the full text itself may be large.",
         ],
         "related_workflows": (),
         "args": {
@@ -228,6 +229,7 @@ COMMAND_HELP = {
                 "`--range START-END`: required byte range to parse; also accepts comma-separated `START,END` form.",
                 "`--levels error,warning`: filter results to the specified comma-separated level names (`info`, `warning`, `error`, `unknown`).",
                 "`--include 1,3,5`: select specific 1-based brief indices; union with `--levels` when both are supplied.",
+                "`--full-text`: attach the complete decoded text for each brief selected by `--include`; requires `--include` and does not change the default 100-character `text` preview.",
                 "`--include-diagnostics`: include top-level debug diagnostics in the machine-readable response.",
             ],
             "Range Rules": [
@@ -239,13 +241,16 @@ COMMAND_HELP = {
                 "When neither `--levels` nor `--include` is supplied, all briefs in the range are returned.",
                 "When both `--levels` and `--include` are supplied, the result is their union; no brief appears more than once.",
                 "`--include` uses 1-based indices matching the `index` field in each brief entry.",
+                "`--full-text` without `--include` is a usage error; full text is attached only to the explicitly selected indices, not to briefs pulled in only through `--levels`.",
             ],
         },
         "status": {
             "success": [
                 "`completed`: `result` is a JSON array of brief objects, each with `index`, `level`, `line_count`, `start_offset`, `end_offset`, and `text` fields.",
+                "With `--full-text --include ...`: the selected briefs additionally carry `full_text` with the complete decoded entry text; unselected briefs and the default `text` preview are unchanged.",
             ],
             "failure": [
+                ("full_text_requires_include", 2, "`--full-text` was supplied without `--include`; pass one or more explicit 1-based brief indices."),
                 ("failed", 1, "the range was invalid, the log file could not be read, or another unexpected failure occurred."),
             ],
         },
@@ -318,6 +323,7 @@ COMMAND_HELP = {
             "`unity-puer-exec exec --project-path X:/project --file X:/script.js --script-args '{\"mode\":\"dry-run\"}'`",
             "`unity-puer-exec exec --project-path X:/project --stdin < script.js`",
             "Every script source (`--file`, `--stdin`, `--code`) must use this module entry template: `export default function (ctx) { return null; }`",
+            "The function's immediate return value is the machine-readable transport for structured data; it populates top-level `result`. For a result that may be large, add `--response-file X:/work/.tmp/result.json` to persist the complete response and receive a compact verifiable reference instead of routing large data through `console.log`, which remains a diagnostic/async-observation channel, not the preferred large-result transport.",
             "Script `ctx` is intentionally narrow: only `ctx.request_id`, `ctx.globals`, and `ctx.args` are guaranteed. See `exec --help-args` or `--help-example derive-project-path-from-unity-api` before assuming project-path helpers.",
             "With `--project-path`, `exec` owns Unity launch or recovery for the project as part of the main work lifecycle.",
             "Scripts use a PuerTS-style JavaScript-to-C# bridge; `puer.loadType(...)` is the normal way to load Unity or C# types inside `exec` scripts.",
@@ -405,6 +411,7 @@ COMMAND_HELP = {
             "Preferred follow-up when you already know an accepted exec `request_id` and want to continue waiting without resubmitting script content.",
             "`unity-puer-exec wait-for-exec --project-path X:/project --request-id RID`",
             "Use this after `exec` returns `running`, or after an ambiguous timeout when you intentionally want recovery with the same `request_id`.",
+            "If an earlier `exec` result was too large to fully inspect inline, `wait-for-exec --request-id RID --response-file X:/work/.tmp/recovered.json` recovers the retained completed response by the same `request_id` without re-running the script.",
         ],
         "related_workflows": ("recover-exec-by-request-id",),
         "args": {
@@ -1314,7 +1321,7 @@ def render_top_level_help():
         "Bridge Model\n`unity-puer-exec` script authoring uses a PuerTS-style JavaScript-to-C# bridge. Use `puer.loadType(...)` to load Unity or C# types, and do not assume bridged C# arrays or `List<T>` values behave exactly like native JS arrays.",
         "Recommended Path\n{}".format(_bullet_lines(RECOMMENDED_PATH)),
         "Command Groups\n{}".format("\n\n".join(command_group_sections)),
-        "Global Options\n- `--suppress-guidance`: omit `next_steps` and `situation` from command responses. Status explanations remain available via `<command> --help-status`.",
+        "Global Options\n- `--suppress-guidance`: omit `next_steps` and `situation` from command responses. Status explanations remain available via `<command> --help-status`.\n- `--response-file <path>`: persist the complete normalized command response to a local file and print a compact reference (with `byte_count` and `sha256`) instead of the full JSON; use this when a response may exceed the caller's output budget. `wait-for-exec --response-file` can recover an already-completed large result by the same `request_id` without re-executing the script.",
         "Global Selector Rules\n- Use exactly one selector on commands that target a Unity session: `--project-path` or `--base-url`.\n- `--project-path` is the normal choice when the CLI should discover, launch, or recover Unity for a project.\n- `--base-url` is for a direct service you already know how to reach.",
         "Common Help Examples\nUse `unity-puer-exec --help-example <example-id>` to view full steps.\n{}".format(
             _bullet_lines(
@@ -1349,12 +1356,13 @@ def render_command_help(command):
 def render_command_args_help(command):
     info = COMMAND_HELP[command]["args"]
     sections = []
-    for title in ("Arguments", "Selector Rules", "Bridge Model", "Script Context", "Timeout Rules"):
+    for title in ("Arguments", "Selector Rules", "Bridge Model", "Script Context", "Range Rules", "Filter Rules", "Timeout Rules"):
         items = info.get(title)
         if items:
             sections.append("{}\n{}".format(title, _bullet_lines(items)))
     sections.append("Global Options\n{}".format(_bullet_lines([
         "`--suppress-guidance`: omit `next_steps` and `situation` from responses. Use `--help-status` as a fallback for status explanations.",
+        "`--response-file <path>`: persist the complete normalized response to a local file and print a compact reference (`response_file.path`, `byte_count`, `sha256`) on the same stream instead of the full JSON. The command's exit code and stream selection are unchanged; if persistence fails, the original response is emitted with an additive `response_file_error` instead.",
     ])))
     return _join_sections(sections)
 

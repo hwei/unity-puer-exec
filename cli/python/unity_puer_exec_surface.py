@@ -24,6 +24,7 @@ def build_parser():
     wait_log_parser.add_argument("--activity-timeout-seconds", type=float, default=unity_session.DEFAULT_ACTIVITY_TIMEOUT_SECONDS)
     wait_log_parser.add_argument("--health-timeout-seconds", type=float, default=unity_session.DEFAULT_HEALTH_TIMEOUT_SECONDS)
     _add_diagnostics_arg(wait_log_parser)
+    _add_response_file_arg(wait_log_parser)
     extract_mode = wait_log_parser.add_mutually_exclusive_group()
     extract_mode.add_argument("--extract-group", type=int, default=None)
     extract_mode.add_argument("--extract-json-group", type=int, default=None)
@@ -32,15 +33,18 @@ def build_parser():
     _add_selector_args(get_log_source_parser)
     get_log_source_parser.add_argument("--unity-log-path", default=None)
     _add_diagnostics_arg(get_log_source_parser)
+    _add_response_file_arg(get_log_source_parser)
 
     get_blocker_state_parser = subparsers.add_parser("get-blocker-state", add_help=False)
     get_blocker_state_parser.add_argument("--project-path", default=None)
     _add_diagnostics_arg(get_blocker_state_parser)
+    _add_response_file_arg(get_blocker_state_parser)
 
     resolve_blocker_parser = subparsers.add_parser("resolve-blocker", add_help=False)
     resolve_blocker_parser.add_argument("--project-path", default=None)
     resolve_blocker_parser.add_argument("--action", choices=("cancel",), required=True)
     _add_diagnostics_arg(resolve_blocker_parser)
+    _add_response_file_arg(resolve_blocker_parser)
 
     exec_parser = subparsers.add_parser("exec", add_help=False)
     _add_selector_args(exec_parser)
@@ -54,6 +58,7 @@ def build_parser():
     exec_parser.add_argument("--import-base-url", default=None)
     exec_parser.add_argument("--reset-jsenv-before-exec", action="store_true")
     _add_diagnostics_arg(exec_parser)
+    _add_response_file_arg(exec_parser)
     script_source = exec_parser.add_mutually_exclusive_group(required=True)
     script_source.add_argument("--file", dest="file_path")
     script_source.add_argument("--stdin", action="store_true")
@@ -68,6 +73,7 @@ def build_parser():
     wait_exec_parser.add_argument("--include-log-offset", action="store_true")  # removed; emits usage error
     wait_exec_parser.add_argument("--log-start-offset", type=int, default=None)
     _add_diagnostics_arg(wait_exec_parser)
+    _add_response_file_arg(wait_exec_parser)
 
     wait_result_parser = subparsers.add_parser("wait-for-result-marker", add_help=False)
     _add_selector_args(wait_result_parser)
@@ -79,6 +85,7 @@ def build_parser():
     wait_result_parser.add_argument("--activity-timeout-seconds", type=float, default=unity_session.DEFAULT_ACTIVITY_TIMEOUT_SECONDS)
     wait_result_parser.add_argument("--health-timeout-seconds", type=float, default=unity_session.DEFAULT_HEALTH_TIMEOUT_SECONDS)
     _add_diagnostics_arg(wait_result_parser)
+    _add_response_file_arg(wait_result_parser)
 
     wait_compile_parser = subparsers.add_parser("wait-for-compile", add_help=False)
     _add_selector_args(wait_compile_parser)
@@ -98,6 +105,7 @@ def build_parser():
         default=unity_session.DEFAULT_HEALTH_TIMEOUT_SECONDS,
     )
     _add_diagnostics_arg(wait_compile_parser)
+    _add_response_file_arg(wait_compile_parser)
 
     get_log_briefs_parser = subparsers.add_parser("get-log-briefs", add_help=False)
     get_log_briefs_parser.add_argument("--project-path", default=None)
@@ -105,12 +113,15 @@ def build_parser():
     get_log_briefs_parser.add_argument("--range", required=True, dest="range_str")
     get_log_briefs_parser.add_argument("--levels", default=None)
     get_log_briefs_parser.add_argument("--include", default=None, dest="include_str")
+    get_log_briefs_parser.add_argument("--full-text", action="store_true", dest="full_text")
     _add_diagnostics_arg(get_log_briefs_parser)
+    _add_response_file_arg(get_log_briefs_parser)
 
     ensure_stopped_parser = subparsers.add_parser("ensure-stopped", add_help=False)
     _add_selector_args(ensure_stopped_parser)
     ensure_stopped_parser.add_argument("--timeout-seconds", type=float, default=unity_session.DEFAULT_STOP_TIMEOUT_SECONDS)
     _add_diagnostics_arg(ensure_stopped_parser)
+    _add_response_file_arg(ensure_stopped_parser)
     stop_mode = ensure_stopped_parser.add_mutually_exclusive_group()
     stop_mode.add_argument("--inspect-only", action="store_true")
     stop_mode.add_argument("--immediate-kill", action="store_true")
@@ -120,12 +131,14 @@ def build_parser():
     get_compile_errors_parser.add_argument("--start", type=int, default=0)
     get_compile_errors_parser.add_argument("--count", type=int, default=3)
     _add_diagnostics_arg(get_compile_errors_parser)
+    _add_response_file_arg(get_compile_errors_parser)
 
     get_compile_warnings_parser = subparsers.add_parser("get-compile-warnings", add_help=False)
     _add_selector_args(get_compile_warnings_parser)
     get_compile_warnings_parser.add_argument("--start", type=int, default=0)
     get_compile_warnings_parser.add_argument("--count", type=int, default=3)
     _add_diagnostics_arg(get_compile_warnings_parser)
+    _add_response_file_arg(get_compile_warnings_parser)
 
 
     return parser
@@ -176,6 +189,10 @@ def _add_selector_args(parser):
 
 def _add_diagnostics_arg(parser):
     parser.add_argument("--include-diagnostics", action="store_true")
+
+
+def _add_response_file_arg(parser):
+    parser.add_argument("--response-file", default=None, dest="response_file")
 
 
 def _format_available_examples():

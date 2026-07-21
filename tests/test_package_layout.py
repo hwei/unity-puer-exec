@@ -1,4 +1,5 @@
 import json
+import re
 import unittest
 from pathlib import Path
 
@@ -145,6 +146,26 @@ class PackageLayoutTests(unittest.TestCase):
         self.assertIn("ImportDeclarationPattern", protocol_content)
         self.assertIn("StringAndCommentPattern", protocol_content)
         self.assertIn("new string(' ', match.Value.Length)", protocol_content)
+
+    def test_completion_log_reports_bounded_metadata_not_result_content(self):
+        server_path = PACKAGE_ROOT / "Editor" / "UnityPuerExecServer.cs"
+        content = server_path.read_text(encoding="utf-8")
+
+        match = re.search(
+            r"internal static void CompleteJob\(.*?\n        \}\n",
+            content,
+            re.DOTALL,
+        )
+        self.assertIsNotNone(match, "CompleteJob method body should exist")
+        method_body = match.group(0)
+
+        # The completion lifecycle log must not echo the full serialized result
+        # (or any preview of it) into Editor.log; only bounded metadata.
+        self.assertNotIn("result={resultJson}", method_body)
+        self.assertIn("result_bytes=", method_body)
+        self.assertIn("Encoding.UTF8.GetByteCount(resultJson)", method_body)
+        # The stored job result and HTTP response are unaffected by the log change.
+        self.assertIn("job.Complete(resultJson);", method_body)
 
 
 if __name__ == "__main__":

@@ -79,32 +79,34 @@ def _runtime_entry_level(header_line, entry_lines=None):
     return LEVEL_INFO
 
 
-def _parse_chunk(chunk, base_offset):
-    """Parse a decoded text chunk into a list of brief dicts.
+def _parse_chunk(raw_bytes, base_offset):
+    """Parse a raw log byte range into a list of brief dicts.
 
     Args:
-        chunk: Decoded text content of the log range.
-        base_offset: Byte offset of the first character in chunk.
+        raw_bytes: Raw (undecoded) byte content of the log range.
+        base_offset: Byte offset of the first byte in raw_bytes.
 
     Returns:
         List of brief dicts with keys:
             index, level, line_count, start_offset, end_offset, text
     """
-    # Split into lines, tracking byte positions. We use len(line.encode("utf-8", errors="replace"))
-    # as a proxy for byte length. The offsets are approximate for non-ASCII content but
-    # are consistent with how read_editor_log_size works (st_size is bytes).
-    raw_lines = chunk.split("\n")
+    # Split on the raw "\n" byte before decoding so start_offset/end_offset are exact
+    # byte boundaries (including CRLF, whose "\r" stays attached to the preceding raw
+    # line, and multibyte UTF-8 content, which never contains a literal 0x0A byte).
+    raw_line_bytes = raw_bytes.split(b"\n")
     # Drop trailing empty element produced by split on newline-terminated content;
     # without this, the empty string is mis-classified as an unknown brief and
     # breaks brief_sequence prefix consistency across growing log ranges.
-    if raw_lines and raw_lines[-1] == "":
-        raw_lines.pop()
-    # Compute byte offset for each line start. We use encoded length + 1 for "\n".
+    if raw_line_bytes and raw_line_bytes[-1] == b"":
+        raw_line_bytes.pop()
+    # Compute the exact byte offset for each line start from the raw byte lengths.
     line_byte_starts = []
     current = base_offset
-    for line in raw_lines:
+    for line_bytes in raw_line_bytes:
         line_byte_starts.append(current)
-        current += len(line.encode("utf-8", errors="replace")) + 1  # +1 for \n
+        current += len(line_bytes) + 1  # +1 for \n
+
+    raw_lines = [lb.decode("utf-8", errors="replace") for lb in raw_line_bytes]
 
     briefs = []
     in_compiler_section = False
@@ -119,7 +121,7 @@ def _parse_chunk(chunk, base_offset):
         start_line_idx = pending_unknown_start
         end_line_idx = pending_unknown_start + pending_unknown_count - 1
         brief_start = line_byte_starts[start_line_idx]
-        brief_end = line_byte_starts[end_line_idx] + len(raw_lines[end_line_idx].encode("utf-8", errors="replace")) + 1
+        brief_end = line_byte_starts[end_line_idx] + len(raw_line_bytes[end_line_idx]) + 1
         briefs.append({
             "index": len(briefs) + 1,
             "level": LEVEL_UNKNOWN,
@@ -137,7 +139,7 @@ def _parse_chunk(chunk, base_offset):
         first_line = raw_lines[line_idx_start]
         text = first_line[:100] if first_line else None
         brief_start = line_byte_starts[line_idx_start]
-        brief_end = line_byte_starts[line_idx_end] + len(raw_lines[line_idx_end].encode("utf-8", errors="replace")) + 1
+        brief_end = line_byte_starts[line_idx_end] + len(raw_line_bytes[line_idx_end]) + 1
         briefs.append({
             "index": len(briefs) + 1,
             "level": level,
@@ -312,8 +314,31 @@ def parse_log_briefs(log_path, start_offset, end_offset):
     except OSError:
         return []
 
-    chunk = raw_bytes.decode("utf-8", errors="replace")
-    return _parse_chunk(chunk, start_offset)
+    return _parse_chunk(raw_bytes, start_offset)
+
+
+def full_text_for_brief(log_path, brief):
+    """Decode the complete raw byte span assigned to one brief as UTF-8 text.
+
+    Reads the exact `[start_offset, end_offset)` span independently of any earlier
+    parse so full-text retrieval stays byte-accurate even for spans that straddle a
+    chunk boundary used elsewhere. Malformed byte sequences are replaced, matching
+    the parser's existing decode tolerance.
+    """
+    path = Path(log_path)
+    if not path.exists():
+        return None
+    start_offset = brief.get("start_offset")
+    end_offset = brief.get("end_offset")
+    if start_offset is None or end_offset is None or start_offset >= end_offset:
+        return None
+    try:
+        with path.open("rb") as handle:
+            handle.seek(start_offset)
+            raw_bytes = handle.read(end_offset - start_offset)
+    except OSError:
+        return None
+    return raw_bytes.decode("utf-8", errors="replace")
 
 
 def build_brief_sequence(briefs):
