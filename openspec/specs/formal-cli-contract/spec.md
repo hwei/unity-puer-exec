@@ -511,6 +511,14 @@ When neither a session artifact nor the preferred port yields a ready endpoint o
 - **THEN** the post-launch readiness wait discovers the launched Editor by range scan with health-identity matching
 - **AND** the command does not report the launched project as not ready merely because the preferred port did not become ready
 
+#### Scenario: Preferred port is occupied by a different, already-ready project with no local artifact
+
+- **WHEN** a project-scoped command runs for a requested project that has no session artifact and is not yet running
+- **AND** a different, unrelated project's Editor is already `ready` on the preferred port
+- **THEN** the command SHALL NOT treat that endpoint's health identity, `session_marker`, or `base_url` as belonging to the requested project
+- **AND** the command SHALL NOT persist a session artifact for the requested project that records the unrelated project's endpoint
+- **AND** the command instead continues through the normal launch, recovery, or range-scan discovery flow for the requested project
+
 ### Requirement: Direct base-url mode remains explicit
 
 Base-url selector mode SHALL continue to target the caller-supplied endpoint directly. Direct mode SHALL NOT require project artifact validation and SHALL NOT imply Unity launch ownership. Base-url mode SHALL support `--refresh-before-exec`: because requesting a refresh does not launch Unity and does not change endpoint ownership, the refresh option is compatible with the direct-mode boundary. In base-url mode the post-refresh readiness settle SHALL re-probe the same caller-supplied endpoint rather than performing project-scoped re-acquisition.
