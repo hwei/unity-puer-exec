@@ -118,6 +118,7 @@ def build_parser():
     get_log_briefs_parser.add_argument("--unity-log-path", default=None)
     get_log_briefs_parser.add_argument("--range", required=True, dest="range_str")
     get_log_briefs_parser.add_argument("--levels", default=None)
+    get_log_briefs_parser.add_argument("--indexes", default=None, dest="indexes_str")
     get_log_briefs_parser.add_argument("--include", default=None, dest="include_str")
     get_log_briefs_parser.add_argument("--full-text", action="store_true", dest="full_text")
     _add_diagnostics_arg(get_log_briefs_parser)

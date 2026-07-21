@@ -86,7 +86,7 @@ TOP_LEVEL_WORKFLOWS = {
     "load-and-call-csharp-type": "learn the normal PuerTS-style bridge path for loading and calling Unity or C# types from JavaScript.",
     "derive-project-path-from-unity-api": "derive project-local paths through Unity APIs instead of assuming undocumented `ctx` fields.",
     "request-editor-exit-via-exec": "request a normal Unity Editor exit through `exec` instead of using `ensure-stopped`.",
-    "component-detection": "use the standard PuerTS pattern for scene-inspection: $typeof + $ref + TryGetComponent + get_Item.",
+    "component-detection": "use the standard PuerTS pattern for scene-inspection: puer.$typeof + puer.$ref + TryGetComponent + get_Item.",
 }
 
 
@@ -228,8 +228,8 @@ COMMAND_HELP = {
                 "`--unity-log-path <path>`: explicit Unity Editor log file path; takes priority over project session artifact.",
                 "`--range START-END`: required byte range to parse; also accepts comma-separated `START,END` form.",
                 "`--levels error,warning`: filter results to the specified comma-separated level names (`info`, `warning`, `error`, `unknown`).",
-                "`--include 1,3,5`: select specific 1-based brief indices; union with `--levels` when both are supplied.",
-                "`--full-text`: attach the complete decoded text for each brief selected by `--include`; requires `--include` and does not change the default 100-character `text` preview.",
+                "`--indexes 1,3,5`: select specific 1-based brief indices; union with `--levels` when both are supplied. `--include` is accepted as a backward-compatible alias with identical behavior.",
+                "`--full-text`: attach the complete decoded text for each brief selected by `--indexes` (or its `--include` alias); requires explicit indices and does not change the default 100-character `text` preview.",
                 "`--include-diagnostics`: include top-level debug diagnostics in the machine-readable response.",
             ],
             "Range Rules": [
@@ -238,20 +238,22 @@ COMMAND_HELP = {
                 "Use `log_range.start` and `log_range.end` from an `exec` or `wait-for-exec` response as the source of truth for range values.",
             ],
             "Filter Rules": [
-                "When neither `--levels` nor `--include` is supplied, all briefs in the range are returned.",
-                "When both `--levels` and `--include` are supplied, the result is their union; no brief appears more than once.",
-                "`--include` uses 1-based indices matching the `index` field in each brief entry.",
-                "`--full-text` without `--include` is a usage error; full text is attached only to the explicitly selected indices, not to briefs pulled in only through `--levels`.",
+                "When neither `--levels` nor `--indexes` (or its `--include` alias) is supplied, all briefs in the range are returned.",
+                "When both `--levels` and `--indexes` are supplied, the result is their union; no brief appears more than once.",
+                "`--indexes` uses 1-based indices matching the `index` field in each brief entry; `--include` is a permanent backward-compatible alias for `--indexes` with identical behavior.",
+                "If both `--indexes` and `--include` are supplied with different values, the CLI reports a usage error rather than silently preferring either flag.",
+                "`--full-text` without `--indexes` (or its `--include` alias) is a usage error; full text is attached only to the explicitly selected indices, not to briefs pulled in only through `--levels`.",
             ],
         },
         "status": {
             "success": [
                 "`completed`: `result` is a JSON array of brief objects, each with `index`, `level`, `line_count`, `start_offset`, `end_offset`, and `text` fields.",
-                "With `--full-text --include ...`: the selected briefs additionally carry `full_text` with the complete decoded entry text; unselected briefs and the default `text` preview are unchanged.",
+                "With `--full-text --indexes ...` (or its `--include` alias): the selected briefs additionally carry `full_text` with the complete decoded entry text; unselected briefs and the default `text` preview are unchanged.",
             ],
             "failure": [
-                ("full_text_requires_include", 2, "`--full-text` was supplied without `--include`; pass one or more explicit 1-based brief indices."),
-                ("failed", 1, "the range was invalid, the log file could not be read, or another unexpected failure occurred."),
+                ("full_text_requires_include", 2, "`--full-text` was supplied without `--indexes` (or its `--include` alias); pass one or more explicit 1-based brief indices."),
+                ("conflicting_indexes_include", 2, "`--indexes` and `--include` were both supplied with different values."),
+                ("failed", 1, "the range was invalid, the log file could not be read, an index-syntax value was not comma-separated integers, or another unexpected failure occurred."),
             ],
         },
     },
@@ -667,14 +669,13 @@ WORKFLOW_EXAMPLES = {
         ],
     },
     "component-detection": {
-        "goal": "Use the standard PuerTS pattern for scene-inspection scripts: `puer.$typeof(CS.UnityEngine.X)` to resolve component types, `puer.$ref()` for out-parameter references, `TryGetComponent` for component probing, and `get_Item()` for C# indexer access on bridged collections.",
+        "goal": "Use the standard PuerTS pattern for scene-inspection scripts: direct `CS.UnityEngine.X` access for static members and instance calls, `puer.$typeof(CS.UnityEngine.X)` only where a `System.Type` value is required as a parameter (such as the `TryGetComponent` type argument), `puer.$ref()` for out-parameter references, `TryGetComponent` for component probing, and `get_Item()` for C# indexer access on bridged collections.",
         "steps": [
             {
                 "command": "`unity-puer-exec exec --project-path X:/project --file X:/scripts/inspect-scene.js --script-args '{\"scenePath\":\"Assets/Scenes/Main.unity\"}' --wait-timeout-ms 1000`",
                 "script_body": [
                     "export default function run(ctx) {",
-                    "  const SceneManager = puer.$typeof(CS.UnityEngine.SceneManagement.SceneManager);",
-                    "  const scene = SceneManager.GetActiveScene();",
+                    "  const scene = CS.UnityEngine.SceneManagement.SceneManager.GetActiveScene();",
                     "  const rootGOs = scene.GetRootGameObjects();",
                     "",
                     "  const results = [];",
@@ -697,7 +698,7 @@ WORKFLOW_EXAMPLES = {
             },
         ],
         "notice": [
-            "Use `puer.$typeof(CS.UnityEngine.X)` instead of `puer.loadType('UnityEngine.X')` for component types; `$typeof` is more reliable across the Unity API surface.",
+            "Use direct `CS.UnityEngine.X` access for ordinary static and instance member access (as with `CS.UnityEngine.SceneManagement.SceneManager.GetActiveScene()`); only wrap a type in `puer.$typeof(CS.UnityEngine.X)` when a `System.Type` value is required as a parameter, such as the type argument to `TryGetComponent`.",
             "Generic instance methods like `go.GetComponents(MeshFilter)` are not supported by PuerTS; use the non-generic `TryGetComponent(type, puer.$ref())` instead.",
             "C# indexers must be called as `get_Item(i)` in PuerTS; the JS bracket syntax `roots[i]` does not work on bridged .NET collections.",
             "`puer.$ref()` creates an out-parameter placeholder; after calling `TryGetComponent`, read the resolved value via `.value` on the ref object.",

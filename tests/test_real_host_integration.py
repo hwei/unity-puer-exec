@@ -404,6 +404,38 @@ class RealHostIntegrationTests(unittest.TestCase):
         except Exception:
             pass
 
+    def test_component_detection_example_executes_against_real_host(self):
+        import help_surface
+
+        script = "\n".join(
+            help_surface.WORKFLOW_EXAMPLES["component-detection"]["steps"][0]["script_body"]
+        )
+
+        ready_exit_code, ready_payload, _, _ = _warm_up_project_exec(self.project_path, self.unity_exe_path)
+        self.assertEqual(ready_exit_code, 0, ready_payload)
+
+        exec_exit_code, exec_payload, _, _ = _run_cli(
+            [
+                "exec",
+                "--project-path",
+                str(self.project_path),
+                "--unity-exe-path",
+                str(self.unity_exe_path),
+                "--wait-timeout-ms",
+                str(WAIT_TIMEOUT_MS),
+                "--code",
+                script,
+            ]
+        )
+
+        self.assertEqual(exec_exit_code, 0, exec_payload)
+        self.assertEqual(exec_payload["status"], "completed")
+        result = exec_payload["result"]
+        self.assertIsInstance(result["rootCount"], int)
+        self.assertGreaterEqual(result["rootCount"], 0)
+        self.assertIsInstance(result["results"], list)
+        self.assertEqual(len(result["results"]), result["rootCount"])
+
     def test_exec_checkpoint_observation_chain_against_real_host(self):
         correlation_id = "sync-{}".format(os.getpid())
         script = "\n".join(
@@ -516,6 +548,29 @@ class RealHostIntegrationTests(unittest.TestCase):
         self.assertEqual(exec_payload["error"], "missing_default_export")
         self.assertIn("export default function (ctx)", exec_payload["error_detail"])
         self.assertIn("return null;", exec_payload["error_detail"])
+
+    def test_exec_bare_typeof_reference_error_hints_puer_prefix_against_real_host(self):
+        ready_exit_code, ready_payload, _, _ = _warm_up_project_exec(self.project_path, self.unity_exe_path)
+        self.assertEqual(ready_exit_code, 0, ready_payload)
+
+        exec_exit_code, exec_payload, _, _ = _run_cli(
+            [
+                "exec",
+                "--project-path",
+                str(self.project_path),
+                "--unity-exe-path",
+                str(self.unity_exe_path),
+                "--wait-timeout-ms",
+                str(WAIT_TIMEOUT_MS),
+                "--code",
+                "export default function run(ctx) { return $typeof; }",
+            ]
+        )
+
+        self.assertEqual(exec_exit_code, 1, exec_payload)
+        self.assertEqual(exec_payload["status"], "failed")
+        self.assertEqual(exec_payload["error"], "ReferenceError: $typeof is not defined")
+        self.assertIn("puer.$typeof", exec_payload["situation"])
 
     def test_exec_rejects_promise_return_against_real_host(self):
         ready_exit_code, ready_payload, _, _ = _warm_up_project_exec(self.project_path, self.unity_exe_path)

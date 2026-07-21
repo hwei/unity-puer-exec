@@ -375,6 +375,24 @@ def _build_guidance_context(args, request_id=None):
     return context
 
 
+_BARE_PUER_REFERENCE_ERROR_RE = re.compile(r"^ReferenceError: \$(typeof|ref) is not defined$")
+
+
+def _maybe_hint_puer_prefix(payload, command):
+    if command not in ("exec", "wait-for-exec") or payload.get("status") != "failed":
+        return
+    error = payload.get("error")
+    if not isinstance(error, str):
+        return
+    match = _BARE_PUER_REFERENCE_ERROR_RE.match(error.strip())
+    if match is None:
+        return
+    name = match.group(1)
+    hint = "This looks like a missing `puer.` prefix: did you mean `puer.${}` instead of bare `${}`?".format(name, name)
+    situation = payload.get("situation")
+    payload["situation"] = "{} {}".format(situation, hint) if situation else hint
+
+
 def _attach_guidance(payload, command, status, args, request_id=None):
     if getattr(args, "suppress_guidance", False):
         return
@@ -385,6 +403,7 @@ def _attach_guidance(payload, command, status, args, request_id=None):
     situation = help_surface.build_situation(command, status)
     if situation:
         payload["situation"] = situation
+    _maybe_hint_puer_prefix(payload, command)
 
 
 def _inject_guidance_into_stdout(stdout_text, command, args, request_id=None):
@@ -394,6 +413,23 @@ def _inject_guidance_into_stdout(stdout_text, command, args, request_id=None):
     rid = request_id or body.get("request_id")
     _attach_guidance(body, command, body.get("status"), args, request_id=rid)
     return emit_payload(body)
+
+
+def _inject_guidance_into_response(stdout_text, stderr_text, command, args, request_id=None):
+    """Like _inject_guidance_into_stdout, but also covers the stderr-carried case.
+
+    exec/wait-for-exec route some failed responses (e.g. a thrown script error) to
+    stderr rather than stdout; guidance built from GUIDANCE_MATRIX -- including the
+    puer. prefix hint -- must reach those responses too.
+    """
+    if stdout_text:
+        return _inject_guidance_into_stdout(stdout_text, command, args, request_id=request_id), stderr_text
+    if not stderr_text or getattr(args, "suppress_guidance", False):
+        return stdout_text, stderr_text
+    body = json.loads(stderr_text)
+    rid = request_id or body.get("request_id")
+    _attach_guidance(body, command, body.get("status"), args, request_id=rid)
+    return stdout_text, emit_payload(body)
 
 
 def _refresh_request_id(request_id):
@@ -931,7 +967,7 @@ def run_exec(args):
                 normalize_compiling=False,
             )
             stdout_text = _inject_log_range_into_stdout(stdout_text, log_path, log_start, _capture_log_offset(log_path))
-            stdout_text = _inject_guidance_into_stdout(stdout_text, "exec", args, request_id=request_id)
+            stdout_text, stderr_text = _inject_guidance_into_response(stdout_text, stderr_text, "exec", args, request_id=request_id)
             return exit_code, stdout_text, stderr_text
         try:
             session = _ensure_project_session_ready_after_refresh(args)
@@ -978,8 +1014,8 @@ def run_exec(args):
             refresh_stdout_text = _inject_log_range_into_stdout(
                 refresh_stdout_text, log_path, log_start, _capture_log_offset(log_path)
             )
-            refresh_stdout_text = _inject_guidance_into_stdout(
-                refresh_stdout_text, "exec", args, request_id=request_id
+            refresh_stdout_text, refresh_stderr_text = _inject_guidance_into_response(
+                refresh_stdout_text, refresh_stderr_text, "exec", args, request_id=request_id
             )
             return refresh_exit_code, refresh_stdout_text, refresh_stderr_text
         # Settle on the compile cycle by re-probing the same endpoint, then run the
@@ -1017,7 +1053,7 @@ def run_exec(args):
         default_phase=default_phase,
     )
     stdout_text = _inject_log_range_into_stdout(stdout_text, log_path, log_start, _capture_log_offset(log_path))
-    stdout_text = _inject_guidance_into_stdout(stdout_text, "exec", args, request_id=request_id)
+    stdout_text, stderr_text = _inject_guidance_into_response(stdout_text, stderr_text, "exec", args, request_id=request_id)
     return exit_code, stdout_text, stderr_text
 
 
@@ -1115,7 +1151,7 @@ def run_wait_for_exec(args):
                     normalize_compiling=False,
                 )
                 stdout_text = _inject_log_range_into_stdout(stdout_text, _wfe_refresh_log_path, _wfe_log_start, _capture_log_offset(_wfe_refresh_log_path))
-                stdout_text = _inject_guidance_into_stdout(stdout_text, "wait-for-exec", args, request_id=args.request_id)
+                stdout_text, stderr_text = _inject_guidance_into_response(stdout_text, stderr_text, "wait-for-exec", args, request_id=args.request_id)
                 return exit_code, stdout_text, stderr_text
             try:
                 session = _ensure_project_session_ready_after_refresh(args)
@@ -1169,7 +1205,7 @@ def run_wait_for_exec(args):
     )
     _wfe_final_log_path = _resolve_log_path(args, session)
     stdout_text = _inject_log_range_into_stdout(stdout_text, _wfe_final_log_path, _wfe_log_start, _capture_log_offset(_wfe_final_log_path))
-    stdout_text = _inject_guidance_into_stdout(stdout_text, "wait-for-exec", args, request_id=args.request_id)
+    stdout_text, stderr_text = _inject_guidance_into_response(stdout_text, stderr_text, "wait-for-exec", args, request_id=args.request_id)
     return exit_code, stdout_text, stderr_text
 
 
@@ -1495,17 +1531,37 @@ def run_get_log_briefs(args):
     if args.levels:
         levels = [lv.strip() for lv in args.levels.split(",") if lv.strip()]
 
-    include_indices = None
-    if args.include_str:
+    indexes_str = getattr(args, "indexes_str", None)
+    include_str = getattr(args, "include_str", None)
+    _INDEXES_FORMAT_ERROR = (
+        "--indexes must be comma-separated 1-based brief indices, e.g. `--indexes 3,5`, "
+        "corresponding to `brief_sequence` positions"
+    )
+
+    def _parse_indexes(raw):
         try:
-            include_indices = [int(x.strip()) for x in args.include_str.split(",") if x.strip()]
+            return [int(x.strip()) for x in raw.split(",") if x.strip()]
         except ValueError:
-            raise ValueError("--include must be comma-separated integers")
+            raise ValueError(_INDEXES_FORMAT_ERROR)
+
+    include_indices = None
+    if indexes_str and include_str:
+        parsed_indexes = _parse_indexes(indexes_str)
+        parsed_include = _parse_indexes(include_str)
+        if parsed_indexes != parsed_include:
+            raise ValueError(
+                "--indexes and --include were both supplied with different values; "
+                "supply only one, or make them match",
+                "conflicting_indexes_include",
+            )
+        include_indices = parsed_indexes
+    elif indexes_str or include_str:
+        include_indices = _parse_indexes(indexes_str or include_str)
 
     full_text = getattr(args, "full_text", False)
     if full_text and not include_indices:
         raise ValueError(
-            "--full-text requires --include with one or more explicit 1-based brief indices",
+            "--full-text requires --indexes (or its --include alias) with one or more explicit 1-based brief indices",
             "full_text_requires_include",
         )
 

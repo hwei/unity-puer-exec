@@ -198,8 +198,8 @@ class UnityPuerExecCliTests(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         self.assertEqual(stderr, "")
         self.assertIn("`--full-text`: attach the complete decoded text", stdout)
-        self.assertIn("requires `--include`", stdout)
-        self.assertIn("`--full-text` without `--include` is a usage error", stdout)
+        self.assertIn("requires explicit indices", stdout)
+        self.assertIn("`--full-text` without `--indexes` (or its `--include` alias) is a usage error", stdout)
         self.assertIn("`--response-file <path>`", stdout)
 
     def test_get_log_briefs_help_status_documents_full_text_usage_error(self):
@@ -312,6 +312,24 @@ class UnityPuerExecCliTests(unittest.TestCase):
         self.assertIn("const Path = puer.loadType('System.IO.Path');", stdout)
         self.assertIn("Path.GetDirectoryName(Application.dataPath)", stdout)
         self.assertIn("`ctx.project_path`", stdout)
+
+    def test_component_detection_help_example_renders_static_access_vs_typeof_distinction(self):
+        exit_code, stdout, stderr = unity_puer_exec.run_cli(["--help-example", "component-detection"])
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(stderr, "")
+        self.assertIn(
+            "const scene = CS.UnityEngine.SceneManagement.SceneManager.GetActiveScene();",
+            stdout,
+        )
+        self.assertNotIn("puer.$typeof(CS.UnityEngine.SceneManagement.SceneManager)", stdout)
+        self.assertIn("puer.$typeof(CS.UnityEngine.MeshFilter), mf", stdout)
+        self.assertIn(
+            "only wrap a type in `puer.$typeof(CS.UnityEngine.X)` when a `System.Type` value is required as a parameter",
+            stdout,
+        )
+        self.assertIn("get_Item(i)", stdout)
+        self.assertIn("puer.$ref()", stdout)
 
     def test_exec_help_describes_running_without_immediate_correlation_id_guarantee(self):
         exit_code, stdout, stderr = unity_puer_exec.run_cli(["exec", "--help-status"])
@@ -636,6 +654,144 @@ class UnityPuerExecCliTests(unittest.TestCase):
         self.assertIn("end", body["log_range"])
         self.assertIn("brief_sequence", body)
         self.assertEqual(body["result"]["correlation_id"], "id-8")
+
+    def test_exec_bare_typeof_reference_error_gets_puer_prefix_hint(self):
+        failure_body = {
+            "ok": False,
+            "status": "failed",
+            "operation": "exec",
+            "request_id": "R-typeof",
+            "error": "ReferenceError: $typeof is not defined",
+        }
+        with mock.patch.object(
+            unity_puer_exec.direct_exec_client,
+            "invoke_command",
+            return_value=(1, "", json.dumps(failure_body)),
+        ):
+            exit_code, stdout, stderr = unity_puer_exec.run_cli(
+                [
+                    "exec",
+                    "--base-url", "http://127.0.0.1:55231",
+                    "--code", "export default function run(ctx) { return $typeof; }",
+                    "--request-id", "R-typeof",
+                ]
+            )
+
+        self.assertEqual(exit_code, 1)
+        body = json.loads(stderr)
+        self.assertEqual(body["status"], "failed")
+        self.assertIn("puer.$typeof", body["situation"])
+        self.assertNotIn("next_steps", body)
+
+    def test_exec_bare_ref_reference_error_gets_puer_prefix_hint(self):
+        failure_body = {
+            "ok": False,
+            "status": "failed",
+            "operation": "exec",
+            "request_id": "R-ref",
+            "error": "ReferenceError: $ref is not defined",
+        }
+        with mock.patch.object(
+            unity_puer_exec.direct_exec_client,
+            "invoke_command",
+            return_value=(1, "", json.dumps(failure_body)),
+        ):
+            exit_code, stdout, stderr = unity_puer_exec.run_cli(
+                [
+                    "exec",
+                    "--base-url", "http://127.0.0.1:55231",
+                    "--code", "export default function run(ctx) { return $ref; }",
+                    "--request-id", "R-ref",
+                ]
+            )
+
+        self.assertEqual(exit_code, 1)
+        body = json.loads(stderr)
+        self.assertEqual(body["status"], "failed")
+        self.assertIn("puer.$ref", body["situation"])
+        self.assertNotIn("next_steps", body)
+
+    def test_exec_unrelated_failure_does_not_get_puer_prefix_hint(self):
+        failure_body = {
+            "ok": False,
+            "status": "failed",
+            "operation": "exec",
+            "request_id": "R-unrelated",
+            "error": "TypeError: Cannot read properties of undefined (reading 'foo')",
+        }
+        with mock.patch.object(
+            unity_puer_exec.direct_exec_client,
+            "invoke_command",
+            return_value=(1, "", json.dumps(failure_body)),
+        ):
+            exit_code, stdout, stderr = unity_puer_exec.run_cli(
+                [
+                    "exec",
+                    "--base-url", "http://127.0.0.1:55231",
+                    "--code", "export default function run(ctx) { return ctx.args.foo.bar; }",
+                    "--request-id", "R-unrelated",
+                ]
+            )
+
+        self.assertEqual(exit_code, 1)
+        body = json.loads(stderr)
+        self.assertEqual(body["status"], "failed")
+        self.assertNotIn("puer.$typeof", body["situation"])
+        self.assertNotIn("puer.$ref", body["situation"])
+
+    def test_exec_application_error_mentioning_typeof_in_prose_does_not_get_hint(self):
+        failure_body = {
+            "ok": False,
+            "status": "failed",
+            "operation": "exec",
+            "request_id": "R-prose",
+            "error": "Error: please use $typeof to resolve this component type",
+        }
+        with mock.patch.object(
+            unity_puer_exec.direct_exec_client,
+            "invoke_command",
+            return_value=(1, "", json.dumps(failure_body)),
+        ):
+            exit_code, stdout, stderr = unity_puer_exec.run_cli(
+                [
+                    "exec",
+                    "--base-url", "http://127.0.0.1:55231",
+                    "--code", "export default function run(ctx) { throw new Error('please use $typeof to resolve this component type'); }",
+                    "--request-id", "R-prose",
+                ]
+            )
+
+        self.assertEqual(exit_code, 1)
+        body = json.loads(stderr)
+        self.assertEqual(body["status"], "failed")
+        self.assertNotIn("puer.$typeof", body["situation"])
+
+    def test_wait_for_exec_recovers_bare_typeof_failure_with_same_hint(self):
+        failure_body = {
+            "ok": False,
+            "status": "failed",
+            "operation": "exec",
+            "request_id": "R-recover-typeof",
+            "error": "ReferenceError: $typeof is not defined",
+        }
+        with mock.patch.object(
+            unity_puer_exec.direct_exec_client,
+            "invoke_command",
+            return_value=(1, "", json.dumps(failure_body)),
+        ):
+            exit_code, stdout, stderr = unity_puer_exec.run_cli(
+                [
+                    "wait-for-exec",
+                    "--base-url", "http://127.0.0.1:55231",
+                    "--request-id", "R-recover-typeof",
+                ]
+            )
+
+        self.assertEqual(exit_code, 1)
+        body = json.loads(stderr)
+        self.assertEqual(body["status"], "failed")
+        self.assertIn("puer.$typeof", body["situation"])
+        self.assertNotIn("next_steps", body)
 
     def test_exec_hides_diagnostics_by_default(self):
         with tempfile.TemporaryDirectory() as temp_dir:

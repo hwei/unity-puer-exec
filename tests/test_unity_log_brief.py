@@ -685,6 +685,99 @@ class GetLogBriefsCliTests(unittest.TestCase):
         finally:
             os.unlink(path)
 
+    def test_get_log_briefs_filter_by_indexes(self):
+        content = (
+            "Info entry one\n"
+            "\n"
+            "[Warning] Warning entry\n"
+            "\n"
+            "[Error] Error entry\n"
+        )
+        path = self._make_log(content)
+        try:
+            size = os.path.getsize(path)
+            exit_code, stdout, _ = self._run([
+                "get-log-briefs",
+                "--unity-log-path", path,
+                "--range", "0-{}".format(size),
+                "--indexes", "1",
+            ])
+            self.assertEqual(exit_code, 0)
+            body = json.loads(stdout)
+            indices = [b["index"] for b in body["result"]]
+            self.assertIn(1, indices)
+            self.assertNotIn(2, indices)
+        finally:
+            os.unlink(path)
+
+    def test_get_log_briefs_indexes_and_include_agree(self):
+        content = (
+            "Info entry one\n"
+            "\n"
+            "[Warning] Warning entry\n"
+            "\n"
+            "[Error] Error entry\n"
+        )
+        path = self._make_log(content)
+        try:
+            size = os.path.getsize(path)
+            indexes_exit_code, indexes_stdout, _ = self._run([
+                "get-log-briefs",
+                "--unity-log-path", path,
+                "--range", "0-{}".format(size),
+                "--indexes", "1",
+            ])
+            both_exit_code, both_stdout, _ = self._run([
+                "get-log-briefs",
+                "--unity-log-path", path,
+                "--range", "0-{}".format(size),
+                "--indexes", "1",
+                "--include", "1",
+            ])
+            self.assertEqual(indexes_exit_code, 0)
+            self.assertEqual(both_exit_code, 0)
+            self.assertEqual(json.loads(indexes_stdout), json.loads(both_stdout))
+        finally:
+            os.unlink(path)
+
+    def test_get_log_briefs_conflicting_indexes_and_include_is_usage_error(self):
+        content = "Info entry\n\n[Error] Error entry\n"
+        path = self._make_log(content)
+        try:
+            size = os.path.getsize(path)
+            exit_code, stdout, stderr = self._run([
+                "get-log-briefs",
+                "--unity-log-path", path,
+                "--range", "0-{}".format(size),
+                "--indexes", "1",
+                "--include", "2",
+            ])
+            self.assertEqual(exit_code, 2)
+            body = json.loads(stderr)
+            self.assertFalse(body["ok"])
+            self.assertEqual(body["status"], "conflicting_indexes_include")
+        finally:
+            os.unlink(path)
+
+    def test_get_log_briefs_invalid_indexes_syntax_names_indexes_flag(self):
+        content = "Info entry\n\n[Error] Error entry\n"
+        path = self._make_log(content)
+        try:
+            size = os.path.getsize(path)
+            exit_code, stdout, stderr = self._run([
+                "get-log-briefs",
+                "--unity-log-path", path,
+                "--range", "0-{}".format(size),
+                "--indexes", "abc",
+            ])
+            self.assertEqual(exit_code, 2)
+            body = json.loads(stderr)
+            self.assertFalse(body["ok"])
+            self.assertIn("--indexes", body["error"])
+            self.assertIn("brief_sequence", body["error"])
+        finally:
+            os.unlink(path)
+
     def test_get_log_briefs_invalid_range_raises_usage_error(self):
         exit_code, stdout, stderr = self._run([
             "get-log-briefs",
