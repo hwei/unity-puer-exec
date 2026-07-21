@@ -154,11 +154,22 @@ def wait_for_session(
     completion_predicate = completion_predicate or (lambda payload: payload.get("ok") and payload.get("status") == "ready")
 
     while time_ref.time() < deadline:
+        skip_probe = False
         if endpoint_resolver is not None:
             resolved_base_url = endpoint_resolver()
             if resolved_base_url is not None:
                 session.base_url = resolved_base_url
-        payload, error = probe_health_fn(session.base_url, health_timeout_seconds)
+            else:
+                # The resolver could not find a live endpoint whose health identity
+                # matches the requested project. Do not fall back to probing
+                # session.base_url directly here: it may still hold a stale default
+                # (e.g. the preferred port) that a different, unrelated project is
+                # readily answering on, which would otherwise be misclaimed.
+                skip_probe = True
+        if skip_probe:
+            payload, error = None, "no endpoint matched the target project yet"
+        else:
+            payload, error = probe_health_fn(session.base_url, health_timeout_seconds)
         if iteration_observer is not None:
             iteration_observer(payload, error)
         if payload is not None:

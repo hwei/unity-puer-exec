@@ -222,6 +222,52 @@ class UnitySessionModuleTests(unittest.TestCase):
         # The wait loop adopted the resolver's endpoint before completing.
         self.assertEqual(session.base_url, rolled_over)
 
+    def test_wait_for_session_never_claims_unresolved_endpoint(self):
+        """An unmatched endpoint_resolver must not fall back to probing session.base_url.
+
+        Regression for the exec misroute: session.base_url starts out pointed at the
+        preferred port (an unrelated, already-ready project may be listening there).
+        The resolver never finds a project-matched candidate, so the wait must time
+        out instead of accepting that unrelated endpoint's "ready" health as if it
+        belonged to this session's project.
+        """
+        preferred = "http://127.0.0.1:55231"
+        session = unity_session_common.UnitySession(
+            owner="test",
+            base_url=preferred,
+            project_path="X:/unity-project",
+        )
+        log_path = Path("X:/Logs/Editor.log")
+        time_values = iter([0.0, 0.0, 6.0])
+        fake_time = SimpleNamespace(time=lambda: next(time_values), sleep=lambda _seconds: None)
+
+        probe_calls = []
+
+        def probe(base_url, _timeout):
+            probe_calls.append(base_url)
+            # An unrelated project is ready on the preferred port; this session's
+            # own project never answers on any candidate.
+            return {"ok": True, "status": "ready", "project_path": "X:/other-project"}, None
+
+        with self.assertRaises(unity_session_common.UnityNotReadyError):
+            unity_session_wait.wait_for_session(
+                session,
+                timeout_seconds=5.0,
+                log_path=log_path,
+                endpoint_resolver=lambda: None,
+                default_editor_log_path_fn=lambda: log_path,
+                probe_health_fn=probe,
+                create_activity_tracker_fn=lambda _path: {"idle_seconds": 0.0},
+                update_activity_tracker_fn=lambda tracker, _path: tracker,
+                finalize_session_diagnostics_fn=lambda *_args, **_kwargs: None,
+                time_ref=fake_time,
+            )
+
+        # The unresolved endpoint_resolver iteration must never have probed
+        # session.base_url directly, and base_url must remain unclaimed.
+        self.assertEqual(probe_calls, [])
+        self.assertEqual(session.base_url, preferred)
+
     def test_wait_wait_for_log_pattern_extracts_json_group(self):
         session = unity_session_common.UnitySession(
             owner="test",

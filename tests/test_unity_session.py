@@ -732,5 +732,77 @@ class RangeAwareDiscoveryTests(unittest.TestCase):
         self.assertEqual(found, self.ROLLED_OVER)
 
 
+class ExecEndpointMisrouteRegressionTests(unittest.TestCase):
+    """Regression for the observed real-host exec misroute.
+
+    Real-host validation (see
+    openspec/changes/archive/2026-07-21-improve-large-response-retrieval/results/validation-evidence.md)
+    observed `exec --project-path <tree2>` complete against an unrelated
+    project's already-ready Editor on the preferred port while tree2 had no
+    session artifact and was never launched. These tests exercise the real
+    `wait_for_session` loop (not mocked, unlike the other `ensure_session_ready`
+    tests in this module) because the defect lived specifically in that loop's
+    fallback probe of a stale `session.base_url`.
+    """
+
+    PREFERRED = "http://127.0.0.1:55231"
+
+    def test_ensure_session_ready_never_claims_unrelated_ready_project_on_preferred_port(self):
+        other_project_payload = {
+            "ok": True,
+            "status": "ready",
+            "project_path": "X:/other-project",
+            "session_marker": "OTHER-PROJECT-MARKER",
+        }
+
+        def probe(base_url, _timeout):
+            if base_url == self.PREFERRED:
+                return other_project_payload, None
+            return None, "connection refused"
+
+        with mock.patch.object(
+            unity_session, "resolve_project_path", return_value=Path(SAMPLE_PROJECT_PATH)
+        ), mock.patch.object(
+            unity_session, "read_session_artifact", return_value=None
+        ), mock.patch.object(
+            unity_session, "_resolve_effective_log_path", return_value=Path("X:/Logs/Editor.log")
+        ), mock.patch.object(
+            unity_session, "_read_editor_log_size", return_value=0
+        ), mock.patch.object(
+            unity_session, "_read_recent_editor_log_lines", return_value=[]
+        ), mock.patch.object(
+            # An unrelated project's Editor is already running on the host; the
+            # requested project's own Editor is not.
+            unity_session, "_list_unity_pids", return_value=[57896]
+        ), mock.patch.object(
+            unity_session, "_probe_health", side_effect=probe
+        ), mock.patch.object(
+            unity_session, "_project_lock_details", return_value={
+                "path": "X:/unity-project/Temp/UnityLockfile", "exists": False, "fresh": False,
+            }
+        ), mock.patch.object(
+            unity_session, "read_launch_claim", return_value=None
+        ), mock.patch.object(
+            unity_session, "write_launch_claim"
+        ), mock.patch.object(
+            unity_session, "clear_launch_claim"
+        ), mock.patch.object(
+            unity_session, "_is_pid_running", return_value=False
+        ), mock.patch.object(
+            unity_session, "_persist_ready_session_artifact"
+        ) as persist_ready, mock.patch.object(
+            unity_session, "_detach_session_process", side_effect=lambda session: session
+        ), mock.patch.object(unity_session.time, "sleep"):
+            with mock.patch.object(unity_session.os, "getpid", return_value=1111):
+                with self.assertRaises(unity_session.UnityNotReadyError):
+                    unity_session.ensure_session_ready(
+                        project_path=SAMPLE_PROJECT_PATH, ready_timeout_seconds=0.05
+                    )
+
+        # The unrelated project's endpoint must never be persisted as this
+        # project's session artifact.
+        persist_ready.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()
