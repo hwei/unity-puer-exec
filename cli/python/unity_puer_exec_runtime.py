@@ -55,8 +55,10 @@ def emit_payload(payload):
     return json.dumps(payload, ensure_ascii=True)
 
 
-def usage_error(message, status="failed"):
+def usage_error(message, status="failed", command=None, args=None):
     payload = {"ok": False, "status": status, "error": message}
+    if command is not None and args is not None:
+        _attach_guidance(payload, command, status, args)
     if status == "address_conflict":
         return 2, emit_payload(payload), ""
     return 2, "", emit_payload(payload)
@@ -273,9 +275,9 @@ def run_command(args):
         return run_ensure_stopped(args)
     except ValueError as exc:
         if len(exc.args) >= 2 and isinstance(exc.args[1], str):
-            return usage_error(str(exc.args[0]), status=exc.args[1])
+            return usage_error(str(exc.args[0]), status=exc.args[1], command=args.command, args=args)
         status = "address_conflict" if str(exc) == "address_conflict" else "failed"
-        return usage_error(str(exc), status=status)
+        return usage_error(str(exc), status=status, command=args.command, args=args)
     except unity_session.UnityLaunchError as exc:
         payload = expected_failure_payload(
             args.command,
@@ -860,7 +862,11 @@ def _exec_stale_module_policy(args):
 
 def run_exec(args):
     if getattr(args, "include_log_offset", False):
-        return usage_error("--include-log-offset has been removed; use log_range.start from exec response")
+        return usage_error(
+            "--include-log-offset has been removed; use log_range.start from exec response",
+            command="exec",
+            args=args,
+        )
     request_id = args.request_id or uuid.uuid4().hex
     code = read_exec_code(args)
     script_args, script_args_json = _canonicalize_script_args(getattr(args, "script_args", None))
@@ -1059,7 +1065,11 @@ def run_exec(args):
 
 def run_wait_for_exec(args):
     if getattr(args, "include_log_offset", False):
-        return usage_error("--include-log-offset has been removed; use log_range.start from exec response")
+        return usage_error(
+            "--include-log-offset has been removed; use log_range.start from exec response",
+            command="wait-for-exec",
+            args=args,
+        )
     selector = resolve_selector(args)
     validate_positive(args.wait_timeout_ms, "wait-timeout-ms")
     validate_project_mode_only(selector, "unity-exe-path", args.unity_exe_path)

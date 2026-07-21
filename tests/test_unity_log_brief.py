@@ -785,6 +785,25 @@ class GetLogBriefsCliTests(unittest.TestCase):
         ])
         self.assertEqual(exit_code, 2)
 
+    def test_get_log_briefs_invalid_range_usage_error_includes_situation(self):
+        exit_code, stdout, stderr = self._run([
+            "get-log-briefs",
+            "--range", "notanumber",
+        ])
+        self.assertEqual(exit_code, 2)
+        body = json.loads(stderr)
+        self.assertIn("situation", body)
+
+    def test_get_log_briefs_suppress_guidance_omits_situation_on_usage_error(self):
+        exit_code, stdout, stderr = self._run([
+            "--suppress-guidance",
+            "get-log-briefs",
+            "--range", "notanumber",
+        ])
+        self.assertEqual(exit_code, 2)
+        body = json.loads(stderr)
+        self.assertNotIn("situation", body)
+
     def test_get_log_briefs_full_text_requires_include(self):
         content = "Info entry\n\n[Error] Error entry\n"
         path = self._make_log(content)

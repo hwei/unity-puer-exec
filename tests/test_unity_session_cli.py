@@ -1663,6 +1663,17 @@ class UnityPuerExecCliTests(unittest.TestCase):
         self.assertEqual(stderr, "")
         payload = json.loads(stdout)
         self.assertEqual(payload["status"], "address_conflict")
+        self.assertNotIn("situation", payload)
+
+    def test_exec_removed_include_log_offset_usage_error_includes_situation(self):
+        exit_code, stdout, stderr = unity_puer_exec.run_cli(
+            ["exec", "--project-path", "X:/a", "--include-log-offset", "--code", "export default function run(ctx) { return 1; }"]
+        )
+
+        self.assertEqual(exit_code, 2)
+        payload = json.loads(stderr)
+        self.assertEqual(payload["status"], "failed")
+        self.assertIn("situation", payload)
 
     def test_wait_for_result_marker_returns_matching_marker(self):
         session = _make_session()
