@@ -56,4 +56,4 @@ Alternatives considered and rejected:
 
 ## Open Questions
 
-- Should `unity_pids` remain as a parameter to `_has_recoverable_editor_signal` at all (e.g. for diagnostics/logging), or be dropped entirely from that function's signature? Resolve during implementation based on whether any diagnostics still reference it there.
+- ~~Should `unity_pids` remain as a parameter to `_has_recoverable_editor_signal` at all (e.g. for diagnostics/logging), or be dropped entirely from that function's signature?~~ **Resolved during implementation:** dropped. The function's only use of `unity_pids` was the truthy check being replaced; diagnostics already receive `unity_pids` independently via `_build_launch_coordination_diagnostics` at each call site, so nothing was lost. The signature is now `_has_recoverable_editor_signal(artifact_pid_running, project_path)`.

@@ -86,6 +86,10 @@ def _is_pid_running(pid):
     return unity_session_process.is_pid_running(pid)
 
 
+def _project_lockfile_is_held(project_path):
+    return unity_session_process._project_lockfile_is_held(project_path)
+
+
 def _probe_health(base_url, timeout_seconds):
     return unity_session_wait.probe_health(base_url, timeout_seconds)
 
@@ -299,8 +303,8 @@ def _build_recovery_session(project_path, base_url, log_path, session_data, unit
     )
 
 
-def _has_recoverable_editor_signal(artifact_pid_running, unity_pids):
-    return bool(artifact_pid_running or unity_pids)
+def _has_recoverable_editor_signal(artifact_pid_running, project_path):
+    return bool(artifact_pid_running or _project_lockfile_is_held(project_path))
 
 
 def _build_ready_service_session(project_path, base_url, log_path, unity_pids, owner="existing_service"):
@@ -575,7 +579,7 @@ def ensure_session_ready(
             "project_launch_claim_active",
         )
 
-    if _has_recoverable_editor_signal(artifact_pid_running, initial_pids):
+    if _has_recoverable_editor_signal(artifact_pid_running, project_path):
         owner = "session_artifact" if artifact_pid_running else "project_recovery"
         session = _build_recovery_session(project_path, base_url, log_path, session_data, initial_pids, owner)
         session.diagnostics = _collect_diagnostics(base_url, log_path, error)
@@ -642,7 +646,7 @@ def ensure_session_ready(
             _persist_ready_session_artifact(session, log_path, payload=followup_payload)
             return session
 
-        if _has_recoverable_editor_signal(artifact_pid_running, followup_pids):
+        if _has_recoverable_editor_signal(artifact_pid_running, project_path):
             owner = "session_artifact" if artifact_pid_running else "project_recovery"
             session = _build_recovery_session(project_path, base_url, log_path, session_data, followup_pids, owner)
             session.diagnostics = _collect_diagnostics(base_url, log_path, followup_error)
@@ -737,7 +741,7 @@ def ensure_session_ready(
                     )
                     _persist_ready_session_artifact(session, log_path, payload=recovery_payload)
                     return session
-                if _has_recoverable_editor_signal(artifact_pid_running, recovery_pids):
+                if _has_recoverable_editor_signal(artifact_pid_running, project_path):
                     recovery_session = _build_recovery_session(
                         project_path,
                         base_url,

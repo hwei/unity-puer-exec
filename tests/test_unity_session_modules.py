@@ -158,6 +158,48 @@ class UnitySessionModuleTests(unittest.TestCase):
 
         self.assertFalse(unity_session_process.is_pid_running(None))
 
+    def test_project_lockfile_is_held_returns_false_when_lockfile_is_missing(self):
+        with mock.patch.object(
+            unity_session_process.os,
+            "open",
+            side_effect=FileNotFoundError(),
+        ):
+            self.assertFalse(unity_session_process._project_lockfile_is_held("X:/unity-project"))
+
+    def test_project_lockfile_is_held_returns_true_when_open_is_denied(self):
+        with mock.patch.object(
+            unity_session_process.os,
+            "open",
+            side_effect=PermissionError(),
+        ):
+            self.assertTrue(unity_session_process._project_lockfile_is_held("X:/unity-project"))
+
+    def test_project_lockfile_is_held_returns_true_on_lock_contention(self):
+        with mock.patch.object(
+            unity_session_process.os, "open", return_value=7
+        ), mock.patch.object(
+            unity_session_process.os, "close",
+        ) as close_fd, mock.patch(
+            "msvcrt.locking", side_effect=OSError()
+        ) as locking:
+            self.assertTrue(unity_session_process._project_lockfile_is_held("X:/unity-project"))
+
+        locking.assert_called_once_with(7, mock.ANY, 1)
+        close_fd.assert_called_once_with(7)
+
+    def test_project_lockfile_is_held_returns_false_when_lock_acquires_cleanly(self):
+        with mock.patch.object(
+            unity_session_process.os, "open", return_value=7
+        ), mock.patch.object(
+            unity_session_process.os, "close",
+        ) as close_fd, mock.patch(
+            "msvcrt.locking", return_value=None
+        ) as locking:
+            self.assertFalse(unity_session_process._project_lockfile_is_held("X:/unity-project"))
+
+        self.assertEqual(locking.call_count, 2)
+        close_fd.assert_called_once_with(7)
+
     def test_wait_wait_until_healthy_uses_wait_for_session_injection(self):
         session = unity_session_common.UnitySession(
             owner="test",

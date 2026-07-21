@@ -1,11 +1,18 @@
 #!/usr/bin/env python3
 import csv
 import io
+import os
 import subprocess
 import time as time_module
 from pathlib import Path
 
-from unity_session_common import DEFAULT_STOP_TIMEOUT_SECONDS, POLL_INTERVAL_SECONDS, UnityLaunchError, UnitySession
+from unity_session_common import (
+    DEFAULT_STOP_TIMEOUT_SECONDS,
+    POLL_INTERVAL_SECONDS,
+    UNITY_LOCKFILE_RELATIVE_PATH,
+    UnityLaunchError,
+    UnitySession,
+)
 
 
 def list_unity_pids():
@@ -62,6 +69,27 @@ def is_pid_running(pid):
         check=False,
     )
     return _pid_present_in_tasklist_csv(result.stdout, pid)
+
+
+def _project_lockfile_is_held(project_path):
+    import msvcrt
+
+    lockfile_path = Path(project_path) / UNITY_LOCKFILE_RELATIVE_PATH
+    try:
+        fd = os.open(str(lockfile_path), os.O_RDWR)
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return True
+    try:
+        try:
+            msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+        except OSError:
+            return True
+        msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+        return False
+    finally:
+        os.close(fd)
 
 
 def detach_session_process(session):

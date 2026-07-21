@@ -419,6 +419,8 @@ class UnitySessionTests(unittest.TestCase):
         ), mock.patch.object(
             unity_session, "_project_lock_details", return_value={"path": "X:/unity-project/Temp/UnityLockfile", "exists": True, "fresh": True}
         ), mock.patch.object(
+            unity_session, "_project_lockfile_is_held", return_value=True
+        ), mock.patch.object(
             unity_session, "read_launch_claim", return_value=None
         ), mock.patch.object(
             unity_session, "wait_ready_with_activity", return_value=recovered
@@ -460,6 +462,8 @@ class UnitySessionTests(unittest.TestCase):
                 {"path": "X:/unity-project/Temp/UnityLockfile", "exists": True, "fresh": True},
             ]
         ), mock.patch.object(
+            unity_session, "_project_lockfile_is_held", return_value=False
+        ), mock.patch.object(
             unity_session, "read_launch_claim", side_effect=[None, {"owner_pid": 1111}, {"owner_pid": 1111}]
         ), mock.patch.object(
             unity_session, "write_launch_claim"
@@ -488,6 +492,108 @@ class UnitySessionTests(unittest.TestCase):
         wait_ready_with_activity.assert_called_once()
         self.assertEqual(wait_ready_with_activity.call_args.args[0].owner, "launched")
         persist_ready.assert_called_once_with(launched, Path("X:/Logs/Editor.log"))
+
+    def test_ensure_session_ready_launches_when_unrelated_project_running_but_own_lock_is_free(self):
+        # Regression for the project-scoped-recovery-signal defect: an unrelated
+        # project's Editor is running on the host (non-empty unity_pids), but the
+        # requested project has no session artifact and its own lockfile is free.
+        # ensure_session_ready must launch the requested project instead of
+        # entering a recovery wait for a recovery that will never happen.
+        launched = unity_session.UnitySession(
+            owner="launched",
+            base_url="http://127.0.0.1:55231",
+            project_path=SAMPLE_PROJECT_PATH,
+            unity_pid=6666,
+            launched=True,
+        )
+        process = mock.Mock(pid=6666)
+
+        with mock.patch.object(unity_session, "resolve_project_path", return_value=Path(SAMPLE_PROJECT_PATH)), mock.patch.object(
+            unity_session, "read_session_artifact", return_value=None
+        ), mock.patch.object(
+            unity_session, "_resolve_effective_log_path", return_value=Path("X:/Logs/Editor.log")
+        ), mock.patch.object(
+            unity_session, "_list_unity_pids", return_value=[9001]
+        ), mock.patch.object(
+            unity_session, "_probe_health", return_value=(None, "connection refused")
+        ), mock.patch.object(
+            unity_session, "_project_lock_details", side_effect=[
+                {"path": "X:/unity-project/Temp/UnityLockfile", "exists": False, "fresh": False},
+                {"path": "X:/unity-project/Temp/UnityLockfile", "exists": False, "fresh": False},
+            ]
+        ), mock.patch.object(
+            unity_session, "_project_lockfile_is_held", return_value=False
+        ), mock.patch.object(
+            unity_session, "read_launch_claim", side_effect=[None, {"owner_pid": 1111}, {"owner_pid": 1111}]
+        ), mock.patch.object(
+            unity_session, "write_launch_claim"
+        ) as write_launch_claim, mock.patch.object(
+            unity_session, "clear_launch_claim"
+        ) as clear_launch_claim, mock.patch.object(
+            unity_session, "_is_pid_running", return_value=False
+        ), mock.patch.object(
+            unity_session, "_resolve_unity_exe_path", return_value="X:/Unity/Unity.exe"
+        ), mock.patch.object(
+            unity_session, "_launch_unity", return_value=process
+        ) as launch_unity, mock.patch.object(
+            unity_session, "wait_ready_with_activity", return_value=launched
+        ) as wait_ready_with_activity, mock.patch.object(
+            unity_session, "_persist_ready_session_artifact"
+        ) as persist_ready, mock.patch.object(
+            unity_session, "_detach_session_process", side_effect=lambda session: session
+        ):
+            with mock.patch.object(unity_session.os, "getpid", return_value=1111):
+                result = unity_session.ensure_session_ready(project_path=SAMPLE_PROJECT_PATH)
+
+        self.assertIs(result, launched)
+        write_launch_claim.assert_called_once()
+        clear_launch_claim.assert_called_once_with(Path(SAMPLE_PROJECT_PATH))
+        launch_unity.assert_called_once_with(Path(SAMPLE_PROJECT_PATH), "X:/Unity/Unity.exe", unity_log_path=None)
+        wait_ready_with_activity.assert_called_once()
+        persist_ready.assert_called_once_with(launched, Path("X:/Logs/Editor.log"))
+
+    def test_ensure_session_ready_waits_when_own_lockfile_is_held_with_no_artifact_pid(self):
+        # The requested project's own lockfile is held (an Editor for that exact
+        # project is starting or open, not yet exposing a matched /health
+        # response), but there is no session artifact pid. This must still be
+        # treated as recoverable rather than attempting a duplicate launch that
+        # would conflict with Unity's own project-lock enforcement.
+        recovered = unity_session.UnitySession(
+            owner="project_recovery",
+            base_url="http://127.0.0.1:55231",
+            project_path=SAMPLE_PROJECT_PATH,
+            unity_pid=4321,
+        )
+
+        with mock.patch.object(unity_session, "resolve_project_path", return_value=Path(SAMPLE_PROJECT_PATH)), mock.patch.object(
+            unity_session, "read_session_artifact", return_value=None
+        ), mock.patch.object(
+            unity_session, "_resolve_effective_log_path", return_value=Path("X:/Logs/Editor.log")
+        ), mock.patch.object(
+            unity_session, "_list_unity_pids", return_value=[]
+        ), mock.patch.object(
+            unity_session, "_probe_health", return_value=(None, "connection refused")
+        ), mock.patch.object(
+            unity_session, "_project_lock_details", return_value={"path": "X:/unity-project/Temp/UnityLockfile", "exists": True, "fresh": True}
+        ), mock.patch.object(
+            unity_session, "_project_lockfile_is_held", return_value=True
+        ), mock.patch.object(
+            unity_session, "read_launch_claim", return_value=None
+        ), mock.patch.object(
+            unity_session, "wait_ready_with_activity", return_value=recovered
+        ) as wait_ready_with_activity, mock.patch.object(
+            unity_session, "_launch_unity"
+        ) as launch_unity, mock.patch.object(
+            unity_session, "_persist_ready_session_artifact"
+        ) as persist_ready, mock.patch.object(
+            unity_session, "_detach_session_process", side_effect=lambda session: session
+        ):
+            result = unity_session.ensure_session_ready(project_path=SAMPLE_PROJECT_PATH)
+
+        self.assertIs(result, recovered)
+        launch_unity.assert_not_called()
+        wait_ready_with_activity.assert_called_once()
+        persist_ready.assert_called_once_with(recovered, Path("X:/Logs/Editor.log"))
 
     def test_ensure_session_ready_raises_launch_conflict_for_active_other_claim(self):
         with mock.patch.object(unity_session, "resolve_project_path", return_value=Path(SAMPLE_PROJECT_PATH)), mock.patch.object(
@@ -533,6 +639,8 @@ class UnitySessionTests(unittest.TestCase):
                 {"path": "X:/unity-project/Temp/UnityLockfile", "exists": False, "fresh": False},
                 {"path": "X:/unity-project/Temp/UnityLockfile", "exists": True, "fresh": True},
             ]
+        ), mock.patch.object(
+            unity_session, "_project_lockfile_is_held", return_value=False
         ), mock.patch.object(
             unity_session, "read_launch_claim", side_effect=[None, {"owner_pid": 1111}, {"owner_pid": 1111}]
         ), mock.patch.object(
@@ -591,6 +699,8 @@ class UnitySessionTests(unittest.TestCase):
                 {"path": "X:/unity-project/Temp/UnityLockfile", "exists": False, "fresh": False},
                 {"path": "X:/unity-project/Temp/UnityLockfile", "exists": True, "fresh": True},
             ]
+        ), mock.patch.object(
+            unity_session, "_project_lockfile_is_held", return_value=False
         ), mock.patch.object(
             unity_session, "read_launch_claim", side_effect=[None, {"owner_pid": 1111}, {"owner_pid": 1111}]
         ), mock.patch.object(
@@ -743,6 +853,15 @@ class ExecEndpointMisrouteRegressionTests(unittest.TestCase):
     `wait_for_session` loop (not mocked, unlike the other `ensure_session_ready`
     tests in this module) because the defect lived specifically in that loop's
     fallback probe of a stale `session.base_url`.
+
+    `project-scoped-recovery-signal` changed what happens next for this exact
+    scenario: an unrelated project's pid alone no longer reads as "recoverable",
+    so `ensure_session_ready` now proceeds to launch the requested project
+    instead of entering a recovery wait that can never succeed. The real
+    `wait_for_session` loop is still exercised here, just reached via the
+    launched-session path rather than the pre-launch recovery path — the
+    stale-`base_url` fallback probe this class guards against lives in that
+    same shared loop either way.
     """
 
     PREFERRED = "http://127.0.0.1:55231"
@@ -760,6 +879,9 @@ class ExecEndpointMisrouteRegressionTests(unittest.TestCase):
                 return other_project_payload, None
             return None, "connection refused"
 
+        process = mock.Mock(pid=8765, returncode=None)
+        process.poll.return_value = None
+
         with mock.patch.object(
             unity_session, "resolve_project_path", return_value=Path(SAMPLE_PROJECT_PATH)
         ), mock.patch.object(
@@ -772,7 +894,8 @@ class ExecEndpointMisrouteRegressionTests(unittest.TestCase):
             unity_session, "_read_recent_editor_log_lines", return_value=[]
         ), mock.patch.object(
             # An unrelated project's Editor is already running on the host; the
-            # requested project's own Editor is not.
+            # requested project's own Editor is not (no session artifact, own
+            # lockfile not held) -> the fix now launches instead of waiting.
             unity_session, "_list_unity_pids", return_value=[57896]
         ), mock.patch.object(
             unity_session, "_probe_health", side_effect=probe
@@ -780,6 +903,8 @@ class ExecEndpointMisrouteRegressionTests(unittest.TestCase):
             unity_session, "_project_lock_details", return_value={
                 "path": "X:/unity-project/Temp/UnityLockfile", "exists": False, "fresh": False,
             }
+        ), mock.patch.object(
+            unity_session, "_project_lockfile_is_held", return_value=False
         ), mock.patch.object(
             unity_session, "read_launch_claim", return_value=None
         ), mock.patch.object(
@@ -789,6 +914,10 @@ class ExecEndpointMisrouteRegressionTests(unittest.TestCase):
         ), mock.patch.object(
             unity_session, "_is_pid_running", return_value=False
         ), mock.patch.object(
+            unity_session, "_resolve_unity_exe_path", return_value="X:/Unity/Unity.exe"
+        ), mock.patch.object(
+            unity_session, "_launch_unity", return_value=process
+        ) as launch_unity, mock.patch.object(
             unity_session, "_persist_ready_session_artifact"
         ) as persist_ready, mock.patch.object(
             unity_session, "_detach_session_process", side_effect=lambda session: session
@@ -799,6 +928,9 @@ class ExecEndpointMisrouteRegressionTests(unittest.TestCase):
                         project_path=SAMPLE_PROJECT_PATH, ready_timeout_seconds=0.05
                     )
 
+        # The defect this change fixes: the requested project's own Editor is
+        # actually launched instead of stalling on a recovery wait.
+        launch_unity.assert_called_once()
         # The unrelated project's endpoint must never be persisted as this
         # project's session artifact.
         persist_ready.assert_not_called()
