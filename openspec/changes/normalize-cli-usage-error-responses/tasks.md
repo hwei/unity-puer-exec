@@ -21,6 +21,7 @@
 ## 4. Usage guidance entries
 
 - [ ] 4.1 Author guidance-matrix entries for `invalid_arguments` with `situation` and a `next_steps` entry pointing at the invoked command's argument help.
+- [ ] 4.1a Resolve the structural tension first: the existing `runtime-guidance` requirement expects the matrix to cover all commands and all documented statuses, but the matrix is keyed by `(command, status)` and `invalid_arguments` can be emitted by every command. Decide between a per-command entry for each and a documented cross-cutting fallback, then record the decision so the coverage requirement stays satisfied rather than quietly weakened.
 - [ ] 4.2 Author guidance-matrix entries for the post-parse usage statuses that currently have routing but no entries, confirming first which statuses are affected rather than assuming the list.
 - [ ] 4.3 Ensure no usage-failure guidance offers the rejected invocation back as a retry candidate.
 - [ ] 4.4 Add unit tests asserting guidance presence and that no retry candidate is offered.
