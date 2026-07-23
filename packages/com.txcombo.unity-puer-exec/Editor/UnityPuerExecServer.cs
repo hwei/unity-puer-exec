@@ -165,6 +165,12 @@ namespace UnityPuerExec
         private static PuerExecLoader execLoader;
         private static string envInitError = "";
         private static string sessionMarker = Guid.NewGuid().ToString("N");
+
+        // Package identity for the Editor half of the product. Resolved once during
+        // [InitializeOnLoad] (main thread) because PackageInfo is a main-thread editor
+        // API, then read from the listener thread when answering /health. Empty when
+        // the assembly is not package-installed.
+        private static readonly string bridgeVersion = ResolveBridgeVersion();
         private static string cachedConsoleLogPath = "";
         private static string activeRequestId = "";
         private static int mainThreadId;
@@ -209,6 +215,21 @@ namespace UnityPuerExec
             CompilationPipeline.compilationStarted += OnCompilationStarted;
             CompilationPipeline.assemblyCompilationFinished += OnAssemblyCompilationFinished;
             Start();
+        }
+
+        private static string ResolveBridgeVersion()
+        {
+            try
+            {
+                var info = UnityEditor.PackageManager.PackageInfo.FindForAssembly(
+                    typeof(UnityPuerExecServer).Assembly
+                );
+                return info == null ? "" : (info.version ?? "");
+            }
+            catch
+            {
+                return "";
+            }
         }
 
         internal static bool IsMainThread => Thread.CurrentThread.ManagedThreadId == mainThreadId;
@@ -485,7 +506,8 @@ namespace UnityPuerExec
                             selectedPort,
                             baseUrl: listenerBaseUrl,
                             unityPid: unityPid,
-                            projectPath: projectPath
+                            projectPath: projectPath,
+                            bridgeVersion: bridgeVersion
                         )
                     );
                     return;

@@ -61,6 +61,42 @@ class PackageLayoutTests(unittest.TestCase):
         self.assertIn('Copy-Item "packages/com.txcombo.unity-puer-exec/README.md.meta"', workflow)
         self.assertNotIn('CLI~.meta', workflow)
 
+    def test_release_workflow_is_parseable_yaml_with_a_runnable_stamp_step(self):
+        """Substring checks pass on a workflow GitHub cannot parse.
+
+        The stamp step's script is written inside a YAML block scalar, where a
+        column-0 line silently ends the scalar; that produced a workflow that
+        every substring assertion accepted and no runner could execute.
+        """
+        try:
+            import yaml  # type: ignore
+        except ImportError:
+            self.skipTest("PyYAML not installed")
+
+        workflow = yaml.safe_load(RELEASE_WORKFLOW_PATH.read_text(encoding="utf-8"))
+        steps = workflow["jobs"]["publish"]["steps"]
+        stamp = next(s for s in steps if s.get("name", "").startswith("Stamp"))
+
+        self.assertIn("CLI_VERSION", stamp["run"])
+        self.assertIn("_build_version.py", stamp["run"])
+        # A line at column 0 would have truncated the scalar above this point.
+        for line in stamp["run"].splitlines():
+            self.assertFalse(line.startswith("CLI_VERSION"), "stamp body escaped the block scalar")
+
+    def test_release_workflow_stamps_and_verifies_the_cli_version(self):
+        workflow = RELEASE_WORKFLOW_PATH.read_text(encoding="utf-8")
+
+        stamp_index = workflow.index('Set-Content -Path "cli/python/_build_version.py"')
+        build_index = workflow.index("--onefile")
+        verify_index = workflow.index('& "dist/unity-puer-exec.exe" --version')
+        assemble_index = workflow.index("Assemble UPM package tree")
+
+        self.assertIn("CLI_VERSION =", workflow)
+        # Stamp before the build, verify the built artifact before it is published.
+        self.assertLess(stamp_index, build_index)
+        self.assertLess(build_index, verify_index)
+        self.assertLess(verify_index, assemble_index)
+
     def test_editor_assembly_uses_formal_identity(self):
         asmdef_path = PACKAGE_ROOT / "Editor" / "UnityPuerExec.Editor.asmdef"
         self.assertTrue(asmdef_path.exists())

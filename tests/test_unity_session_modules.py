@@ -19,6 +19,8 @@ import unity_session_logs  # type: ignore
 import unity_session_process  # type: ignore
 import unity_session_wait  # type: ignore
 
+from tests import version_test_support
+
 
 class UnitySessionModuleTests(unittest.TestCase):
     def test_env_resolve_project_path_uses_injected_loader(self):
@@ -719,6 +721,7 @@ class ArtifactIdentityValidationTests(unittest.TestCase):
                 "ok": True,
                 "status": "ready",
                 "project_path": "X:/unity-project",
+                "bridge_version": version_test_support.matching_bridge_version(),
             }, None
 
         # We need to test via the session module; patch _probe_health

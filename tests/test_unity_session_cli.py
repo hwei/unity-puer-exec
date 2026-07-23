@@ -18,8 +18,33 @@ import unity_session  # type: ignore
 import unity_session_common  # type: ignore
 import unity_session_logs  # type: ignore
 
+from tests import version_test_support
+
 
 SAMPLE_PROJECT_PATH = "X:/unity-project"
+
+_bridge_probe_patcher = None
+
+
+def setUpModule():
+    """Keep the base-url bridge guard from reaching a real local Editor.
+
+    These cases mock the command transport and assume nothing answers on the
+    loopback control ports. The bridge guard added a real `/health` probe on that
+    path, which would otherwise make the results depend on whether the developer
+    happens to have Unity open. The guard's own behavior is covered by
+    tests.test_cli_version.
+    """
+    global _bridge_probe_patcher
+    _bridge_probe_patcher = mock.patch.object(
+        unity_session, "probe_health_payload", return_value=(None, "no service")
+    )
+    _bridge_probe_patcher.start()
+
+
+def tearDownModule():
+    if _bridge_probe_patcher is not None:
+        _bridge_probe_patcher.stop()
 
 
 def _expand_brief_sequence(sequence):

@@ -49,6 +49,18 @@ class UnityStalledError(UnitySessionError):
     pass
 
 
+class UnityVersionMismatchError(UnitySessionError):
+    """Raised when an owned control endpoint reports a version the CLI cannot match.
+
+    Carried out of the session layer so the refusal happens at the moment the
+    disagreement first becomes observable, before the command performs work.
+    """
+
+    def __init__(self, detail, message=None, session=None):
+        super().__init__(message or "version mismatch", session=session)
+        self.detail = detail
+
+
 class UnitySessionStateError(UnitySessionError):
     def __init__(self, status, message, session=None):
         super().__init__(message, session=session)

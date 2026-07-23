@@ -13,6 +13,8 @@ if str(CLI_DIR) not in sys.path:
 
 import unity_session  # type: ignore
 
+from tests import version_test_support
+
 
 SAMPLE_PROJECT_PATH = "X:/unity-project"
 
@@ -741,7 +743,14 @@ class UnitySessionTests(unittest.TestCase):
 
 
 def _ready_payload(project_path):
-    return {"ok": True, "status": "ready", "project_path": str(project_path)}
+    return {
+        "ok": True,
+        "status": "ready",
+        "project_path": str(project_path),
+        # A ready endpoint that states no version is a refusal now, so discovery
+        # fixtures carry the matching one to keep testing discovery.
+        "bridge_version": version_test_support.matching_bridge_version(),
+    }
 
 
 def _probe_by_url(mapping, default=(None, "connection refused")):

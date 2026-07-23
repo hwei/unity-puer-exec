@@ -1271,6 +1271,57 @@ GUIDANCE_MATRIX = {
 }
 
 
+# The matrix key is (command, status) and carries no guard identity, so the
+# per-guard wording lives here and overrides the entry's default `situation`.
+VERSION_MISMATCH_SITUATIONS = {
+    "bridge": (
+        "The CLI executable and the Unity Editor package ship as one release, so the two "
+        "observed versions indicate a mixed installation. The Unity bridge is running a "
+        "different release than the CLI that contacted it."
+    ),
+    "package_layout": (
+        "The executable does not match the package tree it is installed in: its own version "
+        "differs from the `version` declared by the adjacent `package.json`, so the binary is "
+        "left over from a different release than the Editor scripts beside it."
+    ),
+    "bridge_version_unknown": (
+        "The Unity bridge reported no version. It predates version reporting and therefore "
+        "cannot be verified as compatible with this CLI."
+    ),
+    "cli_version_unknown": (
+        "This executable carries no stamped version. It predates version reporting, or was "
+        "built without the stamping step, and therefore cannot be verified as compatible with "
+        "the Unity Editor package it is installed with."
+    ),
+}
+
+_VERSION_MISMATCH_GUIDANCE = {
+    "situation": (
+        "The CLI executable and the Unity Editor package ship as one release, so the two "
+        "observed versions indicate a mixed installation. Reconcile the installation so both "
+        "halves come from the same release."
+    ),
+    "next_steps": [
+        {
+            "command": "--version",
+            "when": "you want to confirm which CLI build is acting before reconciling the installation",
+            "argv": ["unity-puer-exec", "--version"],
+        },
+    ],
+}
+
+# Both local guards run before any command work, so every command can refuse on a
+# version mismatch -- not only the ones that contact the control service.
+for _version_guard_command in COMMANDS:
+    GUIDANCE_MATRIX[(_version_guard_command, "version_mismatch")] = _VERSION_MISMATCH_GUIDANCE
+
+VERSION_MISMATCH_STATUS_LINE = (
+    "`version_mismatch` -> exit {}: the CLI executable and the Unity Editor package are from "
+    "different releases, or one half cannot state its version. The command performs no work; "
+    "reconcile the installation so both halves come from the same release. There is no bypass."
+).format(direct_exec_client.EXIT_VERSION_MISMATCH)
+
+
 def _build_argv(template, target_command, context):
     if not context:
         return None
@@ -1304,6 +1355,9 @@ def build_next_steps(command, status, context):
     result = []
     for template in templates:
         step = {"command": template["command"], "when": template["when"]}
+        static_argv = template.get("argv")
+        if static_argv is not None:
+            step["argv"] = list(static_argv)
         argv_template = template.get("argv_template")
         if argv_template is not None:
             argv = _build_argv(argv_template, template["command"], context)
@@ -1313,7 +1367,9 @@ def build_next_steps(command, status, context):
     return result if result else None
 
 
-def build_situation(command, status):
+def build_situation(command, status, guard=None):
+    if guard is not None and guard in VERSION_MISMATCH_SITUATIONS:
+        return VERSION_MISMATCH_SITUATIONS[guard]
     entry = GUIDANCE_MATRIX.get((command, status))
     if entry is None:
         return None
@@ -1331,7 +1387,7 @@ def render_top_level_help():
         "Bridge Model\n`unity-puer-exec` script authoring uses a PuerTS-style JavaScript-to-C# bridge. Use `puer.loadType(...)` to load Unity or C# types, and do not assume bridged C# arrays or `List<T>` values behave exactly like native JS arrays.",
         "Recommended Path\n{}".format(_bullet_lines(RECOMMENDED_PATH)),
         "Command Groups\n{}".format("\n\n".join(command_group_sections)),
-        "Global Options\n- `--suppress-guidance`: omit `next_steps` and `situation` from command responses. Status explanations remain available via `<command> --help-status`.\n- `--response-file <path>`: persist the complete normalized command response to a local file and print a compact reference (with `byte_count` and `sha256`) instead of the full JSON; use this when a response may exceed the caller's output budget. `wait-for-exec --response-file` can recover an already-completed large result by the same `request_id` without re-executing the script.",
+        "Global Options\n- `--version`: report the acting CLI build and exit, without a command and without contacting Unity. The CLI executable and the Unity Editor package ship as one release; when their versions disagree, commands refuse with `version_mismatch` and there is no bypass -- reconcile the installation instead.\n- `--suppress-guidance`: omit `next_steps` and `situation` from command responses. Status explanations remain available via `<command> --help-status`.\n- `--response-file <path>`: persist the complete normalized command response to a local file and print a compact reference (with `byte_count` and `sha256`) instead of the full JSON; use this when a response may exceed the caller's output budget. `wait-for-exec --response-file` can recover an already-completed large result by the same `request_id` without re-executing the script.",
         "Global Selector Rules\n- Use exactly one selector on commands that target a Unity session: `--project-path` or `--base-url`.\n- `--project-path` is the normal choice when the CLI should discover, launch, or recover Unity for a project.\n- `--base-url` is for a direct service you already know how to reach.",
         "Common Help Examples\nUse `unity-puer-exec --help-example <example-id>` to view full steps.\n{}".format(
             _bullet_lines(
@@ -1387,6 +1443,7 @@ def render_command_status_help(command):
         if situation:
             line += " Situation: {}".format(situation)
         failure_lines.append(line)
+    failure_lines.append(VERSION_MISMATCH_STATUS_LINE)
     sections = [
         "Success Statuses\n{}".format(_bullet_lines(success_lines)),
         "Non-success Statuses\n{}".format(_bullet_lines(failure_lines)),

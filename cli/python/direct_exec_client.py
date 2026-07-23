@@ -15,6 +15,7 @@ EXIT_REQUEST_ID_CONFLICT = 18
 EXIT_MODAL_BLOCKED = 19
 EXIT_MODULE_CACHE_STALE = 22
 EXIT_UNITY_COMPILE_ERROR = 23
+EXIT_VERSION_MISMATCH = 24
 
 # Control-port range contract. The Unity control service binds the preferred port
 # first and rolls over to later ports in [CONTROL_PORT_PREFERRED, CONTROL_PORT_END)
@@ -84,6 +85,8 @@ def _status_to_exit_code(payload):
         return EXIT_MODULE_CACHE_STALE
     if status == "unity_compile_error":
         return EXIT_UNITY_COMPILE_ERROR
+    if status == "version_mismatch":
+        return EXIT_VERSION_MISMATCH
     if status in ("session_missing", "session_stale"):
         return EXIT_SESSION_STATE
     return 1
@@ -141,6 +144,7 @@ def invoke_command(command, base_url, payload, wait_timeout_ms, transport=None):
         EXIT_MODAL_BLOCKED,
         EXIT_MODULE_CACHE_STALE,
         EXIT_UNITY_COMPILE_ERROR,
+        EXIT_VERSION_MISMATCH,
     ):
         return exit_code, json.dumps(response, ensure_ascii=True), ""
     return exit_code, "", json.dumps(response, ensure_ascii=True)

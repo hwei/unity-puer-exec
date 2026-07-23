@@ -2,6 +2,7 @@
 import os
 import time
 
+import cli_version
 import direct_exec_client
 import unity_session_env
 import unity_session_logs
@@ -28,6 +29,7 @@ from unity_session_common import (
     UnitySessionError,
     UnitySessionStateError,
     UnityStalledError,
+    UnityVersionMismatchError,
 )
 
 
@@ -475,6 +477,39 @@ def ensure_session_ready(
     unity_log_path=None,
     argv0=None,
 ):
+    """Prepare a ready project session, refusing a bridge this CLI cannot match.
+
+    The launch and recovery paths lock onto the project's port through pre-`ready`
+    payloads, which carry no identity fields yet, so the version can only be
+    required once the endpoint is actually ready. That is here -- after readiness,
+    before the caller executes anything.
+    """
+    session = _ensure_session_ready_unguarded(
+        project_path=project_path,
+        base_url=base_url,
+        unity_exe_path=unity_exe_path,
+        ready_timeout_seconds=ready_timeout_seconds,
+        activity_timeout_seconds=activity_timeout_seconds,
+        health_timeout_seconds=health_timeout_seconds,
+        unity_log_path=unity_log_path,
+        argv0=argv0,
+    )
+    payload, error = _probe_health(session.base_url, health_timeout_seconds)
+    if payload is not None and error is None:
+        _guard_owned_endpoint_version(session.base_url, payload)
+    return session
+
+
+def _ensure_session_ready_unguarded(
+    project_path=None,
+    base_url=direct_exec_client.DEFAULT_BASE_URL,
+    unity_exe_path=None,
+    ready_timeout_seconds=DEFAULT_READY_TIMEOUT_SECONDS,
+    activity_timeout_seconds=DEFAULT_ACTIVITY_TIMEOUT_SECONDS,
+    health_timeout_seconds=DEFAULT_HEALTH_TIMEOUT_SECONDS,
+    unity_log_path=None,
+    argv0=None,
+):
     project_path = resolve_project_path(project_path, argv0=argv0)
     session_data = read_session_artifact(project_path)
     log_path = _resolve_effective_log_path(project_path, unity_log_path=unity_log_path, session_data=session_data)
@@ -869,6 +904,28 @@ def inspect_direct_service(base_url, health_timeout_seconds=DEFAULT_HEALTH_TIMEO
     return False, None, error
 
 
+def probe_health_payload(base_url, health_timeout_seconds=DEFAULT_HEALTH_TIMEOUT_SECONDS):
+    """Public single health probe, used by the base-url bridge guard."""
+    return _probe_health(base_url, health_timeout_seconds)
+
+
+def _guard_owned_endpoint_version(base_url, payload, require_version=True):
+    """Refuse an owned endpoint whose bridge version disagrees with this CLI.
+
+    Called only where ownership has just been confirmed -- never on the foreign
+    endpoints the control-port scan walks past -- so an unrelated project's Editor
+    can never trigger a refusal here.
+    """
+    detail = cli_version.check_bridge(
+        cli_version.resolve_cli_version(),
+        base_url,
+        payload,
+        require_version=require_version,
+    )
+    if detail is not None:
+        raise UnityVersionMismatchError(detail, message=cli_version.mismatch_message(detail))
+
+
 def _payload_matches_project(payload, project_path):
     """Check whether a health payload belongs to the target project."""
     health_project_path = payload.get("project_path")
@@ -891,6 +948,7 @@ def validate_endpoint_identity(base_url, project_path, health_timeout_seconds=DE
         return False, payload, None
     if not _payload_matches_project(payload, project_path):
         return False, payload, None
+    _guard_owned_endpoint_version(base_url, payload)
     return True, payload, None
 
 
@@ -955,6 +1013,9 @@ def _scan_for_project_endpoint_any_status(project_path, health_timeout_seconds, 
     for candidate in candidate_base_urls:
         payload, _error = _probe_health(candidate, health_timeout_seconds)
         if payload is not None and _payload_matches_project(payload, project_path):
+            # Pre-ready payloads carry no identity fields yet, so an absent
+            # bridge_version here is "not observable yet", not a mismatch.
+            _guard_owned_endpoint_version(candidate, payload, require_version=False)
             return candidate
     return None
 
@@ -973,6 +1034,7 @@ def _make_recovery_endpoint_resolver(project_path, health_timeout_seconds):
         if locked is not None:
             payload, _error = _probe_health(locked, health_timeout_seconds)
             if payload is not None and _payload_matches_project(payload, project_path):
+                _guard_owned_endpoint_version(locked, payload, require_version=False)
                 return locked
             state["locked"] = None
         found = _scan_for_project_endpoint_any_status(project_path, health_timeout_seconds)

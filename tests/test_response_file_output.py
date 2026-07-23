@@ -15,6 +15,23 @@ if str(CLI_DIR) not in sys.path:
 
 import unity_puer_exec  # type: ignore
 import unity_puer_exec_runtime as runtime  # type: ignore
+import unity_session  # type: ignore
+
+_bridge_probe_patcher = None
+
+
+def setUpModule():
+    """See tests.test_unity_session_cli: keep the base-url bridge guard offline."""
+    global _bridge_probe_patcher
+    _bridge_probe_patcher = mock.patch.object(
+        unity_session, "probe_health_payload", return_value=(None, "no service")
+    )
+    _bridge_probe_patcher.start()
+
+
+def tearDownModule():
+    if _bridge_probe_patcher is not None:
+        _bridge_probe_patcher.stop()
 
 
 class ProjectResponseFileUnitTests(unittest.TestCase):

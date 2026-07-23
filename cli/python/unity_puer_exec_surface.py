@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 import argparse
 
+import cli_version
 import direct_exec_client
 import help_surface
 import unity_session
 
 
 HELP_FLAGS = ("--help", "--help-args", "--help-status")
+VERSION_FLAG = "--version"
 
 
 def build_parser():
@@ -149,6 +151,29 @@ def build_parser():
 
 
     return parser
+
+
+def handle_version(argv):
+    """Answer a global `--version` before argparse rejects the missing subcommand.
+
+    The version entry is a diagnostic like the help entries: it never contacts a
+    Unity service and is never subject to the version guards, so a caller told to
+    confirm its acting build by a `version_mismatch` response can always do so.
+    """
+    if argv != [VERSION_FLAG]:
+        return None
+    return 0, render_version_text(), ""
+
+
+def render_version_text():
+    resolved = cli_version.resolve_cli_version()
+    if resolved:
+        return "unity-puer-exec {}".format(resolved)
+    return (
+        "unity-puer-exec {}\n"
+        "This build carries no stamped version and cannot be verified against "
+        "the Unity Editor package it is installed with.".format(cli_version.UNKNOWN_VERSION_TEXT)
+    )
 
 
 def handle_top_level_help(argv):

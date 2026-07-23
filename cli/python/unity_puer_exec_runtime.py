@@ -8,6 +8,7 @@ import tempfile
 import time
 import uuid
 
+import cli_version
 import direct_exec_client
 import help_surface
 import unity_log_brief
@@ -25,6 +26,7 @@ EXIT_REQUEST_ID_CONFLICT = direct_exec_client.EXIT_REQUEST_ID_CONFLICT
 EXIT_MODAL_BLOCKED = direct_exec_client.EXIT_MODAL_BLOCKED
 EXIT_MODULE_CACHE_STALE = direct_exec_client.EXIT_MODULE_CACHE_STALE
 EXIT_UNITY_COMPILE_ERROR = direct_exec_client.EXIT_UNITY_COMPILE_ERROR
+EXIT_VERSION_MISMATCH = direct_exec_client.EXIT_VERSION_MISMATCH
 EXIT_SESSION_STATE = 14
 EXIT_NO_OBSERVATION_TARGET = 15
 EXIT_NOT_STOPPED = 16
@@ -64,7 +66,35 @@ def usage_error(message, status="failed", command=None, args=None):
     return 2, "", emit_payload(payload)
 
 
-_RESPONSE_FILE_ROUTING_FIELDS = ("ok", "status", "operation", "request_id", "phase", "session_marker")
+_RESPONSE_FILE_ROUTING_FIELDS = (
+    "ok",
+    "status",
+    "operation",
+    "request_id",
+    "phase",
+    "session_marker",
+    "cli_version",
+)
+
+
+def _inject_cli_version(text):
+    """Stamp the acting CLI build onto a machine-readable response.
+
+    Applied once at the end of `run_cli`, so every response family carries it --
+    including the normalized exec/wait bodies and usage errors that never pass
+    through the payload builders -- and before the response-file projection, so
+    the compact reference inherits it through the routing fields.
+    """
+    if not text:
+        return text
+    try:
+        body = json.loads(text)
+    except ValueError:
+        return text
+    if not isinstance(body, dict) or "cli_version" in body:
+        return text
+    body["cli_version"] = cli_version.version_text(cli_version.resolve_cli_version())
+    return emit_payload(body)
 
 
 def _atomic_write_bytes(path, data):
@@ -248,7 +278,58 @@ def unexpected_failure_payload(operation, error, session=None, include_diagnosti
     return attach_diagnostics(payload, include_diagnostics=include_diagnostics, session=session, diagnostics=diagnostics)
 
 
+def version_mismatch_payload(operation, detail):
+    return {
+        "ok": False,
+        "status": cli_version.STATUS_VERSION_MISMATCH,
+        "operation": operation,
+        "error": cli_version.mismatch_message(detail),
+        "version_mismatch": dict(detail),
+    }
+
+
+def _version_mismatch_result(args, detail):
+    payload = version_mismatch_payload(args.command, detail)
+    _attach_guidance(payload, args.command, cli_version.STATUS_VERSION_MISMATCH, args)
+    return EXIT_VERSION_MISMATCH, emit_payload(payload), ""
+
+
+def _local_version_guards(args):
+    """Guards that need nothing but the local installation, run before any work."""
+    argv0 = getattr(args, "argv0", None)
+    resolved = cli_version.resolve_cli_version()
+    detail = cli_version.check_cli_version_known(resolved, argv0=argv0)
+    if detail is not None:
+        return detail
+    return cli_version.check_package_layout(resolved, argv0=argv0)
+
+
+def _base_url_bridge_guard(args):
+    """Bridge guard for the selector that never otherwise probes health.
+
+    A transport failure is not a guard failure: the endpoint reported nothing to
+    compare, and the command's own not_available handling is the right answer.
+    """
+    try:
+        if resolve_selector(args) != "base_url":
+            return None
+    except ValueError:
+        # A malformed selector combination is a usage error; let the command say so
+        # rather than spending a probe on an invocation that cannot run.
+        return None
+    base_url = args.base_url
+    payload, error = unity_session.probe_health_payload(base_url)
+    if payload is None or error is not None:
+        return None
+    return cli_version.check_bridge(cli_version.resolve_cli_version(), base_url, payload)
+
+
 def run_command(args):
+    detail = _local_version_guards(args)
+    if detail is None:
+        detail = _base_url_bridge_guard(args)
+    if detail is not None:
+        return _version_mismatch_result(args, detail)
     try:
         if args.command == "exec":
             return run_exec(args)
@@ -273,6 +354,8 @@ def run_command(args):
         if args.command == "get-compile-warnings":
             return run_get_compile_warnings(args)
         return run_ensure_stopped(args)
+    except unity_session.UnityVersionMismatchError as exc:
+        return _version_mismatch_result(args, exc.detail)
     except ValueError as exc:
         if len(exc.args) >= 2 and isinstance(exc.args[1], str):
             return usage_error(str(exc.args[0]), status=exc.args[1], command=args.command, args=args)
@@ -331,6 +414,9 @@ def run_command(args):
 
 def run_cli(argv, surface, argv0=None):
     filtered_argv = [a for a in argv if a != "--suppress-guidance"]
+    version_result = surface.handle_version(filtered_argv)
+    if version_result is not None:
+        return version_result
     help_result = surface.handle_top_level_help(filtered_argv)
     if help_result is not None:
         return help_result
@@ -341,6 +427,8 @@ def run_cli(argv, surface, argv0=None):
     args = parser.parse_args(argv)
     args.argv0 = argv0
     exit_code, stdout_text, stderr_text = run_command(args)
+    stdout_text = _inject_cli_version(stdout_text)
+    stderr_text = _inject_cli_version(stderr_text)
     return _project_response_file(getattr(args, "response_file", None), exit_code, stdout_text, stderr_text)
 
 
@@ -402,7 +490,9 @@ def _attach_guidance(payload, command, status, args, request_id=None):
     next_steps = help_surface.build_next_steps(command, status, context)
     if next_steps:
         payload["next_steps"] = next_steps
-    situation = help_surface.build_situation(command, status)
+    detail = payload.get("version_mismatch")
+    guard = detail.get("guard") if isinstance(detail, dict) else None
+    situation = help_surface.build_situation(command, status, guard=guard)
     if situation:
         payload["situation"] = situation
     _maybe_hint_puer_prefix(payload, command)
