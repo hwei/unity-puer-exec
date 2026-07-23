@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import os
 import time
+from pathlib import Path
 
 import cli_version
 import direct_exec_client
@@ -156,14 +157,74 @@ def _project_lock_details(project_path):
     return unity_session_logs.build_project_lock_details(project_path, time_ref=time)
 
 
-def _resolve_effective_log_path(project_path, unity_log_path=None, session_data=None):
-    return unity_session_logs.resolve_effective_log_path(
+def _resolve_effective_log_path_with_tier(project_path, unity_log_path=None, session_data=None, health_console_log_path=None):
+    return unity_session_logs.resolve_effective_log_path_with_tier(
         project_path,
         unity_log_path=unity_log_path,
         session_data=session_data,
+        health_console_log_path=health_console_log_path,
         read_session_artifact_fn=read_session_artifact,
         session_artifact_log_path_fn=_session_artifact_log_path,
         default_editor_log_path_fn=_default_editor_log_path,
+    )
+
+
+def _resolve_effective_log_path(project_path, unity_log_path=None, session_data=None, health_console_log_path=None):
+    path, _tier = _resolve_effective_log_path_with_tier(
+        project_path,
+        unity_log_path=unity_log_path,
+        session_data=session_data,
+        health_console_log_path=health_console_log_path,
+    )
+    return path
+
+
+def _health_console_log_path(payload):
+    return unity_session_logs.health_console_log_path(payload)
+
+
+def _probe_console_log_path(project_path, session_data=None, health_timeout_seconds=DEFAULT_HEALTH_TIMEOUT_SECONDS):
+    """Ask a reachable, project-owned endpoint where its Editor writes.
+
+    Observation-only, so it deliberately does not run the bridge-version guard the
+    launch paths use: locating a log must not start refusing work. An endpoint
+    owned by a different project is never adopted -- its log path names the wrong
+    file, which is the exact failure this tier exists to remove -- and an
+    unreachable service is simply no answer, leaving the platform default in place.
+    """
+    candidates = []
+    if isinstance(session_data, dict):
+        artifact_base_url = session_data.get("base_url")
+        if isinstance(artifact_base_url, str) and artifact_base_url:
+            candidates.append(artifact_base_url)
+    for candidate in direct_exec_client.candidate_base_urls():
+        if candidate not in candidates:
+            candidates.append(candidate)
+
+    for candidate in candidates:
+        payload, _error = _probe_health(candidate, health_timeout_seconds)
+        if payload is None or not payload.get("ok") or payload.get("status") != "ready":
+            continue
+        if not _payload_matches_project(payload, project_path):
+            continue
+        return _health_console_log_path(payload)
+    return None
+
+
+def _log_path_from_ready_payload(project_path, unity_log_path, session_data, payload, current_log_path):
+    """Re-resolve the observed log once a ready endpoint has stated where it writes.
+
+    Only the tier that was previously a platform-default guess can change here;
+    an explicit flag or a live session artifact still outranks the statement.
+    """
+    reported = _health_console_log_path(payload)
+    if reported is None:
+        return current_log_path
+    return _resolve_effective_log_path(
+        project_path,
+        unity_log_path=unity_log_path,
+        session_data=session_data,
+        health_console_log_path=reported,
     )
 
 
@@ -204,6 +265,10 @@ def _resolve_unity_exe_path(project_path, unity_exe_path):
 
 def _launch_unity(project_path, unity_exe_path, unity_log_path=None):
     return unity_session_process.launch_unity(project_path, unity_exe_path, unity_log_path=unity_log_path)
+
+
+def _prepare_launch_log_path(project_path, unity_log_path=None):
+    return unity_session_logs.prepare_launch_log_path(project_path, unity_log_path=unity_log_path)
 
 
 def _collect_diagnostics(base_url, log_path, health_error, activity_state=None, health_payload=None):
@@ -523,6 +588,7 @@ def _ensure_session_ready_unguarded(
         health_timeout_seconds=health_timeout_seconds,
     )
     if is_valid:
+        log_path = _log_path_from_ready_payload(project_path, unity_log_path, session_data, artifact_payload, log_path)
         session = UnitySession(
             owner="validated_artifact",
             base_url=artifact_base_url,
@@ -562,6 +628,7 @@ def _ensure_session_ready_unguarded(
     scanned_base_url, payload, error, saw_other_project = discover_project_endpoint(project_path, health_timeout_seconds)
     if payload is not None:
         base_url = scanned_base_url
+        log_path = _log_path_from_ready_payload(project_path, unity_log_path, session_data, payload, log_path)
         project_lock = _project_lock_details(project_path)
         launch_claim = read_launch_claim(project_path)
         artifact_pid, artifact_pid_running = _artifact_pid_running(session_data)
@@ -656,6 +723,7 @@ def _ensure_session_ready_unguarded(
 
         if followup_payload is not None:
             base_url = followup_base_url
+            log_path = _log_path_from_ready_payload(project_path, unity_log_path, session_data, followup_payload, log_path)
             session = _build_ready_service_session(project_path, base_url, log_path, followup_pids)
             if artifact_pid_running:
                 session.unity_pid = artifact_pid
@@ -710,7 +778,13 @@ def _ensure_session_ready_unguarded(
             return _detach_session_process(session)
 
         resolved_unity_exe_path = _resolve_unity_exe_path(project_path, unity_exe_path)
-        process = _launch_unity(project_path, resolved_unity_exe_path, unity_log_path=unity_log_path)
+        # An Editor this CLI starts gets a project-private log, so an unrelated
+        # Editor cannot share, rotate, or truncate the file this session is
+        # observed through. The launched Editor reports the same path back via
+        # health console_log_path, so later commands need no --unity-log-path.
+        launch_log_path = _prepare_launch_log_path(project_path, unity_log_path)
+        process = _launch_unity(project_path, resolved_unity_exe_path, unity_log_path=launch_log_path)
+        log_path = launch_log_path
         # Cold start: old artifact is not authoritative; the new endpoint is the source of truth.
         session = UnitySession(
             owner="launched",
@@ -752,6 +826,7 @@ def _ensure_session_ready_unguarded(
                 artifact_pid, artifact_pid_running = _artifact_pid_running(session_data)
                 if recovery_payload is not None:
                     base_url = recovery_base_url
+                    log_path = _log_path_from_ready_payload(project_path, unity_log_path, session_data, recovery_payload, log_path)
                     session = _build_ready_service_session(project_path, base_url, log_path, recovery_pids, owner="recovered_service")
                     if artifact_pid_running:
                         session.unity_pid = artifact_pid
@@ -820,14 +895,36 @@ def _ensure_session_ready_unguarded(
 def get_log_source(project_path=None, base_url=None, unity_log_path=None, argv0=None):
     resolved_project_path = resolve_project_path(project_path, argv0=argv0)
     if base_url is not None:
-        log_path = _default_editor_log_path()
-        if not log_path.exists():
-            return None
+        payload, _error = _probe_health(base_url, DEFAULT_HEALTH_TIMEOUT_SECONDS)
+        reported = _health_console_log_path(payload) if isinstance(payload, dict) and payload.get("status") == "ready" else None
+        if reported:
+            log_path = Path(reported)
+            tier = unity_session_logs.LOG_SOURCE_TIER_CONTROL_SERVICE
+        else:
+            log_path = _default_editor_log_path()
+            tier = unity_session_logs.LOG_SOURCE_TIER_PLATFORM_DEFAULT
     else:
         session_data = read_session_artifact(resolved_project_path)
-        log_path = _resolve_effective_log_path(resolved_project_path, unity_log_path=unity_log_path, session_data=session_data)
-        if not log_path.exists() and unity_log_path is None and _session_artifact_log_path(session_data) is None:
-            return None
+        log_path, tier = _resolve_effective_log_path_with_tier(
+            resolved_project_path,
+            unity_log_path=unity_log_path,
+            session_data=session_data,
+        )
+        if tier == unity_session_logs.LOG_SOURCE_TIER_PLATFORM_DEFAULT:
+            reported = _probe_console_log_path(resolved_project_path, session_data)
+            if reported:
+                log_path, tier = _resolve_effective_log_path_with_tier(
+                    resolved_project_path,
+                    unity_log_path=unity_log_path,
+                    session_data=session_data,
+                    health_console_log_path=reported,
+                )
+
+    # A path an authority named -- a flag, an artifact, or the Editor itself --
+    # is still the answer before the file appears on disk. Only the guess has to
+    # prove itself by existing.
+    if tier == unity_session_logs.LOG_SOURCE_TIER_PLATFORM_DEFAULT and not log_path.exists():
+        return None
 
     session = UnitySession(
         owner="observation",
@@ -837,7 +934,12 @@ def get_log_source(project_path=None, base_url=None, unity_log_path=None, argv0=
         launched=False,
         effective_log_path=log_path,
     )
-    return session, {"status": "log_source_available", "source": "file", "path": str(log_path)}
+    return session, {
+        "status": "log_source_available",
+        "source": "file",
+        "path": str(log_path),
+        "resolution_tier": tier,
+    }
 
 
 def create_direct_session(base_url, project_path=None):
@@ -855,7 +957,15 @@ def create_observation_session(project_path=None, base_url=None, unity_log_path=
     unity_pid = None
     effective_base_url = base_url or direct_exec_client.DEFAULT_BASE_URL
     owner = "observation"
-    log_path = _resolve_effective_log_path(resolved_project_path, unity_log_path=unity_log_path, session_data=session_data)
+    # No control-service probe here: an observation session is built on the cold
+    # path of every wait command, and the launched-Editor case is already answered
+    # by the session artifact tier, which is written at readiness. get-log-source
+    # is where a caller asks the question directly and can afford to pay for it.
+    log_path = _resolve_effective_log_path(
+        resolved_project_path,
+        unity_log_path=unity_log_path,
+        session_data=session_data,
+    )
     if session_data is not None:
         effective_base_url = session_data.get("base_url") or effective_base_url
         unity_pid = session_data.get("unity_pid")

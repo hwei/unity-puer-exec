@@ -17,6 +17,9 @@ from tests import version_test_support
 
 
 SAMPLE_PROJECT_PATH = "X:/unity-project"
+# A CLI-launched Editor is given a project-private log rather than the per-user
+# default an unrelated Editor would share.
+SAMPLE_LAUNCH_LOG_PATH = Path(SAMPLE_PROJECT_PATH) / "Temp" / "UnityPuerExec" / "Editor.log"
 
 
 def _make_session():
@@ -490,10 +493,10 @@ class UnitySessionTests(unittest.TestCase):
         self.assertIs(result, launched)
         write_launch_claim.assert_called_once()
         clear_launch_claim.assert_called_once_with(Path(SAMPLE_PROJECT_PATH))
-        launch_unity.assert_called_once_with(Path(SAMPLE_PROJECT_PATH), "X:/Unity/Unity.exe", unity_log_path=None)
+        launch_unity.assert_called_once_with(Path(SAMPLE_PROJECT_PATH), "X:/Unity/Unity.exe", unity_log_path=SAMPLE_LAUNCH_LOG_PATH)
         wait_ready_with_activity.assert_called_once()
         self.assertEqual(wait_ready_with_activity.call_args.args[0].owner, "launched")
-        persist_ready.assert_called_once_with(launched, Path("X:/Logs/Editor.log"))
+        persist_ready.assert_called_once_with(launched, SAMPLE_LAUNCH_LOG_PATH)
 
     def test_ensure_session_ready_launches_when_unrelated_project_running_but_own_lock_is_free(self):
         # Regression for the project-scoped-recovery-signal defect: an unrelated
@@ -550,9 +553,9 @@ class UnitySessionTests(unittest.TestCase):
         self.assertIs(result, launched)
         write_launch_claim.assert_called_once()
         clear_launch_claim.assert_called_once_with(Path(SAMPLE_PROJECT_PATH))
-        launch_unity.assert_called_once_with(Path(SAMPLE_PROJECT_PATH), "X:/Unity/Unity.exe", unity_log_path=None)
+        launch_unity.assert_called_once_with(Path(SAMPLE_PROJECT_PATH), "X:/Unity/Unity.exe", unity_log_path=SAMPLE_LAUNCH_LOG_PATH)
         wait_ready_with_activity.assert_called_once()
-        persist_ready.assert_called_once_with(launched, Path("X:/Logs/Editor.log"))
+        persist_ready.assert_called_once_with(launched, SAMPLE_LAUNCH_LOG_PATH)
 
     def test_ensure_session_ready_waits_when_own_lockfile_is_held_with_no_artifact_pid(self):
         # The requested project's own lockfile is held (an Editor for that exact
@@ -727,7 +730,9 @@ class UnitySessionTests(unittest.TestCase):
 
         self.assertIs(result, recovered)
         self.assertEqual(wait_ready_with_activity.call_count, 2)
-        persist_ready.assert_called_once_with(recovered, Path("X:/Logs/Editor.log"))
+        # The launch already redirected observation to the project-private log, so
+        # the post-exit recovery keeps observing that file rather than reverting.
+        persist_ready.assert_called_once_with(recovered, SAMPLE_LAUNCH_LOG_PATH)
 
     def test_detach_session_process_clears_live_process_handle(self):
         session = _make_session()

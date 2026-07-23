@@ -14,9 +14,45 @@ from unity_session_common import (
 )
 
 
+# Resolution tiers for the effective Unity log path, most to least authoritative.
+# Reported by get-log-source so a caller can tell a path the Editor named from one
+# the CLI assumed.
+LOG_SOURCE_TIER_SESSION_ARTIFACT = "session_artifact"
+LOG_SOURCE_TIER_EXPLICIT_FLAG = "explicit_flag"
+LOG_SOURCE_TIER_CONTROL_SERVICE = "control_service"
+LOG_SOURCE_TIER_PLATFORM_DEFAULT = "platform_default"
+
+# Project-private Unity log for CLI-launched Editors. Under Temp/ because it is an
+# observation surface for a live session, not an archive; a caller who needs a
+# durable log passes --unity-log-path.
+LAUNCH_LOG_RELATIVE_PATH = ("Temp", "UnityPuerExec", "Editor.log")
+
+
 def default_editor_log_path():
     local_app_data = Path.home() / "AppData" / "Local"
     return local_app_data / "Unity" / "Editor" / "Editor.log"
+
+
+def project_launch_log_path(project_path):
+    return Path(project_path).joinpath(*LAUNCH_LOG_RELATIVE_PATH)
+
+
+def prepare_launch_log_path(project_path, unity_log_path=None):
+    """Pick the -logFile path for a CLI-launched Editor and make it writable.
+
+    Without this the Editor binds to the per-user Editor.log, which an unrelated
+    Editor on another project shares -- and byte-offset observation of a shared
+    file reads the wrong content. Unity creates the log file itself but not its
+    parent directory, so the directory is created here. A directory that cannot
+    be created is not worth failing a launch over: the Editor still starts and
+    resolution falls back through the remaining tiers.
+    """
+    path = Path(unity_log_path) if unity_log_path else project_launch_log_path(project_path)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pass
+    return path
 
 
 def read_recent_editor_log_lines(log_path, max_lines):
@@ -306,22 +342,63 @@ def session_artifact_log_path(session_data, is_pid_running_fn):
     return Path(effective_log_path)
 
 
-def resolve_effective_log_path(
+def resolve_effective_log_path_with_tier(
     project_path,
     unity_log_path=None,
     session_data=None,
+    health_console_log_path=None,
     read_session_artifact_fn=None,
     session_artifact_log_path_fn=None,
     default_editor_log_path_fn=None,
 ):
+    """Resolve the observed log path and name the tier that produced it.
+
+    The bridge-stated path sits below the session artifact deliberately: the
+    artifact is what keeps observation working across health-probe failures, so
+    promoting the stated path would make log resolution depend on control-service
+    reachability. It sits above the platform default because the default is a
+    guess that is wrong whenever a second Editor is open.
+    """
     if session_data is None:
         session_data = read_session_artifact_fn(project_path)
     artifact_log_path = session_artifact_log_path_fn(session_data)
     if artifact_log_path is not None:
-        return artifact_log_path
+        return artifact_log_path, LOG_SOURCE_TIER_SESSION_ARTIFACT
     if unity_log_path:
-        return Path(unity_log_path)
-    return default_editor_log_path_fn()
+        return Path(unity_log_path), LOG_SOURCE_TIER_EXPLICIT_FLAG
+    if health_console_log_path:
+        return Path(health_console_log_path), LOG_SOURCE_TIER_CONTROL_SERVICE
+    return default_editor_log_path_fn(), LOG_SOURCE_TIER_PLATFORM_DEFAULT
+
+
+def resolve_effective_log_path(
+    project_path,
+    unity_log_path=None,
+    session_data=None,
+    health_console_log_path=None,
+    read_session_artifact_fn=None,
+    session_artifact_log_path_fn=None,
+    default_editor_log_path_fn=None,
+):
+    path, _tier = resolve_effective_log_path_with_tier(
+        project_path,
+        unity_log_path=unity_log_path,
+        session_data=session_data,
+        health_console_log_path=health_console_log_path,
+        read_session_artifact_fn=read_session_artifact_fn,
+        session_artifact_log_path_fn=session_artifact_log_path_fn,
+        default_editor_log_path_fn=default_editor_log_path_fn,
+    )
+    return path
+
+
+def health_console_log_path(payload):
+    if not isinstance(payload, dict):
+        return None
+    value = payload.get("console_log_path")
+    if isinstance(value, str) and value:
+        return value
+    return None
 
 
 def session_marker_from_payload(payload):

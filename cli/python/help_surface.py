@@ -192,7 +192,7 @@ COMMAND_HELP = {
             "Arguments": [
                 "`--project-path <path>`: locate the log source for a Unity project.",
                 "`--base-url <url>`: report the log source for a direct service target.",
-                "`--unity-log-path <path>`: explicit non-default Unity Editor log path for pre-session project-scoped discovery.",
+                "`--unity-log-path <path>`: explicit non-default Unity Editor log path for pre-session project-scoped discovery. Without it, a reachable project-owned Editor's own reported log path is preferred over the platform default.",
                 "`--include-diagnostics`: include top-level debug diagnostics in the machine-readable response.",
             ],
             "Selector Rules": [
@@ -200,10 +200,18 @@ COMMAND_HELP = {
                 "`--project-path` is the normal choice when the CLI should discover the target from project context.",
                 "`--base-url` is for a direct service that is already known.",
             ],
+            "Range Rules": [
+                "`result.resolution_tier` names which tier produced `result.path`, so a path the Editor stated is distinguishable from one the CLI assumed.",
+                "`session_artifact`: an established session recorded this path; it outranks every other tier so observation keeps working when the control service is unreachable.",
+                "`explicit_flag`: the caller supplied `--unity-log-path`.",
+                "`control_service`: a reachable Editor owned by this project reported its own `console_log_path`. This is a stated path, not a guess.",
+                "`platform_default`: nothing authoritative was available and the platform per-user `Editor.log` was assumed. Any other Unity Editor open on this machine writes to that same file, so byte offsets taken against it can be invalidated by an unrelated project.",
+            ],
         },
         "status": {
             "success": [
                 "`completed`: a log source is available and `result.status` is `log_source_available`.",
+                "`result.resolution_tier` reports which resolution tier produced `result.path`.",
             ],
             "failure": [
                 ("address_conflict", 2, "both selectors were provided; choose exactly one."),
@@ -345,7 +353,7 @@ COMMAND_HELP = {
                 "`--project-path <path>`: select a Unity project and allow Unity launch when needed. Optional when the exe is invoked from its installed location inside the target Unity project.",
                 "`--base-url <url>`: target an already-known direct service instead of a project.",
                 "`--unity-exe-path <path>`: override the Unity executable for project-scoped startup only.",
-                "`--unity-log-path <path>`: explicit non-default Unity Editor log path for project-scoped startup before `session_marker` exists.",
+                "`--unity-log-path <path>`: explicit Unity Editor log path for project-scoped startup, overriding the project-private log a CLI-launched Editor otherwise gets under the project's `Temp/`. An Editor the CLI did not launch keeps whatever log it was started with; the CLI discovers that path from the endpoint rather than assuming the platform default.",
                 "`--wait-timeout-ms <ms>`: how long to wait before returning the current execution state.",
                 "`--request-id <id>`: optional caller-owned exec identity for recovery or idempotent replay; omitted values are generated automatically.",
                 "`--script-args <json-object>`: optional caller-supplied JSON object that becomes `ctx.args`; malformed JSON or non-object values fail before runtime execution.",
@@ -424,7 +432,7 @@ COMMAND_HELP = {
                 "`--project-path <path>`: select a Unity project and allow Unity launch when needed. Optional when the exe is invoked from its installed location inside the target Unity project.",
                 "`--base-url <url>`: target an already-known direct service instead of a project.",
                 "`--unity-exe-path <path>`: override the Unity executable for project-scoped startup only.",
-                "`--unity-log-path <path>`: explicit non-default Unity Editor log path for project-scoped startup before `session_marker` exists.",
+                "`--unity-log-path <path>`: explicit Unity Editor log path for project-scoped startup, overriding the project-private log a CLI-launched Editor otherwise gets under the project's `Temp/`. An Editor the CLI did not launch keeps whatever log it was started with; the CLI discovers that path from the endpoint rather than assuming the platform default.",
                 "`--request-id <id>`: required accepted exec identity to continue waiting on.",
                 "`--wait-timeout-ms <ms>`: how long to wait before returning the current request state again.",
                 "`--log-start-offset <offset>`: optional log observation start offset; pass `log_range.start` from the original `exec` response so `brief_sequence` remains consistent with the cumulative observed log activity across successive calls.",
@@ -1322,6 +1330,26 @@ VERSION_MISMATCH_STATUS_LINE = (
 ).format(direct_exec_client.EXIT_VERSION_MISMATCH)
 
 
+# Commands that accept a caller-supplied log start offset, and can therefore report
+# that the offset stopped denoting the content the caller meant.
+LOG_OFFSET_AWARE_COMMANDS = ("wait-for-exec", "wait-for-log-pattern", "wait-for-result-marker")
+
+LOG_OFFSETS_INVALIDATED_HELP_LINES = (
+    "`log_offsets_invalidated` is an additive response field, not a status: the exit code and "
+    "the rest of the response are unchanged, and the command still returns whatever the observed "
+    "log currently contains rather than refusing to read.",
+    "It appears when the supplied start offset is past the end of the observed log. The log was "
+    "rotated or truncated, so byte offsets recorded before that no longer denote the content they "
+    "did; the scan restarted from the beginning of the file.",
+    "The field names the observed log path, the supplied start, and the observed end. Discard the "
+    "stale `log_range` and re-observe without an offset instead of reusing it.",
+    "If the named path is the platform default per-user `Editor.log`, a second Unity Editor is "
+    "very likely sharing that file and invalidating the offsets. Run `get-log-source` and check "
+    "`resolution_tier`: `control_service` or `session_artifact` means the observed log belongs to "
+    "the target Editor, while `platform_default` means the path was assumed, not stated.",
+)
+
+
 def _build_argv(template, target_command, context):
     if not context:
         return None
@@ -1448,6 +1476,10 @@ def render_command_status_help(command):
         "Success Statuses\n{}".format(_bullet_lines(success_lines)),
         "Non-success Statuses\n{}".format(_bullet_lines(failure_lines)),
     ]
+    if command in LOG_OFFSET_AWARE_COMMANDS:
+        sections.append(
+            "Log Offset Conditions\n{}".format(_bullet_lines(list(LOG_OFFSETS_INVALIDATED_HELP_LINES)))
+        )
     return _join_sections(sections)
 
 

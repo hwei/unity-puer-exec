@@ -1370,6 +1370,49 @@ class RealHostIntegrationTests(unittest.TestCase):
             # Release the preferred port so the Editor can reclaim it on its next reload.
             binder.stop()
 
+    def test_cli_launched_host_is_observed_through_a_project_private_log_against_real_host(self):
+        """The host writes where the CLI observes, and neither is the shared per-user log.
+
+        This closes the loop the rest of the suite depends on: every other case takes
+        byte offsets against whatever log the CLI resolved, and those offsets are only
+        meaningful if that file belongs to this Editor alone. No case here passes
+        --unity-log-path, so the isolation has to come from the launch default.
+        """
+        expected_log_path = self.project_path / "Temp" / "UnityPuerExec" / "Editor.log"
+
+        ready_exit_code, ready_payload, _, _ = _warm_up_project_exec(self.project_path, self.unity_exe_path)
+        self.assertEqual(ready_exit_code, 0, ready_payload)
+
+        # The Editor states its own log path, and it is the project-private one.
+        base_url, health_payload = _scan_ready_control_endpoint(self.project_path)
+        self.assertIsNotNone(base_url, "no ready control endpoint owned by the host project")
+        reported = health_payload.get("console_log_path")
+        self.assertTrue(reported, "ready /health did not report console_log_path: {}".format(health_payload))
+        self.assertEqual(
+            Path(reported),
+            expected_log_path,
+            "the host Editor is writing to {} rather than its project-private log".format(reported),
+        )
+        self.assertNotEqual(Path(reported), unity_session_logs.default_editor_log_path())
+        self.assertTrue(Path(reported).exists(), "the reported log path does not exist on disk")
+
+        # The CLI observes that same file, and says so rather than leaving the caller
+        # to infer whether the path was stated or assumed.
+        source_exit_code, source_payload, _, _ = _run_cli(
+            ["get-log-source", "--project-path", str(self.project_path)]
+        )
+        self.assertEqual(source_exit_code, 0, source_payload)
+        result = source_payload["result"]
+        self.assertEqual(Path(result["path"]), expected_log_path)
+        self.assertIn(
+            result["resolution_tier"],
+            (
+                unity_session_logs.LOG_SOURCE_TIER_SESSION_ARTIFACT,
+                unity_session_logs.LOG_SOURCE_TIER_CONTROL_SERVICE,
+            ),
+            "the observed log path was assumed rather than stated: {}".format(result),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

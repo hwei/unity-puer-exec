@@ -26,6 +26,7 @@ jobs:
             tests.test_cleanup_validation_host_tool `
             tests.test_cli_version `
             tests.test_direct_exec_client `
+            tests.test_editor_log_isolation `
             tests.test_openspec_backlog `
             tests.test_openspec_change_meta `
             tests.test_package_layout `

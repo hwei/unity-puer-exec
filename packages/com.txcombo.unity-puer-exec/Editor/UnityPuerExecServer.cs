@@ -507,7 +507,8 @@ namespace UnityPuerExec
                             baseUrl: listenerBaseUrl,
                             unityPid: unityPid,
                             projectPath: projectPath,
-                            bridgeVersion: bridgeVersion
+                            bridgeVersion: bridgeVersion,
+                            consoleLogPath: cachedConsoleLogPath
                         )
                     );
                     return;

@@ -225,8 +225,37 @@ def _stack_trace_logging_degraded(container):
     return isinstance(stack_trace_logging, dict) and bool(stack_trace_logging.get("degraded"))
 
 
-def _apply_log_range_and_brief_sequence(container, log_path, log_start, log_end):
+def _detect_offset_invalidation(log_path, caller_start_offset):
+    """Report a caller-supplied start offset that lies past the end of the log.
+
+    Reading still rescans from the beginning -- dropping the read would be worse --
+    but a byte range recorded before a rotation or truncation no longer denotes the
+    content the caller meant, and absorbing that silently turns into an unexplained
+    wait timeout. An observation that supplies no offset passes None here and cannot
+    trip the signal.
+    """
+    if caller_start_offset is None or log_path is None:
+        return None
+    observed_end = unity_session_logs.read_editor_log_size(log_path)
+    if observed_end is None or caller_start_offset <= observed_end:
+        return None
+    return {
+        "log_path": str(log_path),
+        "supplied_start": caller_start_offset,
+        "observed_end": observed_end,
+        "reason": "log_rotated_or_truncated",
+        "detail": (
+            "the supplied start offset {} is past the end ({}) of the observed log {}; "
+            "the log was rotated or truncated, so earlier byte offsets no longer denote "
+            "the intended content and the scan restarted from the beginning"
+        ).format(caller_start_offset, observed_end, log_path),
+    }
+
+
+def _apply_log_range_and_brief_sequence(container, log_path, log_start, log_end, offsets_invalidated=None):
     container["log_range"] = {"start": log_start, "end": log_end}
+    if offsets_invalidated is not None:
+        container["log_offsets_invalidated"] = offsets_invalidated
     if _stack_trace_logging_degraded(container):
         container["brief_sequence"] = _BRIEF_SEQUENCE_STACKTRACE_OFF
         container["brief_hint"] = _BRIEF_HINT_STACKTRACE_OFF
@@ -235,16 +264,16 @@ def _apply_log_range_and_brief_sequence(container, log_path, log_start, log_end)
     container["brief_sequence"] = unity_log_brief.build_brief_sequence(briefs)
 
 
-def _inject_log_range_into_stdout(stdout_text, log_path, log_start, log_end):
+def _inject_log_range_into_stdout(stdout_text, log_path, log_start, log_end, offsets_invalidated=None):
     if not stdout_text:
         return stdout_text
     body = json.loads(stdout_text)
-    _apply_log_range_and_brief_sequence(body, log_path, log_start, log_end)
+    _apply_log_range_and_brief_sequence(body, log_path, log_start, log_end, offsets_invalidated=offsets_invalidated)
     return emit_payload(body)
 
 
-def _inject_log_range_into_payload(payload, log_path, log_start, log_end):
-    _apply_log_range_and_brief_sequence(payload, log_path, log_start, log_end)
+def _inject_log_range_into_payload(payload, log_path, log_start, log_end, offsets_invalidated=None):
+    _apply_log_range_and_brief_sequence(payload, log_path, log_start, log_end, offsets_invalidated=offsets_invalidated)
 
 
 def resolve_selector(args):
@@ -1167,6 +1196,7 @@ def run_wait_for_exec(args):
 
     _wfe_log_path_early = getattr(args, "unity_log_path", None) or str(unity_session_logs.default_editor_log_path())
     _wfe_log_start = args.log_start_offset if args.log_start_offset is not None else _capture_log_offset(_wfe_log_path_early)
+    _wfe_offsets_invalidated = _detect_offset_invalidation(_wfe_log_path_early, args.log_start_offset)
 
     if selector == "project_path":
         _sweep_pending_exec(args)
@@ -1189,7 +1219,7 @@ def run_wait_for_exec(args):
                     phase=_pending_phase(pending),
                 )
                 _wfe_rp1_log_path = _resolve_log_path(args, exc.session)
-                _inject_log_range_into_payload(payload, _wfe_rp1_log_path, _wfe_log_start, _capture_log_offset(_wfe_rp1_log_path))
+                _inject_log_range_into_payload(payload, _wfe_rp1_log_path, _wfe_log_start, _capture_log_offset(_wfe_rp1_log_path), offsets_invalidated=_wfe_offsets_invalidated)
                 return EXIT_RUNNING, emit_payload(payload), ""
             raise
         base_url = session.base_url
@@ -1223,7 +1253,7 @@ def run_wait_for_exec(args):
             if _running_or_timed_out_response(exit_code, stdout_text):
                 pending = _refresh_pending_exec(args, args.request_id, pending, PHASE_REFRESHING)
                 payload = _emit_running_payload("wait-for-exec", session, args.request_id, args, phase=PHASE_REFRESHING)
-                _inject_log_range_into_payload(payload, _wfe_refresh_log_path, _wfe_log_start, _capture_log_offset(_wfe_refresh_log_path))
+                _inject_log_range_into_payload(payload, _wfe_refresh_log_path, _wfe_log_start, _capture_log_offset(_wfe_refresh_log_path), offsets_invalidated=_wfe_offsets_invalidated)
                 return EXIT_RUNNING, emit_payload(payload), ""
             if exit_code != 0:
                 _clear_pending_exec(args, args.request_id)
@@ -1250,7 +1280,7 @@ def run_wait_for_exec(args):
                     default_phase=PHASE_REFRESHING,
                     normalize_compiling=False,
                 )
-                stdout_text = _inject_log_range_into_stdout(stdout_text, _wfe_refresh_log_path, _wfe_log_start, _capture_log_offset(_wfe_refresh_log_path))
+                stdout_text = _inject_log_range_into_stdout(stdout_text, _wfe_refresh_log_path, _wfe_log_start, _capture_log_offset(_wfe_refresh_log_path), offsets_invalidated=_wfe_offsets_invalidated)
                 stdout_text, stderr_text = _inject_guidance_into_response(stdout_text, stderr_text, "wait-for-exec", args, request_id=args.request_id)
                 return exit_code, stdout_text, stderr_text
             try:
@@ -1259,7 +1289,7 @@ def run_wait_for_exec(args):
             except (unity_session.UnityStalledError, unity_session.UnityNotReadyError) as exc:
                 pending = _refresh_pending_exec(args, args.request_id, pending, PHASE_REFRESHING)
                 payload = _emit_running_payload("wait-for-exec", exc.session, args.request_id, args, phase=PHASE_REFRESHING)
-                _inject_log_range_into_payload(payload, _wfe_refresh_log_path, _wfe_log_start, _capture_log_offset(_wfe_refresh_log_path))
+                _inject_log_range_into_payload(payload, _wfe_refresh_log_path, _wfe_log_start, _capture_log_offset(_wfe_refresh_log_path), offsets_invalidated=_wfe_offsets_invalidated)
                 return EXIT_RUNNING, emit_payload(payload), ""
             pending = _refresh_pending_exec(args, args.request_id, pending, PHASE_EXECUTING)
         exit_code, stdout_text, stderr_text = _invoke_exec(
@@ -1304,7 +1334,7 @@ def run_wait_for_exec(args):
         default_phase=default_phase,
     )
     _wfe_final_log_path = _resolve_log_path(args, session)
-    stdout_text = _inject_log_range_into_stdout(stdout_text, _wfe_final_log_path, _wfe_log_start, _capture_log_offset(_wfe_final_log_path))
+    stdout_text = _inject_log_range_into_stdout(stdout_text, _wfe_final_log_path, _wfe_log_start, _capture_log_offset(_wfe_final_log_path), offsets_invalidated=_wfe_offsets_invalidated)
     stdout_text, stderr_text = _inject_guidance_into_response(stdout_text, stderr_text, "wait-for-exec", args, request_id=args.request_id)
     return exit_code, stdout_text, stderr_text
 
@@ -1407,6 +1437,7 @@ def run_wait_for_log_pattern(args):
 
     log_path = _resolve_log_path(args, session)
     log_start = args.start_offset if args.start_offset is not None else _capture_log_offset(log_path)
+    offsets_invalidated = _detect_offset_invalidation(log_path, args.start_offset)
 
     try:
         session = unity_session.wait_for_log_pattern(
@@ -1429,7 +1460,7 @@ def run_wait_for_log_pattern(args):
             session=exc.session,
             include_diagnostics=args.include_diagnostics,
         )
-        _inject_log_range_into_payload(payload, log_path, log_start, _capture_log_offset(log_path))
+        _inject_log_range_into_payload(payload, log_path, log_start, _capture_log_offset(log_path), offsets_invalidated=offsets_invalidated)
         _attach_guidance(payload, "wait-for-log-pattern", status, args)
         return EXIT_UNITY_NOT_READY, emit_payload(payload), ""
 
@@ -1444,7 +1475,7 @@ def run_wait_for_log_pattern(args):
         result=result,
         include_diagnostics=args.include_diagnostics,
     )
-    _inject_log_range_into_payload(payload, log_path, log_start, _capture_log_offset(log_path))
+    _inject_log_range_into_payload(payload, log_path, log_start, _capture_log_offset(log_path), offsets_invalidated=offsets_invalidated)
     return 0, emit_payload(payload), ""
 
 
@@ -1473,6 +1504,7 @@ def run_wait_for_result_marker(args):
 
     log_path = _resolve_log_path(args, session)
     log_start = args.start_offset if args.start_offset is not None else _capture_log_offset(log_path)
+    offsets_invalidated = _detect_offset_invalidation(log_path, args.start_offset)
 
     deadline = time.time() + args.timeout_seconds
     while True:
@@ -1497,7 +1529,7 @@ def run_wait_for_result_marker(args):
                 session=exc.session,
                 include_diagnostics=args.include_diagnostics,
             )
-            _inject_log_range_into_payload(payload, log_path, log_start, _capture_log_offset(log_path))
+            _inject_log_range_into_payload(payload, log_path, log_start, _capture_log_offset(log_path), offsets_invalidated=offsets_invalidated)
             _attach_guidance(payload, "wait-for-result-marker", status, args)
             return EXIT_UNITY_NOT_READY, emit_payload(payload), ""
 
@@ -1516,7 +1548,7 @@ def run_wait_for_result_marker(args):
                 },
                 include_diagnostics=args.include_diagnostics,
             )
-            _inject_log_range_into_payload(payload, log_path, log_start, _capture_log_offset(log_path))
+            _inject_log_range_into_payload(payload, log_path, log_start, _capture_log_offset(log_path), offsets_invalidated=offsets_invalidated)
             return 0, emit_payload(payload), ""
         next_offset = session.diagnostics.get("matched_log_offset")
         args.start_offset = next_offset

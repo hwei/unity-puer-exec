@@ -296,7 +296,8 @@ namespace UnityPuerExec
             string baseUrl = "",
             int unityPid = 0,
             string projectPath = "",
-            string bridgeVersion = ""
+            string bridgeVersion = "",
+            string consoleLogPath = ""
         )
         {
             if (isCompilingOrReloading)
@@ -318,12 +319,19 @@ namespace UnityPuerExec
                 var bridgeVersionJson = string.IsNullOrEmpty(bridgeVersion)
                     ? ""
                     : ",\"bridge_version\":\"" + JsonEscape(bridgeVersion) + "\"";
+                // The Editor's own log path, so a caller observes where this
+                // process actually writes instead of assuming the per-user
+                // default. Omitted rather than guessed when unresolvable.
+                var consoleLogPathJson = string.IsNullOrEmpty(consoleLogPath)
+                    ? ""
+                    : ",\"console_log_path\":\"" + JsonEscape(consoleLogPath) + "\"";
                 return "{\"ok\":true,\"status\":\"ready\",\"port\":" + port +
                        ",\"session_marker\":\"" + JsonEscape(sessionMarker) + "\"" +
                        baseUrlJson +
                        unityPidJson +
                        projectPathJson +
                        bridgeVersionJson +
+                       consoleLogPathJson +
                        "}";
             }
 
