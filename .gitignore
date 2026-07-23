@@ -4,3 +4,12 @@ __pycache__/
 .env
 .tmp/
 *.local.*
+
+# Locally built CLI executable. The published package's CLI~/unity-puer-exec.exe
+# is produced by the release workflow from the tagged checkout; a copy left here
+# is a stale build artifact that shadows current source for anything invoking the
+# CLI from its installed location.
+packages/com.txcombo.unity-puer-exec/CLI~/
+dist/
+build/
+*.spec
