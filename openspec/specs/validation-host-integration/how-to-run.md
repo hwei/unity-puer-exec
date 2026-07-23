@@ -21,7 +21,9 @@ Prerequisites:
 - `UNITY_PROJECT_PATH` points to the validation host Unity `Project/` directory (set in environment or `.env`)
 - Unity Editor is resolvable on this machine
 - Validation host has been wired to the local package via `tools/prepare_validation_host.py`
-- The helper output reports `"embedded_package_shadowing": false`. If it reports `true`, the host contains `Project/Packages/com.txcombo.unity-puer-exec`, which can cause Unity to load that embedded copy instead of the repository-local package path in `manifest.json`; resolve or intentionally account for that before treating the run as evidence for current repository code.
+- The helper output reports `"embedded_package_shadowing": false`. If it reports `true`, an immediate child of `Project/Packages/` declares `com.txcombo.unity-puer-exec` in its `package.json`, which can cause Unity to load that embedded copy instead of the repository-local package path in `manifest.json`; resolve or intentionally account for that before treating the run as evidence for current repository code. `"embedded_package_path"` names the first such directory and `"embedded_package_paths"` names all of them.
+
+  Unity identifies an embedded package by the `name` declared in its `package.json`, not by the directory name. **Renaming the directory does not clear the shadow** — a directory renamed to `com.txcombo.unity-puer-exec.bak` is still loaded as `com.txcombo.unity-puer-exec`. Clearing the shadow requires **moving or removing the directory out of `Project/Packages/`** entirely.
 
 Run command:
 ```
