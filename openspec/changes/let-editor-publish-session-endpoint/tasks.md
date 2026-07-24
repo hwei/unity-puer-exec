@@ -62,7 +62,7 @@
 
 ## 8. Validation and closeout
 
-- [ ] 8.1 Run the repository unit suite and confirm no regressions.
+- [x] 8.1 Run the repository unit suite and confirm no regressions.
 - [x] 8.2 Verify against the validation host that a CLI-launched Editor publishes an endpoint whose every field matches the live process, and that a single direct connection replaces the port scan.
 - [x] 8.3 Verify the Hub-launched path on the real host: an Editor opened without activation is reported as not under CLI control, the guidance is actionable, and the menu action then makes it controllable with a correctly reported non-private log.
 - [x] 8.4 Verify the batch-mode path both with and without activation.
