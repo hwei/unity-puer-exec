@@ -203,6 +203,77 @@ process command line cannot change within a process, so survival is expected on
 structural grounds, but that is reasoning rather than evidence; task 8.9 is where
 it gets measured. Task 1.1 stays open until then.
 
+### R6: A controlled launch publishes fields that match the live process — measured (task 8.2)
+
+Measured by launching the host with the exact arguments the CLI's `launch_unity`
+uses — the activation switch and a project-private `-logFile` — plus the project's
+required `-force-gles30`. Once bound, every published field matched the running
+process: the published `unity_pid` was a live process (the real Editor, not the
+launcher), `project_path` matched, and `console_log_path` was the project-private
+isolated log — not the per-user default, in deliberate contrast to R4's
+menu-activated Hub Editor. `classify_session_state` confirmed `controlled` from a
+single probe of the published port, with health `unity_pid`, `session_marker`, and
+`project_path` all matching the publication. No port scan participated.
+
+*Follow-up found (product-improvement, not this change's regression).* The CLI's own
+`exec` launch of this host failed with `unity_start_failed` because `launch_unity`
+has no way to pass a project-specific Unity argument, and this project needs
+`-force-gles30` to start interactively. `launch_unity` has never had extra-argument
+passthrough, so this predates the change — but the change makes the CLI-launch path
+the primary supported path, which raises the stakes. A caller on such a project
+currently cannot use CLI-driven launch. Candidate: an opt-in passthrough for extra
+Unity launch arguments.
+
+### R5: Hub-reopen and the refusal — measured (tasks 8.3, 8.6b, 1.6)
+
+Continuing from R4's residue: the host was relaunched without activation (the
+Hub-equivalent: `Unity.exe -projectPath <proj> -force-gles30`, no switch, no
+`-logFile`), leaving it sitting next to the surviving residue publication.
+
+- **1.6 — Unity clears `Temp/UnityPuerExec/` on reopen, very early.** The residue
+  `endpoint.json` (old marker `1b0b6d13`, dead pid 71936) was already gone by the
+  time the probe's first poll ran, within the Editor's startup. So a stale
+  publication coexists with a new Editor's lockfile only for the earliest moments of
+  startup, not indefinitely. The D2 confirmation step therefore mainly guards the
+  *other* residue path — a kill followed by a different process taking the published
+  port — rather than Unity's own reopen.
+- **8.6b — the stale publication does not impersonate a controlled session.** With
+  the residue cleared and the lockfile held by the un-activated Editor,
+  `classify_session_state` returned `not_under_control`, not `controlled`.
+- **8.3 — a project-scoped command refuses with actionable guidance.** `exec` against
+  the un-activated host exited `17` (`editor_not_under_cli_control`) with three
+  `ways_forward` entries, while four unrelated old-bridge Editors were running. It
+  did not misreport `version_mismatch` and did not silently attach to another
+  project — the pre-change failure mode. The controllable-with-a-non-private-log half
+  of 8.3 is covered by R4's classification, where a menu-activated Hub Editor
+  correctly reported the platform-default (non-private) `console_log_path`.
+
+### R4: Residue and the stop boundary — measured (tasks 8.5, 8.6a)
+
+Measured on the validation host with five Unity Editors running, one of them the
+controlled host (pid 71936, identified from its own publication — pub pid == health
+pid == 71936, matching marker). Killing it via `taskkill /PID 71936 /T /F`:
+
+- The other four Editors survived. The kill reached only the published pid, which is
+  the D5 property — a stop can no longer target a process belonging to another
+  project.
+- The publication survived the kill (`Temp/` is left on a kill), and with the
+  lockfile now released `classify_session_state` returned `ended_residue`.
+- `ensure-stopped` reported `stopped` (exit 0) with the four unrelated Editors still
+  running — the machine-wide-count failure mode ("any unrelated Editor makes it
+  report not-stopped forever") is gone.
+
+*Note on the host's log class.* This host was Hub-launched and menu-activated, so its
+published `console_log_path` was the platform-default per-user log, not an isolated
+one — the D4 degraded-by-origin case, correct for a mid-session activation. The
+residue's published log therefore remains readable but shared, which is what task 8.6
+expects for that launch mode.
+
+*Still to measure (8.6b):* reopen the project from Unity Hub without activating, and
+confirm the surviving stale publication does not impersonate a controlled session —
+requires the operator, and doubles as task 1.6 (whether Unity clears
+`Temp/UnityPuerExec/` on reopen).
+
 ### R3: A domain reload never reads as not-under-control — measured, and it found a real defect (tasks 1.1, 8.9, 4.10)
 
 Measured on the live controlled host by triggering a script reload from inside the

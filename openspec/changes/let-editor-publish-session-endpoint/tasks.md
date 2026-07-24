@@ -5,7 +5,7 @@
 - [x] 1.3 Confirm that write-to-temp-then-rename produces an atomic replacement on Windows that a concurrently reading CLI never observes as truncated, and record the fallback if it does not.
 - [ ] 1.4 Determine whether the service can reliably remove its own publication on Editor quit, and confirm on the real host that retaining it across domain reloads (design D2) leaves no window in which a compiling Editor reads as not opted in. Record the answer in design; it decides how common the residue branch is.
 - [x] 1.5 Verify whether `EditorApplication.OpenProject` can relaunch the Editor with `-logFile` and the activation switch. If it cannot, drop the "Restart with CLI Control" menu action from scope and say so in design.
-- [ ] 1.6 Determine whether Unity clears `Temp/UnityPuerExec/` when a project is reopened, and record in design how long a stale publication can coexist with a new Editor's lockfile — this decides how load-bearing the D2 confirmation step is.
+- [x] 1.6 Determine whether Unity clears `Temp/UnityPuerExec/` when a project is reopened, and record in design how long a stale publication can coexist with a new Editor's lockfile — this decides how load-bearing the D2 confirmation step is.
 
 ## 2. Editor publishes its own endpoint
 
@@ -63,12 +63,12 @@
 ## 8. Validation and closeout
 
 - [ ] 8.1 Run the repository unit suite and confirm no regressions.
-- [ ] 8.2 Verify against the validation host that a CLI-launched Editor publishes an endpoint whose every field matches the live process, and that a single direct connection replaces the port scan.
-- [ ] 8.3 Verify the Hub-launched path on the real host: an Editor opened without activation is reported as not under CLI control, the guidance is actionable, and the menu action then makes it controllable with a correctly reported non-private log.
-- [ ] 8.4 Verify the batch-mode path both with and without activation.
-- [ ] 8.5 Verify that `ensure-stopped` reports correctly with an unrelated Editor open, and that it never targets that Editor's process id.
-- [ ] 8.6 Verify the crashed-or-killed residue case: kill the Editor, confirm the publication survives, and confirm the CLI reports the session as ended while the published log remains readable. Then reopen the project from Unity Hub without activation and confirm the stale publication does not impersonate a controlled session.
+- [x] 8.2 Verify against the validation host that a CLI-launched Editor publishes an endpoint whose every field matches the live process, and that a single direct connection replaces the port scan.
+- [x] 8.3 Verify the Hub-launched path on the real host: an Editor opened without activation is reported as not under CLI control, the guidance is actionable, and the menu action then makes it controllable with a correctly reported non-private log.
+- [x] 8.4 Verify the batch-mode path both with and without activation.
+- [x] 8.5 Verify that `ensure-stopped` reports correctly with an unrelated Editor open, and that it never targets that Editor's process id.
+- [x] 8.6 Verify the crashed-or-killed residue case: kill the Editor, confirm the publication survives, and confirm the CLI reports the session as ended while the published log remains readable. Then reopen the project from Unity Hub without activation and confirm the stale publication does not impersonate a controlled session.
 - [ ] 8.7 Run the full real-host suite and record the result.
-- [ ] 8.8 Run `openspec validate let-editor-publish-session-endpoint` and confirm the change remains valid.
+- [x] 8.8 Run `openspec validate let-editor-publish-session-endpoint` and confirm the change remains valid.
 - [x] 8.9 Verify on the real host that a script compile (domain reload) in a controlled Editor does not cause any project-scoped command to report the Editor as not under CLI control.
 - [ ] 8.10 Record the apply closeout finding summary, stating either `No new follow-up work identified` or `New follow-up candidates identified`.

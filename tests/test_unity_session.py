@@ -1,3 +1,4 @@
+import json
 import os
 import sys
 import tempfile
@@ -95,34 +96,38 @@ class UnitySessionTests(unittest.TestCase):
 
         self.assertEqual(resolved, Path("X:/from-dotenv"))
 
-    def test_resolve_effective_log_path_prefers_session_artifact(self):
+    def _write_publication(self, project_path, console_log_path, marker="marker-1", unity_pid=1234, port=55231):
+        publication_path = project_path / "Temp" / "UnityPuerExec" / "endpoint.json"
+        publication_path.parent.mkdir(parents=True, exist_ok=True)
+        publication_path.write_text(
+            json.dumps(
+                {
+                    "port": port,
+                    "unity_pid": unity_pid,
+                    "project_path": str(project_path),
+                    "session_marker": marker,
+                    "console_log_path": console_log_path,
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    def test_resolve_effective_log_path_prefers_the_published_path(self):
+        # The published path replaces the session artifact as the tier that keeps
+        # observation working without a live probe -- but it no longer outranks an
+        # explicit flag, which is now unconditionally highest.
         with tempfile.TemporaryDirectory() as temp_dir:
             project_path = Path(temp_dir)
-            unity_session.write_session_artifact(
-                project_path,
-                {
-                    "base_url": "http://127.0.0.1:55231",
-                    "unity_pid": 1234,
-                    "session_marker": "marker-1",
-                    "effective_log_path": "X:/artifact/Editor.log",
-                },
-            )
-            with mock.patch.object(unity_session, "_is_pid_running", return_value=True):
-                resolved = unity_session._resolve_effective_log_path(project_path, unity_log_path="X:/explicit/Editor.log")
+            self._write_publication(project_path, "X:/published/Editor.log")
 
-        self.assertEqual(resolved, Path("X:/artifact/Editor.log"))
+            resolved = unity_session._resolve_effective_log_path(project_path)
 
-    def test_resolve_effective_log_path_uses_explicit_path_before_session_marker_exists(self):
+        self.assertEqual(resolved, Path("X:/published/Editor.log"))
+
+    def test_resolve_effective_log_path_uses_explicit_path_over_the_published_path(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             project_path = Path(temp_dir)
-            unity_session.write_session_artifact(
-                project_path,
-                {
-                    "base_url": "http://127.0.0.1:55231",
-                    "unity_pid": 1234,
-                    "effective_log_path": "X:/artifact/Editor.log",
-                },
-            )
+            self._write_publication(project_path, "X:/published/Editor.log")
 
             resolved = unity_session._resolve_effective_log_path(project_path, unity_log_path="X:/explicit/Editor.log")
 
@@ -138,75 +143,35 @@ class UnitySessionTests(unittest.TestCase):
         self.assertEqual(Path(session.effective_log_path), Path("X:/custom/Editor.log"))
         self.assertEqual(session.owner, "observation")
 
-    def test_create_observation_session_prefers_artifact_path_after_session_marker_exists(self):
+    def test_create_observation_session_prefers_the_published_path(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             project_path = Path(temp_dir)
-            unity_session.write_session_artifact(
-                project_path,
-                {
-                    "base_url": "http://127.0.0.1:55231",
-                    "unity_pid": 1234,
-                    "session_marker": "marker-1",
-                    "effective_log_path": "X:/artifact/Editor.log",
-                },
-            )
-            with mock.patch.object(unity_session, "_is_pid_running", return_value=True):
-                session = unity_session.create_observation_session(
-                    project_path=project_path,
-                    unity_log_path="X:/explicit/Editor.log",
-                )
+            self._write_publication(project_path, "X:/published/Editor.log")
 
-        self.assertEqual(Path(session.effective_log_path), Path("X:/artifact/Editor.log"))
-        self.assertEqual(session.owner, "session_artifact")
+            session = unity_session.create_observation_session(project_path=project_path)
 
-    def test_resolve_effective_log_path_ignores_stale_artifact(self):
+        self.assertEqual(Path(session.effective_log_path), Path("X:/published/Editor.log"))
+        self.assertEqual(session.owner, "published_endpoint")
+
+    def test_create_observation_session_explicit_flag_still_wins_over_the_publication(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             project_path = Path(temp_dir)
-            unity_session.write_session_artifact(
-                project_path,
-                {
-                    "base_url": "http://127.0.0.1:55231",
-                    "unity_pid": 1234,
-                    "session_marker": "marker-1",
-                    "effective_log_path": "X:/artifact/Editor.log",
-                },
-            )
-            with mock.patch.object(unity_session, "_is_pid_running", return_value=False):
-                resolved = unity_session._resolve_effective_log_path(project_path, unity_log_path="X:/explicit/Editor.log")
+            self._write_publication(project_path, "X:/published/Editor.log")
 
-        self.assertEqual(resolved, Path("X:/explicit/Editor.log"))
-
-    def test_persist_ready_session_artifact_requires_session_marker(self):
-        with tempfile.TemporaryDirectory() as temp_dir:
-            project_path = Path(temp_dir)
-            session = unity_session.UnitySession(
-                owner="test",
-                base_url="http://127.0.0.1:55231",
+            session = unity_session.create_observation_session(
                 project_path=project_path,
-                unity_pid=1234,
+                unity_log_path="X:/explicit/Editor.log",
             )
-            unity_session._persist_ready_session_artifact(session, Path("X:/artifact/Editor.log"))
 
-            artifact = unity_session.read_session_artifact(project_path)
+        self.assertEqual(Path(session.effective_log_path), Path("X:/explicit/Editor.log"))
 
-        self.assertIsNone(artifact)
-
-    def test_persist_ready_session_artifact_writes_effective_log_path(self):
-        with tempfile.TemporaryDirectory() as temp_dir:
-            project_path = Path(temp_dir)
-            session = unity_session.UnitySession(
-                owner="test",
-                base_url="http://127.0.0.1:55231",
-                project_path=project_path,
-                unity_pid=1234,
-            )
-            session.diagnostics["last_health_payload"] = {"session_marker": "marker-1"}
-
-            unity_session._persist_ready_session_artifact(session, Path("X:/artifact/Editor.log"))
-            artifact = unity_session.read_session_artifact(project_path)
-
-        self.assertEqual(artifact["session_marker"], "marker-1")
-        self.assertEqual(Path(artifact["effective_log_path"]), Path("X:/artifact/Editor.log"))
+    def test_the_cli_no_longer_writes_a_session_record(self):
+        # session.json is removed: the CLI reads the Editor's publication rather than
+        # authoring a claim about a process it does not own (design D1). The helpers
+        # that used to write and re-read it are gone entirely.
+        self.assertFalse(hasattr(unity_session, "write_session_artifact"))
+        self.assertFalse(hasattr(unity_session, "read_session_artifact"))
+        self.assertFalse(hasattr(unity_session, "_persist_ready_session_artifact"))
 
     def test_get_unity_version_reads_project_version_file(self):
         with tempfile.TemporaryDirectory() as temp_dir:
