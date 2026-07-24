@@ -1077,12 +1077,43 @@ def get_log_source(project_path=None, base_url=None, unity_log_path=None, argv0=
         launched=False,
         effective_log_path=log_path,
     )
-    return session, {
+    result = {
         "status": "log_source_available",
         "source": "file",
         "path": str(log_path),
         "resolution_tier": tier,
     }
+    reliability = _observation_reliability_for(resolved_project_path, log_path, tier)
+    if reliability is not None:
+        # Reported before the caller takes offsets, so a session bound to a shared
+        # per-user log is known to be unsafe to byte-observe up front rather than
+        # only after offsets are invalidated (design D4).
+        result["observation_reliability"] = reliability
+        result["observation_reliable"] = unity_session_endpoint.observation_is_reliable(reliability)
+    return session, result
+
+
+def _observation_reliability_for(project_path, log_path, tier):
+    """Classify how safe byte-offset observation of the resolved log is.
+
+    Only meaningful when a log the target Editor is actually writing to has been
+    resolved -- an explicit caller flag or the published path. A platform-default
+    guess that had to prove itself by existing is classified too, because that is
+    exactly the shared per-user file the a-priori hazard warns about.
+    """
+    if tier == unity_session_logs.LOG_SOURCE_TIER_EXPLICIT_FLAG:
+        # The caller named it; attribute reliability to that choice, not a guess.
+        return unity_session_endpoint.OBSERVATION_CALLER_DIRECTED
+    # "Who else can write this per-user file" -- every Unity but the one whose log
+    # this is. One Unity total means an effectively private default; two or more
+    # means the platform-default log is contended.
+    other_count = max(0, len(_list_unity_pids()) - 1)
+    return unity_session_endpoint.classify_observation_reliability(
+        str(log_path),
+        project_private_log_path=str(unity_session_logs.project_launch_log_path(project_path)),
+        default_editor_log_path=str(_default_editor_log_path()),
+        other_unity_process_count=other_count,
+    )
 
 
 def create_direct_session(base_url, project_path=None):

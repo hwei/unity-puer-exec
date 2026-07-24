@@ -19,6 +19,7 @@ import unity_puer_exec  # type: ignore
 import unity_puer_exec_runtime as runtime  # type: ignore
 import unity_puer_exec_surface as surface  # type: ignore
 import unity_session  # type: ignore
+import unity_session_endpoint  # type: ignore
 
 from tests import version_test_support
 
@@ -592,6 +593,68 @@ class BridgeVersionContractTests(unittest.TestCase):
         self.assertIn("bridgeVersion: bridgeVersion", server)
         # Null PackageInfo means "not package-installed"; it must not be guessed.
         self.assertIn('info == null ? "" :', server)
+
+
+class EditorNotUnderControlStatusTests(unittest.TestCase):
+    """Task 6.5: the not-under-control status, its guidance, and the version-mismatch
+    distinction, at the runtime boundary."""
+
+    def _run_exec(self, project_dir):
+        return unity_puer_exec.run_cli([
+            "exec",
+            "--project-path", project_dir,
+            "--code", "export default function run(){ return 1; }",
+            "--request-id", "R-nc",
+        ])
+
+    def test_running_editor_without_control_service_reports_a_distinct_status(self):
+        with tempfile.TemporaryDirectory() as project_dir:
+            with mock.patch.object(
+                unity_session, "classify_session_state",
+                return_value=(unity_session_endpoint.SESSION_STATE_NOT_UNDER_CONTROL, None, None),
+            ), mock.patch.object(
+                unity_session, "_project_lockfile_is_held", return_value=True
+            ), mock.patch.object(
+                unity_session, "discover_project_endpoint", return_value=(None, None, None, False)
+            ):
+                exit_code, stdout, _stderr = self._run_exec(project_dir)
+
+        body = json.loads(stdout)
+        # Its own exit code, distinct from launch (20) and readiness (21) failures.
+        self.assertEqual(exit_code, 17)
+        self.assertEqual(body["status"], "editor_not_under_cli_control")
+        # The guidance is actionable, not just a failure notice.
+        self.assertTrue(body["ways_forward"])
+        self.assertTrue(any("launch the Editor" in step for step in body["ways_forward"]))
+
+    def test_a_version_mismatched_discovered_service_reports_version_mismatch(self):
+        # The error-path scan finds a service that owns the project but disagrees on
+        # version. That must be reported as version_mismatch pointing at the
+        # installation, not as a missing opt-in pointing at an activation menu the
+        # older bridge does not have.
+        detail = cli_version.check_bridge(
+            "0.7.0",
+            "http://127.0.0.1:55231",
+            {"ok": True, "status": "ready", "bridge_version": "0.6.0", "project_path": "x", "session_marker": "m"},
+            require_version=True,
+        )
+        self.assertIsNotNone(detail)
+        mismatch = unity_session.UnityVersionMismatchError(detail, message=cli_version.mismatch_message(detail))
+
+        with tempfile.TemporaryDirectory() as project_dir:
+            with mock.patch.object(
+                unity_session, "classify_session_state",
+                return_value=(unity_session_endpoint.SESSION_STATE_NOT_UNDER_CONTROL, None, None),
+            ), mock.patch.object(
+                unity_session, "_project_lockfile_is_held", return_value=True
+            ), mock.patch.object(
+                unity_session, "discover_project_endpoint", side_effect=mismatch
+            ):
+                exit_code, stdout, _stderr = self._run_exec(project_dir)
+
+        body = json.loads(stdout)
+        self.assertEqual(body["status"], "version_mismatch")
+        self.assertNotEqual(body["status"], "editor_not_under_cli_control")
 
 
 if __name__ == "__main__":

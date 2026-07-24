@@ -13,7 +13,7 @@
 - [x] 2.2 Make the write atomic per 1.3, so a reader never observes a partial record.
 - [x] 2.3 Republish when the bound port changes across a domain reload, so the publication always names the currently bound port.
 - [x] 2.4 Remove the publication on Editor quit only; retain it across domain reloads so a script compile never reads as a withdrawn opt-in, per design D2 and to the extent 1.4 establishes is reliable.
-- [ ] 2.5 Add source-level or Editor-side assertions that no field is derived from a machine-wide process listing.
+- [x] 2.5 Add source-level or Editor-side assertions that no field is derived from a machine-wide process listing.
 
 ## 3. Control-service activation becomes explicit and uniform
 
@@ -51,8 +51,8 @@
 - [x] 6.1 Add the distinct non-success status for a held lockfile with no publication, with an exit code that does not collide with launch or readiness failures.
 - [x] 6.2 Make the guidance actionable: state the ways forward, and use the error-path scan to distinguish an Editor running a version-mismatched bridge — reported as `version_mismatch` per `cli-version-compatibility` — from an Editor that has not opted in.
 - [x] 6.3 Report observation reliability for a controllable session before the first observation, per design D4, distinguishing a project-private log, a caller-directed explicit log location, the platform default, and the platform default with other Editors running.
-- [ ] 6.4 Add `--help-status` coverage for the new status and for the degraded-observation report.
-- [ ] 6.5 Add unit tests for the status, the guidance content, and every reliability classification, including that a version-mismatched discovered service yields `version_mismatch` rather than the not-under-control status.
+- [x] 6.4 Add `--help-status` coverage for the new status and for the degraded-observation report.
+- [x] 6.5 Add unit tests for the status, the guidance content, and every reliability classification, including that a version-mismatched discovered service yields `version_mismatch` rather than the not-under-control status.
 
 ## 7. Documentation
 

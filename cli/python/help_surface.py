@@ -33,6 +33,7 @@ COMMANDS = tuple(command for _, commands in COMMAND_GROUPS for command in comman
 
 EXIT_NO_OBSERVATION_TARGET = 15
 EXIT_NOT_STOPPED = 16
+EXIT_EDITOR_NOT_UNDER_CLI_CONTROL = 17
 EXIT_UNITY_START_FAILED = 20
 EXIT_UNITY_NOT_READY = 21
 
@@ -212,6 +213,7 @@ COMMAND_HELP = {
             "success": [
                 "`completed`: a log source is available and `result.status` is `log_source_available`.",
                 "`result.resolution_tier` reports which resolution tier produced `result.path`.",
+                "`result.observation_reliability` classifies the resolved log before any offsets are taken: `project_private` and `caller_directed` are reliable; `platform_default_sole_editor` is usable but not privately owned; `platform_default_contended` means another Unity Editor shares the file and byte offsets are unsafe. `result.observation_reliable` is the boolean shortcut.",
             ],
             "failure": [
                 ("address_conflict", 2, "both selectors were provided; choose exactly one."),
@@ -409,6 +411,7 @@ COMMAND_HELP = {
                 ("not_available", direct_exec_client.EXIT_NOT_AVAILABLE, "the direct execution target could not be reached."),
                 ("request_id_conflict", direct_exec_client.EXIT_REQUEST_ID_CONFLICT, "the provided `request_id` was already associated with different execution content."),
                 ("launch_conflict", EXIT_UNITY_START_FAILED, "project-scoped launch ownership could not be established safely, so execution did not start a competing Unity launch."),
+                ("editor_not_under_cli_control", EXIT_EDITOR_NOT_UNDER_CLI_CONTROL, "an Editor is running for this project but never activated a control service; `ways_forward` lists how to proceed. Distinct from a launch or readiness failure -- the remedy is an activation decision, not a retry. If the running Editor is instead a version-mismatched bridge, the status is `version_mismatch`, not this."),
                 ("unity_start_failed", EXIT_UNITY_START_FAILED, "Unity could not be launched for the selected project."),
                 ("unity_stalled", EXIT_UNITY_NOT_READY, "readiness stopped making progress before execution could proceed."),
                 ("unity_not_ready", EXIT_UNITY_NOT_READY, "Unity did not become ready before execution could proceed."),
@@ -461,6 +464,7 @@ COMMAND_HELP = {
                 ("missing", direct_exec_client.EXIT_MISSING, "the addressed service has no recoverable record for that `request_id`, including expired or malformed local pending leftovers."),
                 ("not_available", direct_exec_client.EXIT_NOT_AVAILABLE, "the direct execution target could not be reached."),
                 ("launch_conflict", EXIT_UNITY_START_FAILED, "project-scoped launch ownership could not be established safely, so the CLI refused a competing launch."),
+                ("editor_not_under_cli_control", EXIT_EDITOR_NOT_UNDER_CLI_CONTROL, "an Editor is running for this project but never activated a control service; `ways_forward` lists how to proceed. The remedy is an activation decision, not a retry."),
                 ("unity_start_failed", EXIT_UNITY_START_FAILED, "Unity could not be launched for the selected project."),
                 ("unity_stalled", EXIT_UNITY_NOT_READY, "readiness stopped making progress before waiting could proceed."),
                 ("unity_not_ready", EXIT_UNITY_NOT_READY, "Unity did not become ready before waiting could proceed."),
