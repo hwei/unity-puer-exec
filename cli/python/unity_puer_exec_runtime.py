@@ -1780,6 +1780,9 @@ def _run_get_compile_messages(args, command_name):
         5000,
     )
     if exit_code != 0:
+        stdout_text, stderr_text = _inject_guidance_into_response(
+            stdout_text, stderr_text, command_name, args
+        )
         return exit_code, stdout_text, stderr_text
     body = json.loads(stdout_text)
     result = {
@@ -1795,6 +1798,7 @@ def _run_get_compile_messages(args, command_name):
         result=result,
         include_diagnostics=args.include_diagnostics,
     )
+    _attach_guidance(response, command_name, "completed", args)
     return 0, emit_payload(response), ""
 
 

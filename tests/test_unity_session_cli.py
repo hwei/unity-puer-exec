@@ -2211,6 +2211,125 @@ class UnityPuerExecCliTests(unittest.TestCase):
         self.assertIn("situation", entry)
         self.assertIn("next_steps", entry)
 
+    def test_command_registry_tables_agree(self):
+        """Argparse, help lists, top-level summaries, and guidance cover the same command set."""
+        import command_registry
+        import help_surface
+        import unity_puer_exec_surface as surface
+
+        parser = surface.build_parser()
+        # Subparsers live on the action whose dest is "command".
+        argparse_commands = set()
+        for action in parser._actions:
+            if getattr(action, "dest", None) == "command" and hasattr(action, "choices"):
+                argparse_commands = set(action.choices or ())
+                break
+
+        registry = set(command_registry.COMMANDS)
+        help_commands = set(help_surface.COMMANDS)
+        command_help = set(help_surface.COMMAND_HELP)
+        top_level = set(help_surface.TOP_LEVEL_COMMANDS)
+        guidance = {command for command, _status in help_surface.GUIDANCE_MATRIX}
+
+        tables = {
+            "command_registry.COMMANDS": registry,
+            "argparse subcommands": argparse_commands,
+            "help_surface.COMMANDS": help_commands,
+            "help_surface.COMMAND_HELP": command_help,
+            "help_surface.TOP_LEVEL_COMMANDS": top_level,
+            "help_surface.GUIDANCE_MATRIX": guidance,
+        }
+        mismatches = []
+        for name, values in tables.items():
+            missing = sorted(registry - values)
+            extra = sorted(values - registry)
+            if missing or extra:
+                parts = []
+                if missing:
+                    parts.append("missing {}".format(", ".join(missing)))
+                if extra:
+                    parts.append("extra {}".format(", ".join(extra)))
+                mismatches.append("{}: {}".format(name, "; ".join(parts)))
+        self.assertEqual(mismatches, [], "command-table drift:\n" + "\n".join(mismatches))
+
+    def test_formal_cli_contract_command_tree_matches_registry(self):
+        """Durable formal-cli-contract command tree must match the code registry."""
+        import re
+        import command_registry
+
+        spec_path = REPO_ROOT / "openspec" / "specs" / "formal-cli-contract" / "spec.md"
+        text = spec_path.read_text(encoding="utf-8")
+        match = re.search(
+            r"authoritative flat command tree SHALL include ([^.]+)\.",
+            text,
+        )
+        self.assertIsNotNone(match, "durable formal-cli-contract missing authoritative command tree sentence")
+        named = set(re.findall(r"`([a-z0-9-]+)`", match.group(1)))
+        registry = set(command_registry.COMMANDS)
+        missing_from_spec = sorted(registry - named)
+        extra_in_spec = sorted(named - registry)
+        self.assertEqual(
+            (missing_from_spec, extra_in_spec),
+            ([], []),
+            "formal-cli-contract tree drift: missing_from_spec={!r} extra_in_spec={!r}".format(
+                missing_from_spec, extra_in_spec
+            ),
+        )
+
+    def test_get_compile_errors_help_tiers_render(self):
+        for flag in ("--help", "--help-args", "--help-status"):
+            exit_code, stdout, stderr = unity_puer_exec.run_cli(["get-compile-errors", flag])
+            self.assertEqual(exit_code, 0, flag)
+            self.assertEqual(stderr, "", flag)
+            self.assertTrue(stdout.strip(), flag)
+        self.assertIn("--start", unity_puer_exec.run_cli(["get-compile-errors", "--help-args"])[1])
+        self.assertIn("wait-for-compile", unity_puer_exec.run_cli(["get-compile-errors", "--help"])[1])
+
+    def test_get_compile_warnings_help_tiers_render(self):
+        for flag in ("--help", "--help-args", "--help-status"):
+            exit_code, stdout, stderr = unity_puer_exec.run_cli(["get-compile-warnings", flag])
+            self.assertEqual(exit_code, 0, flag)
+            self.assertEqual(stderr, "", flag)
+            self.assertTrue(stdout.strip(), flag)
+        self.assertIn("--count", unity_puer_exec.run_cli(["get-compile-warnings", "--help-args"])[1])
+
+    def test_top_level_help_lists_compile_message_commands(self):
+        exit_code, stdout, stderr = unity_puer_exec.run_cli(["--help"])
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(stderr, "")
+        self.assertIn("get-compile-errors", stdout)
+        self.assertIn("get-compile-warnings", stdout)
+
+    def test_get_compile_errors_non_success_carries_guidance(self):
+        """A readiness failure attaches situation / next_steps for get-compile-errors."""
+        with mock.patch.object(
+            unity_session,
+            "ensure_session_ready",
+            side_effect=unity_session.UnityNotReadyError("not ready", session=None),
+        ):
+            exit_code, stdout, stderr = unity_puer_exec.run_cli(
+                ["get-compile-errors", "--project-path", SAMPLE_PROJECT_PATH]
+            )
+        self.assertEqual(exit_code, unity_puer_exec.EXIT_UNITY_NOT_READY)
+        body = json.loads(stdout)
+        self.assertEqual(body["status"], "unity_not_ready")
+        self.assertTrue(body.get("situation") or body.get("next_steps"))
+        blob = json.dumps(body)
+        self.assertIn("wait-for-compile", blob)
+
+    def test_get_compile_warnings_non_success_carries_guidance(self):
+        with mock.patch.object(
+            unity_session,
+            "ensure_session_ready",
+            side_effect=unity_session.UnityNotReadyError("not ready", session=None),
+        ):
+            exit_code, stdout, stderr = unity_puer_exec.run_cli(
+                ["get-compile-warnings", "--project-path", SAMPLE_PROJECT_PATH]
+            )
+        self.assertEqual(exit_code, unity_puer_exec.EXIT_UNITY_NOT_READY)
+        body = json.loads(stdout)
+        self.assertEqual(body["status"], "unity_not_ready")
+        self.assertTrue(body.get("situation") or body.get("next_steps"))
 
 
 class DynamicEndpointRoutingTests(unittest.TestCase):

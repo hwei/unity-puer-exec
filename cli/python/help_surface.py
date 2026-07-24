@@ -1,35 +1,9 @@
+import command_registry
 import direct_exec_client
 
 
-COMMAND_GROUPS = (
-    (
-        "Primary Execution",
-        (
-            "exec",
-        ),
-    ),
-    (
-        "Supporting Observation",
-        (
-            "wait-for-exec",
-            "wait-for-result-marker",
-            "wait-for-log-pattern",
-            "wait-for-compile",
-        ),
-    ),
-        (
-            "Secondary / Troubleshooting",
-            (
-                "get-log-source",
-                "get-log-briefs",
-                "get-blocker-state",
-                "resolve-blocker",
-                "ensure-stopped",
-            ),
-        ),
-)
-
-COMMANDS = tuple(command for _, commands in COMMAND_GROUPS for command in commands)
+COMMAND_GROUPS = command_registry.COMMAND_GROUPS
+COMMANDS = command_registry.COMMANDS
 
 EXIT_NO_OBSERVATION_TARGET = 15
 EXIT_NOT_STOPPED = 16
@@ -67,6 +41,8 @@ TOP_LEVEL_COMMANDS = {
     "resolve-blocker": "dismiss a supported Unity modal blocker for the target project with an explicit action. See `resolve-blocker --help`.",
     "exec": "run JavaScript against a project or direct service; primary entry for script execution. See `exec --help`.",
     "ensure-stopped": "check or force a stopped state; not the recommended graceful-exit path. See `ensure-stopped --help`.",
+    "get-compile-errors": "retrieve structured C# compile errors from the control service; use after wait-for-compile when freshness matters. See `get-compile-errors --help`.",
+    "get-compile-warnings": "retrieve structured C# compile warnings from the control service; use after wait-for-compile when freshness matters. See `get-compile-warnings --help`.",
 }
 
 RECOMMENDED_PATH = (
@@ -555,6 +531,90 @@ COMMAND_HELP = {
                 ("address_conflict", 2, "both selectors were provided; choose exactly one."),
                 ("not_stopped", EXIT_NOT_STOPPED, "the target is still not stopped under the selected stop mode."),
                 ("failed", 1, "an unexpected command failure occurred while checking or enforcing the stopped state."),
+            ],
+        },
+    },
+    "get-compile-errors": {
+        "quick_start": [
+            "Secondary troubleshooting command for reading structured C# compile errors from the control service.",
+            "`unity-puer-exec get-compile-errors --project-path X:/project`",
+            "Messages report the most recent completed compilation. A refresh starts compilation asynchronously, so reading immediately can return the previous compilation's results; call `wait-for-compile` after triggering a recompile (or use `exec --refresh-before-exec`) before reading when freshness matters.",
+            "Paginate with `--start` and `--count`. Compare `result.session_marker` across calls to detect a domain reload that invalidates prior offsets.",
+        ],
+        "related_workflows": (),
+        "args": {
+            "Arguments": [
+                "`--project-path <path>`: resolve the project's control endpoint and, when needed, launch or recover the Editor before reading.",
+                "`--base-url <url>`: post to a direct service target without project-identity validation or launch ownership.",
+                "`--start <n>`: zero-based index of the first error to return; default `0`.",
+                "`--count <n>`: number of errors to return; default `3`, allowed range `[1, 100]`.",
+                "`--include-diagnostics`: include top-level debug diagnostics in the machine-readable response.",
+            ],
+            "Selector Rules": [
+                "Use exactly one selector: `--project-path` or `--base-url`.",
+                "`--project-path` is the normal choice when the CLI should discover, launch, or recover Unity for a project.",
+                "`--base-url` is for a direct service that is already known.",
+            ],
+            "Range Rules": [
+                "`--start` must be a non-negative integer.",
+                "`--count` must be an integer in `[1, 100]`.",
+                "The response reports `result.total`, `result.start`, `result.returned`, `result.messages`, and `result.session_marker`.",
+            ],
+        },
+        "status": {
+            "success": [
+                "`completed`: the control service returned the requested page; `result.total` may be zero when no errors are recorded.",
+                "`result.session_marker` identifies the Editor session that produced the page so a domain reload can be detected between paginated calls.",
+            ],
+            "failure": [
+                ("address_conflict", 2, "both selectors were provided; choose exactly one."),
+                ("not_available", direct_exec_client.EXIT_NOT_AVAILABLE, "the control service could not be reached."),
+                ("unity_start_failed", EXIT_UNITY_START_FAILED, "Unity could not be launched for the selected project."),
+                ("unity_stalled", EXIT_UNITY_NOT_READY, "readiness stopped making progress before the compile messages could be read."),
+                ("unity_not_ready", EXIT_UNITY_NOT_READY, "Unity did not become ready before the compile messages could be read."),
+                ("failed", 1, "an unexpected failure occurred while retrieving compile errors."),
+            ],
+        },
+    },
+    "get-compile-warnings": {
+        "quick_start": [
+            "Secondary troubleshooting command for reading structured C# compile warnings from the control service.",
+            "`unity-puer-exec get-compile-warnings --project-path X:/project`",
+            "Same freshness rule as `get-compile-errors`: messages belong to the most recent completed compilation, so call `wait-for-compile` after triggering a recompile when the page must reflect that compile.",
+            "Argument shape, pagination, and `session_marker` semantics match `get-compile-errors`.",
+        ],
+        "related_workflows": (),
+        "args": {
+            "Arguments": [
+                "`--project-path <path>`: resolve the project's control endpoint and, when needed, launch or recover the Editor before reading.",
+                "`--base-url <url>`: post to a direct service target without project-identity validation or launch ownership.",
+                "`--start <n>`: zero-based index of the first warning to return; default `0`.",
+                "`--count <n>`: number of warnings to return; default `3`, allowed range `[1, 100]`.",
+                "`--include-diagnostics`: include top-level debug diagnostics in the machine-readable response.",
+            ],
+            "Selector Rules": [
+                "Use exactly one selector: `--project-path` or `--base-url`.",
+                "`--project-path` is the normal choice when the CLI should discover, launch, or recover Unity for a project.",
+                "`--base-url` is for a direct service that is already known.",
+            ],
+            "Range Rules": [
+                "`--start` must be a non-negative integer.",
+                "`--count` must be an integer in `[1, 100]`.",
+                "The response reports `result.total`, `result.start`, `result.returned`, `result.messages`, and `result.session_marker`.",
+            ],
+        },
+        "status": {
+            "success": [
+                "`completed`: the control service returned the requested page; `result.total` may be zero when no warnings are recorded.",
+                "`result.session_marker` identifies the Editor session that produced the page so a domain reload can be detected between paginated calls.",
+            ],
+            "failure": [
+                ("address_conflict", 2, "both selectors were provided; choose exactly one."),
+                ("not_available", direct_exec_client.EXIT_NOT_AVAILABLE, "the control service could not be reached."),
+                ("unity_start_failed", EXIT_UNITY_START_FAILED, "Unity could not be launched for the selected project."),
+                ("unity_stalled", EXIT_UNITY_NOT_READY, "readiness stopped making progress before the compile messages could be read."),
+                ("unity_not_ready", EXIT_UNITY_NOT_READY, "Unity did not become ready before the compile messages could be read."),
+                ("failed", 1, "an unexpected failure occurred while retrieving compile warnings."),
             ],
         },
     },
@@ -1283,6 +1343,127 @@ GUIDANCE_MATRIX = {
                 ],
             },
         ],
+    },
+    # --- get-compile-errors / get-compile-warnings ---
+    ("get-compile-errors", "completed"): {
+        "situation": (
+            "These messages belong to the most recent completed compilation. A just-triggered "
+            "refresh starts compilation asynchronously, so reading before that compile settles "
+            "returns the previous compilation's results."
+        ),
+        "next_steps": [
+            {
+                "command": "wait-for-compile",
+                "when": "you just triggered a recompile and need this page to reflect that compile before reading again",
+                "argv_template": [
+                    "unity-puer-exec", "wait-for-compile",
+                    "--project-path", "{project_path}",
+                ],
+            },
+            {
+                "command": "get-compile-errors",
+                "when": "you need the next page of errors after this one",
+                "argv_template": [
+                    "unity-puer-exec", "get-compile-errors",
+                    "--project-path", "{project_path}",
+                ],
+            },
+        ],
+    },
+    ("get-compile-errors", "not_available"): {
+        "situation": "The control service could not be reached, so compile errors were not retrieved. Project-scoped calls already attempted Unity launch/recovery before returning this status.",
+    },
+    ("get-compile-errors", "unity_start_failed"): {
+        "situation": "Unity could not be launched for the selected project, so compile errors were not retrieved.",
+    },
+    ("get-compile-errors", "unity_stalled"): {
+        "situation": "Readiness stopped making progress before compile errors could be read. Do not treat any earlier page as current until the Editor is ready again.",
+        "next_steps": [
+            {
+                "command": "wait-for-compile",
+                "when": "a recompile may still be in progress and you want to wait for it to settle first",
+                "argv_template": [
+                    "unity-puer-exec", "wait-for-compile",
+                    "--project-path", "{project_path}",
+                ],
+            },
+        ],
+    },
+    ("get-compile-errors", "unity_not_ready"): {
+        "situation": "Unity did not become ready before compile errors could be read. Messages from an earlier session are not a substitute for a ready Editor.",
+        "next_steps": [
+            {
+                "command": "wait-for-compile",
+                "when": "you want to wait for a compile cycle to settle before retrying the read",
+                "argv_template": [
+                    "unity-puer-exec", "wait-for-compile",
+                    "--project-path", "{project_path}",
+                ],
+            },
+        ],
+    },
+    ("get-compile-errors", "failed"): {
+        "situation": "An unexpected failure occurred while retrieving compile errors. Check the error field for details.",
+    },
+    ("get-compile-warnings", "completed"): {
+        "situation": (
+            "These messages belong to the most recent completed compilation. A just-triggered "
+            "refresh starts compilation asynchronously, so reading before that compile settles "
+            "returns the previous compilation's results."
+        ),
+        "next_steps": [
+            {
+                "command": "wait-for-compile",
+                "when": "you just triggered a recompile and need this page to reflect that compile before reading again",
+                "argv_template": [
+                    "unity-puer-exec", "wait-for-compile",
+                    "--project-path", "{project_path}",
+                ],
+            },
+            {
+                "command": "get-compile-warnings",
+                "when": "you need the next page of warnings after this one",
+                "argv_template": [
+                    "unity-puer-exec", "get-compile-warnings",
+                    "--project-path", "{project_path}",
+                ],
+            },
+        ],
+    },
+    ("get-compile-warnings", "not_available"): {
+        "situation": "The control service could not be reached, so compile warnings were not retrieved. Project-scoped calls already attempted Unity launch/recovery before returning this status.",
+    },
+    ("get-compile-warnings", "unity_start_failed"): {
+        "situation": "Unity could not be launched for the selected project, so compile warnings were not retrieved.",
+    },
+    ("get-compile-warnings", "unity_stalled"): {
+        "situation": "Readiness stopped making progress before compile warnings could be read. Do not treat any earlier page as current until the Editor is ready again.",
+        "next_steps": [
+            {
+                "command": "wait-for-compile",
+                "when": "a recompile may still be in progress and you want to wait for it to settle first",
+                "argv_template": [
+                    "unity-puer-exec", "wait-for-compile",
+                    "--project-path", "{project_path}",
+                ],
+            },
+        ],
+    },
+    ("get-compile-warnings", "unity_not_ready"): {
+        "situation": "Unity did not become ready before compile warnings could be read. Messages from an earlier session are not a substitute for a ready Editor.",
+        "next_steps": [
+            {
+                "command": "wait-for-compile",
+                "when": "you want to wait for a compile cycle to settle before retrying the read",
+                "argv_template": [
+                    "unity-puer-exec", "wait-for-compile",
+                    "--project-path", "{project_path}",
+                ],
+            },
+        ],
+    },
+    ("get-compile-warnings", "failed"): {
+        "situation": "An unexpected failure occurred while retrieving compile warnings. Check the error field for details.",
     },
 }
 

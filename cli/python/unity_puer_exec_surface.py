@@ -2,6 +2,7 @@
 import argparse
 
 import cli_version
+import command_registry
 import direct_exec_client
 import help_surface
 import unity_session
@@ -15,8 +16,13 @@ def build_parser():
     parser = argparse.ArgumentParser(prog="unity-puer-exec", add_help=False)
     parser.add_argument("--suppress-guidance", action="store_true", default=False)
     subparsers = parser.add_subparsers(dest="command", required=True)
+    # Subcommand identity comes from the shared registry; argument declarations stay here.
+    parsers = {
+        name: subparsers.add_parser(name, add_help=False)
+        for name in command_registry.COMMANDS
+    }
 
-    wait_log_parser = subparsers.add_parser("wait-for-log-pattern", add_help=False)
+    wait_log_parser = parsers["wait-for-log-pattern"]
     _add_selector_args(wait_log_parser)
     wait_log_parser.add_argument("--unity-log-path", default=None)
     wait_log_parser.add_argument("--pattern", required=True)
@@ -31,24 +37,24 @@ def build_parser():
     extract_mode.add_argument("--extract-group", type=int, default=None)
     extract_mode.add_argument("--extract-json-group", type=int, default=None)
 
-    get_log_source_parser = subparsers.add_parser("get-log-source", add_help=False)
+    get_log_source_parser = parsers["get-log-source"]
     _add_selector_args(get_log_source_parser)
     get_log_source_parser.add_argument("--unity-log-path", default=None)
     _add_diagnostics_arg(get_log_source_parser)
     _add_response_file_arg(get_log_source_parser)
 
-    get_blocker_state_parser = subparsers.add_parser("get-blocker-state", add_help=False)
+    get_blocker_state_parser = parsers["get-blocker-state"]
     get_blocker_state_parser.add_argument("--project-path", default=None)
     _add_diagnostics_arg(get_blocker_state_parser)
     _add_response_file_arg(get_blocker_state_parser)
 
-    resolve_blocker_parser = subparsers.add_parser("resolve-blocker", add_help=False)
+    resolve_blocker_parser = parsers["resolve-blocker"]
     resolve_blocker_parser.add_argument("--project-path", default=None)
     resolve_blocker_parser.add_argument("--action", choices=("cancel",), required=True)
     _add_diagnostics_arg(resolve_blocker_parser)
     _add_response_file_arg(resolve_blocker_parser)
 
-    exec_parser = subparsers.add_parser("exec", add_help=False)
+    exec_parser = parsers["exec"]
     _add_selector_args(exec_parser)
     exec_parser.add_argument("--unity-exe-path", default=None)
     exec_parser.add_argument("--unity-log-path", default=None)
@@ -79,7 +85,7 @@ def build_parser():
     script_source.add_argument("--stdin", action="store_true")
     script_source.add_argument("--code")
 
-    wait_exec_parser = subparsers.add_parser("wait-for-exec", add_help=False)
+    wait_exec_parser = parsers["wait-for-exec"]
     _add_selector_args(wait_exec_parser)
     wait_exec_parser.add_argument("--unity-exe-path", default=None)
     wait_exec_parser.add_argument("--unity-log-path", default=None)
@@ -97,7 +103,7 @@ def build_parser():
     _add_diagnostics_arg(wait_exec_parser)
     _add_response_file_arg(wait_exec_parser)
 
-    wait_result_parser = subparsers.add_parser("wait-for-result-marker", add_help=False)
+    wait_result_parser = parsers["wait-for-result-marker"]
     _add_selector_args(wait_result_parser)
     wait_result_parser.add_argument("--unity-log-path", default=None)
     wait_result_parser.add_argument("--correlation-id", required=True)
@@ -109,7 +115,7 @@ def build_parser():
     _add_diagnostics_arg(wait_result_parser)
     _add_response_file_arg(wait_result_parser)
 
-    wait_compile_parser = subparsers.add_parser("wait-for-compile", add_help=False)
+    wait_compile_parser = parsers["wait-for-compile"]
     _add_selector_args(wait_compile_parser)
     wait_compile_parser.add_argument("--unity-exe-path", default=None)
     wait_compile_parser.add_argument("--unity-log-path", default=None)
@@ -138,7 +144,7 @@ def build_parser():
     _add_diagnostics_arg(wait_compile_parser)
     _add_response_file_arg(wait_compile_parser)
 
-    get_log_briefs_parser = subparsers.add_parser("get-log-briefs", add_help=False)
+    get_log_briefs_parser = parsers["get-log-briefs"]
     get_log_briefs_parser.add_argument("--project-path", default=None)
     get_log_briefs_parser.add_argument("--unity-log-path", default=None)
     get_log_briefs_parser.add_argument("--range", required=True, dest="range_str")
@@ -149,7 +155,7 @@ def build_parser():
     _add_diagnostics_arg(get_log_briefs_parser)
     _add_response_file_arg(get_log_briefs_parser)
 
-    ensure_stopped_parser = subparsers.add_parser("ensure-stopped", add_help=False)
+    ensure_stopped_parser = parsers["ensure-stopped"]
     _add_selector_args(ensure_stopped_parser)
     ensure_stopped_parser.add_argument("--timeout-seconds", type=float, default=unity_session.DEFAULT_STOP_TIMEOUT_SECONDS)
     _add_diagnostics_arg(ensure_stopped_parser)
@@ -158,7 +164,7 @@ def build_parser():
     stop_mode.add_argument("--inspect-only", action="store_true")
     stop_mode.add_argument("--immediate-kill", action="store_true")
 
-    get_compile_errors_parser = subparsers.add_parser("get-compile-errors", add_help=False)
+    get_compile_errors_parser = parsers["get-compile-errors"]
     _add_selector_args(get_compile_errors_parser)
     get_compile_errors_parser.add_argument("--unity-exe-path", default=None)
     get_compile_errors_parser.add_argument("--unity-log-path", default=None)
@@ -174,7 +180,7 @@ def build_parser():
     _add_diagnostics_arg(get_compile_errors_parser)
     _add_response_file_arg(get_compile_errors_parser)
 
-    get_compile_warnings_parser = subparsers.add_parser("get-compile-warnings", add_help=False)
+    get_compile_warnings_parser = parsers["get-compile-warnings"]
     _add_selector_args(get_compile_warnings_parser)
     get_compile_warnings_parser.add_argument("--unity-exe-path", default=None)
     get_compile_warnings_parser.add_argument("--unity-log-path", default=None)
