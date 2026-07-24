@@ -82,6 +82,10 @@ Temp/UnityLockfile     Temp/UnityPuerExec/endpoint.json      Conclusion
 
 `_project_lockfile_is_held` already distinguishes a held lockfile from a stale file via `msvcrt.locking`.
 
+*A present publication is a claim, not a conclusion.* The `held + present` row is provisional: `Temp/UnityPuerExec/` survives a kill, and a human can then reopen the same project from Unity Hub without opting in — leaving a stale publication sitting next to a lockfile held by a different, uncontrolled process. Before the session is treated as controlled, the CLI confirms the publication against the live service: `/health` must answer on the published port and report the same `session_marker` and `unity_pid` the publication names. If the endpoint is unreachable or the identity does not match, the publication is residue, and with the lockfile held the state collapses to the "did not opt in" row. A recycled port must not be able to impersonate a controlled session, for the same reason a recycled pid must not (D1).
+
+*Removal is quit-scoped, not stop-scoped.* The service stops on every domain reload (`UnityPuerExecServer.cs:213` hooks `Stop` to `AssemblyReloadEvents.beforeAssemblyReload`), so deleting the publication in `Stop` would open a window during every script compile in which `held + absent` reads as "did not opt in". The publication is therefore removed only on `EditorApplication.quitting`; across a reload it stays in place, momentarily naming a service that is restarting, and the confirmation step above covers that gap. For the same reason, the CLI does not conclude "did not opt in" from a single `held + absent` reading without allowing for a service-restart window.
+
 *Trade-off accepted.* Reading a `log_range` from a cleanly exited session is no longer possible. A caller who needs a durable log passes `--unity-log-path` to a location outside `Temp/`, which already works.
 
 ### D3: Control-service activation is explicit, and uniform across launch modes
@@ -114,12 +118,18 @@ Worse, the safety of the missing half depends on a condition outside the Editor:
 console_log_path == <project>/Temp/UnityPuerExec/Editor.log
       └─▶ fully controlled; observation is safe
 
+console_log_path == a caller-chosen location (explicit -logFile at launch)
+      └─▶ caller-directed; reported as reliable and attributed to the
+          caller's explicit choice, not to a platform guess
+
 console_log_path == platform default Editor.log
       ├─ this is the only Unity process on the machine
       │     └─▶ effectively private; usable, reported as degraded-by-origin
       └─ other Unity processes are running
             └─▶ byte offsets are unsafe; reported before the first observation
 ```
+
+Classification compares normalized paths (case, separator, and Windows short-name normalization), so a platform-default log cannot escape its class by spelling.
 
 The previous change reports offset invalidation *after* it happens (`log_offsets_invalidated`); this reports the hazard *before* a caller commits to offsets. The two are the same problem at opposite ends.
 
@@ -131,15 +141,17 @@ The current rule reduces to "is the pid I recorded gone", with a fallback of "is
 
 *Consequence that matters.* `ensure-stopped --immediate-kill` can no longer target a pid belonging to a different project.
 
-### D6: The control-port scan survives only as an error-path aid
+### D6: The control-port scan survives only as an error-path diagnostic
 
-With the endpoint published, the normal path is a single direct connection. The 19-port scan (`55231`–`55249`) is retained solely to make the "did not opt in" refusal actionable — naming the port a caller can pass to `--base-url` — so its cost is paid only when the command is already failing.
+With the endpoint published, the normal path is a single direct connection. Under this design a same-version service without a publication exists only as a failure mode, and `cli-version-compatibility` refuses a mismatched pair in `--base-url` mode with no bypass — so the scan can never produce an address worth handing to the caller to drive.
+
+What it can still do is explain a refusal correctly. An Editor running an older bridge starts its service implicitly, publishes nothing, and has no opt-in menu action, so `held + absent` guidance that says "activate from the Editor menu" would point at a menu item that does not exist in that bridge. The 19-port scan (`55231`–`55249`) is retained solely so the error path can find such a service, read its old or absent `bridge_version`, and report `version_mismatch` — pointing the caller at an upgrade — instead of a missing opt-in. Its cost is paid only when the command is already failing.
 
 ## Open Questions
 
 - **`EditorApplication.OpenProject` with arguments.** A second menu action, "Restart with CLI Control", could relaunch the Editor with `-logFile` and the activation switch, turning the escape hatch into a one-click return to the controlled state. This is **unverified** in this repository and Unity version. If it does not work as assumed, only the session-scoped activation action ships.
 - **Publication atomicity.** `endpoint.json` must not be observable half-written. Write-to-temp-then-rename is the intended approach, pending confirmation that it behaves on Windows under a concurrently reading CLI.
-- **Removal on stop.** Whether the service can reliably delete its own `endpoint.json` on domain reload and on Editor quit, or whether the CLI must treat a present-but-unreachable endpoint as residue (the D2 table already handles the latter).
+- **Publication lifecycle at the edges.** Removal is quit-scoped by design (D2); two edges need real-host confirmation. First, whether the `EditorApplication.quitting` hook fires reliably enough that clean-exit residue stays rare — the D2 residue row already absorbs the cases where it does not. Second, whether Unity clears `Temp/UnityPuerExec/` when a project is reopened, which decides how long a stale publication can sit next to a new Editor's lockfile and therefore how load-bearing the D2 confirmation step is.
 
 ## Risks / Trade-offs
 
@@ -148,3 +160,4 @@ With the endpoint published, the normal path is a single direct connection. The 
 - **Clicking a menu item on every Editor start is friction.** → Accepted, and the friction is the point (D4). The low-friction path is letting the CLI launch the Editor, which is also the only path that yields isolation.
 - **Batch-mode callers must now pass the switch to get a control service.** → Intended; it replaces an implicit suppression with a caller decision, and the batch-mode suppression test becomes a test of the default rather than of a special case.
 - **`endpoint.json` could be mistaken for the removed `session.json`.** → D1 states the distinction explicitly; the durable spec should carry it so a later reader does not "restore" CLI-side writing as a convenience.
+- **The lockfile ruling is Windows-shaped.** `_project_lockfile_is_held` decides via `msvcrt.locking`, and D2/D5 promote that probe to the sole arbiter of "stopped". → Acceptable while real-host validation is Windows-only; the durable spec states the rule as "the project lockfile is held", so a future platform port replaces the probe, not the contract.

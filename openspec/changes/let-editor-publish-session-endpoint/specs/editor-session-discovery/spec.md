@@ -6,6 +6,8 @@ When the Unity control service becomes reachable, the Editor SHALL publish a des
 
 Every published field SHALL be taken from the running Editor process itself. The publication SHALL include the bound port, the Editor process id, the resolved project path, the session marker, and the Editor's own console log path. No party other than the Editor SHALL write this publication.
 
+The publication SHALL remain in place across domain reloads and SHALL be removed only when the Editor process ends, so that a script compile never reads as a withdrawn opt-in.
+
 #### Scenario: A reachable service publishes where and what it is
 
 - **WHEN** the control service binds successfully
@@ -24,9 +26,17 @@ Every published field SHALL be taken from the running Editor process itself. The
 - **THEN** the caller observes either the previous complete content or the new complete content
 - **AND** it never observes a truncated or partial record
 
+#### Scenario: The publication survives a domain reload
+
+- **WHEN** the Editor recompiles scripts and the control service restarts within the same process
+- **THEN** the publication remains present throughout
+- **AND** it names the currently bound port once the service is reachable again
+
 ### Requirement: Session state is decided from project-local files
 
 The CLI SHALL decide whether a project has a controllable Editor from project-local state alone: the project's Unity lockfile and the Editor's published endpoint. It SHALL NOT infer a project's session state from a machine-wide process listing, and SHALL NOT treat a recorded process id as evidence that a session is live.
+
+A present publication is a claim to verify, not a conclusion: before treating a session as controlled, the CLI SHALL confirm that the published endpoint answers and reports the identity the publication names. A publication that is unreachable or does not match SHALL be treated as residue.
 
 #### Scenario: No Editor is running
 
@@ -43,7 +53,20 @@ The CLI SHALL decide whether a project has a controllable Editor from project-lo
 #### Scenario: A controlled Editor is present
 
 - **WHEN** the project lockfile is held and an endpoint is published
+- **AND** the published endpoint answers with an identity matching the publication
 - **THEN** the CLI connects to the published endpoint directly
+
+#### Scenario: A stale publication does not impersonate a controlled session
+
+- **WHEN** the project lockfile is held and a publication is present
+- **AND** the published endpoint is unreachable or answers with an identity that does not match the publication
+- **THEN** the CLI treats the publication as residue
+- **AND** it reports the running Editor as not under CLI control rather than adopting the published endpoint
+
+#### Scenario: A service restart window is not a missing opt-in
+
+- **WHEN** the project lockfile is held and the publication or its service is momentarily unavailable while the Editor's service restarts across a domain reload
+- **THEN** the CLI allows for the restart window before concluding that the Editor did not opt in
 
 #### Scenario: Residue from a crashed or killed Editor
 
@@ -96,6 +119,12 @@ When a controllable Editor's console log path is the platform default per-user l
 
 - **WHEN** the published console log path is private to the project
 - **THEN** the CLI reports observation as reliable
+
+#### Scenario: Controlled Editor with a caller-directed log
+
+- **WHEN** the published console log path is a location the caller chose explicitly at launch, distinct from the platform default
+- **THEN** the CLI reports observation as reliable
+- **AND** it attributes the location to the caller's explicit choice rather than to a platform guess
 
 #### Scenario: Editor bound to the shared per-user log while another Editor runs
 

@@ -73,7 +73,7 @@ CLI log-related commands SHALL support an effective Unity log source that is not
 
 ### Requirement: A project without a control service is reported, not silently attached
 
-When a project-scoped command finds a running Editor that has not activated a control service, the CLI SHALL report that condition as a distinct non-success status rather than attaching to whatever endpoint answers a candidate port. The report SHALL be actionable: it SHALL state the ways the caller can proceed, and when a candidate endpoint owning the project can be identified, it SHALL name the address the caller would need in order to drive it explicitly.
+When a project-scoped command finds a running Editor that has not activated a control service, the CLI SHALL report that condition as a distinct non-success status rather than attaching to whatever endpoint answers a candidate port. The report SHALL be actionable: it SHALL state the ways the caller can proceed. When the error path can identify a reachable service owning the project whose bridge version differs from the CLI or is absent, the condition SHALL be reported as `version_mismatch` per `cli-version-compatibility` rather than as a missing opt-in, so the caller is pointed at aligning the installation instead of at an activation mechanism the running bridge does not provide.
 
 #### Scenario: Running Editor has no control service
 
@@ -81,11 +81,11 @@ When a project-scoped command finds a running Editor that has not activated a co
 - **THEN** the command reports a distinct status identifying the Editor as not under CLI control
 - **AND** the response states how to proceed rather than only that the command failed
 
-#### Scenario: Guidance names an explicitly drivable address
+#### Scenario: A version-mismatched bridge is not reported as a missing opt-in
 
-- **WHEN** the CLI can identify a reachable endpoint that reports ownership of the target project
-- **THEN** the guidance names that address so the caller can drive it with an explicit selector
-- **AND** the CLI still does not adopt that endpoint on the caller's behalf
+- **WHEN** the project lockfile is held, no endpoint is published, and the error-path scan finds a reachable service owning the project whose bridge version differs from the CLI or is absent
+- **THEN** the command reports `version_mismatch`
+- **AND** the guidance points at aligning the installation rather than at an activation action the running bridge does not provide
 
 #### Scenario: The refusal is not a launch failure
 

@@ -16,7 +16,7 @@ The remaining obstacle is that the control service starts implicitly and only in
 - `ensure-stopped` SHALL decide from the published endpoint and the project lockfile rather than from a recorded pid or a machine-wide `Unity.exe` count.
 - A project with no published endpoint SHALL produce a distinct status with actionable guidance rather than a silent attach to whatever answers the preferred port.
 - An endpoint whose `console_log_path` is the platform default SHALL be reported as observation-degraded **before** the first observation, complementing the after-the-fact `log_offsets_invalidated` signal.
-- **BREAKING** — the CLI no longer silently attaches to an Editor it did not launch and that did not opt in. Such a caller must either let the CLI launch the Editor, use the menu action, or drive the endpoint explicitly with `--base-url`.
+- **BREAKING** — the CLI no longer silently attaches to an Editor it did not launch and that did not opt in. Such a caller must either let the CLI launch the Editor or activate the service from the Editor menu. (`--base-url` remains available, but under `cli-version-compatibility` it can only drive a same-version service, so it is an escape hatch for a service whose publication is unexpectedly missing — not a supported third path.)
 - **BREAKING** — the control service no longer starts implicitly on Editor load. An interactive Editor opened from Unity Hub has no control service until it opts in.
 - **BREAKING** — `Temp/UnityPuerExec/session.json` is no longer written or read.
 
