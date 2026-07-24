@@ -7,13 +7,78 @@ import time as time_module
 from pathlib import Path
 
 from unity_session_common import (
+    CLI_OWNED_UNITY_LAUNCH_SWITCHES,
     CONTROL_ACTIVATION_SWITCH,
     DEFAULT_STOP_TIMEOUT_SECONDS,
     POLL_INTERVAL_SECONDS,
+    UNITY_LAUNCH_ARGS_ENV,
     UNITY_LOCKFILE_RELATIVE_PATH,
     UnityLaunchError,
     UnitySession,
 )
+
+
+def _is_cli_owned_unity_switch(token):
+    if token is None:
+        return False
+    text = str(token).strip()
+    if not text:
+        return False
+    # Unity switches are matched case-insensitively; a token may be just the
+    # switch or "switch=value". Compare the leading switch form only.
+    head = text.split("=", 1)[0].lower()
+    return head in CLI_OWNED_UNITY_LAUNCH_SWITCHES
+
+
+def parse_ambient_unity_launch_args(env=None):
+    """Read UNITY_PUER_EXEC_UNITY_LAUNCH_ARGS as a JSON array of strings.
+
+    Returns [] when unset or empty. Raises UnityLaunchError on malformed values
+    so a launch-driven command fails with a machine-usable reason rather than
+    partially applying a guessed token list.
+    """
+    env = os.environ if env is None else env
+    raw = env.get(UNITY_LAUNCH_ARGS_ENV)
+    if raw is None:
+        return []
+    text = str(raw).strip()
+    if not text:
+        return []
+    try:
+        import json
+
+        parsed = json.loads(text)
+    except Exception as exc:  # noqa: BLE001 - normalize for the launch boundary.
+        raise UnityLaunchError(
+            "{} must be a JSON array of strings: {}".format(UNITY_LAUNCH_ARGS_ENV, exc)
+        )
+    if not isinstance(parsed, list) or any(not isinstance(item, str) for item in parsed):
+        raise UnityLaunchError(
+            "{} must be a JSON array of strings".format(UNITY_LAUNCH_ARGS_ENV)
+        )
+    return [item for item in parsed if item != ""]
+
+
+def merge_unity_launch_args(cli_args=None, env=None):
+    """Merge ambient then CLI-flag tokens, dedupe exact matches, reject CLI-owned switches."""
+    ambient = parse_ambient_unity_launch_args(env=env)
+    flag_tokens = [] if cli_args is None else [str(token) for token in cli_args if token is not None and str(token) != ""]
+    merged = []
+    seen = set()
+    for token in ambient + flag_tokens:
+        if token in seen:
+            continue
+        seen.add(token)
+        merged.append(token)
+    reserved = [token for token in merged if _is_cli_owned_unity_switch(token)]
+    if reserved:
+        raise UnityLaunchError(
+            "unity launch args cannot rebind CLI-owned switches {}; got {}".format(
+                ", ".join(sorted({str(t).split('=', 1)[0] for t in reserved})),
+                reserved,
+            )
+        )
+    return merged
 
 
 def list_unity_pids():
@@ -160,7 +225,13 @@ def resolve_unity_exe_path(project_path, unity_exe_path, get_unity_version_fn=No
         raise UnityLaunchError("failed to resolve Unity.exe: {}".format(exc))
 
 
-def launch_unity(project_path, unity_exe_path, unity_log_path=None):
+def launch_unity(project_path, unity_exe_path, unity_log_path=None, extra_args=None, env=None):
+    """Cold-start Unity for a project this CLI owns.
+
+    extra_args are caller-supplied argv tokens (from --unity-launch-arg and/or
+    UNITY_PUER_EXEC_UNITY_LAUNCH_ARGS). They are appended after CLI-owned args and
+    cannot rebind -projectPath, -logFile, or the activation switch.
+    """
     args = [
         unity_exe_path,
         "-projectPath",
@@ -173,6 +244,7 @@ def launch_unity(project_path, unity_exe_path, unity_log_path=None):
     ]
     if unity_log_path:
         args.extend(["-logFile", str(unity_log_path)])
+    args.extend(merge_unity_launch_args(cli_args=extra_args, env=env))
     try:
         process = subprocess.Popen(args)
     except OSError as exc:

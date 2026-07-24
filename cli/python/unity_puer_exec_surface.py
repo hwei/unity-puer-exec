@@ -52,6 +52,13 @@ def build_parser():
     _add_selector_args(exec_parser)
     exec_parser.add_argument("--unity-exe-path", default=None)
     exec_parser.add_argument("--unity-log-path", default=None)
+    exec_parser.add_argument(
+        "--unity-launch-arg",
+        action="append",
+        default=None,
+        dest="unity_launch_args",
+        help="Extra Unity argv token for a cold launch this CLI owns; repeatable.",
+    )
     exec_parser.add_argument("--wait-timeout-ms", type=int, default=direct_exec_client.DEFAULT_WAIT_TIMEOUT_MS)
     exec_parser.add_argument("--request-id", default=None)
     exec_parser.add_argument("--script-args", default=None)
@@ -76,6 +83,13 @@ def build_parser():
     _add_selector_args(wait_exec_parser)
     wait_exec_parser.add_argument("--unity-exe-path", default=None)
     wait_exec_parser.add_argument("--unity-log-path", default=None)
+    wait_exec_parser.add_argument(
+        "--unity-launch-arg",
+        action="append",
+        default=None,
+        dest="unity_launch_args",
+        help="Extra Unity argv token for a cold launch this CLI owns; repeatable.",
+    )
     wait_exec_parser.add_argument("--request-id", required=True)
     wait_exec_parser.add_argument("--wait-timeout-ms", type=int, default=direct_exec_client.DEFAULT_WAIT_TIMEOUT_MS)
     wait_exec_parser.add_argument("--include-log-offset", action="store_true")  # removed; emits usage error
@@ -97,6 +111,15 @@ def build_parser():
 
     wait_compile_parser = subparsers.add_parser("wait-for-compile", add_help=False)
     _add_selector_args(wait_compile_parser)
+    wait_compile_parser.add_argument("--unity-exe-path", default=None)
+    wait_compile_parser.add_argument("--unity-log-path", default=None)
+    wait_compile_parser.add_argument(
+        "--unity-launch-arg",
+        action="append",
+        default=None,
+        dest="unity_launch_args",
+        help="Extra Unity argv token for a cold launch this CLI owns; repeatable.",
+    )
     wait_compile_parser.add_argument(
         "--appear-timeout-seconds",
         type=float,
@@ -137,6 +160,15 @@ def build_parser():
 
     get_compile_errors_parser = subparsers.add_parser("get-compile-errors", add_help=False)
     _add_selector_args(get_compile_errors_parser)
+    get_compile_errors_parser.add_argument("--unity-exe-path", default=None)
+    get_compile_errors_parser.add_argument("--unity-log-path", default=None)
+    get_compile_errors_parser.add_argument(
+        "--unity-launch-arg",
+        action="append",
+        default=None,
+        dest="unity_launch_args",
+        help="Extra Unity argv token for a cold launch this CLI owns; repeatable.",
+    )
     get_compile_errors_parser.add_argument("--start", type=int, default=0)
     get_compile_errors_parser.add_argument("--count", type=int, default=3)
     _add_diagnostics_arg(get_compile_errors_parser)
@@ -144,6 +176,15 @@ def build_parser():
 
     get_compile_warnings_parser = subparsers.add_parser("get-compile-warnings", add_help=False)
     _add_selector_args(get_compile_warnings_parser)
+    get_compile_warnings_parser.add_argument("--unity-exe-path", default=None)
+    get_compile_warnings_parser.add_argument("--unity-log-path", default=None)
+    get_compile_warnings_parser.add_argument(
+        "--unity-launch-arg",
+        action="append",
+        default=None,
+        dest="unity_launch_args",
+        help="Extra Unity argv token for a cold launch this CLI owns; repeatable.",
+    )
     get_compile_warnings_parser.add_argument("--start", type=int, default=0)
     get_compile_warnings_parser.add_argument("--count", type=int, default=3)
     _add_diagnostics_arg(get_compile_warnings_parser)

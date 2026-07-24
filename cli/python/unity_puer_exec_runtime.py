@@ -759,6 +759,7 @@ def _ensure_project_session_ready_after_refresh(args):
         project_path=args.project_path,
         unity_exe_path=args.unity_exe_path,
         unity_log_path=args.unity_log_path,
+        unity_launch_args=getattr(args, "unity_launch_args", None),
         ready_timeout_seconds=_post_refresh_ready_timeout_seconds(args),
         argv0=getattr(args, "argv0", None),
     )
@@ -1014,6 +1015,7 @@ def run_exec(args):
     validate_positive(args.wait_timeout_ms, "wait-timeout-ms")
     validate_project_mode_only(selector, "unity-exe-path", args.unity_exe_path)
     validate_project_mode_only(selector, "unity-log-path", args.unity_log_path)
+    validate_project_mode_only(selector, "unity-launch-arg", getattr(args, "unity_launch_args", None))
     # refresh-before-exec is now allowed in base-url mode: the server accepts
     # refresh_before_exec for any selector, and the base-url settle path re-probes the
     # same endpoint (see _settle_base_url_after_refresh).
@@ -1025,6 +1027,7 @@ def run_exec(args):
                 project_path=args.project_path,
                 unity_exe_path=args.unity_exe_path,
                 unity_log_path=args.unity_log_path,
+                unity_launch_args=getattr(args, "unity_launch_args", None),
                 argv0=getattr(args, "argv0", None),
             )
         except (unity_session.UnityStalledError, unity_session.UnityNotReadyError) as exc:
@@ -1210,6 +1213,7 @@ def run_wait_for_exec(args):
     validate_positive(args.wait_timeout_ms, "wait-timeout-ms")
     validate_project_mode_only(selector, "unity-exe-path", args.unity_exe_path)
     validate_project_mode_only(selector, "unity-log-path", args.unity_log_path)
+    validate_project_mode_only(selector, "unity-launch-arg", getattr(args, "unity_launch_args", None))
 
     _wfe_log_path_early = getattr(args, "unity_log_path", None) or str(unity_session_logs.default_editor_log_path())
     _wfe_log_start = args.log_start_offset if args.log_start_offset is not None else _capture_log_offset(_wfe_log_path_early)
@@ -1223,6 +1227,7 @@ def run_wait_for_exec(args):
                 project_path=args.project_path,
                 unity_exe_path=args.unity_exe_path,
                 unity_log_path=args.unity_log_path,
+                unity_launch_args=getattr(args, "unity_launch_args", None),
                 argv0=getattr(args, "argv0", None),
             )
         except (unity_session.UnityStalledError, unity_session.UnityNotReadyError) as exc:
@@ -1362,11 +1367,16 @@ def run_wait_for_compile(args):
     validate_positive(args.settle_timeout_seconds, "settle-timeout-seconds")
     validate_positive(args.health_timeout_seconds, "health-timeout-seconds")
 
+    validate_project_mode_only(selector, "unity-exe-path", getattr(args, "unity_exe_path", None))
+    validate_project_mode_only(selector, "unity-log-path", getattr(args, "unity_log_path", None))
+    validate_project_mode_only(selector, "unity-launch-arg", getattr(args, "unity_launch_args", None))
+
     if selector == "project_path":
         session = unity_session.ensure_session_ready(
             project_path=args.project_path,
             unity_exe_path=getattr(args, "unity_exe_path", None),
             unity_log_path=getattr(args, "unity_log_path", None),
+            unity_launch_args=getattr(args, "unity_launch_args", None),
             argv0=getattr(args, "argv0", None),
         )
         base_url = session.base_url
@@ -1745,11 +1755,16 @@ def _run_get_compile_messages(args, command_name):
     validate_non_negative(args.start, "start")
     if args.count < 1 or args.count > 100:
         raise ValueError("count must be between 1 and 100")
+    validate_project_mode_only(selector, "unity-exe-path", getattr(args, "unity_exe_path", None))
+    validate_project_mode_only(selector, "unity-log-path", getattr(args, "unity_log_path", None))
+    validate_project_mode_only(selector, "unity-launch-arg", getattr(args, "unity_launch_args", None))
+
     if selector == "project_path":
         session = unity_session.ensure_session_ready(
             project_path=args.project_path,
             unity_exe_path=getattr(args, "unity_exe_path", None),
             unity_log_path=getattr(args, "unity_log_path", None),
+            unity_launch_args=getattr(args, "unity_launch_args", None),
             argv0=getattr(args, "argv0", None),
         )
         base_url = session.base_url

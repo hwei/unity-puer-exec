@@ -23,6 +23,17 @@ RECOVERABLE_HEALTH_STATUSES = ("compiling", "not_available")
 # Editor reads it without any persistence of its own. Must match
 # UnityPuerExecActivation.ActivationSwitch on the Editor side.
 CONTROL_ACTIVATION_SWITCH = "-unityPuerExecControl"
+# Ambient extra Unity argv tokens for a cold launch this CLI owns. Value is a JSON
+# array of strings (e.g. ["-force-gles30"]). Parsed by launch_unity; never a way to
+# rebind CLI-owned switches (-projectPath / -logFile / activation).
+UNITY_LAUNCH_ARGS_ENV = "UNITY_PUER_EXEC_UNITY_LAUNCH_ARGS"
+# Switches the CLI always supplies on a launch it owns. Passthrough tokens that
+# rebind these are rejected rather than applied or silently overridden.
+CLI_OWNED_UNITY_LAUNCH_SWITCHES = (
+    "-projectpath",
+    "-logfile",
+    CONTROL_ACTIVATION_SWITCH.lower(),
+)
 # Where the Editor publishes what it is and how to reach it. Read-only from the
 # CLI's side: the Editor is the only author, because every field is about the
 # Editor and only the Editor can state them without guessing.

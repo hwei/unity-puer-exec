@@ -1,0 +1,8 @@
+change_type: feature
+priority: P1
+# Unblocks let-editor-publish-session-endpoint task 8.7 (full real-host suite
+# auto-launch on hosts that need extra Unity switches such as -force-gles30).
+blocked_by: []
+assumption_state: valid
+evidence: tests
+updated_at: 2026-07-24

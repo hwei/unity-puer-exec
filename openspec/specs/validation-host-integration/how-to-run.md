@@ -20,6 +20,15 @@ Require a live Unity Editor and a prepared validation host project. Not executed
 Prerequisites:
 - `UNITY_PROJECT_PATH` points to the validation host Unity `Project/` directory (set in environment or `.env`)
 - Unity Editor is resolvable on this machine
+- If this host needs extra Unity switches to start interactively (for example
+  `-force-gles30`), set `UNITY_PUER_EXEC_UNITY_LAUNCH_ARGS` to a JSON array of
+  strings in the same environment or `.env`:
+  ```
+  UNITY_PUER_EXEC_UNITY_LAUNCH_ARGS=["-force-gles30"]
+  ```
+  CLI auto-launch of the host picks this up without per-command flags. The
+  tokens are appended after the CLI-owned `-projectPath`, activation switch, and
+  project-private `-logFile`. They cannot rebind those CLI-owned switches.
 - Validation host has been wired to the local package via `tools/prepare_validation_host.py`
 - The helper output reports `"embedded_package_shadowing": false`. If it reports `true`, an immediate child of `Project/Packages/` declares `com.txcombo.unity-puer-exec` in its `package.json`, which can cause Unity to load that embedded copy instead of the repository-local package path in `manifest.json`; resolve or intentionally account for that before treating the run as evidence for current repository code. `"embedded_package_path"` names the first such directory and `"embedded_package_paths"` names all of them.
 

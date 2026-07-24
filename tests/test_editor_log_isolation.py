@@ -225,6 +225,181 @@ class ProjectPrivateLaunchLogTests(unittest.TestCase):
         self.assertEqual(args[args.index("-logFile") + 1], str(Path(EXPLICIT_PATH)))
 
 
+class UnityLaunchArgPassthroughTests(unittest.TestCase):
+    def test_extra_args_are_appended_after_cli_owned_switches(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_path = Path(temp_dir)
+            log_path = unity_session_logs.prepare_launch_log_path(project_path)
+            with mock.patch.object(unity_session_process.subprocess, "Popen") as popen:
+                unity_session_process.launch_unity(
+                    project_path,
+                    "X:/Unity/Unity.exe",
+                    unity_log_path=log_path,
+                    extra_args=["-force-gles30"],
+                    env={},
+                )
+
+        args = popen.call_args.args[0]
+        self.assertEqual(args[0], "X:/Unity/Unity.exe")
+        self.assertEqual(args[1], "-projectPath")
+        self.assertEqual(args[2], str(project_path))
+        self.assertEqual(args[3], unity_session_process.CONTROL_ACTIVATION_SWITCH)
+        self.assertEqual(args[4], "-logFile")
+        self.assertEqual(args[5], str(log_path))
+        self.assertEqual(args[6], "-force-gles30")
+
+    def test_ambient_env_supplies_tokens_without_cli_flags(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_path = Path(temp_dir)
+            with mock.patch.object(unity_session_process.subprocess, "Popen") as popen:
+                unity_session_process.launch_unity(
+                    project_path,
+                    "X:/Unity/Unity.exe",
+                    env={unity_session_process.UNITY_LAUNCH_ARGS_ENV: '["-force-gles30"]'},
+                )
+
+        args = popen.call_args.args[0]
+        self.assertIn("-force-gles30", args)
+
+    def test_flag_and_ambient_merge_dedupes_exact_matches(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_path = Path(temp_dir)
+            with mock.patch.object(unity_session_process.subprocess, "Popen") as popen:
+                unity_session_process.launch_unity(
+                    project_path,
+                    "X:/Unity/Unity.exe",
+                    extra_args=["-force-gles30", "-disable-assembly-updater"],
+                    env={unity_session_process.UNITY_LAUNCH_ARGS_ENV: '["-force-gles30"]'},
+                )
+
+        args = popen.call_args.args[0]
+        self.assertEqual(args.count("-force-gles30"), 1)
+        self.assertIn("-disable-assembly-updater", args)
+
+    def test_cli_owned_switches_are_rejected(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_path = Path(temp_dir)
+            with self.assertRaises(unity_session_process.UnityLaunchError) as ctx:
+                unity_session_process.launch_unity(
+                    project_path,
+                    "X:/Unity/Unity.exe",
+                    extra_args=["-projectPath"],
+                    env={},
+                )
+        self.assertIn("CLI-owned", str(ctx.exception))
+
+        with self.assertRaises(unity_session_process.UnityLaunchError):
+            unity_session_process.launch_unity(
+                project_path,
+                "X:/Unity/Unity.exe",
+                env={unity_session_process.UNITY_LAUNCH_ARGS_ENV: '["-logFile"]'},
+            )
+
+        with self.assertRaises(unity_session_process.UnityLaunchError):
+            unity_session_process.launch_unity(
+                project_path,
+                "X:/Unity/Unity.exe",
+                extra_args=[unity_session_process.CONTROL_ACTIVATION_SWITCH],
+                env={},
+            )
+
+    def test_invalid_ambient_json_is_rejected(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_path = Path(temp_dir)
+            with self.assertRaises(unity_session_process.UnityLaunchError) as ctx:
+                unity_session_process.launch_unity(
+                    project_path,
+                    "X:/Unity/Unity.exe",
+                    env={unity_session_process.UNITY_LAUNCH_ARGS_ENV: "-force-gles30"},
+                )
+        self.assertIn(unity_session_process.UNITY_LAUNCH_ARGS_ENV, str(ctx.exception))
+
+        with self.assertRaises(unity_session_process.UnityLaunchError):
+            unity_session_process.launch_unity(
+                project_path,
+                "X:/Unity/Unity.exe",
+                env={unity_session_process.UNITY_LAUNCH_ARGS_ENV: '[1, 2]'},
+            )
+
+    def test_attach_path_does_not_call_launch_and_ignores_tokens(self):
+        # A controlled session already present means ensure_session_ready never
+        # reaches launch_unity, so supplied tokens are launch-scoped no-ops.
+        import unity_session_endpoint  # type: ignore
+
+        project = "X:/Projects/Host"
+        publication = {
+            "port": 55231,
+            "base_url": "http://127.0.0.1:55231",
+            "unity_pid": 4242,
+            "project_path": project,
+            "session_marker": "marker",
+            "console_log_path": "X:/proj/Temp/UnityPuerExec/Editor.log",
+        }
+        health = {
+            "ok": True,
+            "status": "ready",
+            "port": 55231,
+            "base_url": publication["base_url"],
+            "unity_pid": 4242,
+            "project_path": project,
+            "session_marker": "marker",
+            "bridge_version": "0.0.0",
+            "console_log_path": publication["console_log_path"],
+        }
+
+        with mock.patch.object(
+            unity_session,
+            "classify_session_state",
+            return_value=(unity_session_endpoint.SESSION_STATE_CONTROLLED, publication, health),
+        ), mock.patch.object(
+            unity_session, "_probe_health", return_value=(health, None)
+        ), mock.patch.object(
+            unity_session, "_guard_owned_endpoint_version"
+        ), mock.patch.object(
+            unity_session, "_launch_unity"
+        ) as launch_unity, mock.patch.object(
+            unity_session, "resolve_project_path", return_value=Path(project)
+        ), mock.patch.object(
+            unity_session, "_list_unity_pids", return_value=[4242]
+        ), mock.patch.object(
+            unity_session, "_published_pid_running", return_value=(4242, True)
+        ), mock.patch.object(
+            unity_session, "_project_lock_details", return_value={"held": True}
+        ), mock.patch.object(
+            unity_session, "read_launch_claim", return_value=None
+        ), mock.patch.object(
+            unity_session, "_resolve_effective_log_path", return_value=publication["console_log_path"]
+        ), mock.patch.object(
+            unity_session, "_log_path_from_ready_payload", return_value=publication["console_log_path"]
+        ), mock.patch.object(
+            unity_session,
+            "_build_ready_service_session",
+            return_value=unity_session.UnitySession(
+                owner="published_endpoint",
+                base_url=publication["base_url"],
+                project_path=Path(project),
+                unity_pid=4242,
+                launched=False,
+            ),
+        ):
+            session = unity_session.ensure_session_ready(
+                project_path=project,
+                unity_launch_args=["-force-gles30"],
+            )
+
+        launch_unity.assert_not_called()
+        self.assertEqual(session.base_url, publication["base_url"])
+
+    def test_unity_launch_arg_is_project_path_only(self):
+        with self.assertRaises(ValueError) as ctx:
+            unity_puer_exec_runtime.validate_project_mode_only(
+                "base_url",
+                "unity-launch-arg",
+                ["-force-gles30"],
+            )
+        self.assertIn("only valid with --project-path", str(ctx.exception))
+
+
 class InvalidatedOffsetReportingTests(unittest.TestCase):
     def _log_file(self, temp_dir, size):
         path = Path(temp_dir) / "Editor.log"

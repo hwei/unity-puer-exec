@@ -501,7 +501,12 @@ class UnitySessionTests(unittest.TestCase):
         self.assertIs(result, launched)
         write_launch_claim.assert_called_once()
         clear_launch_claim.assert_called_once_with(Path(SAMPLE_PROJECT_PATH))
-        launch_unity.assert_called_once_with(Path(SAMPLE_PROJECT_PATH), "X:/Unity/Unity.exe", unity_log_path=SAMPLE_LAUNCH_LOG_PATH)
+        launch_unity.assert_called_once_with(
+            Path(SAMPLE_PROJECT_PATH),
+            "X:/Unity/Unity.exe",
+            unity_log_path=SAMPLE_LAUNCH_LOG_PATH,
+            extra_args=None,
+        )
         wait_ready_with_activity.assert_called_once()
         self.assertEqual(wait_ready_with_activity.call_args.args[0].owner, "launched")
 

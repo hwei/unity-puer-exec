@@ -261,8 +261,13 @@ def _resolve_unity_exe_path(project_path, unity_exe_path):
     )
 
 
-def _launch_unity(project_path, unity_exe_path, unity_log_path=None):
-    return unity_session_process.launch_unity(project_path, unity_exe_path, unity_log_path=unity_log_path)
+def _launch_unity(project_path, unity_exe_path, unity_log_path=None, extra_args=None):
+    return unity_session_process.launch_unity(
+        project_path,
+        unity_exe_path,
+        unity_log_path=unity_log_path,
+        extra_args=extra_args,
+    )
 
 
 def _prepare_launch_log_path(project_path, unity_log_path=None):
@@ -661,6 +666,7 @@ def ensure_session_ready(
     activity_timeout_seconds=DEFAULT_ACTIVITY_TIMEOUT_SECONDS,
     health_timeout_seconds=DEFAULT_HEALTH_TIMEOUT_SECONDS,
     unity_log_path=None,
+    unity_launch_args=None,
     argv0=None,
 ):
     """Prepare a ready project session, refusing a bridge this CLI cannot match.
@@ -669,6 +675,10 @@ def ensure_session_ready(
     payloads, which carry no identity fields yet, so the version can only be
     required once the endpoint is actually ready. That is here -- after readiness,
     before the caller executes anything.
+
+    unity_launch_args are optional extra Unity argv tokens for a cold launch this
+    CLI performs. They are ignored when the CLI attaches to an already-running
+    Editor (the launch path is simply not taken).
     """
     session = _ensure_session_ready_unguarded(
         project_path=project_path,
@@ -678,6 +688,7 @@ def ensure_session_ready(
         activity_timeout_seconds=activity_timeout_seconds,
         health_timeout_seconds=health_timeout_seconds,
         unity_log_path=unity_log_path,
+        unity_launch_args=unity_launch_args,
         argv0=argv0,
     )
     payload, error = _probe_health(session.base_url, health_timeout_seconds)
@@ -694,6 +705,7 @@ def _ensure_session_ready_unguarded(
     activity_timeout_seconds=DEFAULT_ACTIVITY_TIMEOUT_SECONDS,
     health_timeout_seconds=DEFAULT_HEALTH_TIMEOUT_SECONDS,
     unity_log_path=None,
+    unity_launch_args=None,
     argv0=None,
 ):
     project_path = resolve_project_path(project_path, argv0=argv0)
@@ -907,7 +919,12 @@ def _ensure_session_ready_unguarded(
         # service no longer starts on its own. The launched Editor publishes both
         # the port and the same log path back, so later commands need no flags.
         launch_log_path = _prepare_launch_log_path(project_path, unity_log_path)
-        process = _launch_unity(project_path, resolved_unity_exe_path, unity_log_path=launch_log_path)
+        process = _launch_unity(
+            project_path,
+            resolved_unity_exe_path,
+            unity_log_path=launch_log_path,
+            extra_args=unity_launch_args,
+        )
         log_path = launch_log_path
         # Cold start: any residue publication names a service that is gone. The
         # endpoint the new Editor publishes is the only source of truth.
