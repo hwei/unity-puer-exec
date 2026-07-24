@@ -12,10 +12,25 @@ HELP_FLAGS = ("--help", "--help-args", "--help-status")
 VERSION_FLAG = "--version"
 
 
+class ArgumentParseError(Exception):
+    """Raised instead of argparse writing prose to stderr and calling sys.exit."""
+
+    def __init__(self, message):
+        super(ArgumentParseError, self).__init__(message)
+        self.message = message
+
+
+class _RaisingArgumentParser(argparse.ArgumentParser):
+    """ArgumentParser that raises ArgumentParseError on usage failures."""
+
+    def error(self, message):
+        raise ArgumentParseError(message)
+
+
 def build_parser():
-    parser = argparse.ArgumentParser(prog="unity-puer-exec", add_help=False)
+    parser = _RaisingArgumentParser(prog="unity-puer-exec", add_help=False)
     parser.add_argument("--suppress-guidance", action="store_true", default=False)
-    subparsers = parser.add_subparsers(dest="command", required=True)
+    subparsers = parser.add_subparsers(dest="command", required=True, parser_class=_RaisingArgumentParser)
     # Subcommand identity comes from the shared registry; argument declarations stay here.
     parsers = {
         name: subparsers.add_parser(name, add_help=False)
@@ -198,6 +213,30 @@ def build_parser():
 
 
     return parser
+
+
+def resolve_command_from_argv(argv):
+    """Return the first recognized command token in argv, or None."""
+    known = set(command_registry.COMMANDS)
+    for token in argv:
+        if token in known:
+            return token
+    return None
+
+
+def option_strings_for_command(parser, command):
+    """Option strings registered on the subparser for ``command`` only."""
+    for action in parser._actions:
+        if not isinstance(action, argparse._SubParsersAction):
+            continue
+        subparser = action.choices.get(command)
+        if subparser is None:
+            return ()
+        strings = []
+        for sub_action in subparser._actions:
+            strings.extend(sub_action.option_strings)
+        return tuple(strings)
+    return ()
 
 
 def handle_version(argv):

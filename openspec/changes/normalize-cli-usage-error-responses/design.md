@@ -57,6 +57,10 @@ Matching the engine's message is unworkable here: an expanded `$typeof` leaves `
 
 The correct follow-up for a usage failure is to read the argument help for the resolved command, not to re-run. Matrix entries therefore carry a `situation` naming what was rejected and `next_steps` pointing at that command's `--help-args`, and do not offer the failed invocation back to the caller.
 
+### D7: `invalid_arguments` is installed per command, not as a matrix fallback
+
+The durable `runtime-guidance` coverage requirement expects the matrix to cover every command × documented status combination, and the matrix is keyed by `(command, status)`. `invalid_arguments` can be emitted by every command, so a single cross-cutting fallback would quietly weaken that requirement. Decision: install one shared template as a per-command entry for each command in the flat tree, matching the existing `version_mismatch` pattern. Top-level failures with no recognizable command token are outside the matrix and carry inline top-level guidance instead.
+
 ## Risks / Trade-offs
 
 - **Prose usage output on stderr disappears for parse failures.** → A caller scraping that text would break. Mitigation: exit code 2 is unchanged, the structured response carries strictly more information than the prose did, and the prose block being replaced is the unhelpful top-level one. The behavior change is stated in the proposal.

@@ -75,10 +75,12 @@ def _make_session(project_path=SAMPLE_PROJECT_PATH):
 
 class UnityPuerExecCliTests(unittest.TestCase):
     def test_parser_exposes_formal_command_tree_without_wait_until_ready(self):
+        import unity_puer_exec_surface as surface
+
         parser = unity_puer_exec._build_parser()
         args = parser.parse_args(["wait-for-exec", "--request-id", "req-1"])
         self.assertEqual(args.command, "wait-for-exec")
-        with self.assertRaises(SystemExit):
+        with self.assertRaises(surface.ArgumentParseError):
             parser.parse_args(["wait-until-ready"])
 
     def test_exec_parser_accepts_import_base_url_and_reset_jsenv_before_exec(self):
@@ -99,9 +101,11 @@ class UnityPuerExecCliTests(unittest.TestCase):
             "--stale-module-policy", "error",
         ])
 
+        import unity_puer_exec_surface as surface
+
         self.assertEqual(default_args.stale_module_policy, "auto-reset")
         self.assertEqual(error_args.stale_module_policy, "error")
-        with self.assertRaises(SystemExit):
+        with self.assertRaises(surface.ArgumentParseError):
             parser.parse_args([
                 "exec", "--code", "export default function run(ctx) { return 1; }",
                 "--stale-module-policy", "invalid",
@@ -467,8 +471,8 @@ class UnityPuerExecCliTests(unittest.TestCase):
         self.assertNotIn("diagnostics", payload)
 
     def test_wait_for_log_pattern_extract_modes_are_mutually_exclusive(self):
-        with self.assertRaises(SystemExit) as exc:
-            unity_puer_exec.run_cli(
+        with mock.patch.object(unity_session, "create_observation_session") as create_session:
+            exit_code, stdout, stderr = unity_puer_exec.run_cli(
                 [
                     "wait-for-log-pattern",
                     "--pattern",
@@ -480,7 +484,12 @@ class UnityPuerExecCliTests(unittest.TestCase):
                 ]
             )
 
-        self.assertEqual(exc.exception.code, 2)
+        self.assertEqual(exit_code, 2)
+        self.assertEqual(stdout, "")
+        body = json.loads(stderr)
+        self.assertEqual(body["status"], "invalid_arguments")
+        self.assertEqual(body["command"], "wait-for-log-pattern")
+        create_session.assert_not_called()
 
     def test_exec_reads_file_input(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -817,6 +826,98 @@ class UnityPuerExecCliTests(unittest.TestCase):
         self.assertEqual(body["status"], "failed")
         self.assertIn("puer.$typeof", body["situation"])
         self.assertNotIn("next_steps", body)
+
+    def test_exec_shell_expansion_syntax_error_gets_hint_for_code_source(self):
+        failure_body = {
+            "ok": False,
+            "status": "failed",
+            "operation": "exec",
+            "request_id": "R-shell-expand",
+            "error": "SyntaxError: Unexpected token '('",
+        }
+        expanded_code = "export default function run(ctx) { return puer.($typeof); }"
+        with mock.patch.object(
+            unity_puer_exec.direct_exec_client,
+            "invoke_command",
+            return_value=(1, "", json.dumps(failure_body)),
+        ) as invoke:
+            exit_code, stdout, stderr = unity_puer_exec.run_cli(
+                [
+                    "exec",
+                    "--base-url", "http://127.0.0.1:55231",
+                    "--code", expanded_code,
+                    "--request-id", "R-shell-expand",
+                ]
+            )
+
+        self.assertEqual(exit_code, 1)
+        body = json.loads(stderr)
+        self.assertEqual(body["status"], "failed")
+        self.assertIn("shell expanded", body["situation"])
+        self.assertIn("single quotes", body["situation"])
+        self.assertIn("--file", body["situation"])
+        invoke.assert_called_once()
+
+    def test_exec_ordinary_syntax_error_does_not_get_shell_expansion_hint(self):
+        failure_body = {
+            "ok": False,
+            "status": "failed",
+            "operation": "exec",
+            "request_id": "R-syntax",
+            "error": "SyntaxError: Unexpected token '{'",
+        }
+        ordinary_code = "export default function run(ctx) { return {; }"
+        with mock.patch.object(
+            unity_puer_exec.direct_exec_client,
+            "invoke_command",
+            return_value=(1, "", json.dumps(failure_body)),
+        ):
+            exit_code, stdout, stderr = unity_puer_exec.run_cli(
+                [
+                    "exec",
+                    "--base-url", "http://127.0.0.1:55231",
+                    "--code", ordinary_code,
+                    "--request-id", "R-syntax",
+                ]
+            )
+
+        self.assertEqual(exit_code, 1)
+        body = json.loads(stderr)
+        self.assertEqual(body["status"], "failed")
+        self.assertNotIn("shell expanded", body.get("situation", ""))
+
+    def test_exec_file_syntax_error_does_not_get_shell_expansion_hint(self):
+        failure_body = {
+            "ok": False,
+            "status": "failed",
+            "operation": "exec",
+            "request_id": "R-file-syntax",
+            "error": "SyntaxError: Unexpected token '('",
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            script_path = Path(temp_dir) / "script.js"
+            script_path.write_text(
+                "export default function run(ctx) { return puer.($typeof); }",
+                encoding="utf-8",
+            )
+            with mock.patch.object(
+                unity_puer_exec.direct_exec_client,
+                "invoke_command",
+                return_value=(1, "", json.dumps(failure_body)),
+            ):
+                exit_code, stdout, stderr = unity_puer_exec.run_cli(
+                    [
+                        "exec",
+                        "--base-url", "http://127.0.0.1:55231",
+                        "--file", str(script_path),
+                        "--request-id", "R-file-syntax",
+                    ]
+                )
+
+        self.assertEqual(exit_code, 1)
+        body = json.loads(stderr)
+        self.assertEqual(body["status"], "failed")
+        self.assertNotIn("shell expanded", body.get("situation", ""))
 
     def test_exec_hides_diagnostics_by_default(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1688,7 +1789,131 @@ class UnityPuerExecCliTests(unittest.TestCase):
         self.assertEqual(stderr, "")
         payload = json.loads(stdout)
         self.assertEqual(payload["status"], "address_conflict")
-        self.assertNotIn("situation", payload)
+        self.assertIn("situation", payload)
+        self.assertIn("next_steps", payload)
+        for step in payload["next_steps"]:
+            argv = step.get("argv") or []
+            self.assertFalse(
+                "--project-path" in argv and "--base-url" in argv,
+                "usage guidance must not re-offer the rejected dual-selector invocation",
+            )
+
+    def test_parse_unrecognized_option_emits_invalid_arguments_json(self):
+        with mock.patch.object(unity_puer_exec.direct_exec_client, "invoke_command") as invoke:
+            exit_code, stdout, stderr = unity_puer_exec.run_cli(
+                ["exec", "--timeout-ms", "5000", "--code", "export default function run(ctx) { return 1; }"]
+            )
+
+        self.assertEqual(exit_code, 2)
+        self.assertEqual(stdout, "")
+        self.assertNotIn("usage:", stderr.lower().split("{", 1)[0])
+        body = json.loads(stderr)
+        self.assertFalse(body["ok"])
+        self.assertEqual(body["status"], "invalid_arguments")
+        self.assertNotEqual(body["status"], "failed")
+        self.assertIn("error", body)
+        self.assertEqual(body["command"], "exec")
+        self.assertEqual(body["suggested_option"], "--wait-timeout-ms")
+        self.assertIn("situation", body)
+        self.assertIn("next_steps", body)
+        help_step = body["next_steps"][0]
+        self.assertEqual(help_step["argv"], ["unity-puer-exec", "exec", "--help-args"])
+        # Top-level command list alone is not the response content.
+        self.assertNotIn("Command Groups", stderr)
+        invoke.assert_not_called()
+
+    def test_parse_missing_required_argument_emits_invalid_arguments_json(self):
+        with mock.patch.object(unity_session, "create_observation_session") as create_session:
+            exit_code, stdout, stderr = unity_puer_exec.run_cli(["wait-for-exec"])
+
+        self.assertEqual(exit_code, 2)
+        self.assertEqual(stdout, "")
+        body = json.loads(stderr)
+        self.assertEqual(body["status"], "invalid_arguments")
+        self.assertEqual(body["command"], "wait-for-exec")
+        self.assertIn("request-id", body["error"])
+        self.assertIn("next_steps", body)
+        create_session.assert_not_called()
+
+    def test_parse_invalid_value_emits_invalid_arguments_json(self):
+        with mock.patch.object(unity_puer_exec.direct_exec_client, "invoke_command") as invoke:
+            exit_code, stdout, stderr = unity_puer_exec.run_cli(
+                [
+                    "exec",
+                    "--code", "export default function run(ctx) { return 1; }",
+                    "--stale-module-policy", "invalid",
+                ]
+            )
+
+        self.assertEqual(exit_code, 2)
+        body = json.loads(stderr)
+        self.assertEqual(body["status"], "invalid_arguments")
+        self.assertEqual(body["command"], "exec")
+        self.assertIn("invalid", body["error"].lower())
+        invoke.assert_not_called()
+
+    def test_parse_failure_without_command_uses_top_level_guidance(self):
+        exit_code, stdout, stderr = unity_puer_exec.run_cli(["--not-a-real-flag"])
+
+        self.assertEqual(exit_code, 2)
+        body = json.loads(stderr)
+        self.assertEqual(body["status"], "invalid_arguments")
+        self.assertNotIn("command", body)
+        self.assertIn("top-level", body["situation"].lower())
+        self.assertEqual(body["next_steps"][0]["argv"], ["unity-puer-exec", "--help"])
+
+    def test_parse_near_match_omitted_when_no_close_option(self):
+        exit_code, stdout, stderr = unity_puer_exec.run_cli(
+            ["exec", "--definitely-not-a-flag", "--code", "export default function run(ctx) { return 1; }"]
+        )
+
+        self.assertEqual(exit_code, 2)
+        body = json.loads(stderr)
+        self.assertEqual(body["status"], "invalid_arguments")
+        self.assertNotIn("suggested_option", body)
+
+    def test_parse_near_match_does_not_offer_other_command_options(self):
+        # --timeout-seconds belongs to wait commands, not exec.
+        exit_code, stdout, stderr = unity_puer_exec.run_cli(
+            ["exec", "--timeout-seconds", "5", "--code", "export default function run(ctx) { return 1; }"]
+        )
+
+        self.assertEqual(exit_code, 2)
+        body = json.loads(stderr)
+        self.assertEqual(body["status"], "invalid_arguments")
+        self.assertEqual(body["command"], "exec")
+        # Even if a suggestion appears, it must be an exec option, never wait-only --timeout-seconds.
+        if "suggested_option" in body:
+            self.assertNotEqual(body["suggested_option"], "--timeout-seconds")
+            parser = unity_puer_exec._build_parser()
+            import unity_puer_exec_surface as surface
+
+            self.assertIn(
+                body["suggested_option"],
+                surface.option_strings_for_command(parser, "exec"),
+            )
+
+    def test_usage_failure_guidance_does_not_offer_retry_of_rejected_invocation(self):
+        exit_code, stdout, stderr = unity_puer_exec.run_cli(
+            ["get-log-briefs", "--range", "0-10", "--full-text"]
+        )
+
+        self.assertEqual(exit_code, 2)
+        body = json.loads(stderr)
+        self.assertEqual(body["status"], "full_text_requires_include")
+        self.assertIn("situation", body)
+        self.assertIn("next_steps", body)
+        for step in body["next_steps"]:
+            argv = step.get("argv") or []
+            self.assertNotIn("--full-text", argv)
+
+    def test_help_status_documents_invalid_arguments_cli_wide(self):
+        exit_code, stdout, stderr = unity_puer_exec.run_cli(["exec", "--help-status"])
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(stderr, "")
+        self.assertIn("`invalid_arguments` -> exit 2", stdout)
+        self.assertIn("CLI-wide usage status", stdout)
 
     def test_exec_removed_include_log_offset_usage_error_includes_situation(self):
         exit_code, stdout, stderr = unity_puer_exec.run_cli(

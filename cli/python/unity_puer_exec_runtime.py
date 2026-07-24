@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+import argparse
+import difflib
 import hashlib
 import json
 import os
@@ -67,6 +69,72 @@ def usage_error(message, status="failed", command=None, args=None):
         _attach_guidance(payload, command, status, args)
     if status == "address_conflict":
         return 2, emit_payload(payload), ""
+    return 2, "", emit_payload(payload)
+
+
+# Near-match cutoff for rejected options against the invoked command's own flags.
+# 0.6 keeps the reported `--timeout-ms` → `--wait-timeout-ms` case while omitting weak guesses.
+_OPTION_NEAR_MATCH_CUTOFF = 0.6
+_UNRECOGNIZED_ARGUMENTS_RE = re.compile(r"unrecognized arguments:\s*(.+)$")
+
+
+def _extract_unrecognized_options(message):
+    match = _UNRECOGNIZED_ARGUMENTS_RE.search(message or "")
+    if match is None:
+        return ()
+    return tuple(token for token in match.group(1).split() if token.startswith("-"))
+
+
+def _suggest_option(parser, surface, command, rejected_option):
+    candidates = surface.option_strings_for_command(parser, command)
+    if not candidates:
+        return None
+    matches = difflib.get_close_matches(
+        rejected_option,
+        candidates,
+        n=1,
+        cutoff=_OPTION_NEAR_MATCH_CUTOFF,
+    )
+    return matches[0] if matches else None
+
+
+def _parse_failure_args(argv, command):
+    return argparse.Namespace(
+        command=command,
+        suppress_guidance="--suppress-guidance" in list(argv or ()),
+    )
+
+
+def handle_parse_failure(argv, parser, surface, message):
+    """Build the structured invalid_arguments envelope for a parse-layer rejection."""
+    command = surface.resolve_command_from_argv(argv)
+    payload = {
+        "ok": False,
+        "status": "invalid_arguments",
+        "error": message,
+    }
+    if command is not None:
+        payload["command"] = command
+        for rejected in _extract_unrecognized_options(message):
+            suggestion = _suggest_option(parser, surface, command, rejected)
+            if suggestion is not None:
+                payload["suggested_option"] = suggestion
+                break
+        args = _parse_failure_args(argv, command)
+        _attach_guidance(payload, command, "invalid_arguments", args)
+    else:
+        if "--suppress-guidance" not in list(argv or ()):
+            payload["situation"] = (
+                "The invocation was rejected before any command was identified. "
+                "Consult top-level help for the available commands."
+            )
+            payload["next_steps"] = [
+                {
+                    "command": "--help",
+                    "when": "you want the top-level command list and global options",
+                    "argv": ["unity-puer-exec", "--help"],
+                }
+            ]
     return 2, "", emit_payload(payload)
 
 
@@ -470,7 +538,13 @@ def run_cli(argv, surface, argv0=None):
     if help_result is not None:
         return help_result
     parser = surface.build_parser()
-    args = parser.parse_args(argv)
+    try:
+        args = parser.parse_args(argv)
+    except surface.ArgumentParseError as exc:
+        exit_code, stdout_text, stderr_text = handle_parse_failure(argv, parser, surface, exc.message)
+        stdout_text = _inject_cli_version(stdout_text)
+        stderr_text = _inject_cli_version(stderr_text)
+        return exit_code, stdout_text, stderr_text
     args.argv0 = argv0
     exit_code, stdout_text, stderr_text = run_command(args)
     stdout_text = _inject_cli_version(stdout_text)
@@ -512,19 +586,38 @@ def _build_guidance_context(args, request_id=None):
 
 
 _BARE_PUER_REFERENCE_ERROR_RE = re.compile(r"^ReferenceError: \$(typeof|ref) is not defined$")
+_SYNTAX_ERROR_RE = re.compile(r"(?i)^\s*SyntaxError\b")
+# Signature of a shell-expanded `$token` that left a member access immediately followed by a call.
+_SHELL_EXPANSION_SIGNATURE_RE = re.compile(r"\.\s*\(")
 
 
-def _maybe_hint_puer_prefix(payload, command):
+def _maybe_hint_puer_prefix(payload, command, args=None):
     if command not in ("exec", "wait-for-exec") or payload.get("status") != "failed":
         return
     error = payload.get("error")
     if not isinstance(error, str):
         return
     match = _BARE_PUER_REFERENCE_ERROR_RE.match(error.strip())
-    if match is None:
+    if match is not None:
+        name = match.group(1)
+        hint = "This looks like a missing `puer.` prefix: did you mean `puer.${}` instead of bare `${}`?".format(name, name)
+        situation = payload.get("situation")
+        payload["situation"] = "{} {}".format(situation, hint) if situation else hint
         return
-    name = match.group(1)
-    hint = "This looks like a missing `puer.` prefix: did you mean `puer.${}` instead of bare `${}`?".format(name, name)
+    # Shell-expansion form: only for inline `--code`, never `--file` / `--stdin`.
+    if args is None or not getattr(args, "code", None):
+        return
+    if getattr(args, "file_path", None) or getattr(args, "stdin", False):
+        return
+    if _SYNTAX_ERROR_RE.match(error.strip()) is None:
+        return
+    if _SHELL_EXPANSION_SIGNATURE_RE.search(args.code) is None:
+        return
+    hint = (
+        "This looks like a shell expanded a `$` token inside double-quoted `--code` "
+        "(for example turning `puer.$typeof(...)` into `puer.(...)`). "
+        "Use single quotes around `--code`, or pass the script through `--file`."
+    )
     situation = payload.get("situation")
     payload["situation"] = "{} {}".format(situation, hint) if situation else hint
 
@@ -541,7 +634,7 @@ def _attach_guidance(payload, command, status, args, request_id=None):
     situation = help_surface.build_situation(command, status, guard=guard)
     if situation:
         payload["situation"] = situation
-    _maybe_hint_puer_prefix(payload, command)
+    _maybe_hint_puer_prefix(payload, command, args=args)
 
 
 def _inject_guidance_into_stdout(stdout_text, command, args, request_id=None):

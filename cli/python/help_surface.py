@@ -1518,6 +1518,113 @@ VERSION_MISMATCH_STATUS_LINE = (
     "reconcile the installation so both halves come from the same release. There is no bypass."
 ).format(direct_exec_client.EXIT_VERSION_MISMATCH)
 
+# Decision (task 4.1a): `invalid_arguments` is installable for every command the same
+# way as `version_mismatch` -- one shared template expanded into per-command matrix
+# entries. That keeps the (command, status) coverage requirement intact rather than
+# introducing a cross-cutting fallback that would quietly weaken it.
+for _invalid_arguments_command in COMMANDS:
+    GUIDANCE_MATRIX[(_invalid_arguments_command, "invalid_arguments")] = {
+        "situation": (
+            "The `{}` invocation was rejected before any command work because the arguments "
+            "were not accepted."
+        ).format(_invalid_arguments_command),
+        "next_steps": [
+            {
+                "command": _invalid_arguments_command,
+                "when": "inspect the accepted arguments for this command",
+                "argv": ["unity-puer-exec", _invalid_arguments_command, "--help-args"],
+            },
+        ],
+    }
+
+INVALID_ARGUMENTS_STATUS_LINE = (
+    "`invalid_arguments` -> exit 2: a CLI-wide usage status for invocations rejected while "
+    "parsing arguments (unrecognized options, missing required arguments, or invalid values). "
+    "No Unity service is contacted. The response names the invoked command when one is "
+    "identifiable and points at that command's `--help-args`."
+)
+
+# Post-parse usage statuses that already route through usage_error() but previously
+# had no authored matrix entries. Guidance points at argument help, never at a retry.
+_ADDRESS_CONFLICT_COMMANDS = (
+    "exec",
+    "wait-for-exec",
+    "wait-for-log-pattern",
+    "wait-for-result-marker",
+    "wait-for-compile",
+    "get-log-source",
+    "get-compile-errors",
+    "get-compile-warnings",
+    "ensure-stopped",
+)
+for _address_conflict_command in _ADDRESS_CONFLICT_COMMANDS:
+    GUIDANCE_MATRIX[(_address_conflict_command, "address_conflict")] = {
+        "situation": (
+            "Both `--project-path` and `--base-url` were supplied; use exactly one selector."
+        ),
+        "next_steps": [
+            {
+                "command": _address_conflict_command,
+                "when": "inspect the selector rules for this command",
+                "argv": ["unity-puer-exec", _address_conflict_command, "--help-args"],
+            },
+        ],
+    }
+
+GUIDANCE_MATRIX[("get-log-briefs", "full_text_requires_include")] = {
+    "situation": (
+        "`--full-text` was supplied without `--indexes` (or its `--include` alias). "
+        "Full text is attached only to explicitly selected brief indices."
+    ),
+    "next_steps": [
+        {
+            "command": "get-log-briefs",
+            "when": "inspect the filter and full-text rules for this command",
+            "argv": ["unity-puer-exec", "get-log-briefs", "--help-args"],
+        },
+    ],
+}
+
+GUIDANCE_MATRIX[("get-log-briefs", "conflicting_indexes_include")] = {
+    "situation": (
+        "`--indexes` and `--include` were both supplied with different values; "
+        "supply only one, or make them match."
+    ),
+    "next_steps": [
+        {
+            "command": "get-log-briefs",
+            "when": "inspect the filter rules for this command",
+            "argv": ["unity-puer-exec", "get-log-briefs", "--help-args"],
+        },
+    ],
+}
+
+GUIDANCE_MATRIX[("exec", "invalid_script_args_json")] = {
+    "situation": (
+        "`--script-args` was not valid JSON. The value must be a JSON object string."
+    ),
+    "next_steps": [
+        {
+            "command": "exec",
+            "when": "inspect the script-args rules for exec",
+            "argv": ["unity-puer-exec", "exec", "--help-args"],
+        },
+    ],
+}
+
+GUIDANCE_MATRIX[("exec", "invalid_script_args_type")] = {
+    "situation": (
+        "`--script-args` must be a JSON object, not an array or scalar."
+    ),
+    "next_steps": [
+        {
+            "command": "exec",
+            "when": "inspect the script-args rules for exec",
+            "argv": ["unity-puer-exec", "exec", "--help-args"],
+        },
+    ],
+}
+
 
 # Commands that accept a caller-supplied log start offset, and can therefore report
 # that the offset stopped denoting the content the caller meant.
@@ -1660,6 +1767,7 @@ def render_command_status_help(command):
         if situation:
             line += " Situation: {}".format(situation)
         failure_lines.append(line)
+    failure_lines.append(INVALID_ARGUMENTS_STATUS_LINE)
     failure_lines.append(VERSION_MISMATCH_STATUS_LINE)
     sections = [
         "Success Statuses\n{}".format(_bullet_lines(success_lines)),
