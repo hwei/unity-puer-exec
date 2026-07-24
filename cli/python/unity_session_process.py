@@ -7,12 +7,78 @@ import time as time_module
 from pathlib import Path
 
 from unity_session_common import (
+    CLI_OWNED_UNITY_LAUNCH_SWITCHES,
+    CONTROL_ACTIVATION_SWITCH,
     DEFAULT_STOP_TIMEOUT_SECONDS,
     POLL_INTERVAL_SECONDS,
+    UNITY_LAUNCH_ARGS_ENV,
     UNITY_LOCKFILE_RELATIVE_PATH,
     UnityLaunchError,
     UnitySession,
 )
+
+
+def _is_cli_owned_unity_switch(token):
+    if token is None:
+        return False
+    text = str(token).strip()
+    if not text:
+        return False
+    # Unity switches are matched case-insensitively; a token may be just the
+    # switch or "switch=value". Compare the leading switch form only.
+    head = text.split("=", 1)[0].lower()
+    return head in CLI_OWNED_UNITY_LAUNCH_SWITCHES
+
+
+def parse_ambient_unity_launch_args(env=None):
+    """Read UNITY_PUER_EXEC_UNITY_LAUNCH_ARGS as a JSON array of strings.
+
+    Returns [] when unset or empty. Raises UnityLaunchError on malformed values
+    so a launch-driven command fails with a machine-usable reason rather than
+    partially applying a guessed token list.
+    """
+    env = os.environ if env is None else env
+    raw = env.get(UNITY_LAUNCH_ARGS_ENV)
+    if raw is None:
+        return []
+    text = str(raw).strip()
+    if not text:
+        return []
+    try:
+        import json
+
+        parsed = json.loads(text)
+    except Exception as exc:  # noqa: BLE001 - normalize for the launch boundary.
+        raise UnityLaunchError(
+            "{} must be a JSON array of strings: {}".format(UNITY_LAUNCH_ARGS_ENV, exc)
+        )
+    if not isinstance(parsed, list) or any(not isinstance(item, str) for item in parsed):
+        raise UnityLaunchError(
+            "{} must be a JSON array of strings".format(UNITY_LAUNCH_ARGS_ENV)
+        )
+    return [item for item in parsed if item != ""]
+
+
+def merge_unity_launch_args(cli_args=None, env=None):
+    """Merge ambient then CLI-flag tokens, dedupe exact matches, reject CLI-owned switches."""
+    ambient = parse_ambient_unity_launch_args(env=env)
+    flag_tokens = [] if cli_args is None else [str(token) for token in cli_args if token is not None and str(token) != ""]
+    merged = []
+    seen = set()
+    for token in ambient + flag_tokens:
+        if token in seen:
+            continue
+        seen.add(token)
+        merged.append(token)
+    reserved = [token for token in merged if _is_cli_owned_unity_switch(token)]
+    if reserved:
+        raise UnityLaunchError(
+            "unity launch args cannot rebind CLI-owned switches {}; got {}".format(
+                ", ".join(sorted({str(t).split('=', 1)[0] for t in reserved})),
+                reserved,
+            )
+        )
+    return merged
 
 
 def list_unity_pids():
@@ -159,14 +225,26 @@ def resolve_unity_exe_path(project_path, unity_exe_path, get_unity_version_fn=No
         raise UnityLaunchError("failed to resolve Unity.exe: {}".format(exc))
 
 
-def launch_unity(project_path, unity_exe_path, unity_log_path=None):
+def launch_unity(project_path, unity_exe_path, unity_log_path=None, extra_args=None, env=None):
+    """Cold-start Unity for a project this CLI owns.
+
+    extra_args are caller-supplied argv tokens (from --unity-launch-arg and/or
+    UNITY_PUER_EXEC_UNITY_LAUNCH_ARGS). They are appended after CLI-owned args and
+    cannot rebind -projectPath, -logFile, or the activation switch.
+    """
     args = [
         unity_exe_path,
         "-projectPath",
         str(project_path),
+        # The control service no longer starts implicitly, so a CLI-driven launch
+        # has to ask for it. Passing it on every launch is what keeps this change
+        # invisible to CLI callers: they still get an Editor that is controllable
+        # and, via -logFile below, privately observable.
+        CONTROL_ACTIVATION_SWITCH,
     ]
     if unity_log_path:
         args.extend(["-logFile", str(unity_log_path)])
+    args.extend(merge_unity_launch_args(cli_args=extra_args, env=env))
     try:
         process = subprocess.Popen(args)
     except OSError as exc:
@@ -179,37 +257,51 @@ def ensure_stopped(
     mode="inspect",
     timeout_seconds=DEFAULT_STOP_TIMEOUT_SECONDS,
     resolve_project_path_fn=None,
-    read_session_artifact_fn=None,
-    session_artifact_path_fn=None,
-    list_unity_pids_fn=None,
+    read_endpoint_publication_fn=None,
+    endpoint_publication_path_fn=None,
+    lockfile_held_fn=None,
     is_pid_running_fn=None,
     default_base_url=None,
     time_ref=None,
 ):
-    list_unity_pids_fn = list_unity_pids if list_unity_pids_fn is None else list_unity_pids_fn
+    """Decide whether a project is stopped, from that project's own state.
+
+    Every caller asks "is any Editor still serving this project". The rule this
+    replaces answered two different questions instead, and both diverged from that
+    one exactly when it mattered. With a session record present it asked "is the pid
+    I wrote down earlier gone", which reports stopped while an Editor the record
+    never knew about is live and answering -- that is what let a real-host case
+    attach to a Hub-launched Editor and observe the shared per-user log. With no
+    record it asked "is the machine free of Unity.exe", so any unrelated Editor made
+    it report "not stopped" forever, on a machine the project explicitly supports.
+
+    The project's Unity lockfile answers the actual question, for any Editor,
+    regardless of who started it and of what else runs on the machine. The
+    publication supplies a process to stop when one is needed -- and only ever a
+    process the target project's own Editor named, so a stop can no longer reach an
+    Editor belonging to a different project.
+    """
     is_pid_running_fn = is_pid_running if is_pid_running_fn is None else is_pid_running_fn
+    lockfile_held_fn = _project_lockfile_is_held if lockfile_held_fn is None else lockfile_held_fn
     time_ref = time_module if time_ref is None else time_ref
 
     resolved_project_path = resolve_project_path_fn(project_path)
-    session_data = read_session_artifact_fn(resolved_project_path)
+    publication = read_endpoint_publication_fn(resolved_project_path)
     session = UnitySession(
         owner="project_control",
-        base_url=(session_data or {}).get("base_url", default_base_url),
+        base_url=(publication or {}).get("base_url", default_base_url),
         project_path=resolved_project_path,
-        unity_pid=(session_data or {}).get("unity_pid"),
+        unity_pid=(publication or {}).get("unity_pid"),
         launched=False,
     )
     session.diagnostics = {
-        "unity_pids": list_unity_pids_fn(),
-        "session_artifact_path": str(session_artifact_path_fn(resolved_project_path)),
-        "session_artifact_exists": session_data is not None,
+        "stop_rule": "project_lockfile",
+        "endpoint_publication_path": str(endpoint_publication_path_fn(resolved_project_path)),
+        "endpoint_publication_exists": publication is not None,
+        "project_lockfile_held": lockfile_held_fn(resolved_project_path),
     }
 
-    target_pid = session.unity_pid
-    if target_pid is None:
-        return len(session.diagnostics["unity_pids"]) == 0, session
-
-    if not is_pid_running_fn(target_pid):
+    if not session.diagnostics["project_lockfile_held"]:
         return True, session
 
     if mode == "inspect":
@@ -218,12 +310,22 @@ def ensure_stopped(
     if mode == "timeout_then_kill":
         deadline = time_ref.time() + timeout_seconds
         while time_ref.time() < deadline:
-            if not is_pid_running_fn(target_pid):
+            if not lockfile_held_fn(resolved_project_path):
+                session.diagnostics["project_lockfile_held"] = False
                 return True, session
             time_ref.sleep(POLL_INTERVAL_SECONDS)
         mode = "immediate_kill"
 
     if mode == "immediate_kill":
+        target_pid = session.unity_pid
+        if target_pid is None:
+            # A held lockfile with nothing published is a running Editor this CLI
+            # was never given a handle on. Killing something to make the answer
+            # true is exactly the failure this rule exists to prevent, so it
+            # reports the Editor instead.
+            session.diagnostics["kill_skipped_reason"] = "no_published_process_to_target"
+            return False, session
+
         result = subprocess.run(
             ["taskkill", "/PID", str(target_pid), "/T", "/F"],
             stdout=subprocess.PIPE,
@@ -231,15 +333,19 @@ def ensure_stopped(
             universal_newlines=True,
             check=False,
         )
+        session.diagnostics["taskkill_target_pid"] = target_pid
         session.diagnostics["taskkill_stdout"] = result.stdout.strip()
         session.diagnostics["taskkill_stderr"] = result.stderr.strip()
         session.diagnostics["taskkill_exit_code"] = result.returncode
         settle_deadline = time_ref.time() + max(POLL_INTERVAL_SECONDS, min(timeout_seconds, 2.0))
         while time_ref.time() < settle_deadline:
-            if not is_pid_running_fn(target_pid):
+            if not lockfile_held_fn(resolved_project_path):
+                session.diagnostics["project_lockfile_held"] = False
                 return True, session
             time_ref.sleep(POLL_INTERVAL_SECONDS)
-        return not is_pid_running_fn(target_pid), session
+        still_held = lockfile_held_fn(resolved_project_path)
+        session.diagnostics["project_lockfile_held"] = still_held
+        return not still_held, session
 
     return False, session
 

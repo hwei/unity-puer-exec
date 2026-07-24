@@ -38,7 +38,12 @@ MARKER_PATTERN = r"(?m)^\[UnityPuerExecResult\] (.+)$"
 PREFERRED_CONTROL_PORT = 55231
 CONTROL_PORT_ATTEMPTS = 20
 CONTROL_PORT_RANGE_END = PREFERRED_CONTROL_PORT + CONTROL_PORT_ATTEMPTS  # exclusive
-BATCH_SKIP_LOG_LINE = "[UnityPuerExec] Skipping control service start in batch-mode process"
+# Uniform activation gate (UnityPuerExecServer.StartIfActivated). The service no
+# longer has a batch-mode-only suppression; absence of the switch is what skips.
+BATCH_NOT_ACTIVATED_LOG_LINE = (
+    "[UnityPuerExec] Control service not activated for this process."
+)
+CONTROL_ACTIVATION_SWITCH = "-unityPuerExecControl"
 READY_LOG_PREFIX = "[UnityPuerExec] Ready on port"
 BIND_FAILURE_LOG_PREFIX = "[UnityPuerExec] Failed to bind any port"
 BATCH_RUN_TIMEOUT_SECONDS = 600
@@ -188,27 +193,35 @@ def _preferred_port_is_free():
         probe.close()
 
 
-def _run_batch_mode_unity(unity_exe_path, project_path, timeout_seconds=BATCH_RUN_TIMEOUT_SECONDS):
+def _run_batch_mode_unity(
+    unity_exe_path,
+    project_path,
+    timeout_seconds=BATCH_RUN_TIMEOUT_SECONDS,
+    activate=False,
+):
     """Launch a one-shot batch-mode Unity process and capture its log.
 
-    Returns (exit_code, log_path, log_text). The caller owns deleting log_path.
-    Raises subprocess.TimeoutExpired if the process does not exit in time.
+    When activate is True, the process is launched with the control-service
+    activation switch so the uniform activation rule can be exercised in both
+    directions. Returns (exit_code, log_path, log_text). The caller owns deleting
+    log_path. Raises subprocess.TimeoutExpired if the process does not exit in time.
     """
     handle = tempfile.NamedTemporaryFile(prefix="upe-batch-", suffix=".log", delete=False)
     log_path = Path(handle.name)
     handle.close()
-    process = subprocess.Popen(
-        [
-            str(unity_exe_path),
-            "-batchMode",
-            "-nographics",
-            "-quit",
-            "-projectPath",
-            str(project_path),
-            "-logFile",
-            str(log_path),
-        ]
-    )
+    args = [
+        str(unity_exe_path),
+        "-batchMode",
+        "-nographics",
+        "-quit",
+        "-projectPath",
+        str(project_path),
+        "-logFile",
+        str(log_path),
+    ]
+    if activate:
+        args.append(CONTROL_ACTIVATION_SWITCH)
+    process = subprocess.Popen(args)
     try:
         exit_code = process.wait(timeout=timeout_seconds)
     except subprocess.TimeoutExpired:
@@ -1188,8 +1201,12 @@ class RealHostIntegrationTests(unittest.TestCase):
                 ]
             )
 
-    def test_batch_mode_process_suppresses_control_service_against_real_host(self):
-        """A batch-mode Unity process must skip the control service.
+    def test_batch_mode_process_follows_uniform_activation_rule_against_real_host(self):
+        """Batch mode follows the uniform activation rule, not a mode exception.
+
+        Without the activation switch the service does not start; with it, the
+        service does start and binds a control port. Both directions are the same
+        rule as an interactive process — batch mode is no longer a special case.
 
         Prerequisite: the host project must NOT be open in an interactive Editor.
         A batch-mode launch needs the exclusive project lock, so this test skips
@@ -1203,30 +1220,73 @@ class RealHostIntegrationTests(unittest.TestCase):
                 "batch-mode launch needs the exclusive project lock".format(running_pids)
             )
 
+        # Direction 1: no activation switch → service does not start.
         try:
             exit_code, log_path, log_text = _run_batch_mode_unity(
-                self.unity_exe_path, self.project_path
+                self.unity_exe_path, self.project_path, activate=False
             )
         except subprocess.TimeoutExpired:
-            self.skipTest("batch-mode Unity did not exit within the timeout")
+            self.skipTest("batch-mode Unity (no switch) did not exit within the timeout")
             return
 
         try:
             self.assertIn(
-                BATCH_SKIP_LOG_LINE,
+                BATCH_NOT_ACTIVATED_LOG_LINE,
                 log_text,
-                "batch-mode log did not record the control-service skip line; "
+                "batch-mode log without activation did not record the not-activated line; "
                 "exit_code={} log={}".format(exit_code, log_path),
             )
             self.assertNotIn(
                 READY_LOG_PREFIX,
                 log_text,
-                "batch-mode process unexpectedly reported a control-port bind; log={}".format(log_path),
+                "batch-mode process without activation reported a control-port bind; "
+                "log={}".format(log_path),
             )
             self.assertNotIn(
                 BIND_FAILURE_LOG_PREFIX,
                 log_text,
-                "batch-mode process reported a whole-range bind failure; log={}".format(log_path),
+                "batch-mode process without activation reported a whole-range bind failure; "
+                "log={}".format(log_path),
+            )
+        finally:
+            log_path.unlink(missing_ok=True)
+
+        # Direction 2: with activation switch → service starts.
+        # Re-check the lock: the previous batch process should have released it,
+        # but an unrelated Editor opening the host mid-test would make this race.
+        running_pids = unity_session._list_unity_pids()
+        if running_pids:
+            self.skipTest(
+                "Unity process appeared after the no-switch batch run (pids={}); "
+                "cannot stage the with-activation direction".format(running_pids)
+            )
+
+        try:
+            exit_code, log_path, log_text = _run_batch_mode_unity(
+                self.unity_exe_path, self.project_path, activate=True
+            )
+        except subprocess.TimeoutExpired:
+            self.skipTest("batch-mode Unity (with switch) did not exit within the timeout")
+            return
+
+        try:
+            self.assertNotIn(
+                BATCH_NOT_ACTIVATED_LOG_LINE,
+                log_text,
+                "batch-mode log with activation still recorded the not-activated line; "
+                "exit_code={} log={}".format(exit_code, log_path),
+            )
+            self.assertIn(
+                READY_LOG_PREFIX,
+                log_text,
+                "batch-mode process with activation did not report a control-port bind; "
+                "exit_code={} log={}".format(exit_code, log_path),
+            )
+            self.assertNotIn(
+                BIND_FAILURE_LOG_PREFIX,
+                log_text,
+                "batch-mode process with activation reported a whole-range bind failure; "
+                "log={}".format(log_path),
             )
         finally:
             log_path.unlink(missing_ok=True)
@@ -1369,6 +1429,49 @@ class RealHostIntegrationTests(unittest.TestCase):
         finally:
             # Release the preferred port so the Editor can reclaim it on its next reload.
             binder.stop()
+
+    def test_cli_launched_host_is_observed_through_a_project_private_log_against_real_host(self):
+        """The host writes where the CLI observes, and neither is the shared per-user log.
+
+        This closes the loop the rest of the suite depends on: every other case takes
+        byte offsets against whatever log the CLI resolved, and those offsets are only
+        meaningful if that file belongs to this Editor alone. No case here passes
+        --unity-log-path, so the isolation has to come from the launch default.
+        """
+        expected_log_path = self.project_path / "Temp" / "UnityPuerExec" / "Editor.log"
+
+        ready_exit_code, ready_payload, _, _ = _warm_up_project_exec(self.project_path, self.unity_exe_path)
+        self.assertEqual(ready_exit_code, 0, ready_payload)
+
+        # The Editor states its own log path, and it is the project-private one.
+        base_url, health_payload = _scan_ready_control_endpoint(self.project_path)
+        self.assertIsNotNone(base_url, "no ready control endpoint owned by the host project")
+        reported = health_payload.get("console_log_path")
+        self.assertTrue(reported, "ready /health did not report console_log_path: {}".format(health_payload))
+        self.assertEqual(
+            Path(reported),
+            expected_log_path,
+            "the host Editor is writing to {} rather than its project-private log".format(reported),
+        )
+        self.assertNotEqual(Path(reported), unity_session_logs.default_editor_log_path())
+        self.assertTrue(Path(reported).exists(), "the reported log path does not exist on disk")
+
+        # The CLI observes that same file, and says so rather than leaving the caller
+        # to infer whether the path was stated or assumed.
+        source_exit_code, source_payload, _, _ = _run_cli(
+            ["get-log-source", "--project-path", str(self.project_path)]
+        )
+        self.assertEqual(source_exit_code, 0, source_payload)
+        result = source_payload["result"]
+        self.assertEqual(Path(result["path"]), expected_log_path)
+        self.assertIn(
+            result["resolution_tier"],
+            (
+                unity_session_logs.LOG_SOURCE_TIER_PUBLISHED_ENDPOINT,
+                unity_session_logs.LOG_SOURCE_TIER_CONTROL_SERVICE,
+            ),
+            "the observed log path was assumed rather than stated: {}".format(result),
+        )
 
 
 if __name__ == "__main__":

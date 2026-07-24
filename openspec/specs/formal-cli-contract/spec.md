@@ -6,7 +6,9 @@ Define the durable machine-facing contract for the `unity-puer-exec` CLI, includ
 ## Requirements
 ### Requirement: The CLI has one primary entry and flat command tree
 
-The formal CLI SHALL use `unity-puer-exec` as its single primary entry. The authoritative flat command tree SHALL include `wait-for-log-pattern`, `wait-for-exec`, `wait-for-result-marker`, `get-log-source`, `get-log-briefs`, `exec`, `ensure-stopped`, `resolve-blocker`, `get-blocker-state`, `get-compile-errors`, and `get-compile-warnings`.
+The formal CLI SHALL use `unity-puer-exec` as its single primary entry. The authoritative flat command tree SHALL include `wait-for-log-pattern`, `wait-for-exec`, `wait-for-result-marker`, `wait-for-compile`, `get-log-source`, `get-log-briefs`, `exec`, `ensure-stopped`, `resolve-blocker`, `get-blocker-state`, `get-compile-errors`, and `get-compile-warnings`.
+
+This tree SHALL be the single declaration of the CLI's command set. The invocable command surface, the per-command help tiers, the top-level command summary, and runtime guidance coverage SHALL all be defined over exactly this set, so a command cannot be invocable while being absent from help or guidance.
 
 When distributed as a binary, the entry SHALL be `unity-puer-exec.exe` on Windows. The executable name (without extension) SHALL match the package name style. Agents and callers SHALL discover the binary by searching for `unity-puer-exec.exe` within the consuming Unity project's package cache, at the path `<PackageCache>/com.txcombo.unity-puer-exec@<version>/CLI~/unity-puer-exec.exe`.
 
@@ -23,6 +25,33 @@ When distributed as a binary, the entry SHALL be `unity-puer-exec.exe` on Window
 - **THEN** the agent searches for `unity-puer-exec.exe` within the project directory
 - **AND** the binary is located under `Library/PackageCache/com.txcombo.unity-puer-exec@<version>/CLI~/`
 - **AND** the binary provides the same command surface as the Python source entry
+
+#### Scenario: Invocable set and documented set agree
+
+- **WHEN** the set of commands the CLI accepts is compared with the set that answers help tiers, the set summarized in top-level help, and the set covered by runtime guidance
+- **THEN** all four sets are the same set
+- **AND** no command is invocable while absent from any of them
+
+### Requirement: Every command in the flat command tree answers every help tier
+
+Each command in the authoritative flat command tree SHALL answer `--help`, `--help-args`, and `--help-status` with rendered help content. A command SHALL NOT reject a help tier as an unrecognized argument, because a caller that discovered the command from the CLI's own usage output has no other way to learn its arguments or statuses.
+
+#### Scenario: Every command answers the help tiers
+
+- **WHEN** a caller invokes `<command> --help`, `<command> --help-args`, or `<command> --help-status` for any command in the flat command tree
+- **THEN** the CLI renders the corresponding help content
+- **AND** exits successfully
+
+#### Scenario: Compile-message commands answer help like any other command
+
+- **WHEN** a caller invokes `get-compile-errors --help` or `get-compile-warnings --help`
+- **THEN** the CLI renders command help rather than reporting `--help` as an unrecognized argument
+
+#### Scenario: Every command appears in top-level help
+
+- **WHEN** a caller invokes `unity-puer-exec --help`
+- **THEN** every command in the flat command tree appears in the command summary
+- **AND** a caller can reach each command's own help from that summary
 
 ### Requirement: Selector-driven commands use mutually exclusive addressing
 
@@ -252,7 +281,9 @@ If session identity checking is needed for safe execution or observation, the fo
 
 ### Requirement: Observation and stop commands keep their boundary
 
-`wait-for-log-pattern` and `get-log-source` SHALL remain observation commands. `ensure-stopped` SHALL remain the stopped-state command. Observation commands MUST NOT imply Unity launch ownership, and `ensure-stopped` in base-url mode MUST NOT kill the target. Process-liveness detection used by `ensure-stopped` SHALL be independent of the host operating system's display language, so that a recorded session PID that is no longer running is reported as stopped regardless of locale.
+`wait-for-log-pattern` and `get-log-source` SHALL remain observation commands. `ensure-stopped` SHALL remain the stopped-state command. Observation commands MUST NOT imply Unity launch ownership, and `ensure-stopped` in base-url mode MUST NOT kill the target.
+
+In project mode, `ensure-stopped` SHALL decide whether the project is stopped from project-local state — the project's Unity lockfile and the Editor's published endpoint — rather than from a process id recorded earlier or from a machine-wide count of Unity processes. A stop action SHALL target only a process the published endpoint identifies as belonging to the target project. Process-liveness detection SHALL be independent of the host operating system's display language.
 
 #### Scenario: Agent checks observable log source
 
@@ -266,31 +297,60 @@ If session identity checking is needed for safe execution or observation, the fo
 - **THEN** the command may inspect state only
 - **AND** it does not perform kill behavior against that direct-service target
 
+#### Scenario: Project with no running Editor is reported stopped
+
+- **WHEN** `ensure-stopped` (project mode) runs and the project's Unity lockfile is not held
+- **THEN** the command reports the target as `stopped`
+- **AND** it reports so regardless of how many unrelated Unity Editor processes are running on the machine
+
+#### Scenario: A live Editor is not reported stopped
+
+- **WHEN** `ensure-stopped` (project mode) runs and the project's Unity lockfile is held
+- **THEN** the command does not report the target as `stopped`
+- **AND** it reports so regardless of whether any earlier session record named a process that has since exited
+
+#### Scenario: A stop action never targets another project
+
+- **WHEN** `ensure-stopped` performs a kill in project mode
+- **THEN** the process it targets is the one the target project's published endpoint identifies
+- **AND** no process belonging to a different project is targeted
+
 #### Scenario: Stopped detection does not depend on OS display language
 
-- **WHEN** `ensure-stopped` (project-path mode) evaluates a recorded session PID that is no longer running on a non-English Windows host
-- **THEN** the command reports the target as `stopped`
-- **AND** it does not classify the dead PID as still running because of a localized process-listing message
+- **WHEN** `ensure-stopped` (project-path mode) evaluates process liveness on a non-English Windows host
+- **THEN** the reported result reflects actual process state
+- **AND** it is not altered by a localized process-listing message
 
 ### Requirement: Log source resolution supports custom project-scoped paths
 
-CLI log-related commands SHALL support an effective Unity log source that is not limited to the platform default Editor log path. After a valid `session_marker` exists, the CLI SHALL treat the session artifact as the authoritative source for `effective_log_path`. Before a valid `session_marker` exists, callers that depend on a non-default log location SHALL provide `--unity-log-path`; otherwise the CLI MAY fall back to the platform default path.
+CLI log-related commands SHALL support an effective Unity log source that is not limited to the platform default Editor log path. The CLI SHALL resolve the effective log source in this order: an explicit `--unity-log-path` supplied by the caller, then the console log path published by the project's Editor, then the platform default path as a last resort. The CLI SHALL NOT resolve the effective log path from a session record it wrote itself. `get-log-source` SHALL report which of these tiers produced the effective path, so a caller can distinguish an observed log the Editor named from one the CLI assumed.
 
-#### Scenario: Post-session observation uses the artifact log path
+#### Scenario: Published path outranks the platform default
 
-- **WHEN** a valid session artifact exists with both `session_marker` and `effective_log_path`
-- **THEN** `get-log-source` reports that effective path
-- **AND** log-observation commands use the same path for waiting and extraction
+- **WHEN** no explicit `--unity-log-path` is supplied
+- **AND** the project's Editor publishes a console log path
+- **THEN** the CLI uses the published path
+- **AND** the CLI does not use the platform default path
 
-#### Scenario: Pre-session observation requires an explicit non-default path
+#### Scenario: Explicit caller intent wins
 
-- **WHEN** a caller relies on a non-default Unity log path before a valid `session_marker` exists
-- **THEN** the caller provides `--unity-log-path` on the log-related command
-- **AND** the CLI uses that explicit path instead of the platform default path
+- **WHEN** a caller supplies `--unity-log-path` and the Editor publishes a different path
+- **THEN** the CLI uses the caller-supplied path
+
+#### Scenario: No published path is available
+
+- **WHEN** no explicit path is supplied and no Editor publication can be read
+- **THEN** the CLI falls back to the platform default path as a last resort
+
+#### Scenario: Caller can tell a named path from an assumed one
+
+- **WHEN** a caller invokes `get-log-source`
+- **THEN** the response identifies which resolution tier produced the effective path
+- **AND** a path obtained from the Editor's publication is distinguishable from the platform default fallback
 
 ### Requirement: Launch-driven sessions can request a custom Unity log path
 
-When `unity-puer-exec` launches Unity for a project-scoped workflow, the CLI SHALL support a caller-controlled path for the Unity Editor log so launch-driven sessions can intentionally avoid the default log location.
+When `unity-puer-exec` launches Unity for a project-scoped workflow, the CLI SHALL support a caller-controlled path for the Unity Editor log so launch-driven sessions can intentionally avoid the default log location. When no caller-controlled path is supplied, the CLI SHALL still avoid the platform default per-user log location and launch the Editor against a log private to the target project, so an unrelated Editor cannot share the log the session is observed through.
 
 #### Scenario: Caller requests a custom log file during launch
 
@@ -298,6 +358,13 @@ When `unity-puer-exec` launches Unity for a project-scoped workflow, the CLI SHA
 - **THEN** Unity is launched with that log-path override
 - **AND** before `session_marker` is available, later log-related commands may continue providing the same `--unity-log-path`
 - **AND** once `session_marker` exists, the session artifact records `effective_log_path` so later commands can omit the flag
+
+#### Scenario: Launch without an explicit path still avoids the shared log
+
+- **WHEN** a caller invokes a launch-driven command without `--unity-log-path`
+- **THEN** Unity is launched against a log location private to the target project
+- **AND** that location is distinct from the platform default per-user Editor log
+- **AND** the session artifact records it as `effective_log_path` so later commands need no flag
 
 ### Requirement: Formal command results are machine-readable JSON
 
@@ -694,13 +761,19 @@ The formal CLI help surface SHALL include a `--help-example` entry for component
 
 ### Requirement: --code help warns about PowerShell $ expansion
 
-The `--code` argument help text SHALL include a note that PowerShell users should use single quotes (`'...'`) when the code contains `$` characters (such as `$typeof`), or use `--file` as an alternative.
+The `--code` argument help text SHALL include a note that PowerShell users should use single quotes (`'...'`) when the code contains `$` characters (such as `$typeof`), or use `--file` as an alternative. The note SHALL also appear in `exec --help`, so a caller composing an inline `--code` value encounters it without first opening the argument help tier. The note SHALL state that shell expansion of `$` produces a JavaScript syntax error that does not name the shell as its cause.
 
 #### Scenario: Agent reads --code help on PowerShell
 
 - **WHEN** an agent reads `unity-puer-exec exec --help-args` on a Windows/PowerShell system
 - **THEN** the argument help for `--code` mentions PowerShell single-quote usage for code containing `$`
 - **AND** the help points to `--file` as the preferred alternative for multi-line or `$`-containing scripts
+
+#### Scenario: Agent reads exec help before composing inline code
+
+- **WHEN** an agent reads `unity-puer-exec exec --help`
+- **THEN** the PowerShell single-quote note is present without requiring `--help-args`
+- **AND** the note explains that shell expansion of `$` surfaces as a JavaScript syntax error rather than as a quoting error
 
 ### Requirement: get-compile-errors command retrieves compile error details
 
@@ -874,4 +947,283 @@ When the server performs an exec-scoped JsEnv reset, the terminal exec response 
 
 - **WHEN** a recovered exec first returns `running` and the caller later invokes `wait-for-exec`
 - **THEN** the terminal response contains the same recovery metadata stored with the accepted job
+
+### Requirement: Exit code 24 represents version_mismatch
+
+The CLI SHALL reserve exit code `24` for the `version_mismatch` status, so callers can branch on a mixed installation without parsing prose diagnostics and without confusing it with an execution failure or an unreachable target.
+
+#### Scenario: Mismatch exits with the dedicated code
+
+- **WHEN** a command returns `status = "version_mismatch"`
+- **THEN** the process exits with code `24`
+- **AND** the exit code is distinct from `1` (unexpected failure), `12` (`not_available`), and `21` (`unity_not_ready`)
+
+#### Scenario: Status is documented in per-command help
+
+- **WHEN** a caller runs `<command> --help-status` for a command that contacts the Unity control service
+- **THEN** the non-success status list includes `version_mismatch` with its exit code and an explanation naming both product halves
+
+### Requirement: Version mismatch responses identify both halves
+
+A `version_mismatch` response SHALL carry enough structured detail for a caller to reconcile the installation without further queries. It SHALL name which guard fired, the CLI version, the observed counterpart version, and the location the counterpart was observed at.
+
+#### Scenario: Bridge guard response detail
+
+- **WHEN** the bridge guard reports a mismatch
+- **THEN** the response includes the guard identity, the CLI version, the observed `bridge_version` (or null when the bridge reported none), and the control endpoint the version was observed at
+
+#### Scenario: Package-layout guard response detail
+
+- **WHEN** the package-layout guard reports a mismatch
+- **THEN** the response includes the guard identity, the CLI version, the version declared by the adjacent `package.json`, and the path of that package
+
+### Requirement: The CLI accepts a global --version entry
+
+The CLI SHALL accept `--version` at the global position, before any command name, and SHALL report the acting CLI version without requiring a command and without contacting a Unity service. This entry SHALL be documented in top-level help alongside the other global options.
+
+#### Scenario: Bare version query succeeds
+
+- **WHEN** a caller invokes `unity-puer-exec --version` with no command
+- **THEN** the CLI reports the version and does not emit a missing-command usage error
+
+#### Scenario: Top-level help documents the entry
+
+- **WHEN** a caller runs `unity-puer-exec --help`
+- **THEN** the global options section documents `--version`
+
+### Requirement: Machine-readable responses carry the acting CLI version
+
+Every machine-readable CLI response SHALL include a top-level `cli_version` field, so a recorded transcript is sufficient to determine which CLI build produced the observed behavior.
+
+#### Scenario: Every response family carries the field
+
+- **WHEN** any formal command emits a success payload, an expected non-success payload, or an unexpected failure payload
+- **THEN** the payload includes a top-level `cli_version` string
+
+#### Scenario: Field survives response-file projection
+
+- **WHEN** `--response-file` replaces the full payload with a compact reference
+- **THEN** the compact reference retains `cli_version` alongside the existing routing fields
+
+### Requirement: A project without a control service is reported, not silently attached
+
+When a project-scoped command finds a running Editor that has not activated a control service, the CLI SHALL report that condition as a distinct non-success status rather than attaching to whatever endpoint answers a candidate port. The report SHALL be actionable: it SHALL state the ways the caller can proceed. When the error path can identify a reachable service owning the project whose bridge version differs from the CLI or is absent, the condition SHALL be reported as `version_mismatch` per `cli-version-compatibility` rather than as a missing opt-in, so the caller is pointed at aligning the installation instead of at an activation mechanism the running bridge does not provide.
+
+#### Scenario: Running Editor has no control service
+
+- **WHEN** a project-scoped command runs, the project's Unity lockfile is held, and no endpoint is published
+- **THEN** the command reports a distinct status identifying the Editor as not under CLI control
+- **AND** the response states how to proceed rather than only that the command failed
+
+#### Scenario: A version-mismatched bridge is not reported as a missing opt-in
+
+- **WHEN** the project lockfile is held, no endpoint is published, and the error-path scan finds a reachable service owning the project whose bridge version differs from the CLI or is absent
+- **THEN** the command reports `version_mismatch`
+- **AND** the guidance points at aligning the installation rather than at an activation action the running bridge does not provide
+
+#### Scenario: The refusal is not a launch failure
+
+- **WHEN** this status is reported
+- **THEN** it is distinguishable from a failure to launch or a failure to become ready
+- **AND** a caller can tell that the remedy is an activation decision rather than a retry
+
+### Requirement: Project-scoped launch accepts extra Unity argv tokens
+
+When `unity-puer-exec` cold-starts Unity for a project-scoped workflow, the CLI SHALL forward caller-supplied extra argv tokens to the Unity process so a project that needs host-specific Unity switches can be launched under CLI control.
+
+Extra tokens SHALL be accepted from either or both of:
+
+- a repeatable project-path-mode flag `--unity-launch-arg <token>`, each occurrence one argv token
+- the process environment variable `UNITY_PUER_EXEC_UNITY_LAUNCH_ARGS`, whose value is a JSON array of strings
+
+Ambient tokens SHALL be applied first, then flag tokens; exact-token duplicates SHALL be collapsed. Extra tokens SHALL be appended after the CLI-owned launch arguments (`-projectPath`, the control-service activation switch, and the effective `-logFile`).
+
+Tokens that rebind a CLI-owned switch — `-projectPath`, `-logFile`, or `-unityPuerExecControl` (case insensitive) — SHALL be rejected as a usage error rather than applied. An invalid ambient JSON value SHALL be rejected with a machine-usable reason rather than partially applied.
+
+Extra tokens SHALL apply only when this CLI performs a cold launch. When the CLI attaches to an already-running Editor, supplied tokens SHALL be ignored and SHALL NOT by themselves cause the command to fail. The flag SHALL be valid only in project-path mode; supplying it with `--base-url` SHALL be a usage error.
+
+#### Scenario: Caller supplies a host-required Unity switch on launch
+
+- **WHEN** a project-scoped launch-driven command is invoked with `--unity-launch-arg -force-gles30` and no Editor is yet serving the project
+- **THEN** the launched Unity process receives `-force-gles30` among its argv tokens
+- **AND** the token appears after the CLI-owned `-projectPath`, activation switch, and `-logFile` arguments
+
+#### Scenario: Ambient env supplies launch tokens without a per-command flag
+
+- **WHEN** `UNITY_PUER_EXEC_UNITY_LAUNCH_ARGS` is set to a JSON array such as `["-force-gles30"]`
+- **AND** a project-scoped command cold-starts Unity without `--unity-launch-arg`
+- **THEN** the launched Unity process receives those ambient tokens
+
+#### Scenario: Flag and ambient tokens merge without duplicating exact matches
+
+- **WHEN** the ambient variable and `--unity-launch-arg` both contribute the same token
+- **THEN** the launched argv contains that token once
+
+#### Scenario: CLI-owned switches cannot be rebound by passthrough
+
+- **WHEN** a caller supplies `--unity-launch-arg -projectPath` or an ambient token equal to `-logFile` or `-unityPuerExecControl` (any case)
+- **THEN** the command fails as a usage error before Unity is launched
+- **AND** the error states that those switches are owned by the CLI
+
+#### Scenario: Invalid ambient JSON is rejected
+
+- **WHEN** `UNITY_PUER_EXEC_UNITY_LAUNCH_ARGS` is set to a value that is not a JSON array of strings
+- **THEN** a launch-driven command fails with a machine-usable reason naming the variable
+- **AND** Unity is not launched with a partial or guessed token list
+
+#### Scenario: Passthrough tokens are ignored on attach
+
+- **WHEN** a project-scoped command finds a controlled Editor already serving the project
+- **AND** the caller also supplied `--unity-launch-arg` tokens
+- **THEN** the command attaches without launching
+- **AND** it does not fail solely because the tokens were supplied
+
+#### Scenario: Passthrough flag is project-path only
+
+- **WHEN** a caller supplies `--unity-launch-arg` together with `--base-url`
+- **THEN** the command fails as a usage error
+- **AND** it does not target the supplied base URL
+
+### Requirement: Parse-level usage failures emit the machine-readable envelope
+
+A usage failure detected while parsing arguments SHALL produce the same machine-readable JSON envelope as a usage failure detected after parsing. The CLI SHALL NOT emit an unstructured argument-parser usage block as the sole response to a rejected invocation.
+
+#### Scenario: Unrecognized option produces JSON
+
+- **WHEN** a caller passes an option the invoked command does not accept
+- **THEN** the response is a JSON payload carrying `ok`, `status`, and `error`
+- **AND** the process exits with code `2`
+- **AND** no bare argument-parser usage block is emitted as the response
+
+#### Scenario: Missing required argument produces JSON
+
+- **WHEN** a caller omits an argument the invoked command requires
+- **THEN** the response is a JSON payload carrying `ok`, `status`, and `error`
+- **AND** the process exits with code `2`
+
+#### Scenario: Rejected invocation before any command work
+
+- **WHEN** an invocation is rejected at the parse layer
+- **THEN** no Unity service is contacted and no command work is performed
+
+### Requirement: Parse-level usage failures report status invalid_arguments
+
+The CLI SHALL report `invalid_arguments` as the status for a usage failure detected at the parse layer, distinguishing it from `failed`, which denotes an unexpected execution failure. The exit code SHALL remain `2`.
+
+#### Scenario: Status distinguishes usage from execution failure
+
+- **WHEN** an invocation is rejected at the parse layer
+- **THEN** the response status is `invalid_arguments`
+- **AND** the status is not `failed`
+- **AND** the exit code is `2` rather than `1`
+
+#### Scenario: Status is documented once for the CLI
+
+- **WHEN** a caller consults help for usage-failure behavior
+- **THEN** `invalid_arguments` and its exit code are documented as a CLI-wide usage status
+
+### Requirement: Usage failures identify the invoked command and its help tier
+
+A usage-failure response SHALL name the command the caller was invoking, when a command is identifiable from the invocation, and SHALL direct the caller to that command's argument help rather than to the top-level command list.
+
+#### Scenario: Unrecognized option on a subcommand
+
+- **WHEN** a caller passes an unrecognized option to a recognized command
+- **THEN** the response names that command
+- **AND** the response directs the caller to that command's argument help
+- **AND** the response does not present only the top-level list of command names
+
+#### Scenario: No recognizable command in the invocation
+
+- **WHEN** an invocation contains no recognizable command token
+- **THEN** the response reports the failure at the top-level surface
+- **AND** directs the caller to top-level help
+
+### Requirement: Usage failures suggest a near-matching option when one exists
+
+When a rejected option string closely resembles an option that the invoked command does accept, the response SHALL include that near match. When no candidate is sufficiently similar, the response SHALL omit any suggestion rather than offer a weak one.
+
+#### Scenario: Close guess is redirected
+
+- **WHEN** a caller passes `--timeout-ms` to `exec`, which accepts `--wait-timeout-ms`
+- **THEN** the response includes `--wait-timeout-ms` as a near match
+
+#### Scenario: Candidates come from the invoked command
+
+- **WHEN** a near match is computed for a rejected option
+- **THEN** the candidates are the option strings accepted by the invoked command
+- **AND** options belonging only to other commands are not offered
+
+#### Scenario: No sufficiently similar option
+
+- **WHEN** a rejected option resembles no option of the invoked command closely enough
+- **THEN** the response omits a near-match suggestion
+
+### Requirement: Help states the exec script environment boundary
+
+Published exec script-authoring help SHALL state that an `exec` script runs in an execution environment separate from the host application's own JavaScript runtime environment, and that it therefore cannot reach that runtime's global variables, module-level state, or singletons. Help SHALL identify the shared C#/Unity object graph as the supported route from an `exec` script to a running application.
+
+#### Scenario: Agent reads exec help before authoring a script
+
+- **WHEN** an agent reads `unity-puer-exec exec --help` or `exec --help-args`
+- **THEN** the help states that the script environment is separate from the host application's JavaScript runtime environment
+- **AND** the help states that the application's globals, module state, and singletons are not reachable from the script
+- **AND** the help identifies the shared C#/Unity object graph as the supported route to the running application
+
+#### Scenario: Boundary is stated alongside the context contract
+
+- **WHEN** help describes `ctx.globals` as same-service shared state
+- **THEN** help also makes clear that this shared state is shared between `exec` requests, not shared with the host application's own JavaScript runtime
+
+### Requirement: Help documents a cross-environment coordination pattern
+
+Because the boundary alone tells a caller only what does not work, help SHALL describe the generic pattern that does: place or read state through shared C#/Unity objects that both sides can observe, and confirm the outcome through log-based observation. The pattern SHALL be described without depending on any particular UI framework or application architecture.
+
+#### Scenario: Agent needs the running application to perform work
+
+- **WHEN** an agent reads help while looking for a way to invoke the host application's own JavaScript functions
+- **THEN** help describes shared-object coordination plus log observation as the supported approach
+- **AND** help does not describe any mechanism for calling into the host application's JavaScript runtime directly
+
+### Requirement: Help scopes framework-specific technique to project-local skills
+
+Help SHALL state that application-framework-specific technique — UI widget-tree traversal, event invocation conventions, and application-specific operations — is outside the scope of this CLI's help and belongs in a project-local skill.
+
+#### Scenario: Agent looks for UI-framework instructions in help
+
+- **WHEN** an agent consults CLI help for how to locate and drive UI widgets in a specific UI framework
+- **THEN** help states that such technique belongs in a project-local skill
+- **AND** help does not contain framework-specific widget or event instructions
+
+### Requirement: Help states that PlayMode transitions are asynchronous requests
+
+Help SHALL state that setting the Unity Editor play state through `exec` issues a request rather than completing a transition, that the `exec` response returning successfully does not establish that the transition finished, and that application-layer readiness is a separate condition from the play state itself. Help SHALL present the generic sequence: request the transition, confirm the play state changed, then wait for the readiness signal the task requires.
+
+#### Scenario: Agent switches PlayMode before acting
+
+- **WHEN** an agent reads help before setting the Editor play state from a script
+- **THEN** help states that a successful `exec` response means the transition was requested, not completed
+- **AND** help states that application-layer systems may not be ready even after the play state has changed
+- **AND** help presents the request, confirm, then wait-for-readiness sequence
+
+### Requirement: Help distinguishes log range start from end by observation intent
+
+Help SHALL state which end of a response `log_range` to use as `--start-offset` for each observation intent: `log_range.start` when waiting for output that the originating command itself produced, and `log_range.end` when observing activity that follows it.
+
+#### Scenario: Agent chooses an observation checkpoint
+
+- **WHEN** an agent reads help or a help example that passes a `log_range` value to `--start-offset`
+- **THEN** help states that `log_range.start` applies when the awaited output came from the originating command
+- **AND** help states that `log_range.end` applies when the awaited activity follows the originating command
+
+### Requirement: Help states what the observation guards each protect against
+
+Help SHALL state the distinct failure that `--start-offset` and `--expected-session-marker` each prevent: `--start-offset` prevents matching output produced before the intended observation window, and `--expected-session-marker` prevents accepting observation from a different Editor session. Help SHALL make clear that these address different failures rather than being alternatives.
+
+#### Scenario: Agent configures a guarded observation
+
+- **WHEN** an agent reads `wait-for-log-pattern --help-args` or a related help example
+- **THEN** help states that `--start-offset` guards against stale output from before the intended window
+- **AND** help states that `--expected-session-marker` guards against observing a different Editor session
+- **AND** help indicates that the two guards cover different failures and are complementary
 

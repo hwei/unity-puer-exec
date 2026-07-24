@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+import argparse
+import difflib
 import hashlib
 import json
 import os
@@ -8,6 +10,7 @@ import tempfile
 import time
 import uuid
 
+import cli_version
 import direct_exec_client
 import help_surface
 import unity_log_brief
@@ -25,9 +28,14 @@ EXIT_REQUEST_ID_CONFLICT = direct_exec_client.EXIT_REQUEST_ID_CONFLICT
 EXIT_MODAL_BLOCKED = direct_exec_client.EXIT_MODAL_BLOCKED
 EXIT_MODULE_CACHE_STALE = direct_exec_client.EXIT_MODULE_CACHE_STALE
 EXIT_UNITY_COMPILE_ERROR = direct_exec_client.EXIT_UNITY_COMPILE_ERROR
+EXIT_VERSION_MISMATCH = direct_exec_client.EXIT_VERSION_MISMATCH
 EXIT_SESSION_STATE = 14
 EXIT_NO_OBSERVATION_TARGET = 15
 EXIT_NOT_STOPPED = 16
+# A running Editor that never activated a control service. Distinct from a launch
+# failure (20) and a readiness failure (21) so a caller can tell that retrying
+# cannot help and an activation decision is what is missing.
+EXIT_EDITOR_NOT_UNDER_CLI_CONTROL = 17
 EXIT_UNITY_START_FAILED = 20
 EXIT_UNITY_NOT_READY = 21
 STALE_MODULE_POLICY_AUTO_RESET = "auto-reset"
@@ -64,7 +72,101 @@ def usage_error(message, status="failed", command=None, args=None):
     return 2, "", emit_payload(payload)
 
 
-_RESPONSE_FILE_ROUTING_FIELDS = ("ok", "status", "operation", "request_id", "phase", "session_marker")
+# Near-match cutoff for rejected options against the invoked command's own flags.
+# 0.6 keeps the reported `--timeout-ms` → `--wait-timeout-ms` case while omitting weak guesses.
+_OPTION_NEAR_MATCH_CUTOFF = 0.6
+_UNRECOGNIZED_ARGUMENTS_RE = re.compile(r"unrecognized arguments:\s*(.+)$")
+
+
+def _extract_unrecognized_options(message):
+    match = _UNRECOGNIZED_ARGUMENTS_RE.search(message or "")
+    if match is None:
+        return ()
+    return tuple(token for token in match.group(1).split() if token.startswith("-"))
+
+
+def _suggest_option(parser, surface, command, rejected_option):
+    candidates = surface.option_strings_for_command(parser, command)
+    if not candidates:
+        return None
+    matches = difflib.get_close_matches(
+        rejected_option,
+        candidates,
+        n=1,
+        cutoff=_OPTION_NEAR_MATCH_CUTOFF,
+    )
+    return matches[0] if matches else None
+
+
+def _parse_failure_args(argv, command):
+    return argparse.Namespace(
+        command=command,
+        suppress_guidance="--suppress-guidance" in list(argv or ()),
+    )
+
+
+def handle_parse_failure(argv, parser, surface, message):
+    """Build the structured invalid_arguments envelope for a parse-layer rejection."""
+    command = surface.resolve_command_from_argv(argv)
+    payload = {
+        "ok": False,
+        "status": "invalid_arguments",
+        "error": message,
+    }
+    if command is not None:
+        payload["command"] = command
+        for rejected in _extract_unrecognized_options(message):
+            suggestion = _suggest_option(parser, surface, command, rejected)
+            if suggestion is not None:
+                payload["suggested_option"] = suggestion
+                break
+        args = _parse_failure_args(argv, command)
+        _attach_guidance(payload, command, "invalid_arguments", args)
+    else:
+        if "--suppress-guidance" not in list(argv or ()):
+            payload["situation"] = (
+                "The invocation was rejected before any command was identified. "
+                "Consult top-level help for the available commands."
+            )
+            payload["next_steps"] = [
+                {
+                    "command": "--help",
+                    "when": "you want the top-level command list and global options",
+                    "argv": ["unity-puer-exec", "--help"],
+                }
+            ]
+    return 2, "", emit_payload(payload)
+
+
+_RESPONSE_FILE_ROUTING_FIELDS = (
+    "ok",
+    "status",
+    "operation",
+    "request_id",
+    "phase",
+    "session_marker",
+    "cli_version",
+)
+
+
+def _inject_cli_version(text):
+    """Stamp the acting CLI build onto a machine-readable response.
+
+    Applied once at the end of `run_cli`, so every response family carries it --
+    including the normalized exec/wait bodies and usage errors that never pass
+    through the payload builders -- and before the response-file projection, so
+    the compact reference inherits it through the routing fields.
+    """
+    if not text:
+        return text
+    try:
+        body = json.loads(text)
+    except ValueError:
+        return text
+    if not isinstance(body, dict) or "cli_version" in body:
+        return text
+    body["cli_version"] = cli_version.version_text(cli_version.resolve_cli_version())
+    return emit_payload(body)
 
 
 def _atomic_write_bytes(path, data):
@@ -195,8 +297,37 @@ def _stack_trace_logging_degraded(container):
     return isinstance(stack_trace_logging, dict) and bool(stack_trace_logging.get("degraded"))
 
 
-def _apply_log_range_and_brief_sequence(container, log_path, log_start, log_end):
+def _detect_offset_invalidation(log_path, caller_start_offset):
+    """Report a caller-supplied start offset that lies past the end of the log.
+
+    Reading still rescans from the beginning -- dropping the read would be worse --
+    but a byte range recorded before a rotation or truncation no longer denotes the
+    content the caller meant, and absorbing that silently turns into an unexplained
+    wait timeout. An observation that supplies no offset passes None here and cannot
+    trip the signal.
+    """
+    if caller_start_offset is None or log_path is None:
+        return None
+    observed_end = unity_session_logs.read_editor_log_size(log_path)
+    if observed_end is None or caller_start_offset <= observed_end:
+        return None
+    return {
+        "log_path": str(log_path),
+        "supplied_start": caller_start_offset,
+        "observed_end": observed_end,
+        "reason": "log_rotated_or_truncated",
+        "detail": (
+            "the supplied start offset {} is past the end ({}) of the observed log {}; "
+            "the log was rotated or truncated, so earlier byte offsets no longer denote "
+            "the intended content and the scan restarted from the beginning"
+        ).format(caller_start_offset, observed_end, log_path),
+    }
+
+
+def _apply_log_range_and_brief_sequence(container, log_path, log_start, log_end, offsets_invalidated=None):
     container["log_range"] = {"start": log_start, "end": log_end}
+    if offsets_invalidated is not None:
+        container["log_offsets_invalidated"] = offsets_invalidated
     if _stack_trace_logging_degraded(container):
         container["brief_sequence"] = _BRIEF_SEQUENCE_STACKTRACE_OFF
         container["brief_hint"] = _BRIEF_HINT_STACKTRACE_OFF
@@ -205,16 +336,16 @@ def _apply_log_range_and_brief_sequence(container, log_path, log_start, log_end)
     container["brief_sequence"] = unity_log_brief.build_brief_sequence(briefs)
 
 
-def _inject_log_range_into_stdout(stdout_text, log_path, log_start, log_end):
+def _inject_log_range_into_stdout(stdout_text, log_path, log_start, log_end, offsets_invalidated=None):
     if not stdout_text:
         return stdout_text
     body = json.loads(stdout_text)
-    _apply_log_range_and_brief_sequence(body, log_path, log_start, log_end)
+    _apply_log_range_and_brief_sequence(body, log_path, log_start, log_end, offsets_invalidated=offsets_invalidated)
     return emit_payload(body)
 
 
-def _inject_log_range_into_payload(payload, log_path, log_start, log_end):
-    _apply_log_range_and_brief_sequence(payload, log_path, log_start, log_end)
+def _inject_log_range_into_payload(payload, log_path, log_start, log_end, offsets_invalidated=None):
+    _apply_log_range_and_brief_sequence(payload, log_path, log_start, log_end, offsets_invalidated=offsets_invalidated)
 
 
 def resolve_selector(args):
@@ -248,7 +379,58 @@ def unexpected_failure_payload(operation, error, session=None, include_diagnosti
     return attach_diagnostics(payload, include_diagnostics=include_diagnostics, session=session, diagnostics=diagnostics)
 
 
+def version_mismatch_payload(operation, detail):
+    return {
+        "ok": False,
+        "status": cli_version.STATUS_VERSION_MISMATCH,
+        "operation": operation,
+        "error": cli_version.mismatch_message(detail),
+        "version_mismatch": dict(detail),
+    }
+
+
+def _version_mismatch_result(args, detail):
+    payload = version_mismatch_payload(args.command, detail)
+    _attach_guidance(payload, args.command, cli_version.STATUS_VERSION_MISMATCH, args)
+    return EXIT_VERSION_MISMATCH, emit_payload(payload), ""
+
+
+def _local_version_guards(args):
+    """Guards that need nothing but the local installation, run before any work."""
+    argv0 = getattr(args, "argv0", None)
+    resolved = cli_version.resolve_cli_version()
+    detail = cli_version.check_cli_version_known(resolved, argv0=argv0)
+    if detail is not None:
+        return detail
+    return cli_version.check_package_layout(resolved, argv0=argv0)
+
+
+def _base_url_bridge_guard(args):
+    """Bridge guard for the selector that never otherwise probes health.
+
+    A transport failure is not a guard failure: the endpoint reported nothing to
+    compare, and the command's own not_available handling is the right answer.
+    """
+    try:
+        if resolve_selector(args) != "base_url":
+            return None
+    except ValueError:
+        # A malformed selector combination is a usage error; let the command say so
+        # rather than spending a probe on an invocation that cannot run.
+        return None
+    base_url = args.base_url
+    payload, error = unity_session.probe_health_payload(base_url)
+    if payload is None or error is not None:
+        return None
+    return cli_version.check_bridge(cli_version.resolve_cli_version(), base_url, payload)
+
+
 def run_command(args):
+    detail = _local_version_guards(args)
+    if detail is None:
+        detail = _base_url_bridge_guard(args)
+    if detail is not None:
+        return _version_mismatch_result(args, detail)
     try:
         if args.command == "exec":
             return run_exec(args)
@@ -273,6 +455,8 @@ def run_command(args):
         if args.command == "get-compile-warnings":
             return run_get_compile_warnings(args)
         return run_ensure_stopped(args)
+    except unity_session.UnityVersionMismatchError as exc:
+        return _version_mismatch_result(args, exc.detail)
     except ValueError as exc:
         if len(exc.args) >= 2 and isinstance(exc.args[1], str):
             return usage_error(str(exc.args[0]), status=exc.args[1], command=args.command, args=args)
@@ -309,6 +493,19 @@ def run_command(args):
         )
         _attach_guidance(payload, args.command, status, args, request_id=getattr(args, "request_id", None))
         return EXIT_UNITY_NOT_READY, emit_payload(payload), ""
+    except unity_session.UnityEditorNotUnderControlError as exc:
+        # Its own exit code, distinct from launch (20) and readiness (21) failures,
+        # because the remedy is an activation decision rather than a retry.
+        payload = expected_failure_payload(
+            args.command,
+            exc.status,
+            exc,
+            session=exc.session,
+            include_diagnostics=getattr(args, "include_diagnostics", False),
+        )
+        payload["ways_forward"] = list(exc.guidance)
+        _attach_guidance(payload, args.command, exc.status, args)
+        return EXIT_EDITOR_NOT_UNDER_CLI_CONTROL, emit_payload(payload), ""
     except unity_session.UnitySessionStateError as exc:
         payload = expected_failure_payload(
             args.command,
@@ -331,6 +528,9 @@ def run_command(args):
 
 def run_cli(argv, surface, argv0=None):
     filtered_argv = [a for a in argv if a != "--suppress-guidance"]
+    version_result = surface.handle_version(filtered_argv)
+    if version_result is not None:
+        return version_result
     help_result = surface.handle_top_level_help(filtered_argv)
     if help_result is not None:
         return help_result
@@ -338,9 +538,17 @@ def run_cli(argv, surface, argv0=None):
     if help_result is not None:
         return help_result
     parser = surface.build_parser()
-    args = parser.parse_args(argv)
+    try:
+        args = parser.parse_args(argv)
+    except surface.ArgumentParseError as exc:
+        exit_code, stdout_text, stderr_text = handle_parse_failure(argv, parser, surface, exc.message)
+        stdout_text = _inject_cli_version(stdout_text)
+        stderr_text = _inject_cli_version(stderr_text)
+        return exit_code, stdout_text, stderr_text
     args.argv0 = argv0
     exit_code, stdout_text, stderr_text = run_command(args)
+    stdout_text = _inject_cli_version(stdout_text)
+    stderr_text = _inject_cli_version(stderr_text)
     return _project_response_file(getattr(args, "response_file", None), exit_code, stdout_text, stderr_text)
 
 
@@ -378,19 +586,38 @@ def _build_guidance_context(args, request_id=None):
 
 
 _BARE_PUER_REFERENCE_ERROR_RE = re.compile(r"^ReferenceError: \$(typeof|ref) is not defined$")
+_SYNTAX_ERROR_RE = re.compile(r"(?i)^\s*SyntaxError\b")
+# Signature of a shell-expanded `$token` that left a member access immediately followed by a call.
+_SHELL_EXPANSION_SIGNATURE_RE = re.compile(r"\.\s*\(")
 
 
-def _maybe_hint_puer_prefix(payload, command):
+def _maybe_hint_puer_prefix(payload, command, args=None):
     if command not in ("exec", "wait-for-exec") or payload.get("status") != "failed":
         return
     error = payload.get("error")
     if not isinstance(error, str):
         return
     match = _BARE_PUER_REFERENCE_ERROR_RE.match(error.strip())
-    if match is None:
+    if match is not None:
+        name = match.group(1)
+        hint = "This looks like a missing `puer.` prefix: did you mean `puer.${}` instead of bare `${}`?".format(name, name)
+        situation = payload.get("situation")
+        payload["situation"] = "{} {}".format(situation, hint) if situation else hint
         return
-    name = match.group(1)
-    hint = "This looks like a missing `puer.` prefix: did you mean `puer.${}` instead of bare `${}`?".format(name, name)
+    # Shell-expansion form: only for inline `--code`, never `--file` / `--stdin`.
+    if args is None or not getattr(args, "code", None):
+        return
+    if getattr(args, "file_path", None) or getattr(args, "stdin", False):
+        return
+    if _SYNTAX_ERROR_RE.match(error.strip()) is None:
+        return
+    if _SHELL_EXPANSION_SIGNATURE_RE.search(args.code) is None:
+        return
+    hint = (
+        "This looks like a shell expanded a `$` token inside double-quoted `--code` "
+        "(for example turning `puer.$typeof(...)` into `puer.(...)`). "
+        "Use single quotes around `--code`, or pass the script through `--file`."
+    )
     situation = payload.get("situation")
     payload["situation"] = "{} {}".format(situation, hint) if situation else hint
 
@@ -399,13 +626,24 @@ def _attach_guidance(payload, command, status, args, request_id=None):
     if getattr(args, "suppress_guidance", False):
         return
     context = _build_guidance_context(args, request_id=request_id)
+    # Enrich context from CLI-owned envelope fields on the response payload.
+    # log_range is injected before guidance is attached, so the payload
+    # already carries CLI-owned byte offsets for the observation window.
+    log_range = payload.get("log_range") if isinstance(payload, dict) else None
+    if isinstance(log_range, dict):
+        _log_start = log_range.get("start")
+        _log_end = log_range.get("end")
+        if _log_start is not None and _log_end is not None:
+            context["log_range_span"] = "{}-{}".format(_log_start, _log_end)
     next_steps = help_surface.build_next_steps(command, status, context)
     if next_steps:
         payload["next_steps"] = next_steps
-    situation = help_surface.build_situation(command, status)
+    detail = payload.get("version_mismatch")
+    guard = detail.get("guard") if isinstance(detail, dict) else None
+    situation = help_surface.build_situation(command, status, guard=guard)
     if situation:
         payload["situation"] = situation
-    _maybe_hint_puer_prefix(payload, command)
+    _maybe_hint_puer_prefix(payload, command, args=args)
 
 
 def _inject_guidance_into_stdout(stdout_text, command, args, request_id=None):
@@ -623,6 +861,7 @@ def _ensure_project_session_ready_after_refresh(args):
         project_path=args.project_path,
         unity_exe_path=args.unity_exe_path,
         unity_log_path=args.unity_log_path,
+        unity_launch_args=getattr(args, "unity_launch_args", None),
         ready_timeout_seconds=_post_refresh_ready_timeout_seconds(args),
         argv0=getattr(args, "argv0", None),
     )
@@ -878,6 +1117,7 @@ def run_exec(args):
     validate_positive(args.wait_timeout_ms, "wait-timeout-ms")
     validate_project_mode_only(selector, "unity-exe-path", args.unity_exe_path)
     validate_project_mode_only(selector, "unity-log-path", args.unity_log_path)
+    validate_project_mode_only(selector, "unity-launch-arg", getattr(args, "unity_launch_args", None))
     # refresh-before-exec is now allowed in base-url mode: the server accepts
     # refresh_before_exec for any selector, and the base-url settle path re-probes the
     # same endpoint (see _settle_base_url_after_refresh).
@@ -889,6 +1129,7 @@ def run_exec(args):
                 project_path=args.project_path,
                 unity_exe_path=args.unity_exe_path,
                 unity_log_path=args.unity_log_path,
+                unity_launch_args=getattr(args, "unity_launch_args", None),
                 argv0=getattr(args, "argv0", None),
             )
         except (unity_session.UnityStalledError, unity_session.UnityNotReadyError) as exc:
@@ -1074,9 +1315,11 @@ def run_wait_for_exec(args):
     validate_positive(args.wait_timeout_ms, "wait-timeout-ms")
     validate_project_mode_only(selector, "unity-exe-path", args.unity_exe_path)
     validate_project_mode_only(selector, "unity-log-path", args.unity_log_path)
+    validate_project_mode_only(selector, "unity-launch-arg", getattr(args, "unity_launch_args", None))
 
     _wfe_log_path_early = getattr(args, "unity_log_path", None) or str(unity_session_logs.default_editor_log_path())
     _wfe_log_start = args.log_start_offset if args.log_start_offset is not None else _capture_log_offset(_wfe_log_path_early)
+    _wfe_offsets_invalidated = _detect_offset_invalidation(_wfe_log_path_early, args.log_start_offset)
 
     if selector == "project_path":
         _sweep_pending_exec(args)
@@ -1086,6 +1329,7 @@ def run_wait_for_exec(args):
                 project_path=args.project_path,
                 unity_exe_path=args.unity_exe_path,
                 unity_log_path=args.unity_log_path,
+                unity_launch_args=getattr(args, "unity_launch_args", None),
                 argv0=getattr(args, "argv0", None),
             )
         except (unity_session.UnityStalledError, unity_session.UnityNotReadyError) as exc:
@@ -1099,7 +1343,7 @@ def run_wait_for_exec(args):
                     phase=_pending_phase(pending),
                 )
                 _wfe_rp1_log_path = _resolve_log_path(args, exc.session)
-                _inject_log_range_into_payload(payload, _wfe_rp1_log_path, _wfe_log_start, _capture_log_offset(_wfe_rp1_log_path))
+                _inject_log_range_into_payload(payload, _wfe_rp1_log_path, _wfe_log_start, _capture_log_offset(_wfe_rp1_log_path), offsets_invalidated=_wfe_offsets_invalidated)
                 return EXIT_RUNNING, emit_payload(payload), ""
             raise
         base_url = session.base_url
@@ -1133,7 +1377,7 @@ def run_wait_for_exec(args):
             if _running_or_timed_out_response(exit_code, stdout_text):
                 pending = _refresh_pending_exec(args, args.request_id, pending, PHASE_REFRESHING)
                 payload = _emit_running_payload("wait-for-exec", session, args.request_id, args, phase=PHASE_REFRESHING)
-                _inject_log_range_into_payload(payload, _wfe_refresh_log_path, _wfe_log_start, _capture_log_offset(_wfe_refresh_log_path))
+                _inject_log_range_into_payload(payload, _wfe_refresh_log_path, _wfe_log_start, _capture_log_offset(_wfe_refresh_log_path), offsets_invalidated=_wfe_offsets_invalidated)
                 return EXIT_RUNNING, emit_payload(payload), ""
             if exit_code != 0:
                 _clear_pending_exec(args, args.request_id)
@@ -1160,7 +1404,7 @@ def run_wait_for_exec(args):
                     default_phase=PHASE_REFRESHING,
                     normalize_compiling=False,
                 )
-                stdout_text = _inject_log_range_into_stdout(stdout_text, _wfe_refresh_log_path, _wfe_log_start, _capture_log_offset(_wfe_refresh_log_path))
+                stdout_text = _inject_log_range_into_stdout(stdout_text, _wfe_refresh_log_path, _wfe_log_start, _capture_log_offset(_wfe_refresh_log_path), offsets_invalidated=_wfe_offsets_invalidated)
                 stdout_text, stderr_text = _inject_guidance_into_response(stdout_text, stderr_text, "wait-for-exec", args, request_id=args.request_id)
                 return exit_code, stdout_text, stderr_text
             try:
@@ -1169,7 +1413,7 @@ def run_wait_for_exec(args):
             except (unity_session.UnityStalledError, unity_session.UnityNotReadyError) as exc:
                 pending = _refresh_pending_exec(args, args.request_id, pending, PHASE_REFRESHING)
                 payload = _emit_running_payload("wait-for-exec", exc.session, args.request_id, args, phase=PHASE_REFRESHING)
-                _inject_log_range_into_payload(payload, _wfe_refresh_log_path, _wfe_log_start, _capture_log_offset(_wfe_refresh_log_path))
+                _inject_log_range_into_payload(payload, _wfe_refresh_log_path, _wfe_log_start, _capture_log_offset(_wfe_refresh_log_path), offsets_invalidated=_wfe_offsets_invalidated)
                 return EXIT_RUNNING, emit_payload(payload), ""
             pending = _refresh_pending_exec(args, args.request_id, pending, PHASE_EXECUTING)
         exit_code, stdout_text, stderr_text = _invoke_exec(
@@ -1214,7 +1458,7 @@ def run_wait_for_exec(args):
         default_phase=default_phase,
     )
     _wfe_final_log_path = _resolve_log_path(args, session)
-    stdout_text = _inject_log_range_into_stdout(stdout_text, _wfe_final_log_path, _wfe_log_start, _capture_log_offset(_wfe_final_log_path))
+    stdout_text = _inject_log_range_into_stdout(stdout_text, _wfe_final_log_path, _wfe_log_start, _capture_log_offset(_wfe_final_log_path), offsets_invalidated=_wfe_offsets_invalidated)
     stdout_text, stderr_text = _inject_guidance_into_response(stdout_text, stderr_text, "wait-for-exec", args, request_id=args.request_id)
     return exit_code, stdout_text, stderr_text
 
@@ -1225,11 +1469,16 @@ def run_wait_for_compile(args):
     validate_positive(args.settle_timeout_seconds, "settle-timeout-seconds")
     validate_positive(args.health_timeout_seconds, "health-timeout-seconds")
 
+    validate_project_mode_only(selector, "unity-exe-path", getattr(args, "unity_exe_path", None))
+    validate_project_mode_only(selector, "unity-log-path", getattr(args, "unity_log_path", None))
+    validate_project_mode_only(selector, "unity-launch-arg", getattr(args, "unity_launch_args", None))
+
     if selector == "project_path":
         session = unity_session.ensure_session_ready(
             project_path=args.project_path,
             unity_exe_path=getattr(args, "unity_exe_path", None),
             unity_log_path=getattr(args, "unity_log_path", None),
+            unity_launch_args=getattr(args, "unity_launch_args", None),
             argv0=getattr(args, "argv0", None),
         )
         base_url = session.base_url
@@ -1317,6 +1566,7 @@ def run_wait_for_log_pattern(args):
 
     log_path = _resolve_log_path(args, session)
     log_start = args.start_offset if args.start_offset is not None else _capture_log_offset(log_path)
+    offsets_invalidated = _detect_offset_invalidation(log_path, args.start_offset)
 
     try:
         session = unity_session.wait_for_log_pattern(
@@ -1339,7 +1589,7 @@ def run_wait_for_log_pattern(args):
             session=exc.session,
             include_diagnostics=args.include_diagnostics,
         )
-        _inject_log_range_into_payload(payload, log_path, log_start, _capture_log_offset(log_path))
+        _inject_log_range_into_payload(payload, log_path, log_start, _capture_log_offset(log_path), offsets_invalidated=offsets_invalidated)
         _attach_guidance(payload, "wait-for-log-pattern", status, args)
         return EXIT_UNITY_NOT_READY, emit_payload(payload), ""
 
@@ -1354,7 +1604,8 @@ def run_wait_for_log_pattern(args):
         result=result,
         include_diagnostics=args.include_diagnostics,
     )
-    _inject_log_range_into_payload(payload, log_path, log_start, _capture_log_offset(log_path))
+    _inject_log_range_into_payload(payload, log_path, log_start, _capture_log_offset(log_path), offsets_invalidated=offsets_invalidated)
+    _attach_guidance(payload, "wait-for-log-pattern", "completed", args)
     return 0, emit_payload(payload), ""
 
 
@@ -1383,6 +1634,7 @@ def run_wait_for_result_marker(args):
 
     log_path = _resolve_log_path(args, session)
     log_start = args.start_offset if args.start_offset is not None else _capture_log_offset(log_path)
+    offsets_invalidated = _detect_offset_invalidation(log_path, args.start_offset)
 
     deadline = time.time() + args.timeout_seconds
     while True:
@@ -1407,7 +1659,7 @@ def run_wait_for_result_marker(args):
                 session=exc.session,
                 include_diagnostics=args.include_diagnostics,
             )
-            _inject_log_range_into_payload(payload, log_path, log_start, _capture_log_offset(log_path))
+            _inject_log_range_into_payload(payload, log_path, log_start, _capture_log_offset(log_path), offsets_invalidated=offsets_invalidated)
             _attach_guidance(payload, "wait-for-result-marker", status, args)
             return EXIT_UNITY_NOT_READY, emit_payload(payload), ""
 
@@ -1426,7 +1678,7 @@ def run_wait_for_result_marker(args):
                 },
                 include_diagnostics=args.include_diagnostics,
             )
-            _inject_log_range_into_payload(payload, log_path, log_start, _capture_log_offset(log_path))
+            _inject_log_range_into_payload(payload, log_path, log_start, _capture_log_offset(log_path), offsets_invalidated=offsets_invalidated)
             return 0, emit_payload(payload), ""
         next_offset = session.diagnostics.get("matched_log_offset")
         args.start_offset = next_offset
@@ -1606,11 +1858,16 @@ def _run_get_compile_messages(args, command_name):
     validate_non_negative(args.start, "start")
     if args.count < 1 or args.count > 100:
         raise ValueError("count must be between 1 and 100")
+    validate_project_mode_only(selector, "unity-exe-path", getattr(args, "unity_exe_path", None))
+    validate_project_mode_only(selector, "unity-log-path", getattr(args, "unity_log_path", None))
+    validate_project_mode_only(selector, "unity-launch-arg", getattr(args, "unity_launch_args", None))
+
     if selector == "project_path":
         session = unity_session.ensure_session_ready(
             project_path=args.project_path,
             unity_exe_path=getattr(args, "unity_exe_path", None),
             unity_log_path=getattr(args, "unity_log_path", None),
+            unity_launch_args=getattr(args, "unity_launch_args", None),
             argv0=getattr(args, "argv0", None),
         )
         base_url = session.base_url
@@ -1626,6 +1883,9 @@ def _run_get_compile_messages(args, command_name):
         5000,
     )
     if exit_code != 0:
+        stdout_text, stderr_text = _inject_guidance_into_response(
+            stdout_text, stderr_text, command_name, args
+        )
         return exit_code, stdout_text, stderr_text
     body = json.loads(stdout_text)
     result = {
@@ -1641,6 +1901,7 @@ def _run_get_compile_messages(args, command_name):
         result=result,
         include_diagnostics=args.include_diagnostics,
     )
+    _attach_guidance(response, command_name, "completed", args)
     return 0, emit_payload(response), ""
 
 

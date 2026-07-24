@@ -18,8 +18,33 @@ import unity_session  # type: ignore
 import unity_session_common  # type: ignore
 import unity_session_logs  # type: ignore
 
+from tests import version_test_support
+
 
 SAMPLE_PROJECT_PATH = "X:/unity-project"
+
+_bridge_probe_patcher = None
+
+
+def setUpModule():
+    """Keep the base-url bridge guard from reaching a real local Editor.
+
+    These cases mock the command transport and assume nothing answers on the
+    loopback control ports. The bridge guard added a real `/health` probe on that
+    path, which would otherwise make the results depend on whether the developer
+    happens to have Unity open. The guard's own behavior is covered by
+    tests.test_cli_version.
+    """
+    global _bridge_probe_patcher
+    _bridge_probe_patcher = mock.patch.object(
+        unity_session, "probe_health_payload", return_value=(None, "no service")
+    )
+    _bridge_probe_patcher.start()
+
+
+def tearDownModule():
+    if _bridge_probe_patcher is not None:
+        _bridge_probe_patcher.stop()
 
 
 def _expand_brief_sequence(sequence):
@@ -50,10 +75,12 @@ def _make_session(project_path=SAMPLE_PROJECT_PATH):
 
 class UnityPuerExecCliTests(unittest.TestCase):
     def test_parser_exposes_formal_command_tree_without_wait_until_ready(self):
+        import unity_puer_exec_surface as surface
+
         parser = unity_puer_exec._build_parser()
         args = parser.parse_args(["wait-for-exec", "--request-id", "req-1"])
         self.assertEqual(args.command, "wait-for-exec")
-        with self.assertRaises(SystemExit):
+        with self.assertRaises(surface.ArgumentParseError):
             parser.parse_args(["wait-until-ready"])
 
     def test_exec_parser_accepts_import_base_url_and_reset_jsenv_before_exec(self):
@@ -74,9 +101,11 @@ class UnityPuerExecCliTests(unittest.TestCase):
             "--stale-module-policy", "error",
         ])
 
+        import unity_puer_exec_surface as surface
+
         self.assertEqual(default_args.stale_module_policy, "auto-reset")
         self.assertEqual(error_args.stale_module_policy, "error")
-        with self.assertRaises(SystemExit):
+        with self.assertRaises(surface.ArgumentParseError):
             parser.parse_args([
                 "exec", "--code", "export default function run(ctx) { return 1; }",
                 "--stale-module-policy", "invalid",
@@ -144,6 +173,14 @@ class UnityPuerExecCliTests(unittest.TestCase):
         self.assertIn("`--help-example derive-project-path-from-unity-api`", stdout)
         self.assertIn("--response-file X:/work/.tmp/result.json", stdout)
         self.assertIn("not the preferred large-result transport", stdout)
+        self.assertIn("separate from the host application's own JavaScript runtime", stdout)
+        self.assertIn("shared C#/Unity object graph", stdout)
+        self.assertIn("place or read shared C#/Unity state both sides can observe", stdout)
+        self.assertIn("belongs in a project-local skill", stdout)
+        self.assertIn("transition was requested, not completed", stdout)
+        self.assertIn("confirm the play state changed", stdout)
+        self.assertIn("PowerShell users composing inline `--code`", stdout)
+        self.assertIn("JavaScript syntax error that does not name the shell", stdout)
 
     def test_exec_help_args_renders_argument_template(self):
         exit_code, stdout, stderr = unity_puer_exec.run_cli(["exec", "--help-args"])
@@ -173,6 +210,15 @@ class UnityPuerExecCliTests(unittest.TestCase):
         self.assertIn("`ctx.project_path`", stdout)
         self.assertIn("`UnityEngine.Application.dataPath`", stdout)
         self.assertIn("`System.IO.Path.GetDirectoryName(...)`", stdout)
+        self.assertIn("separate from the host application's JavaScript runtime", stdout)
+        self.assertIn("shared C#/Unity object graph is the supported route", stdout)
+        self.assertIn("not shared with the host application's own JavaScript runtime", stdout)
+        self.assertIn("place or read shared C#/Unity objects both sides observe", stdout)
+        self.assertIn("belongs in a project-local skill", stdout)
+        self.assertIn("issues a request rather than completing a transition", stdout)
+        self.assertIn("confirm the play state changed", stdout)
+        self.assertIn("PowerShell users: use single quotes", stdout)
+        self.assertIn("$typeof", stdout)
 
     def test_wait_for_exec_help_renders_recovery_guidance(self):
         exit_code, stdout, stderr = unity_puer_exec.run_cli(["wait-for-exec", "--help"])
@@ -220,6 +266,24 @@ class UnityPuerExecCliTests(unittest.TestCase):
         self.assertIn("exec-and-wait-for-log-pattern", stdout)
         self.assertIn("exec-and-wait-for-result-marker", stdout)
         self.assertIn("use `unity-puer-exec --help-example exec-and-wait-for-log-pattern`", stdout)
+        self.assertIn("`log_range.start` when waiting for output the originating command itself produced", stdout)
+        self.assertIn("`log_range.end` when observing activity that follows it", stdout)
+        self.assertIn("guards against matching stale output", stdout)
+        self.assertIn("guards against accepting observation from a different Editor session", stdout)
+        self.assertIn("complementary", stdout)
+
+    def test_wait_for_log_pattern_help_args_documents_offset_and_session_guards(self):
+        exit_code, stdout, stderr = unity_puer_exec.run_cli(["wait-for-log-pattern", "--help-args"])
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(stderr, "")
+        self.assertIn("`--start-offset <offset>`", stdout)
+        self.assertIn("`log_range.start` when the awaited output came from the originating command", stdout)
+        self.assertIn("`log_range.end` when the awaited activity follows it", stdout)
+        self.assertIn("before the intended observation window", stdout)
+        self.assertIn("`--expected-session-marker <marker>`", stdout)
+        self.assertIn("different Editor session", stdout)
+        self.assertIn("Complementary to `--start-offset`", stdout)
 
     def test_wait_for_exec_help_status_mentions_missing(self):
         exit_code, stdout, stderr = unity_puer_exec.run_cli(["wait-for-exec", "--help-status"])
@@ -278,6 +342,9 @@ class UnityPuerExecCliTests(unittest.TestCase):
         self.assertIn("log_range.start", stdout)
         self.assertIn("--start-offset OFFSET", stdout)
         self.assertIn("direct host-log inspection", stdout)
+        self.assertIn("produced by that same `exec`", stdout)
+        self.assertIn("Use `log_range.end` when observing activity that follows the originating command", stdout)
+        self.assertIn("pair it with `--expected-session-marker`", stdout)
 
     def test_recovery_help_example_renders_request_id_workflow(self):
         exit_code, stdout, stderr = unity_puer_exec.run_cli(["--help-example", "recover-exec-by-request-id"])
@@ -442,8 +509,8 @@ class UnityPuerExecCliTests(unittest.TestCase):
         self.assertNotIn("diagnostics", payload)
 
     def test_wait_for_log_pattern_extract_modes_are_mutually_exclusive(self):
-        with self.assertRaises(SystemExit) as exc:
-            unity_puer_exec.run_cli(
+        with mock.patch.object(unity_session, "create_observation_session") as create_session:
+            exit_code, stdout, stderr = unity_puer_exec.run_cli(
                 [
                     "wait-for-log-pattern",
                     "--pattern",
@@ -455,7 +522,12 @@ class UnityPuerExecCliTests(unittest.TestCase):
                 ]
             )
 
-        self.assertEqual(exc.exception.code, 2)
+        self.assertEqual(exit_code, 2)
+        self.assertEqual(stdout, "")
+        body = json.loads(stderr)
+        self.assertEqual(body["status"], "invalid_arguments")
+        self.assertEqual(body["command"], "wait-for-log-pattern")
+        create_session.assert_not_called()
 
     def test_exec_reads_file_input(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -792,6 +864,98 @@ class UnityPuerExecCliTests(unittest.TestCase):
         self.assertEqual(body["status"], "failed")
         self.assertIn("puer.$typeof", body["situation"])
         self.assertNotIn("next_steps", body)
+
+    def test_exec_shell_expansion_syntax_error_gets_hint_for_code_source(self):
+        failure_body = {
+            "ok": False,
+            "status": "failed",
+            "operation": "exec",
+            "request_id": "R-shell-expand",
+            "error": "SyntaxError: Unexpected token '('",
+        }
+        expanded_code = "export default function run(ctx) { return puer.($typeof); }"
+        with mock.patch.object(
+            unity_puer_exec.direct_exec_client,
+            "invoke_command",
+            return_value=(1, "", json.dumps(failure_body)),
+        ) as invoke:
+            exit_code, stdout, stderr = unity_puer_exec.run_cli(
+                [
+                    "exec",
+                    "--base-url", "http://127.0.0.1:55231",
+                    "--code", expanded_code,
+                    "--request-id", "R-shell-expand",
+                ]
+            )
+
+        self.assertEqual(exit_code, 1)
+        body = json.loads(stderr)
+        self.assertEqual(body["status"], "failed")
+        self.assertIn("shell expanded", body["situation"])
+        self.assertIn("single quotes", body["situation"])
+        self.assertIn("--file", body["situation"])
+        invoke.assert_called_once()
+
+    def test_exec_ordinary_syntax_error_does_not_get_shell_expansion_hint(self):
+        failure_body = {
+            "ok": False,
+            "status": "failed",
+            "operation": "exec",
+            "request_id": "R-syntax",
+            "error": "SyntaxError: Unexpected token '{'",
+        }
+        ordinary_code = "export default function run(ctx) { return {; }"
+        with mock.patch.object(
+            unity_puer_exec.direct_exec_client,
+            "invoke_command",
+            return_value=(1, "", json.dumps(failure_body)),
+        ):
+            exit_code, stdout, stderr = unity_puer_exec.run_cli(
+                [
+                    "exec",
+                    "--base-url", "http://127.0.0.1:55231",
+                    "--code", ordinary_code,
+                    "--request-id", "R-syntax",
+                ]
+            )
+
+        self.assertEqual(exit_code, 1)
+        body = json.loads(stderr)
+        self.assertEqual(body["status"], "failed")
+        self.assertNotIn("shell expanded", body.get("situation", ""))
+
+    def test_exec_file_syntax_error_does_not_get_shell_expansion_hint(self):
+        failure_body = {
+            "ok": False,
+            "status": "failed",
+            "operation": "exec",
+            "request_id": "R-file-syntax",
+            "error": "SyntaxError: Unexpected token '('",
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            script_path = Path(temp_dir) / "script.js"
+            script_path.write_text(
+                "export default function run(ctx) { return puer.($typeof); }",
+                encoding="utf-8",
+            )
+            with mock.patch.object(
+                unity_puer_exec.direct_exec_client,
+                "invoke_command",
+                return_value=(1, "", json.dumps(failure_body)),
+            ):
+                exit_code, stdout, stderr = unity_puer_exec.run_cli(
+                    [
+                        "exec",
+                        "--base-url", "http://127.0.0.1:55231",
+                        "--file", str(script_path),
+                        "--request-id", "R-file-syntax",
+                    ]
+                )
+
+        self.assertEqual(exit_code, 1)
+        body = json.loads(stderr)
+        self.assertEqual(body["status"], "failed")
+        self.assertNotIn("shell expanded", body.get("situation", ""))
 
     def test_exec_hides_diagnostics_by_default(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1663,7 +1827,131 @@ class UnityPuerExecCliTests(unittest.TestCase):
         self.assertEqual(stderr, "")
         payload = json.loads(stdout)
         self.assertEqual(payload["status"], "address_conflict")
-        self.assertNotIn("situation", payload)
+        self.assertIn("situation", payload)
+        self.assertIn("next_steps", payload)
+        for step in payload["next_steps"]:
+            argv = step.get("argv") or []
+            self.assertFalse(
+                "--project-path" in argv and "--base-url" in argv,
+                "usage guidance must not re-offer the rejected dual-selector invocation",
+            )
+
+    def test_parse_unrecognized_option_emits_invalid_arguments_json(self):
+        with mock.patch.object(unity_puer_exec.direct_exec_client, "invoke_command") as invoke:
+            exit_code, stdout, stderr = unity_puer_exec.run_cli(
+                ["exec", "--timeout-ms", "5000", "--code", "export default function run(ctx) { return 1; }"]
+            )
+
+        self.assertEqual(exit_code, 2)
+        self.assertEqual(stdout, "")
+        self.assertNotIn("usage:", stderr.lower().split("{", 1)[0])
+        body = json.loads(stderr)
+        self.assertFalse(body["ok"])
+        self.assertEqual(body["status"], "invalid_arguments")
+        self.assertNotEqual(body["status"], "failed")
+        self.assertIn("error", body)
+        self.assertEqual(body["command"], "exec")
+        self.assertEqual(body["suggested_option"], "--wait-timeout-ms")
+        self.assertIn("situation", body)
+        self.assertIn("next_steps", body)
+        help_step = body["next_steps"][0]
+        self.assertEqual(help_step["argv"], ["unity-puer-exec", "exec", "--help-args"])
+        # Top-level command list alone is not the response content.
+        self.assertNotIn("Command Groups", stderr)
+        invoke.assert_not_called()
+
+    def test_parse_missing_required_argument_emits_invalid_arguments_json(self):
+        with mock.patch.object(unity_session, "create_observation_session") as create_session:
+            exit_code, stdout, stderr = unity_puer_exec.run_cli(["wait-for-exec"])
+
+        self.assertEqual(exit_code, 2)
+        self.assertEqual(stdout, "")
+        body = json.loads(stderr)
+        self.assertEqual(body["status"], "invalid_arguments")
+        self.assertEqual(body["command"], "wait-for-exec")
+        self.assertIn("request-id", body["error"])
+        self.assertIn("next_steps", body)
+        create_session.assert_not_called()
+
+    def test_parse_invalid_value_emits_invalid_arguments_json(self):
+        with mock.patch.object(unity_puer_exec.direct_exec_client, "invoke_command") as invoke:
+            exit_code, stdout, stderr = unity_puer_exec.run_cli(
+                [
+                    "exec",
+                    "--code", "export default function run(ctx) { return 1; }",
+                    "--stale-module-policy", "invalid",
+                ]
+            )
+
+        self.assertEqual(exit_code, 2)
+        body = json.loads(stderr)
+        self.assertEqual(body["status"], "invalid_arguments")
+        self.assertEqual(body["command"], "exec")
+        self.assertIn("invalid", body["error"].lower())
+        invoke.assert_not_called()
+
+    def test_parse_failure_without_command_uses_top_level_guidance(self):
+        exit_code, stdout, stderr = unity_puer_exec.run_cli(["--not-a-real-flag"])
+
+        self.assertEqual(exit_code, 2)
+        body = json.loads(stderr)
+        self.assertEqual(body["status"], "invalid_arguments")
+        self.assertNotIn("command", body)
+        self.assertIn("top-level", body["situation"].lower())
+        self.assertEqual(body["next_steps"][0]["argv"], ["unity-puer-exec", "--help"])
+
+    def test_parse_near_match_omitted_when_no_close_option(self):
+        exit_code, stdout, stderr = unity_puer_exec.run_cli(
+            ["exec", "--definitely-not-a-flag", "--code", "export default function run(ctx) { return 1; }"]
+        )
+
+        self.assertEqual(exit_code, 2)
+        body = json.loads(stderr)
+        self.assertEqual(body["status"], "invalid_arguments")
+        self.assertNotIn("suggested_option", body)
+
+    def test_parse_near_match_does_not_offer_other_command_options(self):
+        # --timeout-seconds belongs to wait commands, not exec.
+        exit_code, stdout, stderr = unity_puer_exec.run_cli(
+            ["exec", "--timeout-seconds", "5", "--code", "export default function run(ctx) { return 1; }"]
+        )
+
+        self.assertEqual(exit_code, 2)
+        body = json.loads(stderr)
+        self.assertEqual(body["status"], "invalid_arguments")
+        self.assertEqual(body["command"], "exec")
+        # Even if a suggestion appears, it must be an exec option, never wait-only --timeout-seconds.
+        if "suggested_option" in body:
+            self.assertNotEqual(body["suggested_option"], "--timeout-seconds")
+            parser = unity_puer_exec._build_parser()
+            import unity_puer_exec_surface as surface
+
+            self.assertIn(
+                body["suggested_option"],
+                surface.option_strings_for_command(parser, "exec"),
+            )
+
+    def test_usage_failure_guidance_does_not_offer_retry_of_rejected_invocation(self):
+        exit_code, stdout, stderr = unity_puer_exec.run_cli(
+            ["get-log-briefs", "--range", "0-10", "--full-text"]
+        )
+
+        self.assertEqual(exit_code, 2)
+        body = json.loads(stderr)
+        self.assertEqual(body["status"], "full_text_requires_include")
+        self.assertIn("situation", body)
+        self.assertIn("next_steps", body)
+        for step in body["next_steps"]:
+            argv = step.get("argv") or []
+            self.assertNotIn("--full-text", argv)
+
+    def test_help_status_documents_invalid_arguments_cli_wide(self):
+        exit_code, stdout, stderr = unity_puer_exec.run_cli(["exec", "--help-status"])
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(stderr, "")
+        self.assertIn("`invalid_arguments` -> exit 2", stdout)
+        self.assertIn("CLI-wide usage status", stdout)
 
     def test_exec_removed_include_log_offset_usage_error_includes_situation(self):
         exit_code, stdout, stderr = unity_puer_exec.run_cli(
@@ -2186,6 +2474,296 @@ class UnityPuerExecCliTests(unittest.TestCase):
         self.assertIn("situation", entry)
         self.assertIn("next_steps", entry)
 
+    def test_command_registry_tables_agree(self):
+        """Argparse, help lists, top-level summaries, and guidance cover the same command set."""
+        import command_registry
+        import help_surface
+        import unity_puer_exec_surface as surface
+
+        parser = surface.build_parser()
+        # Subparsers live on the action whose dest is "command".
+        argparse_commands = set()
+        for action in parser._actions:
+            if getattr(action, "dest", None) == "command" and hasattr(action, "choices"):
+                argparse_commands = set(action.choices or ())
+                break
+
+        registry = set(command_registry.COMMANDS)
+        help_commands = set(help_surface.COMMANDS)
+        command_help = set(help_surface.COMMAND_HELP)
+        top_level = set(help_surface.TOP_LEVEL_COMMANDS)
+        guidance = {command for command, _status in help_surface.GUIDANCE_MATRIX}
+
+        tables = {
+            "command_registry.COMMANDS": registry,
+            "argparse subcommands": argparse_commands,
+            "help_surface.COMMANDS": help_commands,
+            "help_surface.COMMAND_HELP": command_help,
+            "help_surface.TOP_LEVEL_COMMANDS": top_level,
+            "help_surface.GUIDANCE_MATRIX": guidance,
+        }
+        mismatches = []
+        for name, values in tables.items():
+            missing = sorted(registry - values)
+            extra = sorted(values - registry)
+            if missing or extra:
+                parts = []
+                if missing:
+                    parts.append("missing {}".format(", ".join(missing)))
+                if extra:
+                    parts.append("extra {}".format(", ".join(extra)))
+                mismatches.append("{}: {}".format(name, "; ".join(parts)))
+        self.assertEqual(mismatches, [], "command-table drift:\n" + "\n".join(mismatches))
+
+    def test_formal_cli_contract_command_tree_matches_registry(self):
+        """Durable formal-cli-contract command tree must match the code registry."""
+        import re
+        import command_registry
+
+        spec_path = REPO_ROOT / "openspec" / "specs" / "formal-cli-contract" / "spec.md"
+        text = spec_path.read_text(encoding="utf-8")
+        match = re.search(
+            r"authoritative flat command tree SHALL include ([^.]+)\.",
+            text,
+        )
+        self.assertIsNotNone(match, "durable formal-cli-contract missing authoritative command tree sentence")
+        named = set(re.findall(r"`([a-z0-9-]+)`", match.group(1)))
+        registry = set(command_registry.COMMANDS)
+        missing_from_spec = sorted(registry - named)
+        extra_in_spec = sorted(named - registry)
+        self.assertEqual(
+            (missing_from_spec, extra_in_spec),
+            ([], []),
+            "formal-cli-contract tree drift: missing_from_spec={!r} extra_in_spec={!r}".format(
+                missing_from_spec, extra_in_spec
+            ),
+        )
+
+    def test_get_compile_errors_help_tiers_render(self):
+        for flag in ("--help", "--help-args", "--help-status"):
+            exit_code, stdout, stderr = unity_puer_exec.run_cli(["get-compile-errors", flag])
+            self.assertEqual(exit_code, 0, flag)
+            self.assertEqual(stderr, "", flag)
+            self.assertTrue(stdout.strip(), flag)
+        self.assertIn("--start", unity_puer_exec.run_cli(["get-compile-errors", "--help-args"])[1])
+        self.assertIn("wait-for-compile", unity_puer_exec.run_cli(["get-compile-errors", "--help"])[1])
+
+    def test_get_compile_warnings_help_tiers_render(self):
+        for flag in ("--help", "--help-args", "--help-status"):
+            exit_code, stdout, stderr = unity_puer_exec.run_cli(["get-compile-warnings", flag])
+            self.assertEqual(exit_code, 0, flag)
+            self.assertEqual(stderr, "", flag)
+            self.assertTrue(stdout.strip(), flag)
+        self.assertIn("--count", unity_puer_exec.run_cli(["get-compile-warnings", "--help-args"])[1])
+
+    def test_top_level_help_lists_compile_message_commands(self):
+        exit_code, stdout, stderr = unity_puer_exec.run_cli(["--help"])
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(stderr, "")
+        self.assertIn("get-compile-errors", stdout)
+        self.assertIn("get-compile-warnings", stdout)
+
+    def test_get_compile_errors_non_success_carries_guidance(self):
+        """A readiness failure attaches situation / next_steps for get-compile-errors."""
+        with mock.patch.object(
+            unity_session,
+            "ensure_session_ready",
+            side_effect=unity_session.UnityNotReadyError("not ready", session=None),
+        ):
+            exit_code, stdout, stderr = unity_puer_exec.run_cli(
+                ["get-compile-errors", "--project-path", SAMPLE_PROJECT_PATH]
+            )
+        self.assertEqual(exit_code, unity_puer_exec.EXIT_UNITY_NOT_READY)
+        body = json.loads(stdout)
+        self.assertEqual(body["status"], "unity_not_ready")
+        self.assertTrue(body.get("situation") or body.get("next_steps"))
+        blob = json.dumps(body)
+        self.assertIn("wait-for-compile", blob)
+
+    def test_get_compile_warnings_non_success_carries_guidance(self):
+        with mock.patch.object(
+            unity_session,
+            "ensure_session_ready",
+            side_effect=unity_session.UnityNotReadyError("not ready", session=None),
+        ):
+            exit_code, stdout, stderr = unity_puer_exec.run_cli(
+                ["get-compile-warnings", "--project-path", SAMPLE_PROJECT_PATH]
+            )
+        self.assertEqual(exit_code, unity_puer_exec.EXIT_UNITY_NOT_READY)
+        body = json.loads(stdout)
+        self.assertEqual(body["status"], "unity_not_ready")
+        self.assertTrue(body.get("situation") or body.get("next_steps"))
+
+    # --- Success-path guidance tests (fill-success-path-next-steps) ---
+
+    def test_success_path_completed_guidance_matrix_entries_have_get_log_briefs(self):
+        """3.1: exec/wait-for-exec/wait-for-log-pattern completed entries exist with get-log-briefs."""
+        import help_surface
+        for cmd in ("exec", "wait-for-exec", "wait-for-log-pattern"):
+            entry = help_surface.GUIDANCE_MATRIX.get((cmd, "completed"))
+            self.assertIsNotNone(entry, "GUIDANCE_MATRIX missing ({}, completed)".format(cmd))
+            self.assertIn("next_steps", entry)
+            next_steps = entry["next_steps"]
+            brief_step = next((s for s in next_steps if s["command"] == "get-log-briefs"), None)
+            self.assertIsNotNone(brief_step, "({}, completed) missing get-log-briefs candidate".format(cmd))
+            self.assertIn("argv_template", brief_step)
+            self.assertIn("{log_range_span}", str(brief_step["argv_template"]))
+            self.assertIn("--levels", brief_step["argv_template"])
+            self.assertIn("error,warning", brief_step["argv_template"])
+
+    def test_wait_for_log_pattern_completed_has_situation_text(self):
+        """3.2: wait-for-log-pattern completed situation warns about pattern match limits."""
+        import help_surface
+        entry = help_surface.GUIDANCE_MATRIX.get(("wait-for-log-pattern", "completed"))
+        self.assertIsNotNone(entry)
+        situation = entry.get("situation")
+        self.assertIsNotNone(situation, "wait-for-log-pattern completed missing situation")
+        self.assertIn("pattern match", situation.lower())
+        # exec/wait-for-exec completed must NOT have a situation
+        for cmd in ("exec", "wait-for-exec"):
+            e2 = help_surface.GUIDANCE_MATRIX.get((cmd, "completed"))
+            self.assertIsNotNone(e2)
+            self.assertIsNone(e2.get("situation"), "({}, completed) should not have a situation".format(cmd))
+
+    def test_completed_response_with_full_log_range_contains_get_log_briefs_argv(self):
+        """3.1: Exec completed with full log_range and project-path produces argv with concrete range."""
+        log_range_start = 1000
+        log_range_end = 3500
+        expected_span = "{}-{}".format(log_range_start, log_range_end)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            log_path = Path(temp_dir) / "Editor.log"
+            log_path.write_text("line1\nline2\n", encoding="utf-8")
+            session = _make_session()
+
+            with mock.patch.object(
+                unity_session, "ensure_session_ready", return_value=session
+            ), mock.patch.object(
+                unity_puer_exec.direct_exec_client, "invoke_command",
+                return_value=(
+                    0,
+                    json.dumps({
+                        "ok": True, "status": "completed",
+                        "request_id": "req-1",
+                        "result": {"value": 42},
+                    }),
+                    "",
+                ),
+            ), mock.patch.object(
+                unity_session_logs, "default_editor_log_path", return_value=log_path
+            ), mock.patch.object(
+                unity_puer_exec_runtime, "_capture_log_offset",
+                side_effect=[log_range_start, log_range_end],
+            ):
+                exit_code, stdout, stderr = unity_puer_exec.run_cli([
+                    "exec", "--project-path", str(log_path.parent),
+                    "--code", "export default function run(ctx) { return 42; }",
+                ])
+
+        self.assertEqual(exit_code, 0)
+        body = json.loads(stdout)
+        next_steps = body.get("next_steps")
+        self.assertIsNotNone(next_steps, "exec completed missing next_steps")
+        brief_step = next((s for s in next_steps if s["command"] == "get-log-briefs"), None)
+        self.assertIsNotNone(brief_step, "next_steps missing get-log-briefs")
+        self.assertIn("argv", brief_step)
+        argv_str = " ".join(brief_step["argv"])
+        self.assertIn("--range", argv_str)
+        self.assertIn(expected_span, argv_str)
+        self.assertIn("--levels", argv_str)
+        self.assertIn("error,warning", argv_str)
+        # exec completed should NOT have a situation
+        self.assertNotIn("situation", body)
+
+    def test_wait_for_log_pattern_completed_includes_situation_and_argv(self):
+        """3.1+3.2: wait-for-log-pattern completed has both situation and get-log-briefs argv."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            log_path = Path(temp_dir) / "Editor.log"
+            log_path.write_text("start\nmatch\n", encoding="utf-8")
+            session = _make_session()
+            session.diagnostics["matched_log_text"] = "match"
+
+            with mock.patch.object(
+                unity_session, "create_observation_session", return_value=session
+            ), mock.patch.object(
+                unity_session, "wait_for_log_pattern", return_value=session
+            ), mock.patch.object(
+                unity_session_logs, "default_editor_log_path", return_value=log_path
+            ):
+                exit_code, stdout, stderr = unity_puer_exec.run_cli([
+                    "wait-for-log-pattern",
+                    "--project-path", str(log_path.parent),
+                    "--pattern", "match",
+                    "--timeout-seconds", "5",
+                    "--activity-timeout-seconds", "3",
+                ])
+
+        self.assertEqual(exit_code, 0)
+        body = json.loads(stdout)
+        # Should have situation text
+        self.assertIn("situation", body)
+        self.assertIn("pattern match", body["situation"].lower())
+        # Should have next_steps with get-log-briefs
+        next_steps = body.get("next_steps")
+        self.assertIsNotNone(next_steps, "wait-for-log-pattern completed missing next_steps")
+        brief_step = next((s for s in next_steps if s["command"] == "get-log-briefs"), None)
+        self.assertIsNotNone(brief_step, "next_steps missing get-log-briefs")
+        self.assertIn("argv", brief_step)
+
+    def test_incomplete_log_range_omits_argv(self):
+        """3.3: When log_range is incomplete, candidate appears without argv."""
+        import help_surface
+        # Verify the build_next_steps behavior with a context lacking log_range_span
+        context = {"project_path": "X:/project"}
+        next_steps = help_surface.build_next_steps("exec", "completed", context)
+        self.assertIsNotNone(next_steps)
+        brief_step = next((s for s in next_steps if s["command"] == "get-log-briefs"), None)
+        self.assertIsNotNone(brief_step)
+        # argv should be absent since log_range_span is missing
+        self.assertNotIn("argv", brief_step)
+        # command and when should still be present
+        self.assertEqual(brief_step["command"], "get-log-briefs")
+        self.assertIn("when", brief_step)
+
+    def test_script_result_does_not_affect_candidates(self):
+        """3.4: Script-authored result does not change success-path candidates."""
+        import help_surface
+        context = {
+            "project_path": "X:/project",
+            "log_range_span": "100-500",
+        }
+        # build_next_steps does not receive result at all, so identical context =
+        # identical candidates regardless of what the envelope's result field says.
+        next_steps_a = help_surface.build_next_steps("exec", "completed", context)
+        next_steps_b = help_surface.build_next_steps("exec", "completed", context)
+        self.assertEqual(next_steps_a, next_steps_b)
+
+    def test_suppress_guidance_strips_success_path_content(self):
+        """3.5: --suppress-guidance removes next_steps and situation on success paths."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            log_path = Path(temp_dir) / "Editor.log"
+            log_path.write_text("line1\n", encoding="utf-8")
+            session = _make_session()
+            session.diagnostics["matched_log_text"] = "match"
+
+            with mock.patch.object(
+                unity_session, "create_observation_session", return_value=session
+            ), mock.patch.object(
+                unity_session, "wait_for_log_pattern", return_value=session
+            ), mock.patch.object(
+                unity_session_logs, "default_editor_log_path", return_value=log_path
+            ):
+                exit_code, stdout, stderr = unity_puer_exec.run_cli([
+                    "--suppress-guidance",
+                    "wait-for-log-pattern",
+                    "--pattern", "match",
+                    "--timeout-seconds", "5",
+                    "--activity-timeout-seconds", "3",
+                ])
+
+        self.assertEqual(exit_code, 0)
+        body = json.loads(stdout)
+        self.assertNotIn("situation", body)
+        self.assertNotIn("next_steps", body)
 
 
 class DynamicEndpointRoutingTests(unittest.TestCase):

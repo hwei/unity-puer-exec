@@ -47,26 +47,52 @@ def project_path_to_manifest_path(project_path):
     return project_path / "Packages" / "manifest.json"
 
 
+def _resolved_path(path):
+    try:
+        return path.resolve()
+    except OSError:
+        return path.absolute()
+
+
+def _declares_formal_package_name(candidate_path):
+    package_json_path = candidate_path / "package.json"
+    try:
+        package_data = json.loads(package_json_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    if not isinstance(package_data, dict):
+        return False
+    return package_data.get("name") == FORMAL_PACKAGE_NAME
+
+
 def detect_embedded_package_shadowing(manifest_path, package_root=None):
+    """Report directories under Packages/ that Unity would load as the formal package.
+
+    Unity identifies an embedded package by the ``name`` declared in its
+    ``package.json``, not by the directory name, so the scan reads candidate
+    manifests rather than testing one fixed path.
+    """
     package_root = FORMAL_PACKAGE_ROOT if package_root is None else Path(package_root)
-    embedded_package_path = Path(manifest_path).parent / FORMAL_PACKAGE_NAME
-    if not embedded_package_path.exists():
-        return False, None
+    packages_path = Path(manifest_path).parent
+    if not packages_path.is_dir():
+        return False, None, []
 
-    try:
-        embedded_resolved = embedded_package_path.resolve()
-    except OSError:
-        embedded_resolved = embedded_package_path.absolute()
+    package_root_resolved = _resolved_path(package_root)
+    shadowing_paths = []
 
-    try:
-        package_root_resolved = package_root.resolve()
-    except OSError:
-        package_root_resolved = package_root.absolute()
+    for candidate_path in sorted(packages_path.iterdir()):
+        if not candidate_path.is_dir():
+            continue
+        if not _declares_formal_package_name(candidate_path):
+            continue
+        if _resolved_path(candidate_path) == package_root_resolved:
+            continue
+        shadowing_paths.append(str(candidate_path))
 
-    if embedded_resolved == package_root_resolved:
-        return False, str(embedded_package_path)
+    if not shadowing_paths:
+        return False, None, []
 
-    return True, str(embedded_package_path)
+    return True, shadowing_paths[0], shadowing_paths
 
 
 def _normalized_anchor(path):
@@ -163,7 +189,9 @@ def main(argv=None):
 
     manifest_data = json.loads(manifest_path.read_text(encoding="utf-8"))
     rewritten_manifest, changed, dependency_value = rewrite_manifest(manifest_data, manifest_path)
-    shadowing, embedded_package_path = detect_embedded_package_shadowing(manifest_path)
+    shadowing, embedded_package_path, embedded_package_paths = detect_embedded_package_shadowing(
+        manifest_path
+    )
 
     if not args.dry_run and changed:
         write_manifest(manifest_path, rewritten_manifest)
@@ -178,6 +206,7 @@ def main(argv=None):
                 "dependency": dependency_value,
                 "embedded_package_shadowing": shadowing,
                 "embedded_package_path": embedded_package_path,
+                "embedded_package_paths": embedded_package_paths,
             },
             ensure_ascii=False,
         )

@@ -61,6 +61,42 @@ class PackageLayoutTests(unittest.TestCase):
         self.assertIn('Copy-Item "packages/com.txcombo.unity-puer-exec/README.md.meta"', workflow)
         self.assertNotIn('CLI~.meta', workflow)
 
+    def test_release_workflow_is_parseable_yaml_with_a_runnable_stamp_step(self):
+        """Substring checks pass on a workflow GitHub cannot parse.
+
+        The stamp step's script is written inside a YAML block scalar, where a
+        column-0 line silently ends the scalar; that produced a workflow that
+        every substring assertion accepted and no runner could execute.
+        """
+        try:
+            import yaml  # type: ignore
+        except ImportError:
+            self.skipTest("PyYAML not installed")
+
+        workflow = yaml.safe_load(RELEASE_WORKFLOW_PATH.read_text(encoding="utf-8"))
+        steps = workflow["jobs"]["publish"]["steps"]
+        stamp = next(s for s in steps if s.get("name", "").startswith("Stamp"))
+
+        self.assertIn("CLI_VERSION", stamp["run"])
+        self.assertIn("_build_version.py", stamp["run"])
+        # A line at column 0 would have truncated the scalar above this point.
+        for line in stamp["run"].splitlines():
+            self.assertFalse(line.startswith("CLI_VERSION"), "stamp body escaped the block scalar")
+
+    def test_release_workflow_stamps_and_verifies_the_cli_version(self):
+        workflow = RELEASE_WORKFLOW_PATH.read_text(encoding="utf-8")
+
+        stamp_index = workflow.index('Set-Content -Path "cli/python/_build_version.py"')
+        build_index = workflow.index("--onefile")
+        verify_index = workflow.index('& "dist/unity-puer-exec.exe" --version')
+        assemble_index = workflow.index("Assemble UPM package tree")
+
+        self.assertIn("CLI_VERSION =", workflow)
+        # Stamp before the build, verify the built artifact before it is published.
+        self.assertLess(stamp_index, build_index)
+        self.assertLess(build_index, verify_index)
+        self.assertLess(verify_index, assemble_index)
+
     def test_editor_assembly_uses_formal_identity(self):
         asmdef_path = PACKAGE_ROOT / "Editor" / "UnityPuerExec.Editor.asmdef"
         self.assertTrue(asmdef_path.exists())
@@ -68,6 +104,33 @@ class PackageLayoutTests(unittest.TestCase):
         asmdef = json.loads(asmdef_path.read_text(encoding="utf-8"))
         self.assertEqual(asmdef["name"], "UnityPuerExec.Editor")
         self.assertEqual(asmdef["rootNamespace"], "UnityPuerExec")
+
+    def test_published_endpoint_fields_come_only_from_the_running_process(self):
+        # Task 2.5: the whole point of the publication is that the Editor states
+        # facts about itself. A field derived from a machine-wide process listing
+        # would reintroduce exactly the defect this change removes -- the CLI's old
+        # session.json filled unity_pid from tasklist order. Pin on source that the
+        # Editor-side publisher takes its pid from its own process and never
+        # enumerates the machine's process table.
+        publication_path = PACKAGE_ROOT / "Editor" / "UnityPuerExecEndpointPublication.cs"
+        content = publication_path.read_text(encoding="utf-8")
+
+        self.assertIn("Process.GetCurrentProcess().Id", content)
+        # No machine-wide process enumeration anywhere in the publisher. (The .NET
+        # enumeration APIs; not the word "tasklist", which appears in a comment
+        # describing the very defect this publisher avoids.)
+        self.assertNotIn("Process.GetProcesses", content)
+        self.assertNotIn("GetProcessesByName", content)
+
+    def test_cli_session_state_decision_does_not_consult_a_machine_process_list(self):
+        # Task 2.5 / 4.6, CLI side: the session-state decision is made from the
+        # project's own lockfile and publication. list_unity_pids must not appear in
+        # the module that decides state, so a project's identity can never be derived
+        # from machine-wide tasklist ordering.
+        endpoint_path = REPO_ROOT / "cli" / "python" / "unity_session_endpoint.py"
+        content = endpoint_path.read_text(encoding="utf-8")
+
+        self.assertNotIn("list_unity_pids", content)
 
     def test_migrated_server_namespace_drops_validation_identity(self):
         server_path = PACKAGE_ROOT / "Editor" / "UnityPuerExecServer.cs"

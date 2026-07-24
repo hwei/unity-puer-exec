@@ -18,11 +18,35 @@ DEFAULT_EDITOR_LOG_MAX_LINES = 40
 DEFAULT_STOP_TIMEOUT_SECONDS = 10.0
 POLL_INTERVAL_SECONDS = 1.0
 RECOVERABLE_HEALTH_STATUSES = ("compiling", "not_available")
-SESSION_RELATIVE_PATH = Path("Temp") / "UnityPuerExec" / "session.json"
+# Asks the Unity bridge to start its control service for the whole process. Unity
+# passes unrecognised switches through to Environment.GetCommandLineArgs(), so the
+# Editor reads it without any persistence of its own. Must match
+# UnityPuerExecActivation.ActivationSwitch on the Editor side.
+CONTROL_ACTIVATION_SWITCH = "-unityPuerExecControl"
+# Ambient extra Unity argv tokens for a cold launch this CLI owns. Value is a JSON
+# array of strings (e.g. ["-force-gles30"]). Parsed by launch_unity; never a way to
+# rebind CLI-owned switches (-projectPath / -logFile / activation).
+UNITY_LAUNCH_ARGS_ENV = "UNITY_PUER_EXEC_UNITY_LAUNCH_ARGS"
+# Switches the CLI always supplies on a launch it owns. Passthrough tokens that
+# rebind these are rejected rather than applied or silently overridden.
+CLI_OWNED_UNITY_LAUNCH_SWITCHES = (
+    "-projectpath",
+    "-logfile",
+    CONTROL_ACTIVATION_SWITCH.lower(),
+)
+# Where the Editor publishes what it is and how to reach it. Read-only from the
+# CLI's side: the Editor is the only author, because every field is about the
+# Editor and only the Editor can state them without guessing.
+ENDPOINT_RELATIVE_PATH = Path("Temp") / "UnityPuerExec" / "endpoint.json"
 LAUNCH_CLAIM_RELATIVE_PATH = Path("Temp") / "UnityPuerExec" / "launch_claim.json"
 PENDING_EXEC_DIR_RELATIVE_PATH = Path("Temp") / "UnityPuerExec" / "pending_exec"
 UNITY_LOCKFILE_RELATIVE_PATH = Path("Temp") / "UnityLockfile"
 PROJECT_RECOVERY_WINDOW_SECONDS = 30.0
+# How long a held lockfile with no answering published service is allowed to be a
+# service restarting across a domain reload rather than an Editor that never opted
+# in. Short, because it is only the first discriminator: a longer compile is
+# separated from residue by whether the published process is still running.
+SERVICE_RESTART_GRACE_SECONDS = 2.0
 PENDING_EXEC_SCHEMA_VERSION = 2
 PENDING_EXEC_RETENTION_MS = 24 * 60 * 60 * 1000
 
@@ -49,10 +73,41 @@ class UnityStalledError(UnitySessionError):
     pass
 
 
+class UnityVersionMismatchError(UnitySessionError):
+    """Raised when an owned control endpoint reports a version the CLI cannot match.
+
+    Carried out of the session layer so the refusal happens at the moment the
+    disagreement first becomes observable, before the command performs work.
+    """
+
+    def __init__(self, detail, message=None, session=None):
+        super().__init__(message or "version mismatch", session=session)
+        self.detail = detail
+
+
 class UnitySessionStateError(UnitySessionError):
     def __init__(self, status, message, session=None):
         super().__init__(message, session=session)
         self.status = status
+
+
+class UnityEditorNotUnderControlError(UnitySessionStateError):
+    """An Editor is serving the project, but it never activated a control service.
+
+    Its own status and exit code because the remedy is an activation decision, not
+    a retry: it is neither a failure to launch nor a failure to become ready, and a
+    caller that cannot tell those apart will retry something that cannot succeed.
+
+    Replaces the previous behaviour of silently attaching to whatever answered the
+    preferred control port -- which only appeared to work when exactly one Editor
+    was open, and misattributed the session to an unrelated project when it was not.
+    """
+
+    STATUS = "editor_not_under_cli_control"
+
+    def __init__(self, message, session=None, guidance=None):
+        super().__init__(self.STATUS, message, session=session)
+        self.guidance = guidance or []
 
 
 class UnitySession:

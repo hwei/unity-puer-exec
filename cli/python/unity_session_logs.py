@@ -9,14 +9,54 @@ from unity_session_common import (
     PENDING_EXEC_RETENTION_MS,
     PENDING_EXEC_SCHEMA_VERSION,
     PROJECT_RECOVERY_WINDOW_SECONDS,
-    SESSION_RELATIVE_PATH,
     UNITY_LOCKFILE_RELATIVE_PATH,
 )
+
+
+# Resolution tiers for the effective Unity log path, most to least authoritative.
+# Reported by get-log-source so a caller can tell a path the Editor named from one
+# the CLI assumed.
+#
+# The CLI-authored session artifact used to sit at the top of this list, on the
+# reasoning that it was the tier that survived a health-probe failure. That
+# reasoning is now served by the Editor's own publication, which is equally durable
+# and, unlike the artifact, cannot name a log the target Editor is not writing to.
+LOG_SOURCE_TIER_EXPLICIT_FLAG = "explicit_flag"
+LOG_SOURCE_TIER_PUBLISHED_ENDPOINT = "published_endpoint"
+LOG_SOURCE_TIER_CONTROL_SERVICE = "control_service"
+LOG_SOURCE_TIER_PLATFORM_DEFAULT = "platform_default"
+
+# Project-private Unity log for CLI-launched Editors. Under Temp/ because it is an
+# observation surface for a live session, not an archive; a caller who needs a
+# durable log passes --unity-log-path.
+LAUNCH_LOG_RELATIVE_PATH = ("Temp", "UnityPuerExec", "Editor.log")
 
 
 def default_editor_log_path():
     local_app_data = Path.home() / "AppData" / "Local"
     return local_app_data / "Unity" / "Editor" / "Editor.log"
+
+
+def project_launch_log_path(project_path):
+    return Path(project_path).joinpath(*LAUNCH_LOG_RELATIVE_PATH)
+
+
+def prepare_launch_log_path(project_path, unity_log_path=None):
+    """Pick the -logFile path for a CLI-launched Editor and make it writable.
+
+    Without this the Editor binds to the per-user Editor.log, which an unrelated
+    Editor on another project shares -- and byte-offset observation of a shared
+    file reads the wrong content. Unity creates the log file itself but not its
+    parent directory, so the directory is created here. A directory that cannot
+    be created is not worth failing a launch over: the Editor still starts and
+    resolution falls back through the remaining tiers.
+    """
+    path = Path(unity_log_path) if unity_log_path else project_launch_log_path(project_path)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pass
+    return path
 
 
 def read_recent_editor_log_lines(log_path, max_lines):
@@ -62,10 +102,6 @@ def read_editor_log_chunk(log_path, start_offset):
         handle.seek(read_offset)
         chunk = handle.read().decode("utf-8", errors="replace")
     return file_size, chunk
-
-
-def session_artifact_path(project_path):
-    return Path(project_path) / SESSION_RELATIVE_PATH
 
 
 def launch_claim_path(project_path):
@@ -193,14 +229,6 @@ def sweep_pending_exec_artifacts(project_path, time_ref=None):
     return removed
 
 
-def read_session_artifact(project_path):
-    return _read_json_file(session_artifact_path(project_path))
-
-
-def write_session_artifact(project_path, payload):
-    _write_json_file(session_artifact_path(project_path), payload)
-
-
 def read_launch_claim(project_path):
     return _read_json_file(launch_claim_path(project_path))
 
@@ -291,37 +319,72 @@ def build_project_lock_details(project_path, time_ref):
     return details
 
 
-def session_artifact_log_path(session_data, is_pid_running_fn):
-    if not isinstance(session_data, dict):
+def publication_console_log_path(publication):
+    if not isinstance(publication, dict):
         return None
-    session_marker = session_data.get("session_marker")
-    effective_log_path = session_data.get("effective_log_path")
-    unity_pid = session_data.get("unity_pid")
-    if not isinstance(session_marker, str) or not session_marker:
-        return None
-    if not isinstance(effective_log_path, str) or not effective_log_path:
-        return None
-    if unity_pid is not None and not is_pid_running_fn(unity_pid):
-        return None
-    return Path(effective_log_path)
+    value = publication.get("console_log_path")
+    if isinstance(value, str) and value:
+        return Path(value)
+    return None
+
+
+def resolve_effective_log_path_with_tier(
+    project_path,
+    unity_log_path=None,
+    publication=None,
+    health_console_log_path=None,
+    read_endpoint_publication_fn=None,
+    default_editor_log_path_fn=None,
+):
+    """Resolve the observed log path and name the tier that produced it.
+
+    Explicit caller intent wins, then the path the project's own Editor published,
+    then whatever a live service says, and only then the platform default.
+
+    The published path outranks the live service answer for the reason the removed
+    session artifact used to: it keeps observation working when a health probe does
+    not answer, so a momentary control-service failure cannot silently degrade
+    observation to a per-user log that a second Editor may be sharing. Unlike the
+    artifact, it costs nothing in correctness -- the Editor wrote it about itself.
+    """
+    if unity_log_path:
+        return Path(unity_log_path), LOG_SOURCE_TIER_EXPLICIT_FLAG
+    if publication is None and read_endpoint_publication_fn is not None:
+        publication = read_endpoint_publication_fn(project_path)
+    published_log_path = publication_console_log_path(publication)
+    if published_log_path is not None:
+        return published_log_path, LOG_SOURCE_TIER_PUBLISHED_ENDPOINT
+    if health_console_log_path:
+        return Path(health_console_log_path), LOG_SOURCE_TIER_CONTROL_SERVICE
+    return default_editor_log_path_fn(), LOG_SOURCE_TIER_PLATFORM_DEFAULT
 
 
 def resolve_effective_log_path(
     project_path,
     unity_log_path=None,
-    session_data=None,
-    read_session_artifact_fn=None,
-    session_artifact_log_path_fn=None,
+    publication=None,
+    health_console_log_path=None,
+    read_endpoint_publication_fn=None,
     default_editor_log_path_fn=None,
 ):
-    if session_data is None:
-        session_data = read_session_artifact_fn(project_path)
-    artifact_log_path = session_artifact_log_path_fn(session_data)
-    if artifact_log_path is not None:
-        return artifact_log_path
-    if unity_log_path:
-        return Path(unity_log_path)
-    return default_editor_log_path_fn()
+    path, _tier = resolve_effective_log_path_with_tier(
+        project_path,
+        unity_log_path=unity_log_path,
+        publication=publication,
+        health_console_log_path=health_console_log_path,
+        read_endpoint_publication_fn=read_endpoint_publication_fn,
+        default_editor_log_path_fn=default_editor_log_path_fn,
+    )
+    return path
+
+
+def health_console_log_path(payload):
+    if not isinstance(payload, dict):
+        return None
+    value = payload.get("console_log_path")
+    if isinstance(value, str) and value:
+        return value
+    return None
 
 
 def session_marker_from_payload(payload):
@@ -333,35 +396,7 @@ def session_marker_from_payload(payload):
     return None
 
 
-def persist_ready_session_artifact(
-    session,
-    effective_log_path,
-    payload=None,
-    session_marker_from_payload_fn=None,
-    write_session_artifact_fn=None,
-):
-    session_marker = session_marker_from_payload_fn(payload)
-    if session_marker is None and session.diagnostics:
-        session_marker = session_marker_from_payload_fn(session.diagnostics.get("last_health_payload"))
-    if not session_marker:
-        return
-    port = None
-    if isinstance(payload, dict) and "port" in payload:
-        port = payload["port"]
-    if port is None and session.diagnostics:
-        last_payload = session.diagnostics.get("last_health_payload")
-        if isinstance(last_payload, dict) and "port" in last_payload:
-            port = last_payload["port"]
-    artifact = {
-        "base_url": session.base_url,
-        "unity_pid": session.unity_pid,
-        "session_marker": session_marker,
-        "effective_log_path": str(effective_log_path),
-        "project_path": session.project_path,
-    }
-    if port is not None and port != 0:
-        artifact["port"] = port
-    write_session_artifact_fn(
-        session.project_path,
-        artifact,
-    )
+# Nothing persists a session record here any more. The CLI does not write claims
+# about a process it does not own; the Editor publishes its own endpoint, and the
+# CLI reads it. See design D1 of let-editor-publish-session-endpoint -- if this
+# looks like a convenience worth restoring, it is the defect, not the convenience.

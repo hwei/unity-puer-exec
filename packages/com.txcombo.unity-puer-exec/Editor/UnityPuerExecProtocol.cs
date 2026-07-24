@@ -295,7 +295,9 @@ namespace UnityPuerExec
             int port,
             string baseUrl = "",
             int unityPid = 0,
-            string projectPath = ""
+            string projectPath = "",
+            string bridgeVersion = "",
+            string consoleLogPath = ""
         )
         {
             if (isCompilingOrReloading)
@@ -312,11 +314,24 @@ namespace UnityPuerExec
                 var baseUrlJson = string.IsNullOrEmpty(baseUrl)
                     ? ""
                     : ",\"base_url\":\"" + JsonEscape(baseUrl) + "\"";
+                // Omitted rather than guessed when the Editor assembly is not
+                // package-installed; the CLI treats the absence as unverifiable.
+                var bridgeVersionJson = string.IsNullOrEmpty(bridgeVersion)
+                    ? ""
+                    : ",\"bridge_version\":\"" + JsonEscape(bridgeVersion) + "\"";
+                // The Editor's own log path, so a caller observes where this
+                // process actually writes instead of assuming the per-user
+                // default. Omitted rather than guessed when unresolvable.
+                var consoleLogPathJson = string.IsNullOrEmpty(consoleLogPath)
+                    ? ""
+                    : ",\"console_log_path\":\"" + JsonEscape(consoleLogPath) + "\"";
                 return "{\"ok\":true,\"status\":\"ready\",\"port\":" + port +
                        ",\"session_marker\":\"" + JsonEscape(sessionMarker) + "\"" +
                        baseUrlJson +
                        unityPidJson +
                        projectPathJson +
+                       bridgeVersionJson +
+                       consoleLogPathJson +
                        "}";
             }
 

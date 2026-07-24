@@ -149,32 +149,53 @@ The repository-owned real-host validation workflow SHALL establish a repeatable 
 
 ### Requirement: Validation host preparation reports embedded package shadowing
 
-Repository-owned validation-host preparation tooling SHALL report when the target Unity project contains an embedded `Packages/com.txcombo.unity-puer-exec` directory that is distinct from the repository-local package root being injected through `Packages/manifest.json`. The report SHALL be machine-readable so real-host validation scripts and agents can treat the run as unsafe evidence for repository-local package changes unless the shadowing condition is resolved or intentionally accepted.
+Repository-owned validation-host preparation tooling SHALL report when the target Unity project contains an embedded package that declares the formal package name and is distinct from the repository-local package root being injected through `Packages/manifest.json`. Detection SHALL identify an embedded package the way Unity does — by the `name` declared in a candidate directory's `package.json` among the immediate children of `Packages/` — and SHALL NOT rely on the directory being named after the package, because Unity loads such a directory under any name. The report SHALL be machine-readable so real-host validation scripts and agents can treat the run as unsafe evidence for repository-local package changes unless the shadowing condition is resolved or intentionally accepted. When more than one embedded directory declares the formal package name, the report SHALL name all of them.
 
 #### Scenario: Embedded package shadows local package injection
 - **WHEN** a contributor prepares a validation host whose `Packages/manifest.json` is rewritten to the repository-local package path
-- **AND** `<project>/Packages/com.txcombo.unity-puer-exec` exists as a distinct embedded package directory
+- **AND** an immediate child of `Packages/` declares the formal package name in its `package.json` and is a distinct directory from the repository-local package root
 - **THEN** the preparation result reports `embedded_package_shadowing = true`
 - **AND** the result includes the embedded package path
 
+#### Scenario: Renamed embedded directory is still reported
+- **WHEN** an embedded package directory declaring the formal package name has been renamed to something other than the package name
+- **THEN** the preparation result still reports `embedded_package_shadowing = true`
+- **AND** the result names the renamed directory
+- **AND** the result does not report the host as clean merely because no directory carries the package name
+
 #### Scenario: No embedded package shadowing is present
-- **WHEN** a contributor prepares a validation host whose `Packages/com.txcombo.unity-puer-exec` directory is absent
+- **WHEN** a contributor prepares a validation host in which no immediate child of `Packages/` declares the formal package name
 - **THEN** the preparation result reports `embedded_package_shadowing = false`
 
 #### Scenario: Embedded package path is the intended package root
 - **WHEN** a contributor prepares a validation host whose embedded package path resolves to the same directory as the repository-local package root
 - **THEN** the preparation result does not report shadowing
 
+#### Scenario: Multiple shadowing directories are all reported
+- **WHEN** more than one immediate child of `Packages/` declares the formal package name and is distinct from the repository-local package root
+- **THEN** the preparation result reports shadowing
+- **AND** the result names every such directory rather than only the first
+
+#### Scenario: Unrelated or unreadable package directories are ignored
+- **WHEN** an immediate child of `Packages/` has no `package.json`, has one that cannot be parsed, or declares a different package name
+- **THEN** that directory does not contribute to the shadowing report
+- **AND** the preparation run completes rather than failing on the unrelated directory
+
 ### Requirement: Real-host validation covers control-port binding behavior
 
-The repository SHALL maintain repeatable real-host validation expectations that prove the Unity control-port binding contract, covering both batch-mode service suppression and occupied-preferred-port rollover. These expectations SHALL run only under the existing opt-in real-host gate and SHALL skip cleanly when Unity, the host project, or the required process state is unavailable, so the default mocked/unit workflow is unaffected.
+The repository SHALL maintain repeatable real-host validation expectations that prove the Unity control-port binding contract, covering the uniform activation rule in batch mode (both with and without activation requested) and occupied-preferred-port rollover. These expectations SHALL run only under the existing opt-in real-host gate and SHALL skip cleanly when Unity, the host project, or the required process state is unavailable, so the default mocked/unit workflow is unaffected.
 
-#### Scenario: Contributor validates that a batch-mode process suppresses the control service
+#### Scenario: Contributor validates that a batch-mode process without activation does not start the control service
 
-- **WHEN** a contributor runs the real-host validation against a host project loaded by a batch-mode Unity process
-- **THEN** the validation asserts the batch-mode process log records that the control service was skipped for a batch-mode process
+- **WHEN** a contributor runs the real-host validation against a host project loaded by a batch-mode Unity process launched without activation requested
+- **THEN** the validation asserts the batch-mode process log records that the control service was not activated for that process
 - **AND** the validation asserts the batch-mode process log records no successful control-port bind and no whole-range bind failure
-- **AND** the validation asserts no control-range port is held by the batch-mode process
+
+#### Scenario: Contributor validates that a batch-mode process with activation starts the control service
+
+- **WHEN** a contributor runs the real-host validation against a host project loaded by a batch-mode Unity process launched with activation requested
+- **THEN** the validation asserts the batch-mode process log records a successful control-port bind
+- **AND** the validation asserts the batch-mode process log does not record that the control service was not activated
 
 #### Scenario: Contributor validates rollover when the preferred control port is occupied
 
@@ -187,4 +208,68 @@ The repository SHALL maintain repeatable real-host validation expectations that 
 - **WHEN** the real-host gate is disabled, or Unity / the host project / the required process state is unavailable
 - **THEN** the binding-behavior validation skips with a machine-usable reason
 - **AND** it does not report a failure that would be indistinguishable from a real binding regression
+
+### Requirement: Real-host run instructions state how embedded shadowing is cleared
+
+The repository's real-host run instructions SHALL state that renaming an embedded package directory does not stop Unity from loading it, because Unity identifies embedded packages by the `name` declared in `package.json`, and that clearing the shadow requires moving or removing the directory out of `Packages/`.
+
+#### Scenario: Contributor resolves a reported shadowing condition
+- **WHEN** a contributor consults the real-host run instructions after a shadowing report
+- **THEN** the instructions state that renaming the directory is not sufficient
+- **AND** the instructions state that the directory must be moved out of or removed from `Packages/`
+
+### Requirement: Real-host validation observes a log no unrelated Editor can share
+
+Real-host validation SHALL observe the validation host through a log source private to the host project, so a Unity Editor open on an unrelated project cannot share, rotate, or truncate the file the suite reads. A development machine running several Unity projects at once SHALL remain a supported environment for real-host validation.
+
+The suite SHALL establish its clean starting boundary from project-local state — the host project's Unity lockfile and published endpoint — so that a boundary check cannot report the host as stopped while an Editor is still serving it. A case SHALL fail rather than proceed if it would observe a host the suite did not bring up.
+
+#### Scenario: Concurrent unrelated Editor does not invalidate observation
+
+- **WHEN** real-host validation runs while an unrelated Unity Editor is open on a different project
+- **THEN** the suite observes the validation host through a host-private log
+- **AND** log-based assertions reflect output the validation host actually produced
+
+#### Scenario: Host-private log is established without per-command flags
+
+- **WHEN** the suite brings up the validation host
+- **THEN** the host-private log is established at launch
+- **AND** individual cases do not each have to supply a log-path flag to observe it
+
+#### Scenario: The boundary cannot pass while the host is still serving
+
+- **WHEN** the suite establishes its starting boundary and an Editor is still serving the host project
+- **THEN** the boundary does not report the host as stopped
+- **AND** no case proceeds against that Editor
+
+#### Scenario: An unrelated Editor does not block the boundary
+
+- **WHEN** the suite establishes its starting boundary while unrelated Unity Editors are running for other projects
+- **THEN** those processes do not prevent the boundary from being established
+
+### Requirement: Real-host run instructions state the concurrent-Editor condition
+
+The repository's real-host run instructions SHALL state that a Unity Editor open on an unrelated project shares the platform default per-user Editor log, that this invalidates byte-offset log observation, and that host-private logging is what makes the suite safe to run in that condition. A contributor SHALL be able to recognize the symptom from the instructions rather than by bisecting the product.
+
+#### Scenario: Contributor reads the real-host prerequisites
+
+- **WHEN** a contributor consults the real-host run instructions
+- **THEN** the instructions describe the shared-default-log condition and its effect on log observation
+- **AND** the instructions state how the host's log is isolated from it
+
+#### Scenario: Contributor diagnoses an observation timeout
+
+- **WHEN** a real-host log-observation case fails with a wait timeout
+- **THEN** the instructions let the contributor distinguish an invalidated log source from a product regression
+
+### Requirement: Real-host run instructions document host-required Unity launch arguments
+
+The repository's real-host run instructions SHALL state how a contributor supplies Unity launch arguments that a particular validation host needs in order for CLI auto-launch to succeed (for example a graphics API switch), including the ambient environment variable `UNITY_PUER_EXEC_UNITY_LAUNCH_ARGS` as a JSON array of strings and its relationship to CLI-driven Editor launch.
+
+#### Scenario: Contributor prepares a host that needs an extra Unity switch
+
+- **WHEN** a contributor consults the real-host run instructions for a host that cannot start without an extra Unity argument
+- **THEN** the instructions name `UNITY_PUER_EXEC_UNITY_LAUNCH_ARGS`
+- **AND** the instructions show a JSON-array example such as `["-force-gles30"]`
+- **AND** the instructions state that CLI auto-launch of the host picks the value up without per-command flags
 

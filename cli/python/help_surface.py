@@ -1,38 +1,13 @@
+import command_registry
 import direct_exec_client
 
 
-COMMAND_GROUPS = (
-    (
-        "Primary Execution",
-        (
-            "exec",
-        ),
-    ),
-    (
-        "Supporting Observation",
-        (
-            "wait-for-exec",
-            "wait-for-result-marker",
-            "wait-for-log-pattern",
-            "wait-for-compile",
-        ),
-    ),
-        (
-            "Secondary / Troubleshooting",
-            (
-                "get-log-source",
-                "get-log-briefs",
-                "get-blocker-state",
-                "resolve-blocker",
-                "ensure-stopped",
-            ),
-        ),
-)
-
-COMMANDS = tuple(command for _, commands in COMMAND_GROUPS for command in commands)
+COMMAND_GROUPS = command_registry.COMMAND_GROUPS
+COMMANDS = command_registry.COMMANDS
 
 EXIT_NO_OBSERVATION_TARGET = 15
 EXIT_NOT_STOPPED = 16
+EXIT_EDITOR_NOT_UNDER_CLI_CONTROL = 17
 EXIT_UNITY_START_FAILED = 20
 EXIT_UNITY_NOT_READY = 21
 
@@ -66,6 +41,8 @@ TOP_LEVEL_COMMANDS = {
     "resolve-blocker": "dismiss a supported Unity modal blocker for the target project with an explicit action. See `resolve-blocker --help`.",
     "exec": "run JavaScript against a project or direct service; primary entry for script execution. See `exec --help`.",
     "ensure-stopped": "check or force a stopped state; not the recommended graceful-exit path. See `ensure-stopped --help`.",
+    "get-compile-errors": "retrieve structured C# compile errors from the control service; use after wait-for-compile when freshness matters. See `get-compile-errors --help`.",
+    "get-compile-warnings": "retrieve structured C# compile warnings from the control service; use after wait-for-compile when freshness matters. See `get-compile-warnings --help`.",
 }
 
 RECOMMENDED_PATH = (
@@ -96,6 +73,8 @@ COMMAND_HELP = {
             "Supporting observation command for log-based verification after or alongside `exec`.",
             "`unity-puer-exec wait-for-log-pattern --project-path X:/project --pattern \"\\\\[Build\\\\] done\"`",
             "Use this when task success is best verified through Unity log output; the pattern is a regular expression, not a literal string.",
+            "Choose `--start-offset` from a response `log_range` by intent: `log_range.start` when waiting for output the originating command itself produced; `log_range.end` when observing activity that follows it.",
+            "`--start-offset` guards against matching stale output from before the intended observation window; `--expected-session-marker` guards against accepting observation from a different Editor session. The two cover different failures and are complementary.",
         ],
         "related_workflows": ("exec-and-wait-for-log-pattern", "exec-and-wait-for-result-marker"),
         "args": {
@@ -104,8 +83,8 @@ COMMAND_HELP = {
                 "`--base-url <url>`: observe through a direct service target.",
                 "`--unity-log-path <path>`: explicit non-default Unity Editor log path for pre-session project-scoped observation.",
                 "`--pattern <regex>`: required regular expression to wait for.",
-                "`--start-offset <offset>`: optional log offset from which to begin scanning.",
-                "`--expected-session-marker <marker>`: optional same-session guard for observation.",
+                "`--start-offset <offset>`: optional log offset from which to begin scanning. Use `log_range.start` when the awaited output came from the originating command; use `log_range.end` when the awaited activity follows it. Guards against matching output produced before the intended observation window.",
+                "`--expected-session-marker <marker>`: optional same-session guard; prevents accepting observation from a different Editor session. Complementary to `--start-offset`, not an alternative.",
                 "`--extract-group <n>`: return the matched text for capture group `n`.",
                 "`--extract-json-group <n>`: parse capture group `n` as JSON and return the parsed object.",
                 "`--timeout-seconds <seconds>`: total wait budget for the requested pattern.",
@@ -192,7 +171,7 @@ COMMAND_HELP = {
             "Arguments": [
                 "`--project-path <path>`: locate the log source for a Unity project.",
                 "`--base-url <url>`: report the log source for a direct service target.",
-                "`--unity-log-path <path>`: explicit non-default Unity Editor log path for pre-session project-scoped discovery.",
+                "`--unity-log-path <path>`: explicit non-default Unity Editor log path for pre-session project-scoped discovery. Without it, a reachable project-owned Editor's own reported log path is preferred over the platform default.",
                 "`--include-diagnostics`: include top-level debug diagnostics in the machine-readable response.",
             ],
             "Selector Rules": [
@@ -200,10 +179,19 @@ COMMAND_HELP = {
                 "`--project-path` is the normal choice when the CLI should discover the target from project context.",
                 "`--base-url` is for a direct service that is already known.",
             ],
+            "Range Rules": [
+                "`result.resolution_tier` names which tier produced `result.path`, so a path the Editor stated is distinguishable from one the CLI assumed.",
+                "`explicit_flag`: the caller supplied `--unity-log-path`.",
+                "`published_endpoint`: the project's own Editor published this path when its control service started. It outranks a live probe so observation keeps working when the control service is momentarily unreachable.",
+                "`control_service`: a reachable Editor owned by this project reported its own `console_log_path`. This is a stated path, not a guess.",
+                "`platform_default`: nothing authoritative was available and the platform per-user `Editor.log` was assumed. Any other Unity Editor open on this machine writes to that same file, so byte offsets taken against it can be invalidated by an unrelated project.",
+            ],
         },
         "status": {
             "success": [
                 "`completed`: a log source is available and `result.status` is `log_source_available`.",
+                "`result.resolution_tier` reports which resolution tier produced `result.path`.",
+                "`result.observation_reliability` classifies the resolved log before any offsets are taken: `project_private` and `caller_directed` are reliable; `platform_default_sole_editor` is usable but not privately owned; `platform_default_contended` means another Unity Editor shares the file and byte offsets are unsafe. `result.observation_reliable` is the boolean shortcut.",
             ],
             "failure": [
                 ("address_conflict", 2, "both selectors were provided; choose exactly one."),
@@ -327,6 +315,11 @@ COMMAND_HELP = {
             "Every script source (`--file`, `--stdin`, `--code`) must use this module entry template: `export default function (ctx) { return null; }`",
             "The function's immediate return value is the machine-readable transport for structured data; it populates top-level `result`. For a result that may be large, add `--response-file X:/work/.tmp/result.json` to persist the complete response and receive a compact verifiable reference instead of routing large data through `console.log`, which remains a diagnostic/async-observation channel, not the preferred large-result transport.",
             "Script `ctx` is intentionally narrow: only `ctx.request_id`, `ctx.globals`, and `ctx.args` are guaranteed. See `exec --help-args` or `--help-example derive-project-path-from-unity-api` before assuming project-path helpers.",
+            "An `exec` script runs in an environment separate from the host application's own JavaScript runtime: that runtime's globals, module-level state, and singletons are unreachable. Reach the running application through the shared C#/Unity object graph (`puer.loadType(...)`, scene objects, components).",
+            "To coordinate with application code, place or read shared C#/Unity state both sides can observe, then confirm the outcome with log-based observation. There is no supported way to call into the host application's JavaScript runtime directly.",
+            "Framework-specific UI technique (widget-tree traversal, event invocation conventions, application-specific operations) belongs in a project-local skill, not in this CLI's help.",
+            "Setting the Unity Editor play state through `exec` issues a request: a successful response means the transition was requested, not completed. Application-layer readiness is separate from the play state. Sequence: request the transition, confirm the play state changed, then wait for the readiness signal the task requires.",
+            "PowerShell users composing inline `--code` with `$` (for example `$typeof`): use single quotes (`'...'`) or prefer `--file`. Shell expansion of `$` surfaces as a JavaScript syntax error that does not name the shell.",
             "With `--project-path`, `exec` owns Unity launch or recovery for the project as part of the main work lifecycle.",
             "Changed local modules are recovered by a same-invocation server-owned JsEnv reset by default; use `--stale-module-policy error` when `ctx.globals` or module singleton continuity must be preserved.",
             "Scripts use a PuerTS-style JavaScript-to-C# bridge; `puer.loadType(...)` is the normal way to load Unity or C# types inside `exec` scripts.",
@@ -345,7 +338,8 @@ COMMAND_HELP = {
                 "`--project-path <path>`: select a Unity project and allow Unity launch when needed. Optional when the exe is invoked from its installed location inside the target Unity project.",
                 "`--base-url <url>`: target an already-known direct service instead of a project.",
                 "`--unity-exe-path <path>`: override the Unity executable for project-scoped startup only.",
-                "`--unity-log-path <path>`: explicit non-default Unity Editor log path for project-scoped startup before `session_marker` exists.",
+                "`--unity-log-path <path>`: explicit Unity Editor log path for project-scoped startup, overriding the project-private log a CLI-launched Editor otherwise gets under the project's `Temp/`. An Editor the CLI did not launch keeps whatever log it was started with; the CLI discovers that path from the endpoint rather than assuming the platform default.",
+                "`--unity-launch-arg <token>`: extra Unity argv token for a cold launch this CLI owns (repeatable). Applied after CLI-owned `-projectPath`, the activation switch, and `-logFile`. Cannot rebind those CLI-owned switches. Ignored when the CLI attaches to an already-running Editor. Ambient alternative: env `UNITY_PUER_EXEC_UNITY_LAUNCH_ARGS` as a JSON array of strings (e.g. `[\"-force-gles30\"]`).",
                 "`--wait-timeout-ms <ms>`: how long to wait before returning the current execution state.",
                 "`--request-id <id>`: optional caller-owned exec identity for recovery or idempotent replay; omitted values are generated automatically.",
                 "`--script-args <json-object>`: optional caller-supplied JSON object that becomes `ctx.args`; malformed JSON or non-object values fail before runtime execution.",
@@ -355,7 +349,7 @@ COMMAND_HELP = {
                 "`--include-diagnostics`: include top-level debug diagnostics in the machine-readable response.",
                 "`--file <path>`: preferred script input for multi-line or AI-generated scripts; the file must export `default function (ctx) { ... }`.",
                 "`--stdin`: read script content from standard input; stdin content must export `default function (ctx) { ... }`.",
-                "`--code <inline-js>`: inline module-shaped source that still must export `default function (ctx) { ... }`; compatibility path with quoting and multiline drawbacks. PowerShell users: use single quotes (`'...'`) around `--code` values containing `$` (e.g., `$typeof`) to prevent variable expansion, or use `--file` instead.",
+                "`--code <inline-js>`: inline module-shaped source that still must export `default function (ctx) { ... }`; compatibility path with quoting and multiline drawbacks. PowerShell users: use single quotes (`'...'`) around `--code` values containing `$` (e.g., `$typeof`), or use `--file` instead; see `exec --help` for how shell expansion surfaces.",
             ],
             "Selector Rules": [
                 "Use at most one selector: `--project-path` or `--base-url`. Supplying both is a usage error.",
@@ -364,22 +358,27 @@ COMMAND_HELP = {
                 "After a script writes C# or other import-triggering assets, prefer the next task `exec --refresh-before-exec` and stay on `wait-for-exec` for accepted continuation.",
                 "`--base-url` is for a direct service that is already known.",
                 "`--unity-exe-path` is only valid with `--project-path`.",
+                "`--unity-launch-arg` is only valid with `--project-path` and only affects a cold launch this CLI performs.",
                 "Use exactly one script source: `--file`, `--stdin`, or `--code`.",
                 "Every script source must provide a full module entry, not a fragment: `export default function (ctx) { return null; }`.",
             ],
             "Bridge Model": [
                 "`unity-puer-exec` scripts use a PuerTS-style JavaScript-to-C# bridge rather than ordinary JS imports for Unity/.NET APIs.",
                 "`puer.loadType(...)` is the normal bridge entry for loading Unity or C# types inside the script.",
+                "The script environment is separate from the host application's JavaScript runtime; application globals, module state, and singletons are unreachable. The shared C#/Unity object graph is the supported route to the running application.",
+                "To have application code perform work, place or read shared C#/Unity objects both sides observe, then confirm via log observation; do not expect to call into the host application's JavaScript runtime.",
+                "Framework-specific UI technique belongs in a project-local skill, not in this CLI's help.",
                 "Bridged C# arrays and `List<T>` values are not plain JS arrays; prefer PuerTS-aware access patterns when collection behavior matters.",
                 "Official JS-to-C# bridge reference: https://puerts.github.io/docs/puerts/unity/tutorial/js2cs",
             ],
             "Script Context": [
                 "Guaranteed `ctx` fields are intentionally narrow: `ctx.request_id`, `ctx.globals`, and `ctx.args`.",
                 "`ctx.request_id` matches the accepted top-level exec `request_id`.",
-                "`ctx.globals` is mutable same-service shared state and is not described as durable across service restart or replacement.",
+                "`ctx.globals` is mutable shared state between `exec` requests in the same service; it is not shared with the host application's own JavaScript runtime and is not described as durable across service restart or replacement.",
                 "`ctx.args` is the caller-supplied JSON object from `--script-args`; when omitted, `ctx.args` is `{}`.",
                 "Do not assume undocumented fields such as `ctx.project_path` are available unless the runtime contract is expanded explicitly.",
                 "When a script needs project-local paths, derive them through supported Unity APIs such as `UnityEngine.Application.dataPath`, then use `System.IO.Path.GetDirectoryName(...)` to reach the project root.",
+                "Setting the Unity Editor play state through `exec` issues a request rather than completing a transition: a successful response means the request was accepted, not that play state or application-layer readiness has finished. Sequence: request the transition, confirm the play state changed, then wait for the readiness signal the task requires.",
             ],
             "Timeout Rules": [
                 "`--wait-timeout-ms` must be a positive integer.",
@@ -401,6 +400,7 @@ COMMAND_HELP = {
                 ("not_available", direct_exec_client.EXIT_NOT_AVAILABLE, "the direct execution target could not be reached."),
                 ("request_id_conflict", direct_exec_client.EXIT_REQUEST_ID_CONFLICT, "the provided `request_id` was already associated with different execution content."),
                 ("launch_conflict", EXIT_UNITY_START_FAILED, "project-scoped launch ownership could not be established safely, so execution did not start a competing Unity launch."),
+                ("editor_not_under_cli_control", EXIT_EDITOR_NOT_UNDER_CLI_CONTROL, "an Editor is running for this project but never activated a control service; `ways_forward` lists how to proceed. Distinct from a launch or readiness failure -- the remedy is an activation decision, not a retry. If the running Editor is instead a version-mismatched bridge, the status is `version_mismatch`, not this."),
                 ("unity_start_failed", EXIT_UNITY_START_FAILED, "Unity could not be launched for the selected project."),
                 ("unity_stalled", EXIT_UNITY_NOT_READY, "readiness stopped making progress before execution could proceed."),
                 ("unity_not_ready", EXIT_UNITY_NOT_READY, "Unity did not become ready before execution could proceed."),
@@ -424,7 +424,8 @@ COMMAND_HELP = {
                 "`--project-path <path>`: select a Unity project and allow Unity launch when needed. Optional when the exe is invoked from its installed location inside the target Unity project.",
                 "`--base-url <url>`: target an already-known direct service instead of a project.",
                 "`--unity-exe-path <path>`: override the Unity executable for project-scoped startup only.",
-                "`--unity-log-path <path>`: explicit non-default Unity Editor log path for project-scoped startup before `session_marker` exists.",
+                "`--unity-log-path <path>`: explicit Unity Editor log path for project-scoped startup, overriding the project-private log a CLI-launched Editor otherwise gets under the project's `Temp/`. An Editor the CLI did not launch keeps whatever log it was started with; the CLI discovers that path from the endpoint rather than assuming the platform default.",
+                "`--unity-launch-arg <token>`: extra Unity argv token for a cold launch this CLI owns (repeatable). Same rules as `exec --unity-launch-arg`; ambient env `UNITY_PUER_EXEC_UNITY_LAUNCH_ARGS` also applies.",
                 "`--request-id <id>`: required accepted exec identity to continue waiting on.",
                 "`--wait-timeout-ms <ms>`: how long to wait before returning the current request state again.",
                 "`--log-start-offset <offset>`: optional log observation start offset; pass `log_range.start` from the original `exec` response so `brief_sequence` remains consistent with the cumulative observed log activity across successive calls.",
@@ -435,6 +436,7 @@ COMMAND_HELP = {
                 "`--project-path` is the normal choice when the CLI should prepare Unity for the project before waiting.",
                 "`--base-url` is for a direct service that is already known.",
                 "`--unity-exe-path` is only valid with `--project-path`.",
+                "`--unity-launch-arg` is only valid with `--project-path` and only affects a cold launch this CLI performs.",
             ],
             "Timeout Rules": [
                 "`--wait-timeout-ms` must be a positive integer.",
@@ -453,6 +455,7 @@ COMMAND_HELP = {
                 ("missing", direct_exec_client.EXIT_MISSING, "the addressed service has no recoverable record for that `request_id`, including expired or malformed local pending leftovers."),
                 ("not_available", direct_exec_client.EXIT_NOT_AVAILABLE, "the direct execution target could not be reached."),
                 ("launch_conflict", EXIT_UNITY_START_FAILED, "project-scoped launch ownership could not be established safely, so the CLI refused a competing launch."),
+                ("editor_not_under_cli_control", EXIT_EDITOR_NOT_UNDER_CLI_CONTROL, "an Editor is running for this project but never activated a control service; `ways_forward` lists how to proceed. The remedy is an activation decision, not a retry."),
                 ("unity_start_failed", EXIT_UNITY_START_FAILED, "Unity could not be launched for the selected project."),
                 ("unity_stalled", EXIT_UNITY_NOT_READY, "readiness stopped making progress before waiting could proceed."),
                 ("unity_not_ready", EXIT_UNITY_NOT_READY, "Unity did not become ready before waiting could proceed."),
@@ -542,6 +545,90 @@ COMMAND_HELP = {
             ],
         },
     },
+    "get-compile-errors": {
+        "quick_start": [
+            "Secondary troubleshooting command for reading structured C# compile errors from the control service.",
+            "`unity-puer-exec get-compile-errors --project-path X:/project`",
+            "Messages report the most recent completed compilation. A refresh starts compilation asynchronously, so reading immediately can return the previous compilation's results; call `wait-for-compile` after triggering a recompile (or use `exec --refresh-before-exec`) before reading when freshness matters.",
+            "Paginate with `--start` and `--count`. Compare `result.session_marker` across calls to detect a domain reload that invalidates prior offsets.",
+        ],
+        "related_workflows": (),
+        "args": {
+            "Arguments": [
+                "`--project-path <path>`: resolve the project's control endpoint and, when needed, launch or recover the Editor before reading.",
+                "`--base-url <url>`: post to a direct service target without project-identity validation or launch ownership.",
+                "`--start <n>`: zero-based index of the first error to return; default `0`.",
+                "`--count <n>`: number of errors to return; default `3`, allowed range `[1, 100]`.",
+                "`--include-diagnostics`: include top-level debug diagnostics in the machine-readable response.",
+            ],
+            "Selector Rules": [
+                "Use exactly one selector: `--project-path` or `--base-url`.",
+                "`--project-path` is the normal choice when the CLI should discover, launch, or recover Unity for a project.",
+                "`--base-url` is for a direct service that is already known.",
+            ],
+            "Range Rules": [
+                "`--start` must be a non-negative integer.",
+                "`--count` must be an integer in `[1, 100]`.",
+                "The response reports `result.total`, `result.start`, `result.returned`, `result.messages`, and `result.session_marker`.",
+            ],
+        },
+        "status": {
+            "success": [
+                "`completed`: the control service returned the requested page; `result.total` may be zero when no errors are recorded.",
+                "`result.session_marker` identifies the Editor session that produced the page so a domain reload can be detected between paginated calls.",
+            ],
+            "failure": [
+                ("address_conflict", 2, "both selectors were provided; choose exactly one."),
+                ("not_available", direct_exec_client.EXIT_NOT_AVAILABLE, "the control service could not be reached."),
+                ("unity_start_failed", EXIT_UNITY_START_FAILED, "Unity could not be launched for the selected project."),
+                ("unity_stalled", EXIT_UNITY_NOT_READY, "readiness stopped making progress before the compile messages could be read."),
+                ("unity_not_ready", EXIT_UNITY_NOT_READY, "Unity did not become ready before the compile messages could be read."),
+                ("failed", 1, "an unexpected failure occurred while retrieving compile errors."),
+            ],
+        },
+    },
+    "get-compile-warnings": {
+        "quick_start": [
+            "Secondary troubleshooting command for reading structured C# compile warnings from the control service.",
+            "`unity-puer-exec get-compile-warnings --project-path X:/project`",
+            "Same freshness rule as `get-compile-errors`: messages belong to the most recent completed compilation, so call `wait-for-compile` after triggering a recompile when the page must reflect that compile.",
+            "Argument shape, pagination, and `session_marker` semantics match `get-compile-errors`.",
+        ],
+        "related_workflows": (),
+        "args": {
+            "Arguments": [
+                "`--project-path <path>`: resolve the project's control endpoint and, when needed, launch or recover the Editor before reading.",
+                "`--base-url <url>`: post to a direct service target without project-identity validation or launch ownership.",
+                "`--start <n>`: zero-based index of the first warning to return; default `0`.",
+                "`--count <n>`: number of warnings to return; default `3`, allowed range `[1, 100]`.",
+                "`--include-diagnostics`: include top-level debug diagnostics in the machine-readable response.",
+            ],
+            "Selector Rules": [
+                "Use exactly one selector: `--project-path` or `--base-url`.",
+                "`--project-path` is the normal choice when the CLI should discover, launch, or recover Unity for a project.",
+                "`--base-url` is for a direct service that is already known.",
+            ],
+            "Range Rules": [
+                "`--start` must be a non-negative integer.",
+                "`--count` must be an integer in `[1, 100]`.",
+                "The response reports `result.total`, `result.start`, `result.returned`, `result.messages`, and `result.session_marker`.",
+            ],
+        },
+        "status": {
+            "success": [
+                "`completed`: the control service returned the requested page; `result.total` may be zero when no warnings are recorded.",
+                "`result.session_marker` identifies the Editor session that produced the page so a domain reload can be detected between paginated calls.",
+            ],
+            "failure": [
+                ("address_conflict", 2, "both selectors were provided; choose exactly one."),
+                ("not_available", direct_exec_client.EXIT_NOT_AVAILABLE, "the control service could not be reached."),
+                ("unity_start_failed", EXIT_UNITY_START_FAILED, "Unity could not be launched for the selected project."),
+                ("unity_stalled", EXIT_UNITY_NOT_READY, "readiness stopped making progress before the compile messages could be read."),
+                ("unity_not_ready", EXIT_UNITY_NOT_READY, "Unity did not become ready before the compile messages could be read."),
+                ("failed", 1, "an unexpected failure occurred while retrieving compile warnings."),
+            ],
+        },
+    },
 }
 
 
@@ -576,7 +663,7 @@ WORKFLOW_EXAMPLES = {
         ],
     },
     "exec-and-wait-for-log-pattern": {
-        "goal": "Run a script and verify success through ordinary Unity log output without falling back to direct host-log inspection; use `log_range.start` from the exec response as the observation checkpoint.",
+        "goal": "Run a script and verify success through ordinary Unity log output without falling back to direct host-log inspection; use `log_range.start` from the exec response as the observation checkpoint because the awaited line is produced by that same `exec`.",
         "steps": [
             {
                 "command": "`unity-puer-exec exec --project-path X:/project --file X:/scripts/emit-build-log.js --wait-timeout-ms 1000`",
@@ -595,7 +682,8 @@ WORKFLOW_EXAMPLES = {
         ],
         "notice": [
             "Use this workflow when success is confirmed by ordinary Unity log output rather than by a correlation-aware result marker.",
-            "Read `log_range.start` from the `exec` response and pass it to `wait-for-log-pattern --start-offset` so observation begins after the originating request.",
+            "Read `log_range.start` from the `exec` response and pass it to `wait-for-log-pattern --start-offset` when the awaited output came from that originating command (this example). Use `log_range.end` when observing activity that follows the originating command.",
+            "`--start-offset` guards against matching stale output from before the intended window; pair it with `--expected-session-marker` when you also need to reject a different Editor session — the two guards cover different failures.",
             "If the first observation window was missed, prefer creating a fresh safe checkpoint through a new exec-side attempt rather than falling back to direct host-log inspection.",
             "The pattern is a regular expression; escape special characters such as `[` and `]` when you need a literal match.",
             "If the session has not yet produced `session_marker` and you intentionally use a non-default Unity log file, keep passing the same `--unity-log-path` on the log-related commands in that workflow.",
@@ -778,7 +866,20 @@ GUIDANCE_MATRIX = {
             },
         ],
     },
-    ("exec", "completed"): {},
+    ("exec", "completed"): {
+        "next_steps": [
+            {
+                "command": "get-log-briefs",
+                "when": "re-check the observation window for new errors or warnings",
+                "argv_template": [
+                    "unity-puer-exec", "get-log-briefs",
+                    "--project-path", "{project_path}",
+                    "--range", "{log_range_span}",
+                    "--levels", "error,warning",
+                ],
+            },
+        ],
+    },
     ("exec", "modal_blocked"): {
         "situation": "A supported Unity modal dialog is blocking exec progress. Inspect the blocker type before deciding whether to resolve it.",
         "next_steps": [
@@ -962,7 +1063,20 @@ GUIDANCE_MATRIX = {
             },
         ],
     },
-    ("wait-for-exec", "completed"): {},
+    ("wait-for-exec", "completed"): {
+        "next_steps": [
+            {
+                "command": "get-log-briefs",
+                "when": "re-check the observation window for new errors or warnings",
+                "argv_template": [
+                    "unity-puer-exec", "get-log-briefs",
+                    "--project-path", "{project_path}",
+                    "--range", "{log_range_span}",
+                    "--levels", "error,warning",
+                ],
+            },
+        ],
+    },
     ("wait-for-exec", "modal_blocked"): {
         "situation": "A supported Unity modal dialog is blocking the accepted exec request. Do not start a fresh request; resolve the blocker first.",
         "next_steps": [
@@ -1086,7 +1200,21 @@ GUIDANCE_MATRIX = {
         "situation": "An unexpected wait-for-exec failure occurred. Check the error field for details.",
     },
     # --- wait-for-log-pattern ---
-    ("wait-for-log-pattern", "completed"): {},
+    ("wait-for-log-pattern", "completed"): {
+        "situation": "A pattern match does not imply the observation window contained no new errors or warnings.",
+        "next_steps": [
+            {
+                "command": "get-log-briefs",
+                "when": "re-check the observation window for new errors or warnings; a pattern match alone does not prove the window was clean",
+                "argv_template": [
+                    "unity-puer-exec", "get-log-briefs",
+                    "--project-path", "{project_path}",
+                    "--range", "{log_range_span}",
+                    "--levels", "error,warning",
+                ],
+            },
+        ],
+    },
     ("wait-for-log-pattern", "no_observation_target"): {
         "situation": "No eligible Unity log source could be observed for the selected target.",
         "next_steps": [
@@ -1268,7 +1396,306 @@ GUIDANCE_MATRIX = {
             },
         ],
     },
+    # --- get-compile-errors / get-compile-warnings ---
+    ("get-compile-errors", "completed"): {
+        "situation": (
+            "These messages belong to the most recent completed compilation. A just-triggered "
+            "refresh starts compilation asynchronously, so reading before that compile settles "
+            "returns the previous compilation's results."
+        ),
+        "next_steps": [
+            {
+                "command": "wait-for-compile",
+                "when": "you just triggered a recompile and need this page to reflect that compile before reading again",
+                "argv_template": [
+                    "unity-puer-exec", "wait-for-compile",
+                    "--project-path", "{project_path}",
+                ],
+            },
+            {
+                "command": "get-compile-errors",
+                "when": "you need the next page of errors after this one",
+                "argv_template": [
+                    "unity-puer-exec", "get-compile-errors",
+                    "--project-path", "{project_path}",
+                ],
+            },
+        ],
+    },
+    ("get-compile-errors", "not_available"): {
+        "situation": "The control service could not be reached, so compile errors were not retrieved. Project-scoped calls already attempted Unity launch/recovery before returning this status.",
+    },
+    ("get-compile-errors", "unity_start_failed"): {
+        "situation": "Unity could not be launched for the selected project, so compile errors were not retrieved.",
+    },
+    ("get-compile-errors", "unity_stalled"): {
+        "situation": "Readiness stopped making progress before compile errors could be read. Do not treat any earlier page as current until the Editor is ready again.",
+        "next_steps": [
+            {
+                "command": "wait-for-compile",
+                "when": "a recompile may still be in progress and you want to wait for it to settle first",
+                "argv_template": [
+                    "unity-puer-exec", "wait-for-compile",
+                    "--project-path", "{project_path}",
+                ],
+            },
+        ],
+    },
+    ("get-compile-errors", "unity_not_ready"): {
+        "situation": "Unity did not become ready before compile errors could be read. Messages from an earlier session are not a substitute for a ready Editor.",
+        "next_steps": [
+            {
+                "command": "wait-for-compile",
+                "when": "you want to wait for a compile cycle to settle before retrying the read",
+                "argv_template": [
+                    "unity-puer-exec", "wait-for-compile",
+                    "--project-path", "{project_path}",
+                ],
+            },
+        ],
+    },
+    ("get-compile-errors", "failed"): {
+        "situation": "An unexpected failure occurred while retrieving compile errors. Check the error field for details.",
+    },
+    ("get-compile-warnings", "completed"): {
+        "situation": (
+            "These messages belong to the most recent completed compilation. A just-triggered "
+            "refresh starts compilation asynchronously, so reading before that compile settles "
+            "returns the previous compilation's results."
+        ),
+        "next_steps": [
+            {
+                "command": "wait-for-compile",
+                "when": "you just triggered a recompile and need this page to reflect that compile before reading again",
+                "argv_template": [
+                    "unity-puer-exec", "wait-for-compile",
+                    "--project-path", "{project_path}",
+                ],
+            },
+            {
+                "command": "get-compile-warnings",
+                "when": "you need the next page of warnings after this one",
+                "argv_template": [
+                    "unity-puer-exec", "get-compile-warnings",
+                    "--project-path", "{project_path}",
+                ],
+            },
+        ],
+    },
+    ("get-compile-warnings", "not_available"): {
+        "situation": "The control service could not be reached, so compile warnings were not retrieved. Project-scoped calls already attempted Unity launch/recovery before returning this status.",
+    },
+    ("get-compile-warnings", "unity_start_failed"): {
+        "situation": "Unity could not be launched for the selected project, so compile warnings were not retrieved.",
+    },
+    ("get-compile-warnings", "unity_stalled"): {
+        "situation": "Readiness stopped making progress before compile warnings could be read. Do not treat any earlier page as current until the Editor is ready again.",
+        "next_steps": [
+            {
+                "command": "wait-for-compile",
+                "when": "a recompile may still be in progress and you want to wait for it to settle first",
+                "argv_template": [
+                    "unity-puer-exec", "wait-for-compile",
+                    "--project-path", "{project_path}",
+                ],
+            },
+        ],
+    },
+    ("get-compile-warnings", "unity_not_ready"): {
+        "situation": "Unity did not become ready before compile warnings could be read. Messages from an earlier session are not a substitute for a ready Editor.",
+        "next_steps": [
+            {
+                "command": "wait-for-compile",
+                "when": "you want to wait for a compile cycle to settle before retrying the read",
+                "argv_template": [
+                    "unity-puer-exec", "wait-for-compile",
+                    "--project-path", "{project_path}",
+                ],
+            },
+        ],
+    },
+    ("get-compile-warnings", "failed"): {
+        "situation": "An unexpected failure occurred while retrieving compile warnings. Check the error field for details.",
+    },
 }
+
+
+# The matrix key is (command, status) and carries no guard identity, so the
+# per-guard wording lives here and overrides the entry's default `situation`.
+VERSION_MISMATCH_SITUATIONS = {
+    "bridge": (
+        "The CLI executable and the Unity Editor package ship as one release, so the two "
+        "observed versions indicate a mixed installation. The Unity bridge is running a "
+        "different release than the CLI that contacted it."
+    ),
+    "package_layout": (
+        "The executable does not match the package tree it is installed in: its own version "
+        "differs from the `version` declared by the adjacent `package.json`, so the binary is "
+        "left over from a different release than the Editor scripts beside it."
+    ),
+    "bridge_version_unknown": (
+        "The Unity bridge reported no version. It predates version reporting and therefore "
+        "cannot be verified as compatible with this CLI."
+    ),
+    "cli_version_unknown": (
+        "This executable carries no stamped version. It predates version reporting, or was "
+        "built without the stamping step, and therefore cannot be verified as compatible with "
+        "the Unity Editor package it is installed with."
+    ),
+}
+
+_VERSION_MISMATCH_GUIDANCE = {
+    "situation": (
+        "The CLI executable and the Unity Editor package ship as one release, so the two "
+        "observed versions indicate a mixed installation. Reconcile the installation so both "
+        "halves come from the same release."
+    ),
+    "next_steps": [
+        {
+            "command": "--version",
+            "when": "you want to confirm which CLI build is acting before reconciling the installation",
+            "argv": ["unity-puer-exec", "--version"],
+        },
+    ],
+}
+
+# Both local guards run before any command work, so every command can refuse on a
+# version mismatch -- not only the ones that contact the control service.
+for _version_guard_command in COMMANDS:
+    GUIDANCE_MATRIX[(_version_guard_command, "version_mismatch")] = _VERSION_MISMATCH_GUIDANCE
+
+VERSION_MISMATCH_STATUS_LINE = (
+    "`version_mismatch` -> exit {}: the CLI executable and the Unity Editor package are from "
+    "different releases, or one half cannot state its version. The command performs no work; "
+    "reconcile the installation so both halves come from the same release. There is no bypass."
+).format(direct_exec_client.EXIT_VERSION_MISMATCH)
+
+# Decision (task 4.1a): `invalid_arguments` is installable for every command the same
+# way as `version_mismatch` -- one shared template expanded into per-command matrix
+# entries. That keeps the (command, status) coverage requirement intact rather than
+# introducing a cross-cutting fallback that would quietly weaken it.
+for _invalid_arguments_command in COMMANDS:
+    GUIDANCE_MATRIX[(_invalid_arguments_command, "invalid_arguments")] = {
+        "situation": (
+            "The `{}` invocation was rejected before any command work because the arguments "
+            "were not accepted."
+        ).format(_invalid_arguments_command),
+        "next_steps": [
+            {
+                "command": _invalid_arguments_command,
+                "when": "inspect the accepted arguments for this command",
+                "argv": ["unity-puer-exec", _invalid_arguments_command, "--help-args"],
+            },
+        ],
+    }
+
+INVALID_ARGUMENTS_STATUS_LINE = (
+    "`invalid_arguments` -> exit 2: a CLI-wide usage status for invocations rejected while "
+    "parsing arguments (unrecognized options, missing required arguments, or invalid values). "
+    "No Unity service is contacted. The response names the invoked command when one is "
+    "identifiable and points at that command's `--help-args`."
+)
+
+# Post-parse usage statuses that already route through usage_error() but previously
+# had no authored matrix entries. Guidance points at argument help, never at a retry.
+_ADDRESS_CONFLICT_COMMANDS = (
+    "exec",
+    "wait-for-exec",
+    "wait-for-log-pattern",
+    "wait-for-result-marker",
+    "wait-for-compile",
+    "get-log-source",
+    "get-compile-errors",
+    "get-compile-warnings",
+    "ensure-stopped",
+)
+for _address_conflict_command in _ADDRESS_CONFLICT_COMMANDS:
+    GUIDANCE_MATRIX[(_address_conflict_command, "address_conflict")] = {
+        "situation": (
+            "Both `--project-path` and `--base-url` were supplied; use exactly one selector."
+        ),
+        "next_steps": [
+            {
+                "command": _address_conflict_command,
+                "when": "inspect the selector rules for this command",
+                "argv": ["unity-puer-exec", _address_conflict_command, "--help-args"],
+            },
+        ],
+    }
+
+GUIDANCE_MATRIX[("get-log-briefs", "full_text_requires_include")] = {
+    "situation": (
+        "`--full-text` was supplied without `--indexes` (or its `--include` alias). "
+        "Full text is attached only to explicitly selected brief indices."
+    ),
+    "next_steps": [
+        {
+            "command": "get-log-briefs",
+            "when": "inspect the filter and full-text rules for this command",
+            "argv": ["unity-puer-exec", "get-log-briefs", "--help-args"],
+        },
+    ],
+}
+
+GUIDANCE_MATRIX[("get-log-briefs", "conflicting_indexes_include")] = {
+    "situation": (
+        "`--indexes` and `--include` were both supplied with different values; "
+        "supply only one, or make them match."
+    ),
+    "next_steps": [
+        {
+            "command": "get-log-briefs",
+            "when": "inspect the filter rules for this command",
+            "argv": ["unity-puer-exec", "get-log-briefs", "--help-args"],
+        },
+    ],
+}
+
+GUIDANCE_MATRIX[("exec", "invalid_script_args_json")] = {
+    "situation": (
+        "`--script-args` was not valid JSON. The value must be a JSON object string."
+    ),
+    "next_steps": [
+        {
+            "command": "exec",
+            "when": "inspect the script-args rules for exec",
+            "argv": ["unity-puer-exec", "exec", "--help-args"],
+        },
+    ],
+}
+
+GUIDANCE_MATRIX[("exec", "invalid_script_args_type")] = {
+    "situation": (
+        "`--script-args` must be a JSON object, not an array or scalar."
+    ),
+    "next_steps": [
+        {
+            "command": "exec",
+            "when": "inspect the script-args rules for exec",
+            "argv": ["unity-puer-exec", "exec", "--help-args"],
+        },
+    ],
+}
+
+
+# Commands that accept a caller-supplied log start offset, and can therefore report
+# that the offset stopped denoting the content the caller meant.
+LOG_OFFSET_AWARE_COMMANDS = ("wait-for-exec", "wait-for-log-pattern", "wait-for-result-marker")
+
+LOG_OFFSETS_INVALIDATED_HELP_LINES = (
+    "`log_offsets_invalidated` is an additive response field, not a status: the exit code and "
+    "the rest of the response are unchanged, and the command still returns whatever the observed "
+    "log currently contains rather than refusing to read.",
+    "It appears when the supplied start offset is past the end of the observed log. The log was "
+    "rotated or truncated, so byte offsets recorded before that no longer denote the content they "
+    "did; the scan restarted from the beginning of the file.",
+    "The field names the observed log path, the supplied start, and the observed end. Discard the "
+    "stale `log_range` and re-observe without an offset instead of reusing it.",
+    "If the named path is the platform default per-user `Editor.log`, a second Unity Editor is "
+    "very likely sharing that file and invalidating the offsets. Run `get-log-source` and check "
+    "`resolution_tier`: `published_endpoint` or `control_service` means the observed log belongs to "
+    "the target Editor, while `platform_default` means the path was assumed, not stated.",
+)
 
 
 def _build_argv(template, target_command, context):
@@ -1304,6 +1731,9 @@ def build_next_steps(command, status, context):
     result = []
     for template in templates:
         step = {"command": template["command"], "when": template["when"]}
+        static_argv = template.get("argv")
+        if static_argv is not None:
+            step["argv"] = list(static_argv)
         argv_template = template.get("argv_template")
         if argv_template is not None:
             argv = _build_argv(argv_template, template["command"], context)
@@ -1313,7 +1743,9 @@ def build_next_steps(command, status, context):
     return result if result else None
 
 
-def build_situation(command, status):
+def build_situation(command, status, guard=None):
+    if guard is not None and guard in VERSION_MISMATCH_SITUATIONS:
+        return VERSION_MISMATCH_SITUATIONS[guard]
     entry = GUIDANCE_MATRIX.get((command, status))
     if entry is None:
         return None
@@ -1331,7 +1763,7 @@ def render_top_level_help():
         "Bridge Model\n`unity-puer-exec` script authoring uses a PuerTS-style JavaScript-to-C# bridge. Use `puer.loadType(...)` to load Unity or C# types, and do not assume bridged C# arrays or `List<T>` values behave exactly like native JS arrays.",
         "Recommended Path\n{}".format(_bullet_lines(RECOMMENDED_PATH)),
         "Command Groups\n{}".format("\n\n".join(command_group_sections)),
-        "Global Options\n- `--suppress-guidance`: omit `next_steps` and `situation` from command responses. Status explanations remain available via `<command> --help-status`.\n- `--response-file <path>`: persist the complete normalized command response to a local file and print a compact reference (with `byte_count` and `sha256`) instead of the full JSON; use this when a response may exceed the caller's output budget. `wait-for-exec --response-file` can recover an already-completed large result by the same `request_id` without re-executing the script.",
+        "Global Options\n- `--version`: report the acting CLI build and exit, without a command and without contacting Unity. The CLI executable and the Unity Editor package ship as one release; when their versions disagree, commands refuse with `version_mismatch` and there is no bypass -- reconcile the installation instead.\n- `--suppress-guidance`: omit `next_steps` and `situation` from command responses. Status explanations remain available via `<command> --help-status`.\n- `--response-file <path>`: persist the complete normalized command response to a local file and print a compact reference (with `byte_count` and `sha256`) instead of the full JSON; use this when a response may exceed the caller's output budget. `wait-for-exec --response-file` can recover an already-completed large result by the same `request_id` without re-executing the script.",
         "Global Selector Rules\n- Use exactly one selector on commands that target a Unity session: `--project-path` or `--base-url`.\n- `--project-path` is the normal choice when the CLI should discover, launch, or recover Unity for a project.\n- `--base-url` is for a direct service you already know how to reach.",
         "Common Help Examples\nUse `unity-puer-exec --help-example <example-id>` to view full steps.\n{}".format(
             _bullet_lines(
@@ -1387,10 +1819,16 @@ def render_command_status_help(command):
         if situation:
             line += " Situation: {}".format(situation)
         failure_lines.append(line)
+    failure_lines.append(INVALID_ARGUMENTS_STATUS_LINE)
+    failure_lines.append(VERSION_MISMATCH_STATUS_LINE)
     sections = [
         "Success Statuses\n{}".format(_bullet_lines(success_lines)),
         "Non-success Statuses\n{}".format(_bullet_lines(failure_lines)),
     ]
+    if command in LOG_OFFSET_AWARE_COMMANDS:
+        sections.append(
+            "Log Offset Conditions\n{}".format(_bullet_lines(list(LOG_OFFSETS_INVALIDATED_HELP_LINES)))
+        )
     return _join_sections(sections)
 
 

@@ -53,18 +53,48 @@ When a CLI command response reaches a status where the agent benefits from under
 
 ### Requirement: Guidance covers all commands and statuses via a static matrix
 
-The CLI SHALL maintain a static guidance matrix keyed by `(command, status)` that determines which `next_steps` and `situation` content to include in each response. The matrix SHALL cover all ten commands and all documented response statuses.
+The CLI SHALL maintain a static guidance matrix keyed by `(command, status)` that determines which `next_steps` and `situation` content to include in each response. The matrix SHALL cover every command in the authoritative flat command tree defined by the formal CLI contract, and all documented response statuses for each. The coverage requirement SHALL be expressed against that command tree rather than against a fixed command count, so adding a command extends the obligation automatically instead of leaving a stale number behind.
+
+Candidate *selection* (which commands appear, in which order, and whether a `situation` is attached) SHALL be determined by the command name and status alone. The CLI SHALL NOT inspect script-authored `result` fields to filter, reorder, or replace candidates. When a selected candidate includes an `argv_template`, the CLI MAY fill placeholder values from CLI-owned response envelope fields (including `log_range`) and from invocation arguments; it SHALL NOT fill placeholders from script-authored `result`.
 
 #### Scenario: Every documented non-success status has a guidance matrix entry
 
 - **WHEN** a command returns any documented non-success status from the formal CLI contract
 - **THEN** the guidance matrix provides either `next_steps`, `situation`, or both for that command × status combination
 
-#### Scenario: Guidance matrix does not depend on response payload content
+#### Scenario: Coverage follows the command tree
+
+- **WHEN** a command is present in the authoritative flat command tree
+- **THEN** the guidance matrix contains entries for that command
+- **AND** a command added to the tree without matrix entries is detected rather than silently returning responses with no guidance
+
+#### Scenario: Candidate selection ignores script-authored result fields
 
 - **WHEN** the CLI constructs `next_steps` for a response
 - **THEN** the candidates are determined by the command name and status alone
 - **AND** the CLI does not inspect script-authored `result` fields to filter or reorder candidates
+
+#### Scenario: Argv values may use CLI-owned envelope fields
+
+- **WHEN** a guidance-matrix candidate carries an `argv_template` that references CLI-owned envelope fields such as `log_range`
+- **AND** those fields are present on the response being annotated
+- **THEN** the emitted `argv` includes the concrete values from those fields
+- **AND** candidate selection for that response remains identical to any other response with the same command and status
+
+### Requirement: Compile-message commands carry freshness guidance
+
+Responses from `get-compile-errors` and `get-compile-warnings` SHALL carry guidance covering the freshness hazard these commands are exposed to: compile messages read before a triggered compilation has settled report the previous compilation's results. The guidance SHALL point at the edge-aware compile wait as the way to establish that the messages being read belong to the intended compilation.
+
+#### Scenario: Compile-message response explains the staleness hazard
+
+- **WHEN** `get-compile-errors` or `get-compile-warnings` returns a response carrying guidance
+- **THEN** the guidance explains that messages read before a compile settles belong to the previous compilation
+- **AND** the candidates include waiting for the compile cycle before reading
+
+#### Scenario: Compile-message commands carry guidance for service-contact statuses
+
+- **WHEN** `get-compile-errors` or `get-compile-warnings` returns a non-success status arising from contacting the control service
+- **THEN** the response carries `next_steps`, `situation`, or both, on the same terms as other service-contacting commands
 
 ### Requirement: Global --suppress-guidance flag omits all runtime guidance
 
@@ -182,4 +212,129 @@ When `exec` or `wait-for-exec` completes with `status = "failed"` and the `error
 
 - **WHEN** the `puer.$typeof`/`puer.$ref` hint is added to `situation` for a failed response
 - **THEN** the response's `next_steps` candidates are identical to what they would be for any other `("exec", "failed")` or `("wait-for-exec", "failed")` response
+
+### Requirement: Version mismatch responses carry reconciliation guidance
+
+The guidance matrix SHALL cover the `version_mismatch` status for every command that can return it. Because the resolution is an installation change rather than another CLI invocation, the response SHALL carry a `situation` explaining which two halves disagree and how they came to differ.
+
+#### Scenario: Bridge mismatch explains the mixed installation
+
+- **WHEN** a command returns `version_mismatch` from the bridge guard
+- **THEN** the response includes a `situation` string stating that the CLI executable and the Unity Editor package ship as one release and that the two observed versions indicate a mixed installation
+
+#### Scenario: Package-layout mismatch explains the stale binary
+
+- **WHEN** a command returns `version_mismatch` from the package-layout guard
+- **THEN** the response includes a `situation` string stating that the executable does not match the package tree it is installed in
+
+#### Scenario: Unknown-version mismatch explains the unverifiable half
+
+- **WHEN** a command returns `version_mismatch` because a counterpart reported no version
+- **THEN** the response includes a `situation` string stating that the counterpart predates version reporting and therefore cannot be verified as compatible
+
+### Requirement: Version mismatch guidance offers only verification follow-ups
+
+The `next_steps` for `version_mismatch` SHALL be limited to actions that help the caller confirm the installation state. They SHALL NOT suggest re-running the failed command, and SHALL NOT reference any bypass mechanism, because neither would produce a trustworthy result.
+
+#### Scenario: Guidance offers a version query
+
+- **WHEN** a `version_mismatch` response includes `next_steps`
+- **THEN** the candidates include `--version` for confirming the acting CLI build
+- **AND** no candidate re-runs the failed command with the same mismatched pair
+
+#### Scenario: Guidance does not offer a bypass
+
+- **WHEN** a `version_mismatch` response includes `next_steps` or `situation`
+- **THEN** neither references a flag, environment variable, or setting that would suppress the guard
+
+### Requirement: Guidance suppression does not hide version mismatch detail
+
+The `--suppress-guidance` flag SHALL continue to omit `next_steps` and `situation`, but SHALL NOT remove the structured version detail from a `version_mismatch` response, because that detail is the machine-readable result rather than advisory guidance.
+
+#### Scenario: Suppressed guidance retains structured detail
+
+- **WHEN** a caller invokes a command with `--suppress-guidance` and the command returns `version_mismatch`
+- **THEN** the response omits `next_steps` and `situation`
+- **AND** the response retains the guard identity, the CLI version, the observed counterpart version, and the observed location
+
+### Requirement: Usage-failure responses carry guidance toward argument help
+
+Usage-failure statuses SHALL have guidance-matrix coverage. The response SHALL carry a `situation` naming what was rejected, and `next_steps` directing the caller to the argument help for the command that was invoked. The guidance SHALL NOT offer the failed invocation back to the caller as a retry candidate, because re-running an invocation the CLI has already rejected cannot succeed.
+
+#### Scenario: Parse-level failure carries guidance
+
+- **WHEN** a command returns `invalid_arguments`
+- **THEN** the response includes a `situation` describing what was rejected
+- **AND** `next_steps` includes the invoked command's argument help entry
+
+#### Scenario: Post-parse usage failures carry guidance
+
+- **WHEN** a command returns a usage status raised after parsing, such as `full_text_requires_include` or `address_conflict`
+- **THEN** the response includes `situation`, `next_steps`, or both, rather than status and error text alone
+
+#### Scenario: Guidance does not suggest retrying the rejected invocation
+
+- **WHEN** a usage-failure response includes `next_steps`
+- **THEN** no candidate re-runs the rejected invocation unchanged
+
+### Requirement: Shell-expansion hint covers the syntax-error form
+
+The existing bare-`puer.`-prefix hint SHALL be extended to the form that shell expansion actually produces. When an `exec` or `wait-for-exec` failure is a syntax error and the invocation supplied inline code through `--code` that carries the signature of a consumed `$` — a member access immediately followed by a call, such as `puer.(` — the response `situation` SHALL include a hint naming shell variable expansion as the likely cause and single quoting or `--file` as the resolution.
+
+The hint SHALL require both conditions together, and SHALL apply only to `--code`, because `--file` and `--stdin` content does not pass through shell interpolation.
+
+#### Scenario: Expanded variable in inline code
+
+- **WHEN** `exec --code` fails with a syntax error and the submitted code contains a member access immediately followed by a call
+- **THEN** the response `situation` includes a hint that a shell may have expanded a `$` token
+- **AND** the hint names single quoting or `--file` as the resolution
+
+#### Scenario: Ordinary syntax error is not misattributed
+
+- **WHEN** `exec --code` fails with a syntax error and the submitted code carries no expansion signature
+- **THEN** no shell-expansion hint is attached
+
+#### Scenario: File and stdin sources are excluded
+
+- **WHEN** an `exec` invocation supplied its script through `--file` or `--stdin` and fails with a syntax error
+- **THEN** no shell-expansion hint is attached, regardless of the code's content
+
+#### Scenario: Existing prefix hint is preserved
+
+- **WHEN** a failure reports a bare `$typeof` or `$ref` reference error
+- **THEN** the existing missing-`puer.`-prefix hint is still attached
+
+### Requirement: Success-path observation windows carry an error-sweep follow-up
+
+When `exec`, `wait-for-exec`, or `wait-for-log-pattern` returns `status = "completed"` and the response carries a CLI-owned `log_range` with both `start` and `end`, the response SHALL include `next_steps` with a `get-log-briefs` candidate whose `argv` is a complete invocation that re-scans that window for errors and warnings. The candidate SHALL use `--range <start>-<end>` built from `log_range.start` and `log_range.end`, and SHALL include `--levels error,warning`. Candidate presence is determined by command and status alone; missing `log_range` or selector context SHALL cause the entry to omit `argv` while still carrying `command` and `when`, rather than removing the candidate or substituting a different command.
+
+#### Scenario: exec completed offers a copyable error sweep
+
+- **WHEN** `exec` returns `status = "completed"` with `log_range.start` and `log_range.end` present and a project-path selector available
+- **THEN** the response includes a `next_steps` entry with `command = "get-log-briefs"`
+- **AND** that entry's `argv` includes `--range` with the value `{log_range.start}-{log_range.end}`
+- **AND** that entry's `argv` includes `--levels` with the value `error,warning`
+
+#### Scenario: wait-for-exec completed offers the same error sweep
+
+- **WHEN** `wait-for-exec` returns `status = "completed"` with `log_range.start` and `log_range.end` present and a project-path selector available
+- **THEN** the response includes a `next_steps` entry with `command = "get-log-briefs"`
+- **AND** that entry's `argv` includes the same `--range` and `--levels error,warning` shape as the `exec` completed case
+
+#### Scenario: wait-for-log-pattern completed offers the error sweep and explains the limit of a match
+
+- **WHEN** `wait-for-log-pattern` returns `status = "completed"` with `log_range.start` and `log_range.end` present and a project-path selector available
+- **THEN** the response includes a `situation` string stating that a pattern match does not imply the observation window contained no new errors or warnings
+- **AND** the response includes a `next_steps` entry with `command = "get-log-briefs"` whose `argv` re-scans that window with `--levels error,warning`
+
+#### Scenario: Incomplete log_range drops argv but keeps the candidate
+
+- **WHEN** one of the covered commands returns `status = "completed"` without both `log_range.start` and `log_range.end`
+- **THEN** the `get-log-briefs` candidate is still present with `command` and `when`
+- **AND** that candidate omits `argv`
+
+#### Scenario: Script result does not change the success-path candidates
+
+- **WHEN** `exec` returns `status = "completed"` with two different script-authored `result` values across otherwise identical envelopes
+- **THEN** both responses carry the same `next_steps` candidate set for that command and status
 

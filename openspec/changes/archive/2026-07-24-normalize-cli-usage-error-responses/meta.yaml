@@ -1,0 +1,7 @@
+change_type: feature
+priority: P1
+blocked_by:
+  - unify-cli-command-registry
+assumption_state: valid
+evidence: cli-transcript
+updated_at: 2026-07-23
