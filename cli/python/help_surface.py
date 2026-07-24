@@ -73,6 +73,8 @@ COMMAND_HELP = {
             "Supporting observation command for log-based verification after or alongside `exec`.",
             "`unity-puer-exec wait-for-log-pattern --project-path X:/project --pattern \"\\\\[Build\\\\] done\"`",
             "Use this when task success is best verified through Unity log output; the pattern is a regular expression, not a literal string.",
+            "Choose `--start-offset` from a response `log_range` by intent: `log_range.start` when waiting for output the originating command itself produced; `log_range.end` when observing activity that follows it.",
+            "`--start-offset` guards against matching stale output from before the intended observation window; `--expected-session-marker` guards against accepting observation from a different Editor session. The two cover different failures and are complementary.",
         ],
         "related_workflows": ("exec-and-wait-for-log-pattern", "exec-and-wait-for-result-marker"),
         "args": {
@@ -81,8 +83,8 @@ COMMAND_HELP = {
                 "`--base-url <url>`: observe through a direct service target.",
                 "`--unity-log-path <path>`: explicit non-default Unity Editor log path for pre-session project-scoped observation.",
                 "`--pattern <regex>`: required regular expression to wait for.",
-                "`--start-offset <offset>`: optional log offset from which to begin scanning.",
-                "`--expected-session-marker <marker>`: optional same-session guard for observation.",
+                "`--start-offset <offset>`: optional log offset from which to begin scanning. Use `log_range.start` when the awaited output came from the originating command; use `log_range.end` when the awaited activity follows it. Guards against matching output produced before the intended observation window.",
+                "`--expected-session-marker <marker>`: optional same-session guard; prevents accepting observation from a different Editor session. Complementary to `--start-offset`, not an alternative.",
                 "`--extract-group <n>`: return the matched text for capture group `n`.",
                 "`--extract-json-group <n>`: parse capture group `n` as JSON and return the parsed object.",
                 "`--timeout-seconds <seconds>`: total wait budget for the requested pattern.",
@@ -313,6 +315,11 @@ COMMAND_HELP = {
             "Every script source (`--file`, `--stdin`, `--code`) must use this module entry template: `export default function (ctx) { return null; }`",
             "The function's immediate return value is the machine-readable transport for structured data; it populates top-level `result`. For a result that may be large, add `--response-file X:/work/.tmp/result.json` to persist the complete response and receive a compact verifiable reference instead of routing large data through `console.log`, which remains a diagnostic/async-observation channel, not the preferred large-result transport.",
             "Script `ctx` is intentionally narrow: only `ctx.request_id`, `ctx.globals`, and `ctx.args` are guaranteed. See `exec --help-args` or `--help-example derive-project-path-from-unity-api` before assuming project-path helpers.",
+            "An `exec` script runs in an environment separate from the host application's own JavaScript runtime: that runtime's globals, module-level state, and singletons are unreachable. Reach the running application through the shared C#/Unity object graph (`puer.loadType(...)`, scene objects, components).",
+            "To coordinate with application code, place or read shared C#/Unity state both sides can observe, then confirm the outcome with log-based observation. There is no supported way to call into the host application's JavaScript runtime directly.",
+            "Framework-specific UI technique (widget-tree traversal, event invocation conventions, application-specific operations) belongs in a project-local skill, not in this CLI's help.",
+            "Setting the Unity Editor play state through `exec` issues a request: a successful response means the transition was requested, not completed. Application-layer readiness is separate from the play state. Sequence: request the transition, confirm the play state changed, then wait for the readiness signal the task requires.",
+            "PowerShell users composing inline `--code` with `$` (for example `$typeof`): use single quotes (`'...'`) or prefer `--file`. Shell expansion of `$` surfaces as a JavaScript syntax error that does not name the shell.",
             "With `--project-path`, `exec` owns Unity launch or recovery for the project as part of the main work lifecycle.",
             "Changed local modules are recovered by a same-invocation server-owned JsEnv reset by default; use `--stale-module-policy error` when `ctx.globals` or module singleton continuity must be preserved.",
             "Scripts use a PuerTS-style JavaScript-to-C# bridge; `puer.loadType(...)` is the normal way to load Unity or C# types inside `exec` scripts.",
@@ -342,7 +349,7 @@ COMMAND_HELP = {
                 "`--include-diagnostics`: include top-level debug diagnostics in the machine-readable response.",
                 "`--file <path>`: preferred script input for multi-line or AI-generated scripts; the file must export `default function (ctx) { ... }`.",
                 "`--stdin`: read script content from standard input; stdin content must export `default function (ctx) { ... }`.",
-                "`--code <inline-js>`: inline module-shaped source that still must export `default function (ctx) { ... }`; compatibility path with quoting and multiline drawbacks. PowerShell users: use single quotes (`'...'`) around `--code` values containing `$` (e.g., `$typeof`) to prevent variable expansion, or use `--file` instead.",
+                "`--code <inline-js>`: inline module-shaped source that still must export `default function (ctx) { ... }`; compatibility path with quoting and multiline drawbacks. PowerShell users: use single quotes (`'...'`) around `--code` values containing `$` (e.g., `$typeof`), or use `--file` instead; see `exec --help` for how shell expansion surfaces.",
             ],
             "Selector Rules": [
                 "Use at most one selector: `--project-path` or `--base-url`. Supplying both is a usage error.",
@@ -358,16 +365,20 @@ COMMAND_HELP = {
             "Bridge Model": [
                 "`unity-puer-exec` scripts use a PuerTS-style JavaScript-to-C# bridge rather than ordinary JS imports for Unity/.NET APIs.",
                 "`puer.loadType(...)` is the normal bridge entry for loading Unity or C# types inside the script.",
+                "The script environment is separate from the host application's JavaScript runtime; application globals, module state, and singletons are unreachable. The shared C#/Unity object graph is the supported route to the running application.",
+                "To have application code perform work, place or read shared C#/Unity objects both sides observe, then confirm via log observation; do not expect to call into the host application's JavaScript runtime.",
+                "Framework-specific UI technique belongs in a project-local skill, not in this CLI's help.",
                 "Bridged C# arrays and `List<T>` values are not plain JS arrays; prefer PuerTS-aware access patterns when collection behavior matters.",
                 "Official JS-to-C# bridge reference: https://puerts.github.io/docs/puerts/unity/tutorial/js2cs",
             ],
             "Script Context": [
                 "Guaranteed `ctx` fields are intentionally narrow: `ctx.request_id`, `ctx.globals`, and `ctx.args`.",
                 "`ctx.request_id` matches the accepted top-level exec `request_id`.",
-                "`ctx.globals` is mutable same-service shared state and is not described as durable across service restart or replacement.",
+                "`ctx.globals` is mutable shared state between `exec` requests in the same service; it is not shared with the host application's own JavaScript runtime and is not described as durable across service restart or replacement.",
                 "`ctx.args` is the caller-supplied JSON object from `--script-args`; when omitted, `ctx.args` is `{}`.",
                 "Do not assume undocumented fields such as `ctx.project_path` are available unless the runtime contract is expanded explicitly.",
                 "When a script needs project-local paths, derive them through supported Unity APIs such as `UnityEngine.Application.dataPath`, then use `System.IO.Path.GetDirectoryName(...)` to reach the project root.",
+                "Setting the Unity Editor play state through `exec` issues a request rather than completing a transition: a successful response means the request was accepted, not that play state or application-layer readiness has finished. Sequence: request the transition, confirm the play state changed, then wait for the readiness signal the task requires.",
             ],
             "Timeout Rules": [
                 "`--wait-timeout-ms` must be a positive integer.",
@@ -652,7 +663,7 @@ WORKFLOW_EXAMPLES = {
         ],
     },
     "exec-and-wait-for-log-pattern": {
-        "goal": "Run a script and verify success through ordinary Unity log output without falling back to direct host-log inspection; use `log_range.start` from the exec response as the observation checkpoint.",
+        "goal": "Run a script and verify success through ordinary Unity log output without falling back to direct host-log inspection; use `log_range.start` from the exec response as the observation checkpoint because the awaited line is produced by that same `exec`.",
         "steps": [
             {
                 "command": "`unity-puer-exec exec --project-path X:/project --file X:/scripts/emit-build-log.js --wait-timeout-ms 1000`",
@@ -671,7 +682,8 @@ WORKFLOW_EXAMPLES = {
         ],
         "notice": [
             "Use this workflow when success is confirmed by ordinary Unity log output rather than by a correlation-aware result marker.",
-            "Read `log_range.start` from the `exec` response and pass it to `wait-for-log-pattern --start-offset` so observation begins after the originating request.",
+            "Read `log_range.start` from the `exec` response and pass it to `wait-for-log-pattern --start-offset` when the awaited output came from that originating command (this example). Use `log_range.end` when observing activity that follows the originating command.",
+            "`--start-offset` guards against matching stale output from before the intended window; pair it with `--expected-session-marker` when you also need to reject a different Editor session — the two guards cover different failures.",
             "If the first observation window was missed, prefer creating a fresh safe checkpoint through a new exec-side attempt rather than falling back to direct host-log inspection.",
             "The pattern is a regular expression; escape special characters such as `[` and `]` when you need a literal match.",
             "If the session has not yet produced `session_marker` and you intentionally use a non-default Unity log file, keep passing the same `--unity-log-path` on the log-related commands in that workflow.",

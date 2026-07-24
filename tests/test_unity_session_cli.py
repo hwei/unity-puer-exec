@@ -173,6 +173,14 @@ class UnityPuerExecCliTests(unittest.TestCase):
         self.assertIn("`--help-example derive-project-path-from-unity-api`", stdout)
         self.assertIn("--response-file X:/work/.tmp/result.json", stdout)
         self.assertIn("not the preferred large-result transport", stdout)
+        self.assertIn("separate from the host application's own JavaScript runtime", stdout)
+        self.assertIn("shared C#/Unity object graph", stdout)
+        self.assertIn("place or read shared C#/Unity state both sides can observe", stdout)
+        self.assertIn("belongs in a project-local skill", stdout)
+        self.assertIn("transition was requested, not completed", stdout)
+        self.assertIn("confirm the play state changed", stdout)
+        self.assertIn("PowerShell users composing inline `--code`", stdout)
+        self.assertIn("JavaScript syntax error that does not name the shell", stdout)
 
     def test_exec_help_args_renders_argument_template(self):
         exit_code, stdout, stderr = unity_puer_exec.run_cli(["exec", "--help-args"])
@@ -202,6 +210,15 @@ class UnityPuerExecCliTests(unittest.TestCase):
         self.assertIn("`ctx.project_path`", stdout)
         self.assertIn("`UnityEngine.Application.dataPath`", stdout)
         self.assertIn("`System.IO.Path.GetDirectoryName(...)`", stdout)
+        self.assertIn("separate from the host application's JavaScript runtime", stdout)
+        self.assertIn("shared C#/Unity object graph is the supported route", stdout)
+        self.assertIn("not shared with the host application's own JavaScript runtime", stdout)
+        self.assertIn("place or read shared C#/Unity objects both sides observe", stdout)
+        self.assertIn("belongs in a project-local skill", stdout)
+        self.assertIn("issues a request rather than completing a transition", stdout)
+        self.assertIn("confirm the play state changed", stdout)
+        self.assertIn("PowerShell users: use single quotes", stdout)
+        self.assertIn("$typeof", stdout)
 
     def test_wait_for_exec_help_renders_recovery_guidance(self):
         exit_code, stdout, stderr = unity_puer_exec.run_cli(["wait-for-exec", "--help"])
@@ -249,6 +266,24 @@ class UnityPuerExecCliTests(unittest.TestCase):
         self.assertIn("exec-and-wait-for-log-pattern", stdout)
         self.assertIn("exec-and-wait-for-result-marker", stdout)
         self.assertIn("use `unity-puer-exec --help-example exec-and-wait-for-log-pattern`", stdout)
+        self.assertIn("`log_range.start` when waiting for output the originating command itself produced", stdout)
+        self.assertIn("`log_range.end` when observing activity that follows it", stdout)
+        self.assertIn("guards against matching stale output", stdout)
+        self.assertIn("guards against accepting observation from a different Editor session", stdout)
+        self.assertIn("complementary", stdout)
+
+    def test_wait_for_log_pattern_help_args_documents_offset_and_session_guards(self):
+        exit_code, stdout, stderr = unity_puer_exec.run_cli(["wait-for-log-pattern", "--help-args"])
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(stderr, "")
+        self.assertIn("`--start-offset <offset>`", stdout)
+        self.assertIn("`log_range.start` when the awaited output came from the originating command", stdout)
+        self.assertIn("`log_range.end` when the awaited activity follows it", stdout)
+        self.assertIn("before the intended observation window", stdout)
+        self.assertIn("`--expected-session-marker <marker>`", stdout)
+        self.assertIn("different Editor session", stdout)
+        self.assertIn("Complementary to `--start-offset`", stdout)
 
     def test_wait_for_exec_help_status_mentions_missing(self):
         exit_code, stdout, stderr = unity_puer_exec.run_cli(["wait-for-exec", "--help-status"])
@@ -307,6 +342,9 @@ class UnityPuerExecCliTests(unittest.TestCase):
         self.assertIn("log_range.start", stdout)
         self.assertIn("--start-offset OFFSET", stdout)
         self.assertIn("direct host-log inspection", stdout)
+        self.assertIn("produced by that same `exec`", stdout)
+        self.assertIn("Use `log_range.end` when observing activity that follows the originating command", stdout)
+        self.assertIn("pair it with `--expected-session-marker`", stdout)
 
     def test_recovery_help_example_renders_request_id_workflow(self):
         exit_code, stdout, stderr = unity_puer_exec.run_cli(["--help-example", "recover-exec-by-request-id"])
