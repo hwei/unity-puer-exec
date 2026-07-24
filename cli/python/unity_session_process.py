@@ -7,6 +7,7 @@ import time as time_module
 from pathlib import Path
 
 from unity_session_common import (
+    CONTROL_ACTIVATION_SWITCH,
     DEFAULT_STOP_TIMEOUT_SECONDS,
     POLL_INTERVAL_SECONDS,
     UNITY_LOCKFILE_RELATIVE_PATH,
@@ -164,6 +165,11 @@ def launch_unity(project_path, unity_exe_path, unity_log_path=None):
         unity_exe_path,
         "-projectPath",
         str(project_path),
+        # The control service no longer starts implicitly, so a CLI-driven launch
+        # has to ask for it. Passing it on every launch is what keeps this change
+        # invisible to CLI callers: they still get an Editor that is controllable
+        # and, via -logFile below, privately observable.
+        CONTROL_ACTIVATION_SWITCH,
     ]
     if unity_log_path:
         args.extend(["-logFile", str(unity_log_path)])
@@ -179,37 +185,51 @@ def ensure_stopped(
     mode="inspect",
     timeout_seconds=DEFAULT_STOP_TIMEOUT_SECONDS,
     resolve_project_path_fn=None,
-    read_session_artifact_fn=None,
-    session_artifact_path_fn=None,
-    list_unity_pids_fn=None,
+    read_endpoint_publication_fn=None,
+    endpoint_publication_path_fn=None,
+    lockfile_held_fn=None,
     is_pid_running_fn=None,
     default_base_url=None,
     time_ref=None,
 ):
-    list_unity_pids_fn = list_unity_pids if list_unity_pids_fn is None else list_unity_pids_fn
+    """Decide whether a project is stopped, from that project's own state.
+
+    Every caller asks "is any Editor still serving this project". The rule this
+    replaces answered two different questions instead, and both diverged from that
+    one exactly when it mattered. With a session record present it asked "is the pid
+    I wrote down earlier gone", which reports stopped while an Editor the record
+    never knew about is live and answering -- that is what let a real-host case
+    attach to a Hub-launched Editor and observe the shared per-user log. With no
+    record it asked "is the machine free of Unity.exe", so any unrelated Editor made
+    it report "not stopped" forever, on a machine the project explicitly supports.
+
+    The project's Unity lockfile answers the actual question, for any Editor,
+    regardless of who started it and of what else runs on the machine. The
+    publication supplies a process to stop when one is needed -- and only ever a
+    process the target project's own Editor named, so a stop can no longer reach an
+    Editor belonging to a different project.
+    """
     is_pid_running_fn = is_pid_running if is_pid_running_fn is None else is_pid_running_fn
+    lockfile_held_fn = _project_lockfile_is_held if lockfile_held_fn is None else lockfile_held_fn
     time_ref = time_module if time_ref is None else time_ref
 
     resolved_project_path = resolve_project_path_fn(project_path)
-    session_data = read_session_artifact_fn(resolved_project_path)
+    publication = read_endpoint_publication_fn(resolved_project_path)
     session = UnitySession(
         owner="project_control",
-        base_url=(session_data or {}).get("base_url", default_base_url),
+        base_url=(publication or {}).get("base_url", default_base_url),
         project_path=resolved_project_path,
-        unity_pid=(session_data or {}).get("unity_pid"),
+        unity_pid=(publication or {}).get("unity_pid"),
         launched=False,
     )
     session.diagnostics = {
-        "unity_pids": list_unity_pids_fn(),
-        "session_artifact_path": str(session_artifact_path_fn(resolved_project_path)),
-        "session_artifact_exists": session_data is not None,
+        "stop_rule": "project_lockfile",
+        "endpoint_publication_path": str(endpoint_publication_path_fn(resolved_project_path)),
+        "endpoint_publication_exists": publication is not None,
+        "project_lockfile_held": lockfile_held_fn(resolved_project_path),
     }
 
-    target_pid = session.unity_pid
-    if target_pid is None:
-        return len(session.diagnostics["unity_pids"]) == 0, session
-
-    if not is_pid_running_fn(target_pid):
+    if not session.diagnostics["project_lockfile_held"]:
         return True, session
 
     if mode == "inspect":
@@ -218,12 +238,22 @@ def ensure_stopped(
     if mode == "timeout_then_kill":
         deadline = time_ref.time() + timeout_seconds
         while time_ref.time() < deadline:
-            if not is_pid_running_fn(target_pid):
+            if not lockfile_held_fn(resolved_project_path):
+                session.diagnostics["project_lockfile_held"] = False
                 return True, session
             time_ref.sleep(POLL_INTERVAL_SECONDS)
         mode = "immediate_kill"
 
     if mode == "immediate_kill":
+        target_pid = session.unity_pid
+        if target_pid is None:
+            # A held lockfile with nothing published is a running Editor this CLI
+            # was never given a handle on. Killing something to make the answer
+            # true is exactly the failure this rule exists to prevent, so it
+            # reports the Editor instead.
+            session.diagnostics["kill_skipped_reason"] = "no_published_process_to_target"
+            return False, session
+
         result = subprocess.run(
             ["taskkill", "/PID", str(target_pid), "/T", "/F"],
             stdout=subprocess.PIPE,
@@ -231,15 +261,19 @@ def ensure_stopped(
             universal_newlines=True,
             check=False,
         )
+        session.diagnostics["taskkill_target_pid"] = target_pid
         session.diagnostics["taskkill_stdout"] = result.stdout.strip()
         session.diagnostics["taskkill_stderr"] = result.stderr.strip()
         session.diagnostics["taskkill_exit_code"] = result.returncode
         settle_deadline = time_ref.time() + max(POLL_INTERVAL_SECONDS, min(timeout_seconds, 2.0))
         while time_ref.time() < settle_deadline:
-            if not is_pid_running_fn(target_pid):
+            if not lockfile_held_fn(resolved_project_path):
+                session.diagnostics["project_lockfile_held"] = False
                 return True, session
             time_ref.sleep(POLL_INTERVAL_SECONDS)
-        return not is_pid_running_fn(target_pid), session
+        still_held = lockfile_held_fn(resolved_project_path)
+        session.diagnostics["project_lockfile_held"] = still_held
+        return not still_held, session
 
     return False, session
 

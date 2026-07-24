@@ -88,6 +88,33 @@ Temp/UnityLockfile     Temp/UnityPuerExec/endpoint.json      Conclusion
 
 *Trade-off accepted.* Reading a `log_range` from a cleanly exited session is no longer possible. A caller who needs a durable log passes `--unity-log-path` to a location outside `Temp/`, which already works.
 
+*Refinement found while applying: what "allowing for a restart window" actually is.*
+D2 above says an unreachable publication is residue, softened by a restart window.
+A fixed window alone cannot carry that, because the two cases it must separate are
+not distinguishable by duration: a domain reload in a large project keeps the
+service down far longer than any window short enough to fail fast, and the residue
+case is permanent. Two discriminators are used instead, in order:
+
+1. **A short grace window** (2 s) for the ordinary case where the listener is down
+   for a moment, or the publication is mid-replacement.
+2. **Whether the published process is still running.** A live published process
+   next to a held lockfile is a controlled Editor whose service is restarting, and
+   the caller's existing readiness wait — bounded by `ready_timeout` — is where
+   waiting belongs. A published process that is gone, with the lockfile held by
+   something else, is residue beside an Editor that never opted in.
+
+Consulting the published process id here does not reintroduce what D1 removed. The
+defect there was the CLI *inventing* a pid from tasklist order and then trusting it
+as proof of liveness. This pid is stated by the Editor about itself, and it is only
+ever corroboration alongside the project's own lockfile — never the sole evidence
+that a session is live — so a recycled pid still cannot resurrect an ended session.
+
+*Session marker, not process id, is the confirmation discriminator.* A `compiling`
+health payload carries `session_marker` but not `unity_pid` or `project_path`, and
+the marker is minted fresh on every service start, so it both proves identity and
+lets a mid-compile Editor confirm. `unity_pid` and `project_path` are checked
+additionally once the payload is `ready`.
+
 ### D3: Control-service activation is explicit, and uniform across launch modes
 
 The service currently starts implicitly on Editor load and is suppressed in batch-mode (`UnityPuerExecServer.cs:275`). It becomes opt-in in every mode:
@@ -147,10 +174,97 @@ With the endpoint published, the normal path is a single direct connection. Unde
 
 What it can still do is explain a refusal correctly. An Editor running an older bridge starts its service implicitly, publishes nothing, and has no opt-in menu action, so `held + absent` guidance that says "activate from the Editor menu" would point at a menu item that does not exist in that bridge. The 19-port scan (`55231`–`55249`) is retained solely so the error path can find such a service, read its old or absent `bridge_version`, and report `version_mismatch` — pointing the caller at an upgrade — instead of a missing opt-in. Its cost is paid only when the command is already failing.
 
+## Resolved Questions
+
+### R0: The activation switch is visible to the Editor — measured (task 1.1, partial)
+
+Measured on the validation host with two batch runs of the same project, one with
+`-unityPuerExecControl` and one without.
+
+Without the switch the service does not start and the process says why. With it,
+the same process binds and publishes:
+
+```
+[UnityPuerExec] Port 55231 unavailable: ...
+[UnityPuerExec] Port 55232 unavailable: ...
+[UnityPuerExec] Published endpoint at <project>/Temp/UnityPuerExec/endpoint.json
+[UnityPuerExec] Ready on port 55233
+```
+
+So Unity passes an unrecognised switch through to `Environment.GetCommandLineArgs()`,
+and the uniform activation rule holds in batch mode in both directions — which is
+the evidence tasks 3.7 and 8.4 ask for. The rolled-over port is incidental but
+useful: two unrelated Editors held 55231 and 55232, and the publication named the
+port actually bound rather than the preferred one.
+
+**Still unmeasured: survival across a domain reload.** A batch run compiles and
+then loads the domain once, so it is not a vehicle for observing a reload. The
+process command line cannot change within a process, so survival is expected on
+structural grounds, but that is reasoning rather than evidence; task 8.9 is where
+it gets measured. Task 1.1 stays open until then.
+
+### R1: Publication atomicity — confirmed, with a contention caveat (task 1.3)
+
+Measured on the Windows validation machine with a writer replacing the target and
+four reader threads reading it concurrently (`.tmp/probe_atomic_replace*.py`, three
+runs: a ~10 000 reads/s stress run and two runs nearer the real cadence).
+
+**A reader never observes a truncated record.** Across roughly 63 000 concurrent
+reads, zero partial or malformed records were seen. A replacing rename
+(`MoveFileEx` with `MOVEFILE_REPLACE_EXISTING`, which is what `os.replace` and
+.NET's `File.Replace` both issue) gives a reader either the previous complete
+content or the new complete content. This settles the spec scenario "A partially
+written publication is never observed", and it holds regardless of which side
+issues the rename, so the C# writer inherits it — provided it uses a replacing
+rename and never truncates the published file in place.
+
+**The rename itself is not contention-free.** A reader holding the destination
+open denies the replace with `ERROR_ACCESS_DENIED` (5), because the usual read
+open shares read access but not delete access. Readers do not deny each other, so
+this is one-directional: reads stay clean while publishes occasionally fail. At a
+synthetic 400 reads/s it cost roughly 1% of publishes even with a 400 ms retry
+budget; at the real cadence — publish on bind and on port change, read once per
+CLI command — it is not expected to be observable.
+
+*Consequences for the implementation.*
+
+- The Editor writes a sibling temp file and replaces the target. Where the target
+  does not yet exist, a plain move is used, since `File.Replace` requires it.
+- The publish retries with a short backoff and treats exhaustion as non-fatal: the
+  previously published record is still valid, and the next publish trigger retries.
+  A failed publish must never fail the Editor's startup.
+- The CLI retries a denied read briefly. A read it still cannot complete falls
+  under the D2 transient-gap rule — momentarily unreadable is not "did not opt in".
+
 ## Open Questions
 
+- **A booting Editor is indistinguishable from one that did not opt in — unresolved.**
+  Found while applying, and not yet answered. Unity takes the project lockfile early
+  in startup but does not publish until its service binds, so for the 30–60 s a cold
+  Editor takes to come up, the state is `held + absent` — the same reading as a
+  Hub-launched Editor that will never opt in. The command that performs the launch is
+  unaffected, because it goes straight to its own readiness wait without
+  re-classifying. A *second* command issued during that window is not: it classifies,
+  waits out the grace window, and refuses with `editor_not_under_cli_control`. The
+  previous behaviour was to wait, via `_has_recoverable_editor_signal`.
+
+  This is a regression the D2 table does not cover, and the risks section already
+  named its shape ("a recovery path depends on artifact state in a way the table does
+  not cover"). Candidate discriminators, none yet chosen:
+
+  - The project-private launch log exists and is still growing — the activity tracker
+    already measures exactly this, and it is evidence about *this* project.
+  - The launch claim, if its lifetime were extended from "until the launching command
+    returns" to "until the launched Editor publishes". This changes launch-coordination
+    semantics and needs its own thought.
+  - Lockfile freshness (`PROJECT_RECOVERY_WINDOW_SECONDS`), which is already computed —
+    but a Hub-launched Editor has an equally fresh lockfile, so on its own it only
+    trades a false refusal for a false wait.
+
+  The regression test that pins this is
+  `test_ensure_session_ready_recovers_when_launched_process_exits_cleanly_before_ready`.
+
 - **`EditorApplication.OpenProject` with arguments.** A second menu action, "Restart with CLI Control", could relaunch the Editor with `-logFile` and the activation switch, turning the escape hatch into a one-click return to the controlled state. This is **unverified** in this repository and Unity version. If it does not work as assumed, only the session-scoped activation action ships.
-- **Publication atomicity.** `endpoint.json` must not be observable half-written. Write-to-temp-then-rename is the intended approach, pending confirmation that it behaves on Windows under a concurrently reading CLI.
 - **Publication lifecycle at the edges.** Removal is quit-scoped by design (D2); two edges need real-host confirmation. First, whether the `EditorApplication.quitting` hook fires reliably enough that clean-exit residue stays rare — the D2 residue row already absorbs the cases where it does not. Second, whether Unity clears `Temp/UnityPuerExec/` when a project is reopened, which decides how long a stale publication can sit next to a new Editor's lockfile and therefore how load-bearing the D2 confirmation step is.
 
 ## Risks / Trade-offs

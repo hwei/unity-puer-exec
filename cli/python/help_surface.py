@@ -202,8 +202,8 @@ COMMAND_HELP = {
             ],
             "Range Rules": [
                 "`result.resolution_tier` names which tier produced `result.path`, so a path the Editor stated is distinguishable from one the CLI assumed.",
-                "`session_artifact`: an established session recorded this path; it outranks every other tier so observation keeps working when the control service is unreachable.",
                 "`explicit_flag`: the caller supplied `--unity-log-path`.",
+                "`published_endpoint`: the project's own Editor published this path when its control service started. It outranks a live probe so observation keeps working when the control service is momentarily unreachable.",
                 "`control_service`: a reachable Editor owned by this project reported its own `console_log_path`. This is a stated path, not a guess.",
                 "`platform_default`: nothing authoritative was available and the platform per-user `Editor.log` was assumed. Any other Unity Editor open on this machine writes to that same file, so byte offsets taken against it can be invalidated by an unrelated project.",
             ],
@@ -1345,7 +1345,7 @@ LOG_OFFSETS_INVALIDATED_HELP_LINES = (
     "stale `log_range` and re-observe without an offset instead of reusing it.",
     "If the named path is the platform default per-user `Editor.log`, a second Unity Editor is "
     "very likely sharing that file and invalidating the offsets. Run `get-log-source` and check "
-    "`resolution_tier`: `control_service` or `session_artifact` means the observed log belongs to "
+    "`resolution_tier`: `published_endpoint` or `control_service` means the observed log belongs to "
     "the target Editor, while `platform_default` means the path was assumed, not stated.",
 )
 

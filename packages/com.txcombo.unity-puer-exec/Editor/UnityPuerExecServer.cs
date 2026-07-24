@@ -211,10 +211,44 @@ namespace UnityPuerExec
             SampleStackTraceLogTypes();
             EditorApplication.update += OnEditorUpdate;
             AssemblyReloadEvents.beforeAssemblyReload += Stop;
-            EditorApplication.quitting += Stop;
+            EditorApplication.quitting += OnEditorQuitting;
             CompilationPipeline.compilationStarted += OnCompilationStarted;
             CompilationPipeline.assemblyCompilationFinished += OnAssemblyCompilationFinished;
+            StartIfActivated();
+        }
+
+        /// <summary>
+        /// Start the control service if this process asked for one.
+        ///
+        /// Every launch mode goes through this single gate -- CLI-driven, batch-mode, and
+        /// an Editor a human opened directly -- so the service means the same thing
+        /// everywhere. It replaces both the implicit start on Editor load and the
+        /// batch-mode-only suppression that stood in for a caller decision.
+        /// </summary>
+        internal static void StartIfActivated()
+        {
+            if (!UnityPuerExecActivation.IsActivated())
+            {
+                Debug.Log(
+                    "[UnityPuerExec] Control service not activated for this process. "
+                    + $"Launch Unity with {UnityPuerExecActivation.ActivationSwitch}, "
+                    + $"or use the '{UnityPuerExecActivation.ActivateMenuPath}' menu action."
+                );
+                return;
+            }
+
             Start();
+        }
+
+        /// <summary>
+        /// Withdraw the opt-in publication, which is a quit-scoped act. Stop alone is
+        /// not: it also runs before every domain reload, and removing the publication
+        /// there would make each script compile look like an Editor that never opted in.
+        /// </summary>
+        private static void OnEditorQuitting()
+        {
+            Stop();
+            UnityPuerExecEndpointPublication.Remove();
         }
 
         private static string ResolveBridgeVersion()
@@ -266,16 +300,12 @@ namespace UnityPuerExec
 
         private static void Start()
         {
-            // The control endpoint targets interactive Editor sessions only. Batch-mode
-            // Unity subprocesses -- notably AssetImportWorker workers, which also run this
-            // [InitializeOnLoad] type -- must not start the listener, or a transient worker
-            // can win and squat the preferred port that the interactive Editor needs.
-            if (Application.isBatchMode)
-            {
-                Debug.Log("[UnityPuerExec] Skipping control service start in batch-mode process");
-                return;
-            }
-
+            // No mode check here. A batch-mode Unity subprocess -- notably an
+            // AssetImportWorker, which also runs this [InitializeOnLoad] type -- never
+            // reaches Start, because it is never launched with the activation switch and
+            // has no Editor menu to click. The property that mattered (a transient worker
+            // cannot squat the preferred port) now follows from the uniform activation
+            // rule rather than from a mode-specific exception.
             StopListener();
             sessionMarker = Guid.NewGuid().ToString("N");
             RefreshConsoleLogPathCache();
@@ -337,6 +367,11 @@ namespace UnityPuerExec
             }
 
             _ = Task.Run(() => AcceptLoopAsync(listenerCancellation.Token));
+            // Publish on every successful bind, not only the first. Start runs again
+            // after each domain reload and mints a fresh session marker and possibly a
+            // different port, so republishing unconditionally is what keeps the record
+            // naming the currently bound service rather than the one before the compile.
+            UnityPuerExecEndpointPublication.Publish(selectedPort, sessionMarker, cachedConsoleLogPath);
             Debug.Log($"{ReadyLogPrefix} {selectedPort}");
         }
 

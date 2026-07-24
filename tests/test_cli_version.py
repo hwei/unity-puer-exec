@@ -298,14 +298,48 @@ class BridgeGuardTests(unittest.TestCase):
         self.assertEqual(exit_code, direct_exec_client.EXIT_NOT_AVAILABLE)
         self.assertEqual(json.loads(stdout)["status"], "not_available")
 
+    SESSION_MARKER = "cli-version-guard-marker"
+
+    @staticmethod
+    def _publish_endpoint(project_dir, session_marker, unity_pid=4242):
+        """Give the project a controlled session the way a real Editor would.
+
+        A project-scoped command now reaches its endpoint through the Editor's own
+        publication plus a held project lockfile, so a guard test has to establish
+        both before the version guard is even reachable.
+        """
+        publication_path = Path(project_dir) / "Temp" / "UnityPuerExec" / "endpoint.json"
+        publication_path.parent.mkdir(parents=True, exist_ok=True)
+        publication_path.write_text(
+            json.dumps(
+                {
+                    "port": 55231,
+                    "unity_pid": unity_pid,
+                    "project_path": project_dir,
+                    "session_marker": session_marker,
+                }
+            ),
+            encoding="utf-8",
+        )
+
     def _run_project_scoped_exec(self, bridge_version):
-        payload = {"ok": True, "status": "ready", "port": 55231, "base_url": self.BASE_URL}
+        payload = {
+            "ok": True,
+            "status": "ready",
+            "port": 55231,
+            "base_url": self.BASE_URL,
+            "session_marker": self.SESSION_MARKER,
+            "unity_pid": 4242,
+        }
         with tempfile.TemporaryDirectory() as project_dir:
             payload["project_path"] = project_dir
             if bridge_version is not None:
                 payload["bridge_version"] = bridge_version
+            self._publish_endpoint(project_dir, self.SESSION_MARKER)
             with mock.patch.object(cli_version, "resolve_cli_version", return_value="0.7.0"), mock.patch.object(
                 unity_session, "_probe_health", return_value=(payload, None)
+            ), mock.patch.object(
+                unity_session, "_project_lockfile_is_held", return_value=True
             ), mock.patch.object(direct_exec_client, "invoke_command") as invoke:
                 exit_code, stdout, stderr = unity_puer_exec.run_cli([
                     "exec",
@@ -334,11 +368,22 @@ class BridgeGuardTests(unittest.TestCase):
 
     def test_project_scoped_command_proceeds_on_a_matched_bridge(self):
         completed = {"ok": True, "status": "completed", "operation": "exec", "request_id": "R-1", "result": 1}
-        payload = {"ok": True, "status": "ready", "port": 55231, "base_url": self.BASE_URL, "bridge_version": "0.7.0"}
+        payload = {
+            "ok": True,
+            "status": "ready",
+            "port": 55231,
+            "base_url": self.BASE_URL,
+            "bridge_version": "0.7.0",
+            "session_marker": self.SESSION_MARKER,
+            "unity_pid": 4242,
+        }
         with tempfile.TemporaryDirectory() as project_dir:
             payload["project_path"] = project_dir
+            self._publish_endpoint(project_dir, self.SESSION_MARKER)
             with mock.patch.object(cli_version, "resolve_cli_version", return_value="0.7.0"), mock.patch.object(
                 unity_session, "_probe_health", return_value=(payload, None)
+            ), mock.patch.object(
+                unity_session, "_project_lockfile_is_held", return_value=True
             ), mock.patch.object(
                 direct_exec_client, "invoke_command", return_value=(0, json.dumps(completed), "")
             ):

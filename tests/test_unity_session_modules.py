@@ -42,23 +42,27 @@ class UnitySessionModuleTests(unittest.TestCase):
         self.assertEqual(resolved, Path("X:/from-env"))
         self.assertEqual(loader_calls, [env])
 
-    def test_logs_resolve_effective_log_path_uses_injected_artifact_reader(self):
-        def fake_read_session_artifact(_project_path):
-            return {"session_marker": "marker-1", "effective_log_path": "X:/artifact/Editor.log", "unity_pid": 42}
+    def test_logs_resolve_effective_log_path_uses_injected_publication_reader(self):
+        def fake_read_publication(_project_path):
+            return {"console_log_path": "X:/published/Editor.log", "unity_pid": 42}
 
         resolved = unity_session_logs.resolve_effective_log_path(
             "X:/project",
-            unity_log_path="X:/explicit/Editor.log",
-            session_data=None,
-            read_session_artifact_fn=fake_read_session_artifact,
-            session_artifact_log_path_fn=lambda payload: unity_session_logs.session_artifact_log_path(
-                payload,
-                is_pid_running_fn=lambda pid: pid == 42,
-            ),
+            read_endpoint_publication_fn=fake_read_publication,
             default_editor_log_path_fn=lambda: Path("X:/default/Editor.log"),
         )
 
-        self.assertEqual(resolved, Path("X:/artifact/Editor.log"))
+        self.assertEqual(resolved, Path("X:/published/Editor.log"))
+
+    def test_logs_explicit_flag_outranks_the_published_path(self):
+        resolved = unity_session_logs.resolve_effective_log_path(
+            "X:/project",
+            unity_log_path="X:/explicit/Editor.log",
+            read_endpoint_publication_fn=lambda _p: {"console_log_path": "X:/published/Editor.log"},
+            default_editor_log_path_fn=lambda: Path("X:/default/Editor.log"),
+        )
+
+        self.assertEqual(resolved, Path("X:/explicit/Editor.log"))
 
     def test_process_ensure_stopped_uses_injected_dependencies(self):
         time_ref = SimpleNamespace(time=lambda: 0.0, sleep=lambda _seconds: None)
@@ -67,9 +71,12 @@ class UnitySessionModuleTests(unittest.TestCase):
             project_path="X:/project",
             mode="inspect",
             resolve_project_path_fn=lambda value: Path(value),
-            read_session_artifact_fn=lambda _path: {"base_url": "http://127.0.0.1:55231", "unity_pid": 1234},
-            session_artifact_path_fn=lambda _path: Path("X:/project/Temp/UnityPuerExec/session.json"),
-            list_unity_pids_fn=lambda: [1234],
+            read_endpoint_publication_fn=lambda _path: {
+                "base_url": "http://127.0.0.1:55231",
+                "unity_pid": 1234,
+            },
+            endpoint_publication_path_fn=lambda _path: Path("X:/project/Temp/UnityPuerExec/endpoint.json"),
+            lockfile_held_fn=lambda _path: True,
             is_pid_running_fn=lambda pid: pid == 1234,
             default_base_url="http://127.0.0.1:55231",
             time_ref=time_ref,
@@ -77,12 +84,16 @@ class UnitySessionModuleTests(unittest.TestCase):
 
         self.assertEqual(stopped, False)
         self.assertEqual(session.owner, "project_control")
-        self.assertEqual(session.diagnostics["unity_pids"], [1234])
+        self.assertTrue(session.diagnostics["project_lockfile_held"])
+        self.assertEqual(session.unity_pid, 1234)
 
     def test_process_ensure_stopped_waits_briefly_after_taskkill(self):
         time_values = iter([0.0, 0.0, 0.2, 0.2])
         sleep_calls = []
-        pid_running = iter([True, True, False])
+        # Stopped-ness is now read from the project lockfile, not from the pid: the
+        # lockfile answers "is any Editor still serving this project", which is what
+        # every caller actually asks.
+        lockfile_held = iter([True, True, False])
 
         time_ref = SimpleNamespace(time=lambda: next(time_values), sleep=lambda seconds: sleep_calls.append(seconds))
 
@@ -100,17 +111,66 @@ class UnitySessionModuleTests(unittest.TestCase):
                 project_path="X:/project",
                 mode="immediate_kill",
                 resolve_project_path_fn=lambda value: Path(value),
-                read_session_artifact_fn=lambda _path: {"base_url": "http://127.0.0.1:55231", "unity_pid": 1234},
-                session_artifact_path_fn=lambda _path: Path("X:/project/Temp/UnityPuerExec/session.json"),
-                list_unity_pids_fn=lambda: [1234],
-                is_pid_running_fn=lambda _pid: next(pid_running),
+                read_endpoint_publication_fn=lambda _path: {
+                    "base_url": "http://127.0.0.1:55231",
+                    "unity_pid": 1234,
+                },
+                endpoint_publication_path_fn=lambda _path: Path("X:/project/Temp/UnityPuerExec/endpoint.json"),
+                lockfile_held_fn=lambda _path: next(lockfile_held),
+                is_pid_running_fn=lambda _pid: True,
                 default_base_url="http://127.0.0.1:55231",
                 time_ref=time_ref,
             )
 
         self.assertTrue(stopped)
         self.assertEqual(session.diagnostics["taskkill_exit_code"], 0)
+        self.assertEqual(session.diagnostics["taskkill_target_pid"], 1234)
         self.assertEqual(sleep_calls, [unity_session_common.POLL_INTERVAL_SECONDS])
+
+    def test_process_ensure_stopped_never_targets_an_unpublished_process(self):
+        """A held lockfile with nothing published is reported, never killed blindly.
+
+        The removed rule would take a pid from machine-wide tasklist order and
+        taskkill /T /F it, which could reach an Editor belonging to a different
+        project entirely.
+        """
+        time_ref = SimpleNamespace(time=lambda: 0.0, sleep=lambda _seconds: None)
+
+        with mock.patch.object(unity_session_process.subprocess, "run") as run:
+            stopped, session = unity_session_process.ensure_stopped(
+                project_path="X:/project",
+                mode="immediate_kill",
+                resolve_project_path_fn=lambda value: Path(value),
+                read_endpoint_publication_fn=lambda _path: None,
+                endpoint_publication_path_fn=lambda _path: Path("X:/project/Temp/UnityPuerExec/endpoint.json"),
+                lockfile_held_fn=lambda _path: True,
+                is_pid_running_fn=lambda _pid: True,
+                default_base_url="http://127.0.0.1:55231",
+                time_ref=time_ref,
+            )
+
+        self.assertFalse(stopped)
+        run.assert_not_called()
+        self.assertEqual(session.diagnostics["kill_skipped_reason"], "no_published_process_to_target")
+
+    def test_process_ensure_stopped_reports_stopped_with_unrelated_editors_running(self):
+        """A free lockfile means stopped, however many unrelated Editors exist."""
+        time_ref = SimpleNamespace(time=lambda: 0.0, sleep=lambda _seconds: None)
+
+        stopped, session = unity_session_process.ensure_stopped(
+            project_path="X:/project",
+            mode="inspect",
+            resolve_project_path_fn=lambda value: Path(value),
+            read_endpoint_publication_fn=lambda _path: None,
+            endpoint_publication_path_fn=lambda _path: Path("X:/project/Temp/UnityPuerExec/endpoint.json"),
+            lockfile_held_fn=lambda _path: False,
+            is_pid_running_fn=lambda _pid: True,
+            default_base_url="http://127.0.0.1:55231",
+            time_ref=time_ref,
+        )
+
+        self.assertTrue(stopped)
+        self.assertFalse(session.diagnostics["project_lockfile_held"])
 
     def test_pid_present_in_tasklist_csv_is_locale_independent(self):
         # A real PID-row match.
@@ -343,21 +403,6 @@ class UnitySessionModuleTests(unittest.TestCase):
         self.assertIs(result, session)
         self.assertEqual(session.diagnostics["extracted_json"]["correlation_id"], "id-1")
         self.assertEqual(session.diagnostics["matched_log_offset"], 57)
-
-    def test_logs_write_and_read_session_artifact_round_trip(self):
-        with tempfile.TemporaryDirectory() as temp_dir:
-            project_path = Path(temp_dir)
-            payload = {
-                "base_url": "http://127.0.0.1:55231",
-                "unity_pid": 1234,
-                "session_marker": "marker-1",
-                "effective_log_path": "X:/artifact/Editor.log",
-            }
-
-            unity_session_logs.write_session_artifact(project_path, payload)
-            restored = unity_session_logs.read_session_artifact(project_path)
-
-        self.assertEqual(restored, payload)
 
     def test_logs_write_and_clear_launch_claim_round_trip(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -682,38 +727,21 @@ class HealthIdentityProtocolTests(unittest.TestCase):
         self.assertEqual(payload["port"], 55240)
         self.assertNotEqual(payload["port"], 55231)
 
-    def test_persist_ready_session_artifact_includes_port_from_payload(self):
-        import json as _json
-        with tempfile.TemporaryDirectory() as temp_dir:
-            project_path = Path(temp_dir)
-            session = unity_session_common.UnitySession(
-                owner="test",
-                base_url="http://127.0.0.1:55233",
-                project_path=str(project_path),
-                unity_pid=1234,
-            )
-            payload = {
-                "ok": True,
-                "status": "ready",
-                "port": 55233,
-                "session_marker": "marker-1",
-                "project_path": str(project_path),
-            }
-            unity_session_logs.persist_ready_session_artifact(
-                session,
-                Path("X:/Logs/Editor.log"),
-                payload=payload,
-                session_marker_from_payload_fn=unity_session_logs.session_marker_from_payload,
-                write_session_artifact_fn=unity_session_logs.write_session_artifact,
-            )
-            artifact = unity_session_logs.read_session_artifact(project_path)
-            self.assertEqual(artifact["port"], 55233)
-            self.assertEqual(artifact["project_path"], str(project_path))
-            self.assertEqual(artifact["session_marker"], "marker-1")
+    def test_the_cli_writes_no_session_record_of_its_own(self):
+        """The CLI reads the Editor's publication; it does not author one.
+
+        Guards design D1 against a later reader restoring CLI-side writing as a
+        convenience: a record the CLI writes is a claim about a process it does not
+        own, and that is what let an unrelated project's pid drive a kill.
+        """
+        self.assertFalse(hasattr(unity_session_logs, "write_session_artifact"))
+        self.assertFalse(hasattr(unity_session_logs, "read_session_artifact"))
+        self.assertFalse(hasattr(unity_session_logs, "persist_ready_session_artifact"))
+        self.assertFalse(hasattr(unity_session_common, "SESSION_RELATIVE_PATH"))
 
 
 class ArtifactIdentityValidationTests(unittest.TestCase):
-    """Tests for validate_endpoint_identity and validate_artifact_endpoint."""
+    """Tests for validate_endpoint_identity and publication coercion."""
 
     def test_validate_endpoint_identity_matching_project_returns_true(self):
         def fake_probe(base_url, timeout_seconds):
@@ -799,41 +827,67 @@ class ArtifactIdentityValidationTests(unittest.TestCase):
         self.assertFalse(is_valid)
         self.assertIsNotNone(payload)
 
-    def test_validate_artifact_endpoint_empty_artifact_returns_false(self):
-        import unity_session as us
-        is_valid, base_url, payload, error = us.validate_artifact_endpoint(
-            None,
-            "X:/unity-project",
-        )
-        self.assertFalse(is_valid)
-        self.assertIsNone(base_url)
-        self.assertIsNone(payload)
-        self.assertIsNone(error)
+    def test_publication_is_read_back_with_a_derived_base_url(self):
+        import json as _json
+        import unity_session_endpoint
 
-    def test_validate_artifact_endpoint_missing_base_url_returns_false(self):
-        import unity_session as us
-        is_valid, base_url, payload, error = us.validate_artifact_endpoint(
-            {"session_marker": "abc"},
-            "X:/unity-project",
-        )
-        self.assertFalse(is_valid)
-        self.assertIsNone(base_url)
-
-    def test_logs_session_artifact_includes_project_path_and_port(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             project_path = Path(temp_dir)
-            payload = {
-                "base_url": "http://127.0.0.1:55235",
-                "unity_pid": 1234,
-                "session_marker": "marker-1",
-                "effective_log_path": "X:/artifact/Editor.log",
-                "project_path": str(project_path),
-                "port": 55235,
-            }
-            unity_session_logs.write_session_artifact(project_path, payload)
-            restored = unity_session_logs.read_session_artifact(project_path)
-            self.assertEqual(restored["project_path"], str(project_path))
-            self.assertEqual(restored["port"], 55235)
+            path = unity_session_endpoint.endpoint_publication_path(project_path)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(
+                _json.dumps(
+                    {
+                        "port": 55235,
+                        "unity_pid": 1234,
+                        "project_path": str(project_path),
+                        "session_marker": "marker-1",
+                        "console_log_path": "X:/published/Editor.log",
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            publication = unity_session_endpoint.read_endpoint_publication(project_path)
+
+        self.assertEqual(publication["port"], 55235)
+        self.assertEqual(publication["unity_pid"], 1234)
+        self.assertEqual(publication["session_marker"], "marker-1")
+        self.assertEqual(publication["base_url"], "http://127.0.0.1:55235")
+        self.assertEqual(publication["console_log_path"], "X:/published/Editor.log")
+
+    def test_an_absent_publication_reads_as_nothing(self):
+        import unity_session_endpoint
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            self.assertIsNone(unity_session_endpoint.read_endpoint_publication(Path(temp_dir)))
+
+    def test_an_incomplete_publication_is_no_publication(self):
+        """A half-filled record is not a partial answer, it is no answer.
+
+        The publication's whole value is that it is authoritative, so a record
+        missing the fields that make it actionable must not be acted on.
+        """
+        import json as _json
+        import unity_session_endpoint
+
+        for incomplete in (
+            {"unity_pid": 1, "project_path": "X:/p", "session_marker": "m"},
+            {"port": 55231, "project_path": "X:/p", "session_marker": "m"},
+            {"port": 55231, "unity_pid": 1, "session_marker": "m"},
+            {"port": 55231, "unity_pid": 1, "project_path": "X:/p"},
+            {"port": 0, "unity_pid": 1, "project_path": "X:/p", "session_marker": "m"},
+        ):
+            with tempfile.TemporaryDirectory() as temp_dir:
+                project_path = Path(temp_dir)
+                path = unity_session_endpoint.endpoint_publication_path(project_path)
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(_json.dumps(incomplete), encoding="utf-8")
+
+                self.assertIsNone(
+                    unity_session_endpoint.read_endpoint_publication(project_path),
+                    incomplete,
+                )
 
 
 if __name__ == "__main__":

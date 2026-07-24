@@ -28,20 +28,19 @@ import unity_session_process  # type: ignore
 
 EDITOR_SOURCE_DIR = REPO_ROOT / "packages" / "com.txcombo.unity-puer-exec" / "Editor"
 
-ARTIFACT_PATH = "X:/artifact/Editor.log"
+PUBLISHED_PATH = "X:/published/Editor.log"
 EXPLICIT_PATH = "X:/explicit/Editor.log"
 REPORTED_PATH = "X:/reported/Editor.log"
 DEFAULT_PATH = "X:/default/Editor.log"
 
 
-def _resolve(artifact=None, explicit=None, reported=None):
+def _resolve(published=None, explicit=None, reported=None):
     """Resolve with every dependency injected, so only precedence is under test."""
     return unity_session_logs.resolve_effective_log_path_with_tier(
         "X:/unity-project",
         unity_log_path=explicit,
-        session_data={},
+        publication={"console_log_path": published} if published else {},
         health_console_log_path=reported,
-        session_artifact_log_path_fn=lambda _session_data: Path(artifact) if artifact else None,
         default_editor_log_path_fn=lambda: Path(DEFAULT_PATH),
     )
 
@@ -69,10 +68,15 @@ class BridgeConsoleLogPathContractTests(unittest.TestCase):
 
 
 class LogPathPrecedenceTests(unittest.TestCase):
-    def test_session_artifact_outranks_every_other_tier(self):
-        path, tier = _resolve(artifact=ARTIFACT_PATH, explicit=EXPLICIT_PATH, reported=REPORTED_PATH)
-        self.assertEqual(path, Path(ARTIFACT_PATH))
-        self.assertEqual(tier, unity_session_logs.LOG_SOURCE_TIER_SESSION_ARTIFACT)
+    def test_explicit_flag_outranks_every_other_tier(self):
+        path, tier = _resolve(published=PUBLISHED_PATH, explicit=EXPLICIT_PATH, reported=REPORTED_PATH)
+        self.assertEqual(path, Path(EXPLICIT_PATH))
+        self.assertEqual(tier, unity_session_logs.LOG_SOURCE_TIER_EXPLICIT_FLAG)
+
+    def test_published_path_outranks_a_live_probe_answer(self):
+        path, tier = _resolve(published=PUBLISHED_PATH, reported=REPORTED_PATH)
+        self.assertEqual(path, Path(PUBLISHED_PATH))
+        self.assertEqual(tier, unity_session_logs.LOG_SOURCE_TIER_PUBLISHED_ENDPOINT)
 
     def test_explicit_flag_outranks_the_reported_path(self):
         path, tier = _resolve(explicit=EXPLICIT_PATH, reported=REPORTED_PATH)
@@ -96,10 +100,15 @@ class LogPathPrecedenceTests(unittest.TestCase):
         self.assertEqual(path, Path(DEFAULT_PATH))
         self.assertEqual(tier, unity_session_logs.LOG_SOURCE_TIER_PLATFORM_DEFAULT)
 
-    def test_session_artifact_still_wins_when_the_control_service_is_unreachable(self):
-        path, tier = _resolve(artifact=ARTIFACT_PATH, reported=None)
-        self.assertEqual(path, Path(ARTIFACT_PATH))
-        self.assertEqual(tier, unity_session_logs.LOG_SOURCE_TIER_SESSION_ARTIFACT)
+    def test_published_path_still_wins_when_the_control_service_is_unreachable(self):
+        """Observation must not degrade to a per-user guess on a momentary probe failure.
+
+        This is the property the removed session artifact was carrying, now carried
+        by a record the Editor wrote about itself instead of one the CLI invented.
+        """
+        path, tier = _resolve(published=PUBLISHED_PATH, reported=None)
+        self.assertEqual(path, Path(PUBLISHED_PATH))
+        self.assertEqual(tier, unity_session_logs.LOG_SOURCE_TIER_PUBLISHED_ENDPOINT)
 
     def test_health_console_log_path_reads_only_a_non_empty_string(self):
         self.assertEqual(unity_session_logs.health_console_log_path({"console_log_path": REPORTED_PATH}), REPORTED_PATH)
@@ -120,22 +129,29 @@ class GetLogSourceTierReportingTests(unittest.TestCase):
         self.assertEqual(result["resolution_tier"], unity_session_logs.LOG_SOURCE_TIER_EXPLICIT_FLAG)
         self.assertEqual(Path(session.effective_log_path), Path(EXPLICIT_PATH))
 
-    def test_artifact_path_is_reported_as_the_artifact_tier(self):
+    def test_published_path_is_reported_as_the_published_tier(self):
+        import json
+
         with tempfile.TemporaryDirectory() as temp_dir:
             project_path = Path(temp_dir)
-            unity_session.write_session_artifact(
-                project_path,
-                {
-                    "base_url": "http://127.0.0.1:55231",
-                    "unity_pid": 1234,
-                    "session_marker": "marker-1",
-                    "effective_log_path": ARTIFACT_PATH,
-                },
+            publication_path = project_path / "Temp" / "UnityPuerExec" / "endpoint.json"
+            publication_path.parent.mkdir(parents=True, exist_ok=True)
+            publication_path.write_text(
+                json.dumps(
+                    {
+                        "port": 55231,
+                        "unity_pid": 1234,
+                        "project_path": str(project_path),
+                        "session_marker": "marker-1",
+                        "console_log_path": PUBLISHED_PATH,
+                    }
+                ),
+                encoding="utf-8",
             )
-            with mock.patch.object(unity_session, "_is_pid_running", return_value=True):
-                session, result = unity_session.get_log_source(project_path=project_path)
+            _session, result = unity_session.get_log_source(project_path=project_path)
 
-        self.assertEqual(result["resolution_tier"], unity_session_logs.LOG_SOURCE_TIER_SESSION_ARTIFACT)
+        self.assertEqual(result["path"], str(Path(PUBLISHED_PATH)))
+        self.assertEqual(result["resolution_tier"], unity_session_logs.LOG_SOURCE_TIER_PUBLISHED_ENDPOINT)
 
     def test_reported_path_is_distinguishable_from_the_platform_default(self):
         ready = {"ok": True, "status": "ready", "project_path": None, "console_log_path": REPORTED_PATH}
@@ -288,7 +304,7 @@ class OffsetInvalidationGuidanceTests(unittest.TestCase):
     def test_get_log_source_help_explains_every_resolution_tier(self):
         blob = help_surface.render_command_args_help("get-log-source")
         for tier in (
-            unity_session_logs.LOG_SOURCE_TIER_SESSION_ARTIFACT,
+            unity_session_logs.LOG_SOURCE_TIER_PUBLISHED_ENDPOINT,
             unity_session_logs.LOG_SOURCE_TIER_EXPLICIT_FLAG,
             unity_session_logs.LOG_SOURCE_TIER_CONTROL_SERVICE,
             unity_session_logs.LOG_SOURCE_TIER_PLATFORM_DEFAULT,

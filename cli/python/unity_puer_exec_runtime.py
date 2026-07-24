@@ -30,6 +30,10 @@ EXIT_VERSION_MISMATCH = direct_exec_client.EXIT_VERSION_MISMATCH
 EXIT_SESSION_STATE = 14
 EXIT_NO_OBSERVATION_TARGET = 15
 EXIT_NOT_STOPPED = 16
+# A running Editor that never activated a control service. Distinct from a launch
+# failure (20) and a readiness failure (21) so a caller can tell that retrying
+# cannot help and an activation decision is what is missing.
+EXIT_EDITOR_NOT_UNDER_CLI_CONTROL = 17
 EXIT_UNITY_START_FAILED = 20
 EXIT_UNITY_NOT_READY = 21
 STALE_MODULE_POLICY_AUTO_RESET = "auto-reset"
@@ -421,6 +425,19 @@ def run_command(args):
         )
         _attach_guidance(payload, args.command, status, args, request_id=getattr(args, "request_id", None))
         return EXIT_UNITY_NOT_READY, emit_payload(payload), ""
+    except unity_session.UnityEditorNotUnderControlError as exc:
+        # Its own exit code, distinct from launch (20) and readiness (21) failures,
+        # because the remedy is an activation decision rather than a retry.
+        payload = expected_failure_payload(
+            args.command,
+            exc.status,
+            exc,
+            session=exc.session,
+            include_diagnostics=getattr(args, "include_diagnostics", False),
+        )
+        payload["ways_forward"] = list(exc.guidance)
+        _attach_guidance(payload, args.command, exc.status, args)
+        return EXIT_EDITOR_NOT_UNDER_CLI_CONTROL, emit_payload(payload), ""
     except unity_session.UnitySessionStateError as exc:
         payload = expected_failure_payload(
             args.command,
