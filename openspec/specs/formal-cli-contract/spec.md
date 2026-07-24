@@ -252,7 +252,9 @@ If session identity checking is needed for safe execution or observation, the fo
 
 ### Requirement: Observation and stop commands keep their boundary
 
-`wait-for-log-pattern` and `get-log-source` SHALL remain observation commands. `ensure-stopped` SHALL remain the stopped-state command. Observation commands MUST NOT imply Unity launch ownership, and `ensure-stopped` in base-url mode MUST NOT kill the target. Process-liveness detection used by `ensure-stopped` SHALL be independent of the host operating system's display language, so that a recorded session PID that is no longer running is reported as stopped regardless of locale.
+`wait-for-log-pattern` and `get-log-source` SHALL remain observation commands. `ensure-stopped` SHALL remain the stopped-state command. Observation commands MUST NOT imply Unity launch ownership, and `ensure-stopped` in base-url mode MUST NOT kill the target.
+
+In project mode, `ensure-stopped` SHALL decide whether the project is stopped from project-local state — the project's Unity lockfile and the Editor's published endpoint — rather than from a process id recorded earlier or from a machine-wide count of Unity processes. A stop action SHALL target only a process the published endpoint identifies as belonging to the target project. Process-liveness detection SHALL be independent of the host operating system's display language.
 
 #### Scenario: Agent checks observable log source
 
@@ -266,40 +268,56 @@ If session identity checking is needed for safe execution or observation, the fo
 - **THEN** the command may inspect state only
 - **AND** it does not perform kill behavior against that direct-service target
 
+#### Scenario: Project with no running Editor is reported stopped
+
+- **WHEN** `ensure-stopped` (project mode) runs and the project's Unity lockfile is not held
+- **THEN** the command reports the target as `stopped`
+- **AND** it reports so regardless of how many unrelated Unity Editor processes are running on the machine
+
+#### Scenario: A live Editor is not reported stopped
+
+- **WHEN** `ensure-stopped` (project mode) runs and the project's Unity lockfile is held
+- **THEN** the command does not report the target as `stopped`
+- **AND** it reports so regardless of whether any earlier session record named a process that has since exited
+
+#### Scenario: A stop action never targets another project
+
+- **WHEN** `ensure-stopped` performs a kill in project mode
+- **THEN** the process it targets is the one the target project's published endpoint identifies
+- **AND** no process belonging to a different project is targeted
+
 #### Scenario: Stopped detection does not depend on OS display language
 
-- **WHEN** `ensure-stopped` (project-path mode) evaluates a recorded session PID that is no longer running on a non-English Windows host
-- **THEN** the command reports the target as `stopped`
-- **AND** it does not classify the dead PID as still running because of a localized process-listing message
+- **WHEN** `ensure-stopped` (project-path mode) evaluates process liveness on a non-English Windows host
+- **THEN** the reported result reflects actual process state
+- **AND** it is not altered by a localized process-listing message
 
 ### Requirement: Log source resolution supports custom project-scoped paths
 
-CLI log-related commands SHALL support an effective Unity log source that is not limited to the platform default Editor log path. After a valid `session_marker` exists, the CLI SHALL treat the session artifact as the authoritative source for `effective_log_path`. Before a valid `session_marker` exists, callers that depend on a non-default log location SHALL provide `--unity-log-path`. When neither is available, the CLI SHALL prefer the console log path reported by a reachable control service over the platform default path, and SHALL fall back to the platform default path only when no reported path can be obtained. `get-log-source` SHALL report which of these tiers produced the effective path, so a caller can distinguish an observed log the Editor named from one the CLI assumed.
+CLI log-related commands SHALL support an effective Unity log source that is not limited to the platform default Editor log path. The CLI SHALL resolve the effective log source in this order: an explicit `--unity-log-path` supplied by the caller, then the console log path published by the project's Editor, then the platform default path as a last resort. The CLI SHALL NOT resolve the effective log path from a session record it wrote itself. `get-log-source` SHALL report which of these tiers produced the effective path, so a caller can distinguish an observed log the Editor named from one the CLI assumed.
 
-#### Scenario: Post-session observation uses the artifact log path
+#### Scenario: Published path outranks the platform default
 
-- **WHEN** a valid session artifact exists with both `session_marker` and `effective_log_path`
-- **THEN** `get-log-source` reports that effective path
-- **AND** log-observation commands use the same path for waiting and extraction
-
-#### Scenario: Pre-session observation requires an explicit non-default path
-
-- **WHEN** a caller relies on a non-default Unity log path before a valid `session_marker` exists
-- **THEN** the caller provides `--unity-log-path` on the log-related command
-- **AND** the CLI uses that explicit path instead of the platform default path
-
-#### Scenario: Reported path outranks the platform default
-
-- **WHEN** no explicit `--unity-log-path` and no session artifact `effective_log_path` are available
-- **AND** a reachable control service reports a console log path
-- **THEN** the CLI uses the reported path
+- **WHEN** no explicit `--unity-log-path` is supplied
+- **AND** the project's Editor publishes a console log path
+- **THEN** the CLI uses the published path
 - **AND** the CLI does not use the platform default path
+
+#### Scenario: Explicit caller intent wins
+
+- **WHEN** a caller supplies `--unity-log-path` and the Editor publishes a different path
+- **THEN** the CLI uses the caller-supplied path
+
+#### Scenario: No published path is available
+
+- **WHEN** no explicit path is supplied and no Editor publication can be read
+- **THEN** the CLI falls back to the platform default path as a last resort
 
 #### Scenario: Caller can tell a named path from an assumed one
 
 - **WHEN** a caller invokes `get-log-source`
 - **THEN** the response identifies which resolution tier produced the effective path
-- **AND** a path obtained from the control service is distinguishable from the platform default fallback
+- **AND** a path obtained from the Editor's publication is distinguishable from the platform default fallback
 
 ### Requirement: Launch-driven sessions can request a custom Unity log path
 
@@ -951,4 +969,83 @@ Every machine-readable CLI response SHALL include a top-level `cli_version` fiel
 
 - **WHEN** `--response-file` replaces the full payload with a compact reference
 - **THEN** the compact reference retains `cli_version` alongside the existing routing fields
+
+### Requirement: A project without a control service is reported, not silently attached
+
+When a project-scoped command finds a running Editor that has not activated a control service, the CLI SHALL report that condition as a distinct non-success status rather than attaching to whatever endpoint answers a candidate port. The report SHALL be actionable: it SHALL state the ways the caller can proceed. When the error path can identify a reachable service owning the project whose bridge version differs from the CLI or is absent, the condition SHALL be reported as `version_mismatch` per `cli-version-compatibility` rather than as a missing opt-in, so the caller is pointed at aligning the installation instead of at an activation mechanism the running bridge does not provide.
+
+#### Scenario: Running Editor has no control service
+
+- **WHEN** a project-scoped command runs, the project's Unity lockfile is held, and no endpoint is published
+- **THEN** the command reports a distinct status identifying the Editor as not under CLI control
+- **AND** the response states how to proceed rather than only that the command failed
+
+#### Scenario: A version-mismatched bridge is not reported as a missing opt-in
+
+- **WHEN** the project lockfile is held, no endpoint is published, and the error-path scan finds a reachable service owning the project whose bridge version differs from the CLI or is absent
+- **THEN** the command reports `version_mismatch`
+- **AND** the guidance points at aligning the installation rather than at an activation action the running bridge does not provide
+
+#### Scenario: The refusal is not a launch failure
+
+- **WHEN** this status is reported
+- **THEN** it is distinguishable from a failure to launch or a failure to become ready
+- **AND** a caller can tell that the remedy is an activation decision rather than a retry
+
+### Requirement: Project-scoped launch accepts extra Unity argv tokens
+
+When `unity-puer-exec` cold-starts Unity for a project-scoped workflow, the CLI SHALL forward caller-supplied extra argv tokens to the Unity process so a project that needs host-specific Unity switches can be launched under CLI control.
+
+Extra tokens SHALL be accepted from either or both of:
+
+- a repeatable project-path-mode flag `--unity-launch-arg <token>`, each occurrence one argv token
+- the process environment variable `UNITY_PUER_EXEC_UNITY_LAUNCH_ARGS`, whose value is a JSON array of strings
+
+Ambient tokens SHALL be applied first, then flag tokens; exact-token duplicates SHALL be collapsed. Extra tokens SHALL be appended after the CLI-owned launch arguments (`-projectPath`, the control-service activation switch, and the effective `-logFile`).
+
+Tokens that rebind a CLI-owned switch — `-projectPath`, `-logFile`, or `-unityPuerExecControl` (case insensitive) — SHALL be rejected as a usage error rather than applied. An invalid ambient JSON value SHALL be rejected with a machine-usable reason rather than partially applied.
+
+Extra tokens SHALL apply only when this CLI performs a cold launch. When the CLI attaches to an already-running Editor, supplied tokens SHALL be ignored and SHALL NOT by themselves cause the command to fail. The flag SHALL be valid only in project-path mode; supplying it with `--base-url` SHALL be a usage error.
+
+#### Scenario: Caller supplies a host-required Unity switch on launch
+
+- **WHEN** a project-scoped launch-driven command is invoked with `--unity-launch-arg -force-gles30` and no Editor is yet serving the project
+- **THEN** the launched Unity process receives `-force-gles30` among its argv tokens
+- **AND** the token appears after the CLI-owned `-projectPath`, activation switch, and `-logFile` arguments
+
+#### Scenario: Ambient env supplies launch tokens without a per-command flag
+
+- **WHEN** `UNITY_PUER_EXEC_UNITY_LAUNCH_ARGS` is set to a JSON array such as `["-force-gles30"]`
+- **AND** a project-scoped command cold-starts Unity without `--unity-launch-arg`
+- **THEN** the launched Unity process receives those ambient tokens
+
+#### Scenario: Flag and ambient tokens merge without duplicating exact matches
+
+- **WHEN** the ambient variable and `--unity-launch-arg` both contribute the same token
+- **THEN** the launched argv contains that token once
+
+#### Scenario: CLI-owned switches cannot be rebound by passthrough
+
+- **WHEN** a caller supplies `--unity-launch-arg -projectPath` or an ambient token equal to `-logFile` or `-unityPuerExecControl` (any case)
+- **THEN** the command fails as a usage error before Unity is launched
+- **AND** the error states that those switches are owned by the CLI
+
+#### Scenario: Invalid ambient JSON is rejected
+
+- **WHEN** `UNITY_PUER_EXEC_UNITY_LAUNCH_ARGS` is set to a value that is not a JSON array of strings
+- **THEN** a launch-driven command fails with a machine-usable reason naming the variable
+- **AND** Unity is not launched with a partial or guessed token list
+
+#### Scenario: Passthrough tokens are ignored on attach
+
+- **WHEN** a project-scoped command finds a controlled Editor already serving the project
+- **AND** the caller also supplied `--unity-launch-arg` tokens
+- **THEN** the command attaches without launching
+- **AND** it does not fail solely because the tokens were supplied
+
+#### Scenario: Passthrough flag is project-path only
+
+- **WHEN** a caller supplies `--unity-launch-arg` together with `--base-url`
+- **THEN** the command fails as a usage error
+- **AND** it does not target the supplied base URL
 

@@ -36,6 +36,8 @@ The Unity-side project control service SHALL bind to a loopback HTTP endpoint by
 
 The Unity-side health endpoint SHALL expose enough identity for a project-scoped caller to verify endpoint ownership and installation consistency, and to observe the Editor without inferring where it writes. A ready health response SHALL include the selected port, base URL, Unity process id when available, resolved Unity project path, session marker, the bridge package version, and the Editor's own console log path. The bridge version SHALL be resolved from the Unity package metadata for the assembly providing the service, and SHALL be omitted or reported as null when that assembly does not belong to an installed package rather than reported as a guessed value. The console log path SHALL be resolved from the running Editor's own Unity runtime, and SHALL be omitted or reported as null when it cannot be resolved rather than reported as a platform-default guess.
 
+The same identity SHALL be available to a caller that has not yet connected, through the endpoint publication defined by `editor-session-discovery`, so that reaching the service never requires probing candidate ports to discover which one belongs to the target project.
+
 #### Scenario: Caller probes a ready service
 
 - **WHEN** a caller probes `/health` on a ready UnityPuerExec service
@@ -60,6 +62,12 @@ The Unity-side health endpoint SHALL expose enough identity for a project-scoped
 - **THEN** `console_log_path` names the log file that Editor process is writing to
 - **AND** the caller can observe that path instead of assuming the platform default Editor log
 
+#### Scenario: Caller reaches the service without probing candidate ports
+
+- **WHEN** a caller needs to reach the control service of a specific project
+- **THEN** the published endpoint supplies the port to connect to
+- **AND** the caller does not probe other ports in the control port range to establish ownership
+
 #### Scenario: Service assembly is not package-installed
 
 - **WHEN** the Editor assembly providing the service does not belong to an installed Unity package
@@ -72,30 +80,20 @@ The Unity-side health endpoint SHALL expose enough identity for a project-scoped
 - **THEN** the health response omits `console_log_path` or reports it as null
 - **AND** the response remains otherwise well-formed so callers can still evaluate endpoint ownership
 
-### Requirement: Project session artifact records validated endpoint identity
-
-The project-local session artifact SHALL record the validated control endpoint identity after a project-scoped session becomes ready. The artifact SHALL include the selected base URL, port, Unity process id when available, session marker, effective log path when known, and resolved project path.
-
-#### Scenario: Readiness is confirmed
-
-- **WHEN** the CLI confirms that a project-scoped UnityPuerExec service is ready and belongs to the target project
-- **THEN** the project-local session artifact records the selected endpoint identity
-- **AND** later project-scoped commands can use the artifact as a candidate routing hint
-
-#### Scenario: Artifact survives process exit
-
-- **WHEN** a session artifact remains after the Unity process exits or the recorded endpoint is reused by another project
-- **THEN** the artifact alone is not sufficient proof that the endpoint is valid
-- **AND** a caller must validate live health identity before treating the endpoint as authoritative
-
 ### Requirement: Control service runs only in the interactive Editor process
 
-The Unity-side control service SHALL start only in the interactive Unity Editor process. It SHALL NOT start in non-interactive Unity subprocesses such as batch-mode asset-import workers, so that transient subprocesses never contend for or occupy the preferred control port reserved for the interactive Editor.
+The Unity-side control service SHALL start only when activation has been explicitly requested for the running process, under the uniform activation rule defined by `editor-session-discovery`. A non-interactive Unity subprocess such as a batch-mode asset-import worker SHALL NOT request activation implicitly, so that transient subprocesses never contend for or occupy the preferred control port reserved for a controlled Editor.
 
-#### Scenario: Interactive Editor loads the package
+#### Scenario: Interactive Editor launched with activation requested
 
-- **WHEN** the package loads in an interactive Unity Editor process
+- **WHEN** the package loads in an interactive Unity Editor process that was launched with activation requested
 - **THEN** the control service starts and binds a loopback endpoint
+
+#### Scenario: Interactive Editor launched without activation requested
+
+- **WHEN** the package loads in an interactive Unity Editor process that was launched without activation requested
+- **THEN** the control service does not start
+- **AND** the process does not bind or occupy any port in the control port range
 
 #### Scenario: Batch-mode asset-import worker loads the package
 

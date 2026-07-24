@@ -8,7 +8,7 @@
 
 ## MODIFIED Requirements
 
-### Requirement: Control service runs only when activation is requested
+### Requirement: Control service runs only in the interactive Editor process
 
 The Unity-side control service SHALL start only when activation has been explicitly requested for the running process, under the uniform activation rule defined by `editor-session-discovery`. A non-interactive Unity subprocess such as a batch-mode asset-import worker SHALL NOT request activation implicitly, so that transient subprocesses never contend for or occupy the preferred control port reserved for a controlled Editor.
 

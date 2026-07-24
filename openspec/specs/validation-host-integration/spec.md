@@ -183,14 +183,19 @@ Repository-owned validation-host preparation tooling SHALL report when the targe
 
 ### Requirement: Real-host validation covers control-port binding behavior
 
-The repository SHALL maintain repeatable real-host validation expectations that prove the Unity control-port binding contract, covering both batch-mode service suppression and occupied-preferred-port rollover. These expectations SHALL run only under the existing opt-in real-host gate and SHALL skip cleanly when Unity, the host project, or the required process state is unavailable, so the default mocked/unit workflow is unaffected.
+The repository SHALL maintain repeatable real-host validation expectations that prove the Unity control-port binding contract, covering the uniform activation rule in batch mode (both with and without activation requested) and occupied-preferred-port rollover. These expectations SHALL run only under the existing opt-in real-host gate and SHALL skip cleanly when Unity, the host project, or the required process state is unavailable, so the default mocked/unit workflow is unaffected.
 
-#### Scenario: Contributor validates that a batch-mode process suppresses the control service
+#### Scenario: Contributor validates that a batch-mode process without activation does not start the control service
 
-- **WHEN** a contributor runs the real-host validation against a host project loaded by a batch-mode Unity process
-- **THEN** the validation asserts the batch-mode process log records that the control service was skipped for a batch-mode process
+- **WHEN** a contributor runs the real-host validation against a host project loaded by a batch-mode Unity process launched without activation requested
+- **THEN** the validation asserts the batch-mode process log records that the control service was not activated for that process
 - **AND** the validation asserts the batch-mode process log records no successful control-port bind and no whole-range bind failure
-- **AND** the validation asserts no control-range port is held by the batch-mode process
+
+#### Scenario: Contributor validates that a batch-mode process with activation starts the control service
+
+- **WHEN** a contributor runs the real-host validation against a host project loaded by a batch-mode Unity process launched with activation requested
+- **THEN** the validation asserts the batch-mode process log records a successful control-port bind
+- **AND** the validation asserts the batch-mode process log does not record that the control service was not activated
 
 #### Scenario: Contributor validates rollover when the preferred control port is occupied
 
@@ -217,6 +222,8 @@ The repository's real-host run instructions SHALL state that renaming an embedde
 
 Real-host validation SHALL observe the validation host through a log source private to the host project, so a Unity Editor open on an unrelated project cannot share, rotate, or truncate the file the suite reads. A development machine running several Unity projects at once SHALL remain a supported environment for real-host validation.
 
+The suite SHALL establish its clean starting boundary from project-local state — the host project's Unity lockfile and published endpoint — so that a boundary check cannot report the host as stopped while an Editor is still serving it. A case SHALL fail rather than proceed if it would observe a host the suite did not bring up.
+
 #### Scenario: Concurrent unrelated Editor does not invalidate observation
 
 - **WHEN** real-host validation runs while an unrelated Unity Editor is open on a different project
@@ -228,6 +235,17 @@ Real-host validation SHALL observe the validation host through a log source priv
 - **WHEN** the suite brings up the validation host
 - **THEN** the host-private log is established at launch
 - **AND** individual cases do not each have to supply a log-path flag to observe it
+
+#### Scenario: The boundary cannot pass while the host is still serving
+
+- **WHEN** the suite establishes its starting boundary and an Editor is still serving the host project
+- **THEN** the boundary does not report the host as stopped
+- **AND** no case proceeds against that Editor
+
+#### Scenario: An unrelated Editor does not block the boundary
+
+- **WHEN** the suite establishes its starting boundary while unrelated Unity Editors are running for other projects
+- **THEN** those processes do not prevent the boundary from being established
 
 ### Requirement: Real-host run instructions state the concurrent-Editor condition
 
@@ -243,4 +261,15 @@ The repository's real-host run instructions SHALL state that a Unity Editor open
 
 - **WHEN** a real-host log-observation case fails with a wait timeout
 - **THEN** the instructions let the contributor distinguish an invalidated log source from a product regression
+
+### Requirement: Real-host run instructions document host-required Unity launch arguments
+
+The repository's real-host run instructions SHALL state how a contributor supplies Unity launch arguments that a particular validation host needs in order for CLI auto-launch to succeed (for example a graphics API switch), including the ambient environment variable `UNITY_PUER_EXEC_UNITY_LAUNCH_ARGS` as a JSON array of strings and its relationship to CLI-driven Editor launch.
+
+#### Scenario: Contributor prepares a host that needs an extra Unity switch
+
+- **WHEN** a contributor consults the real-host run instructions for a host that cannot start without an extra Unity argument
+- **THEN** the instructions name `UNITY_PUER_EXEC_UNITY_LAUNCH_ARGS`
+- **AND** the instructions show a JSON-array example such as `["-force-gles30"]`
+- **AND** the instructions state that CLI auto-launch of the host picks the value up without per-command flags
 

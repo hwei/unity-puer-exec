@@ -1,19 +1,3 @@
-## MODIFIED Requirements
-
-### Requirement: Project-scoped launch supports a caller-controlled Editor log path
-
-When `unity-puer-exec` launches Unity for a project-scoped workflow, the CLI SHALL support a caller-controlled path for the Unity Editor log so launch-driven sessions can intentionally avoid the default log location. When no caller-controlled path is supplied, the CLI SHALL still avoid the platform default per-user log location and launch the Editor against a log private to the target project, so an unrelated Editor cannot share the log the session is observed through.
-
-#### Scenario: Caller requests a custom log file during launch
-
-- **WHEN** a caller invokes a launch-driven command with `--unity-log-path <path>`
-- **THEN** Unity is launched with that log-path override
-
-#### Scenario: Launch without an explicit log path still isolates the Editor log
-
-- **WHEN** a caller invokes a launch-driven command without `--unity-log-path`
-- **THEN** Unity is launched against a log location private to the target project
-
 ## ADDED Requirements
 
 ### Requirement: Project-scoped launch accepts extra Unity argv tokens
