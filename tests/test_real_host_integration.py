@@ -1467,7 +1467,7 @@ class RealHostIntegrationTests(unittest.TestCase):
         self.assertIn(
             result["resolution_tier"],
             (
-                unity_session_logs.LOG_SOURCE_TIER_SESSION_ARTIFACT,
+                unity_session_logs.LOG_SOURCE_TIER_PUBLISHED_ENDPOINT,
                 unity_session_logs.LOG_SOURCE_TIER_CONTROL_SERVICE,
             ),
             "the observed log path was assumed rather than stated: {}".format(result),
