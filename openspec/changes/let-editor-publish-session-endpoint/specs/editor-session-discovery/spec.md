@@ -6,6 +6,8 @@ When the Unity control service becomes reachable, the Editor SHALL publish a des
 
 Every published field SHALL be taken from the running Editor process itself. The publication SHALL include the bound port, the Editor process id, the resolved project path, the session marker, and the Editor's own console log path. No party other than the Editor SHALL write this publication.
 
+The publication is Editor-authored by design, not as a convenience of implementation. A CLI-written session record about a process the CLI does not own can record a recycled process id (any image, not just Unity), a log path guessed at write time, or another project's identity taken from machine-wide process-list order. An Editor-authored publication cannot, because every field is taken from the running process itself (`Process.GetCurrentProcess().Id`, `Application.dataPath`, `Application.consoleLogPath`). No later change SHALL restore CLI-side writing of this record as a shortcut for discovery or recovery.
+
 The publication SHALL remain in place across domain reloads and SHALL be removed only when the Editor process ends, so that a script compile never reads as a withdrawn opt-in.
 
 #### Scenario: A reachable service publishes where and what it is
@@ -103,6 +105,12 @@ An activation granted after process start SHALL NOT persist beyond the Editor pr
 - **WHEN** a batch-mode Unity process is launched without activation requested
 - **THEN** the control service does not start
 - **AND** the outcome is decided by the same activation rule as an interactive process, not by a mode-specific exception
+
+#### Scenario: Batch-mode with activation starts the service
+
+- **WHEN** a batch-mode Unity process is launched with activation requested
+- **THEN** the control service starts
+- **AND** the process binds a port in the control port range
 
 #### Scenario: Activation after process start
 

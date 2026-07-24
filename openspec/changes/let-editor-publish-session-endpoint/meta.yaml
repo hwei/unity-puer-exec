@@ -4,6 +4,6 @@ priority: P1
 # also touch CLI statuses/exit codes and help_surface.py; coordinate before working
 # either in parallel with this change.
 blocked_by: []
-assumption_state: needs-review
+assumption_state: valid
 evidence: host-validation
 updated_at: 2026-07-24

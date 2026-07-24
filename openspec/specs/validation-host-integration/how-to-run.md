@@ -30,6 +30,55 @@ Run command:
 UNITY_PUER_EXEC_RUN_REAL_HOST_TESTS=1 python -m unittest tests.test_real_host_integration
 ```
 
+### Activation is required for a controllable host
+
+The control service no longer starts implicitly when the package loads. A process is
+controllable only when activation has been requested for that process:
+
+- **CLI-driven launch** (`launch_unity` / any project-scoped command that starts the
+  Editor) always passes `-unityPuerExecControl` and a project-private `-logFile`, so
+  a suite-launched host is controllable and privately observable with no extra flags.
+- **Batch-mode launches** follow the same rule: without the switch the service does
+  not start; with the switch it does. There is no batch-mode-only exception.
+- **Hub / direct launches** without the switch and without the menu action leave the
+  Editor not under CLI control. The CLI reports that condition rather than attaching
+  to whatever answers a candidate port.
+
+An Editor a human already opened on the host project without activation is therefore
+**not** a usable real-host target. Close it (or use the Editor menu action
+`Tools/UnityPuerExec/Activate CLI Control (this session)` / `Restart with CLI Control`)
+and let the suite launch the host itself.
+
+### Launch modes: control, isolation, or both
+
+| How the Editor was started | Control service | Log isolation | Typical use |
+|---|---|---|---|
+| CLI launch (`launch_unity`) | yes (`-unityPuerExecControl`) | yes (project-private `-logFile`) | real-host suite, agent/CLI workflows |
+| Command-line switch + `-logFile` | yes | yes | scripted relaunch, "Restart with CLI Control" |
+| Menu "Activate CLI Control (this session)" | yes (session-scoped) | no — log was fixed at process start | escape hatch for a Hub-opened Editor |
+| Menu "Restart with CLI Control" | yes | yes — relaunches with switch + isolated log | one-click return to the controlled state |
+| Hub / direct, no activation | no | no (shared per-user `Editor.log`) | everyday editing; not a CLI target |
+
+Mid-session menu activation grants control but never isolation: Unity binds
+`Application.consoleLogPath` at process start, and there is no runtime redirection
+API. That is why the menu activation is session-scoped (`SessionState`) and is never
+remembered across Editor restarts. For isolation, relaunch with `-logFile` (CLI
+launch or "Restart with CLI Control").
+
+### Project-local session boundary
+
+The suite decides whether the host project is free from project-local state alone:
+
+- the project's Unity lockfile (held ⇒ an Editor is still serving the project)
+- the Editor-published endpoint at `Temp/UnityPuerExec/endpoint.json` (present only
+  when that Editor activated a control service; authorship is the Editor's, not the
+  CLI's)
+
+A clean starting boundary means the lockfile is not held. Unrelated Unity Editors
+open on other projects do not affect that decision and are never kill targets. The
+suite force-stops only the host project's own published process id when one is
+named.
+
 ### A concurrent unrelated Editor and the shared per-user log
 
 A Unity Editor started without `-logFile` — which is every Editor opened from Unity
@@ -43,18 +92,16 @@ of file, and content the validation host really did emit can be absent entirely.
 The suite is safe to run in that condition because it brings the host up through a
 **host-private log**. The CLI launches the validation host Editor with `-logFile`
 pointing at `<project>/Temp/UnityPuerExec/Editor.log`, and that Editor reports the
-same path back through `/health` as `console_log_path`, which the CLI ranks above
-the platform default when resolving the effective log source. The path is recorded
-in the session artifact at readiness, so individual cases observe it without each
-supplying `--unity-log-path`. A development machine with several Unity projects
-open at once is therefore a supported environment for real-host validation.
+same path back through `/health` as `console_log_path` and through the published
+endpoint. The CLI ranks the published path above the platform default when resolving
+the effective log source, so individual cases observe it without each supplying
+`--unity-log-path`. A development machine with several Unity projects open at once
+is therefore a supported environment for real-host validation.
 
 This does **not** extend to an Editor a human opened from Unity Hub and left running
-on the host project. The CLI cannot change how that process was launched, so it will
-still share the per-user log. Reporting `console_log_path` means the CLI at least
-reads the file that Editor is genuinely writing to; if a second Hub-launched Editor
-is open on another project, they still corrupt each other's offsets. Close the
-unrelated Editor, or let the suite launch the host itself.
+on the host project without activation (see above). Even after mid-session menu
+activation, that process still shares the per-user log. Close the unrelated Editor,
+or let the suite launch the host itself.
 
 ### Recognizing an invalidated log source
 
@@ -70,9 +117,11 @@ Distinguish an invalidated log source from a product regression before bisecting
   start offset was past the end of the observed log — the file was rotated or
   truncated, and the offsets stopped denoting the intended content.
 - Run `unity-puer-exec get-log-source --project-path <host>` and read
-  `result.resolution_tier`. `session_artifact` or `control_service` means the observed
-  path was stated by an authority; `platform_default` means it was assumed, and an
-  assumed path on a multi-Editor machine is very likely the wrong file.
+  `result.resolution_tier`. `published_endpoint` (or an explicit caller flag) means
+  the observed path was stated by an authority; `platform_default` means it was
+  assumed, and an assumed path on a multi-Editor machine is very likely the wrong
+  file. Also read `result.observation_reliability` — a degraded report means the
+  session is controllable but its log is the shared per-user default.
 - Compare `result.path` against the per-user `Editor.log`. If they are the same file
   and more than one `Unity.exe` is running, the observation target is shared.
 - Grep the observed log for `[UnityPuerExec] Ready on port`. One occurrence with two
@@ -86,14 +135,15 @@ regression in the CLI chain or the runtime.
 Two cases in this suite assert control-port binding behavior and have extra
 process-state prerequisites beyond the shared ones above:
 
-- **Batch-mode service suppression**
-  (`test_batch_mode_process_suppresses_control_service_against_real_host`):
+- **Batch-mode uniform activation rule**
+  (`test_batch_mode_process_follows_uniform_activation_rule_against_real_host`):
   the host project must **not** be open in an interactive Editor. This case
-  launches its own one-shot `Unity.exe -batchMode -nographics -quit` process,
-  which needs the exclusive project lock; it `skip`s (does not fail) when any
-  Unity process is already running. The suite's setUp force-stops the host
-  Editor, so this normally holds — but if you keep the project open in your own
-  Editor it will skip.
+  launches its own one-shot `Unity.exe -batchMode -nographics -quit` processes —
+  once without `-unityPuerExecControl` (service must not start) and once with it
+  (service must start and bind a port). Both need the exclusive project lock; the
+  case `skip`s (does not fail) when any Unity process is already running. The
+  suite's setUp force-stops the host Editor, so this normally holds — but if you
+  keep the project open in your own Editor it will skip.
 - **Occupied-preferred-port rollover**
   (`test_control_port_rolls_over_when_preferred_port_occupied_against_real_host`):
   needs an interactive Editor on the preferred control port (`55231`). The test

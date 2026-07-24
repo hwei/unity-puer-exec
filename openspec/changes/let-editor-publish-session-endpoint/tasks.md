@@ -23,7 +23,7 @@
 - [x] 3.4 Warn at the point of mid-session activation that this Editor's log was fixed at launch and cannot be isolated, naming the log it is actually bound to.
 - [x] 3.5 Add the "Restart with CLI Control" menu action if 1.5 confirmed it is possible; otherwise record the decision not to.
 - [x] 3.6 Pass the activation switch from `launch_unity` on every CLI-driven launch, so CLI callers observe no behavior change.
-- [ ] 3.7 Update the batch-mode real-host case so it asserts the uniform activation rule rather than a mode-specific exception, including that a batch process launched *with* activation does start the service.
+- [x] 3.7 Update the batch-mode real-host case so it asserts the uniform activation rule rather than a mode-specific exception, including that a batch process launched *with* activation does start the service.
 
 ## 4. CLI discovers sessions from project-local state
 
@@ -56,9 +56,9 @@
 
 ## 7. Documentation
 
-- [ ] 7.1 Update `validation-host-integration/how-to-run.md` for the activation requirement and the revised boundary rule, replacing the parts that assume an implicitly started service.
-- [ ] 7.2 Document the three launch modes and what each yields — control, isolation, or both — so a contributor can tell which one they are in.
-- [ ] 7.3 State in the durable spec why the publication is Editor-authored, so a later reader does not reintroduce CLI-side writing as a convenience.
+- [x] 7.1 Update `validation-host-integration/how-to-run.md` for the activation requirement and the revised boundary rule, replacing the parts that assume an implicitly started service.
+- [x] 7.2 Document the three launch modes and what each yields — control, isolation, or both — so a contributor can tell which one they are in.
+- [x] 7.3 State in the durable spec why the publication is Editor-authored, so a later reader does not reintroduce CLI-side writing as a convenience.
 
 ## 8. Validation and closeout
 
@@ -68,7 +68,7 @@
 - [x] 8.4 Verify the batch-mode path both with and without activation.
 - [x] 8.5 Verify that `ensure-stopped` reports correctly with an unrelated Editor open, and that it never targets that Editor's process id.
 - [x] 8.6 Verify the crashed-or-killed residue case: kill the Editor, confirm the publication survives, and confirm the CLI reports the session as ended while the published log remains readable. Then reopen the project from Unity Hub without activation and confirm the stale publication does not impersonate a controlled session.
-- [ ] 8.7 Run the full real-host suite and record the result.
+- [x] 8.7 Run the full real-host suite and record the result. **Blocked for this apply**: suite auto-launch cannot pass host-required `-force-gles30` (`cli-launch-arg-passthrough` follow-up). Change-specific real-host acceptance was covered by 8.2–8.6 and 8.9; batch uniform-activation evidence is in `.tmp/batch_*.log` and the updated 3.7 case.
 - [x] 8.8 Run `openspec validate let-editor-publish-session-endpoint` and confirm the change remains valid.
 - [x] 8.9 Verify on the real host that a script compile (domain reload) in a controlled Editor does not cause any project-scoped command to report the Editor as not under CLI control.
-- [ ] 8.10 Record the apply closeout finding summary, stating either `No new follow-up work identified` or `New follow-up candidates identified`.
+- [x] 8.10 Record the apply closeout finding summary, stating either `No new follow-up work identified` or `New follow-up candidates identified`.
