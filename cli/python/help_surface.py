@@ -866,7 +866,20 @@ GUIDANCE_MATRIX = {
             },
         ],
     },
-    ("exec", "completed"): {},
+    ("exec", "completed"): {
+        "next_steps": [
+            {
+                "command": "get-log-briefs",
+                "when": "re-check the observation window for new errors or warnings",
+                "argv_template": [
+                    "unity-puer-exec", "get-log-briefs",
+                    "--project-path", "{project_path}",
+                    "--range", "{log_range_span}",
+                    "--levels", "error,warning",
+                ],
+            },
+        ],
+    },
     ("exec", "modal_blocked"): {
         "situation": "A supported Unity modal dialog is blocking exec progress. Inspect the blocker type before deciding whether to resolve it.",
         "next_steps": [
@@ -1050,7 +1063,20 @@ GUIDANCE_MATRIX = {
             },
         ],
     },
-    ("wait-for-exec", "completed"): {},
+    ("wait-for-exec", "completed"): {
+        "next_steps": [
+            {
+                "command": "get-log-briefs",
+                "when": "re-check the observation window for new errors or warnings",
+                "argv_template": [
+                    "unity-puer-exec", "get-log-briefs",
+                    "--project-path", "{project_path}",
+                    "--range", "{log_range_span}",
+                    "--levels", "error,warning",
+                ],
+            },
+        ],
+    },
     ("wait-for-exec", "modal_blocked"): {
         "situation": "A supported Unity modal dialog is blocking the accepted exec request. Do not start a fresh request; resolve the blocker first.",
         "next_steps": [
@@ -1174,7 +1200,21 @@ GUIDANCE_MATRIX = {
         "situation": "An unexpected wait-for-exec failure occurred. Check the error field for details.",
     },
     # --- wait-for-log-pattern ---
-    ("wait-for-log-pattern", "completed"): {},
+    ("wait-for-log-pattern", "completed"): {
+        "situation": "A pattern match does not imply the observation window contained no new errors or warnings.",
+        "next_steps": [
+            {
+                "command": "get-log-briefs",
+                "when": "re-check the observation window for new errors or warnings; a pattern match alone does not prove the window was clean",
+                "argv_template": [
+                    "unity-puer-exec", "get-log-briefs",
+                    "--project-path", "{project_path}",
+                    "--range", "{log_range_span}",
+                    "--levels", "error,warning",
+                ],
+            },
+        ],
+    },
     ("wait-for-log-pattern", "no_observation_target"): {
         "situation": "No eligible Unity log source could be observed for the selected target.",
         "next_steps": [

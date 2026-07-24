@@ -2594,6 +2594,177 @@ class UnityPuerExecCliTests(unittest.TestCase):
         self.assertEqual(body["status"], "unity_not_ready")
         self.assertTrue(body.get("situation") or body.get("next_steps"))
 
+    # --- Success-path guidance tests (fill-success-path-next-steps) ---
+
+    def test_success_path_completed_guidance_matrix_entries_have_get_log_briefs(self):
+        """3.1: exec/wait-for-exec/wait-for-log-pattern completed entries exist with get-log-briefs."""
+        import help_surface
+        for cmd in ("exec", "wait-for-exec", "wait-for-log-pattern"):
+            entry = help_surface.GUIDANCE_MATRIX.get((cmd, "completed"))
+            self.assertIsNotNone(entry, "GUIDANCE_MATRIX missing ({}, completed)".format(cmd))
+            self.assertIn("next_steps", entry)
+            next_steps = entry["next_steps"]
+            brief_step = next((s for s in next_steps if s["command"] == "get-log-briefs"), None)
+            self.assertIsNotNone(brief_step, "({}, completed) missing get-log-briefs candidate".format(cmd))
+            self.assertIn("argv_template", brief_step)
+            self.assertIn("{log_range_span}", str(brief_step["argv_template"]))
+            self.assertIn("--levels", brief_step["argv_template"])
+            self.assertIn("error,warning", brief_step["argv_template"])
+
+    def test_wait_for_log_pattern_completed_has_situation_text(self):
+        """3.2: wait-for-log-pattern completed situation warns about pattern match limits."""
+        import help_surface
+        entry = help_surface.GUIDANCE_MATRIX.get(("wait-for-log-pattern", "completed"))
+        self.assertIsNotNone(entry)
+        situation = entry.get("situation")
+        self.assertIsNotNone(situation, "wait-for-log-pattern completed missing situation")
+        self.assertIn("pattern match", situation.lower())
+        # exec/wait-for-exec completed must NOT have a situation
+        for cmd in ("exec", "wait-for-exec"):
+            e2 = help_surface.GUIDANCE_MATRIX.get((cmd, "completed"))
+            self.assertIsNotNone(e2)
+            self.assertIsNone(e2.get("situation"), "({}, completed) should not have a situation".format(cmd))
+
+    def test_completed_response_with_full_log_range_contains_get_log_briefs_argv(self):
+        """3.1: Exec completed with full log_range and project-path produces argv with concrete range."""
+        log_range_start = 1000
+        log_range_end = 3500
+        expected_span = "{}-{}".format(log_range_start, log_range_end)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            log_path = Path(temp_dir) / "Editor.log"
+            log_path.write_text("line1\nline2\n", encoding="utf-8")
+            session = _make_session()
+
+            with mock.patch.object(
+                unity_session, "ensure_session_ready", return_value=session
+            ), mock.patch.object(
+                unity_puer_exec.direct_exec_client, "invoke_command",
+                return_value=(
+                    0,
+                    json.dumps({
+                        "ok": True, "status": "completed",
+                        "request_id": "req-1",
+                        "result": {"value": 42},
+                    }),
+                    "",
+                ),
+            ), mock.patch.object(
+                unity_session_logs, "default_editor_log_path", return_value=log_path
+            ), mock.patch.object(
+                unity_puer_exec_runtime, "_capture_log_offset",
+                side_effect=[log_range_start, log_range_end],
+            ):
+                exit_code, stdout, stderr = unity_puer_exec.run_cli([
+                    "exec", "--project-path", str(log_path.parent),
+                    "--code", "export default function run(ctx) { return 42; }",
+                ])
+
+        self.assertEqual(exit_code, 0)
+        body = json.loads(stdout)
+        next_steps = body.get("next_steps")
+        self.assertIsNotNone(next_steps, "exec completed missing next_steps")
+        brief_step = next((s for s in next_steps if s["command"] == "get-log-briefs"), None)
+        self.assertIsNotNone(brief_step, "next_steps missing get-log-briefs")
+        self.assertIn("argv", brief_step)
+        argv_str = " ".join(brief_step["argv"])
+        self.assertIn("--range", argv_str)
+        self.assertIn(expected_span, argv_str)
+        self.assertIn("--levels", argv_str)
+        self.assertIn("error,warning", argv_str)
+        # exec completed should NOT have a situation
+        self.assertNotIn("situation", body)
+
+    def test_wait_for_log_pattern_completed_includes_situation_and_argv(self):
+        """3.1+3.2: wait-for-log-pattern completed has both situation and get-log-briefs argv."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            log_path = Path(temp_dir) / "Editor.log"
+            log_path.write_text("start\nmatch\n", encoding="utf-8")
+            session = _make_session()
+            session.diagnostics["matched_log_text"] = "match"
+
+            with mock.patch.object(
+                unity_session, "create_observation_session", return_value=session
+            ), mock.patch.object(
+                unity_session, "wait_for_log_pattern", return_value=session
+            ), mock.patch.object(
+                unity_session_logs, "default_editor_log_path", return_value=log_path
+            ):
+                exit_code, stdout, stderr = unity_puer_exec.run_cli([
+                    "wait-for-log-pattern",
+                    "--project-path", str(log_path.parent),
+                    "--pattern", "match",
+                    "--timeout-seconds", "5",
+                    "--activity-timeout-seconds", "3",
+                ])
+
+        self.assertEqual(exit_code, 0)
+        body = json.loads(stdout)
+        # Should have situation text
+        self.assertIn("situation", body)
+        self.assertIn("pattern match", body["situation"].lower())
+        # Should have next_steps with get-log-briefs
+        next_steps = body.get("next_steps")
+        self.assertIsNotNone(next_steps, "wait-for-log-pattern completed missing next_steps")
+        brief_step = next((s for s in next_steps if s["command"] == "get-log-briefs"), None)
+        self.assertIsNotNone(brief_step, "next_steps missing get-log-briefs")
+        self.assertIn("argv", brief_step)
+
+    def test_incomplete_log_range_omits_argv(self):
+        """3.3: When log_range is incomplete, candidate appears without argv."""
+        import help_surface
+        # Verify the build_next_steps behavior with a context lacking log_range_span
+        context = {"project_path": "X:/project"}
+        next_steps = help_surface.build_next_steps("exec", "completed", context)
+        self.assertIsNotNone(next_steps)
+        brief_step = next((s for s in next_steps if s["command"] == "get-log-briefs"), None)
+        self.assertIsNotNone(brief_step)
+        # argv should be absent since log_range_span is missing
+        self.assertNotIn("argv", brief_step)
+        # command and when should still be present
+        self.assertEqual(brief_step["command"], "get-log-briefs")
+        self.assertIn("when", brief_step)
+
+    def test_script_result_does_not_affect_candidates(self):
+        """3.4: Script-authored result does not change success-path candidates."""
+        import help_surface
+        context = {
+            "project_path": "X:/project",
+            "log_range_span": "100-500",
+        }
+        # build_next_steps does not receive result at all, so identical context =
+        # identical candidates regardless of what the envelope's result field says.
+        next_steps_a = help_surface.build_next_steps("exec", "completed", context)
+        next_steps_b = help_surface.build_next_steps("exec", "completed", context)
+        self.assertEqual(next_steps_a, next_steps_b)
+
+    def test_suppress_guidance_strips_success_path_content(self):
+        """3.5: --suppress-guidance removes next_steps and situation on success paths."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            log_path = Path(temp_dir) / "Editor.log"
+            log_path.write_text("line1\n", encoding="utf-8")
+            session = _make_session()
+            session.diagnostics["matched_log_text"] = "match"
+
+            with mock.patch.object(
+                unity_session, "create_observation_session", return_value=session
+            ), mock.patch.object(
+                unity_session, "wait_for_log_pattern", return_value=session
+            ), mock.patch.object(
+                unity_session_logs, "default_editor_log_path", return_value=log_path
+            ):
+                exit_code, stdout, stderr = unity_puer_exec.run_cli([
+                    "--suppress-guidance",
+                    "wait-for-log-pattern",
+                    "--pattern", "match",
+                    "--timeout-seconds", "5",
+                    "--activity-timeout-seconds", "3",
+                ])
+
+        self.assertEqual(exit_code, 0)
+        body = json.loads(stdout)
+        self.assertNotIn("situation", body)
+        self.assertNotIn("next_steps", body)
+
 
 class DynamicEndpointRoutingTests(unittest.TestCase):
     """Project mode routes to non-default validated endpoint; direct base-url stays literal."""

@@ -626,6 +626,15 @@ def _attach_guidance(payload, command, status, args, request_id=None):
     if getattr(args, "suppress_guidance", False):
         return
     context = _build_guidance_context(args, request_id=request_id)
+    # Enrich context from CLI-owned envelope fields on the response payload.
+    # log_range is injected before guidance is attached, so the payload
+    # already carries CLI-owned byte offsets for the observation window.
+    log_range = payload.get("log_range") if isinstance(payload, dict) else None
+    if isinstance(log_range, dict):
+        _log_start = log_range.get("start")
+        _log_end = log_range.get("end")
+        if _log_start is not None and _log_end is not None:
+            context["log_range_span"] = "{}-{}".format(_log_start, _log_end)
     next_steps = help_surface.build_next_steps(command, status, context)
     if next_steps:
         payload["next_steps"] = next_steps
@@ -1596,6 +1605,7 @@ def run_wait_for_log_pattern(args):
         include_diagnostics=args.include_diagnostics,
     )
     _inject_log_range_into_payload(payload, log_path, log_start, _capture_log_offset(log_path), offsets_invalidated=offsets_invalidated)
+    _attach_guidance(payload, "wait-for-log-pattern", "completed", args)
     return 0, emit_payload(payload), ""
 
 
