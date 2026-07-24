@@ -1,9 +1,9 @@
 ## 1. Resolve the open design questions first
 
-- [ ] 1.1 Confirm that a control-service activation switch passed on the Unity command line is readable via `Environment.GetCommandLineArgs()` and survives a domain reload, so process-launched activation needs no persistence of its own.
-- [ ] 1.2 Confirm that `UnityEditor.SessionState` retains a mid-session activation across a domain reload and is cleared when the Editor process ends, and record what happens on an Editor crash.
+- [x] 1.1 Confirm that a control-service activation switch passed on the Unity command line is readable via `Environment.GetCommandLineArgs()` and survives a domain reload, so process-launched activation needs no persistence of its own.
+- [x] 1.2 Confirm that `UnityEditor.SessionState` retains a mid-session activation across a domain reload and is cleared when the Editor process ends, and record what happens on an Editor crash.
 - [x] 1.3 Confirm that write-to-temp-then-rename produces an atomic replacement on Windows that a concurrently reading CLI never observes as truncated, and record the fallback if it does not.
-- [ ] 1.4 Determine whether the service can reliably remove its own publication on Editor quit, and confirm on the real host that retaining it across domain reloads (design D2) leaves no window in which a compiling Editor reads as not opted in. Record the answer in design; it decides how common the residue branch is.
+- [x] 1.4 Determine whether the service can reliably remove its own publication on Editor quit, and confirm on the real host that retaining it across domain reloads (design D2) leaves no window in which a compiling Editor reads as not opted in. Record the answer in design; it decides how common the residue branch is.
 - [x] 1.5 Verify whether `EditorApplication.OpenProject` can relaunch the Editor with `-logFile` and the activation switch. If it cannot, drop the "Restart with CLI Control" menu action from scope and say so in design.
 - [x] 1.6 Determine whether Unity clears `Temp/UnityPuerExec/` when a project is reopened, and record in design how long a stale publication can coexist with a new Editor's lockfile — this decides how load-bearing the D2 confirmation step is.
 
@@ -19,7 +19,7 @@
 
 - [x] 3.1 Gate service startup on an explicit activation request, replacing the current implicit start and the batch-mode-only suppression at `UnityPuerExecServer.cs:275`.
 - [x] 3.2 Read the activation switch from the process command line.
-- [ ] 3.3 Add an Editor menu action that activates the service for the current process only, backed by `SessionState`, and confirm it does not restore on the next project open.
+- [x] 3.3 Add an Editor menu action that activates the service for the current process only, backed by `SessionState`, and confirm it does not restore on the next project open.
 - [x] 3.4 Warn at the point of mid-session activation that this Editor's log was fixed at launch and cannot be isolated, naming the log it is actually bound to.
 - [x] 3.5 Add the "Restart with CLI Control" menu action if 1.5 confirmed it is possible; otherwise record the decision not to.
 - [x] 3.6 Pass the activation switch from `launch_unity` on every CLI-driven launch, so CLI callers observe no behavior change.

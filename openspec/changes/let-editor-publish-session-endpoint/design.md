@@ -203,6 +203,18 @@ process command line cannot change within a process, so survival is expected on
 structural grounds, but that is reasoning rather than evidence; task 8.9 is where
 it gets measured. Task 1.1 stays open until then.
 
+### R7: Menu-granted activation lives and dies with the process — measured (task 1.2)
+
+Measured on the validation host with a Hub-launched (un-activated) Editor. Activating
+via `Tools/UnityPuerExec/Activate CLI Control (this session)` greyed the menu item
+(SessionState set, service started). A domain reload — one script edit — left it
+greyed, so the mid-session activation survives a reload the same way the command-line
+switch does. After killing the Editor and reopening the project without activation,
+the menu item was clickable again: the SessionState opt-in did not restore into the
+new process. That is D4's requirement that a menu-granted activation is explicit each
+time, session-scoped, and never remembered across the project's next open — confirmed
+rather than assumed.
+
 ### R6: A controlled launch publishes fields that match the live process — measured (task 8.2)
 
 Measured by launching the host with the exact arguments the CLI's `launch_unity`
@@ -395,7 +407,15 @@ CLI command — it is not expected to be observable.
   `test_ensure_session_ready_recovers_when_launched_process_exits_cleanly_before_ready`.
 
 - **`EditorApplication.OpenProject` with arguments.** A second menu action, "Restart with CLI Control", could relaunch the Editor with `-logFile` and the activation switch, turning the escape hatch into a one-click return to the controlled state. This is **unverified** in this repository and Unity version. If it does not work as assumed, only the session-scoped activation action ships.
-- **Publication lifecycle at the edges.** Removal is quit-scoped by design (D2); two edges need real-host confirmation. First, whether the `EditorApplication.quitting` hook fires reliably enough that clean-exit residue stays rare — the D2 residue row already absorbs the cases where it does not. Second, whether Unity clears `Temp/UnityPuerExec/` when a project is reopened, which decides how long a stale publication can sit next to a new Editor's lockfile and therefore how load-bearing the D2 confirmation step is.
+- ~~**Publication lifecycle at the edges.**~~ *Resolved (task 1.4/1.6).* Both edges
+  are now measured. The reload edge is covered by R3: the publication is retained
+  across a domain reload and a compiling Editor never reads as not-opted-in. The
+  quit edge is moot in the direction that mattered: R5/1.6 showed Unity clears
+  `Temp/UnityPuerExec/` on reopen and R4/8.6a showed it survives a kill, so on a
+  clean exit the publication is removed by Unity's own `Temp/` teardown whether or
+  not the `EditorApplication.quitting` hook also deletes it — the two are
+  indistinguishable and the D2 residue row absorbs any clean-exit residue that does
+  briefly survive. No separate confirmation of the hook is load-bearing.
 
 ## Risks / Trade-offs
 
