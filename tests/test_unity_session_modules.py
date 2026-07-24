@@ -890,5 +890,193 @@ class ArtifactIdentityValidationTests(unittest.TestCase):
                 )
 
 
+class _FakeClock:
+    """A clock that only advances when the code under test sleeps.
+
+    Lets a test drive the grace window deterministically: every classify retry
+    sleeps READ_RETRY_SECONDS, so N retries advance the clock by N * that.
+    """
+
+    def __init__(self):
+        self._now = 1000.0
+
+    def time(self):
+        return self._now
+
+    def sleep(self, seconds):
+        self._now += seconds
+
+
+class SessionStateTableTests(unittest.TestCase):
+    """The D2 state table, decided from the project lockfile and the publication alone."""
+
+    PROJECT = "X:/project"
+    MARKER = "session-marker-live"
+
+    def _publication(self, marker=None, unity_pid=4242, port=55233):
+        return {
+            "port": port,
+            "unity_pid": unity_pid,
+            "project_path": self.PROJECT,
+            "session_marker": marker or self.MARKER,
+            "base_url": "http://127.0.0.1:{}".format(port),
+        }
+
+    def _classify(self, lockfile_held, publication, health_sequence, pid_running=True, grace_seconds=1.0):
+        import unity_session_endpoint
+
+        probes = iter(health_sequence)
+
+        def probe_health(_base_url, _timeout):
+            try:
+                return next(probes), None
+            except StopIteration:
+                return health_sequence[-1], None
+
+        return unity_session_endpoint.classify_session_state(
+            self.PROJECT,
+            lockfile_held_fn=lambda _p: lockfile_held,
+            read_publication_fn=lambda _p: publication,
+            probe_health_fn=probe_health,
+            health_timeout_seconds=2.0,
+            is_pid_running_fn=lambda _pid: pid_running,
+            grace_seconds=grace_seconds,
+            time_ref=_FakeClock(),
+        )
+
+    def test_no_lockfile_and_no_publication_is_no_editor(self):
+        import unity_session_endpoint
+
+        state, publication, _health = self._classify(False, None, [None])
+        self.assertEqual(state, unity_session_endpoint.SESSION_STATE_NO_EDITOR)
+        self.assertIsNone(publication)
+
+    def test_held_lockfile_with_no_publication_is_not_under_control(self):
+        import unity_session_endpoint
+
+        state, _pub, _health = self._classify(True, None, [None])
+        self.assertEqual(state, unity_session_endpoint.SESSION_STATE_NOT_UNDER_CONTROL)
+
+    def test_held_lockfile_with_confirmed_publication_is_controlled(self):
+        import unity_session_endpoint
+
+        ready = {"status": "ready", "session_marker": self.MARKER, "unity_pid": 4242, "project_path": self.PROJECT}
+        state, _pub, health = self._classify(True, self._publication(), [ready])
+        self.assertEqual(state, unity_session_endpoint.SESSION_STATE_CONTROLLED)
+        self.assertEqual(health["status"], "ready")
+
+    def test_publication_without_a_held_lockfile_is_residue(self):
+        import unity_session_endpoint
+
+        # The crashed-or-killed row: the session is over even though the record
+        # survives, and it is not confused for a live one no matter how the probe
+        # would answer.
+        state, publication, _health = self._classify(False, self._publication(), [None])
+        self.assertEqual(state, unity_session_endpoint.SESSION_STATE_ENDED_RESIDUE)
+        self.assertIsNotNone(publication)
+
+    def test_a_recycled_pid_cannot_make_an_ended_session_look_live(self):
+        import unity_session_endpoint
+
+        # Lockfile is free, so the session is ended -- even though a process with the
+        # published id happens to be running (a recycled pid). Liveness is never the
+        # sole evidence; the lockfile is.
+        state, _pub, _health = self._classify(False, self._publication(), [None], pid_running=True)
+        self.assertEqual(state, unity_session_endpoint.SESSION_STATE_ENDED_RESIDUE)
+
+    def test_a_transient_mismatch_during_reload_heals_instead_of_refusing(self):
+        """Task 4.10: the reload window must not read as a withdrawn opt-in.
+
+        Across a domain reload the service restarts with a fresh session marker and
+        rewrites the publication; a probe caught between the new service answering and
+        the new publication landing sees the old marker against the new one. A single
+        such reading must self-heal, not collapse to not-under-control. This is the
+        real-host defect from design R3, pinned.
+        """
+        import unity_session_endpoint
+
+        # First probe answers ready but with a different (newer) marker than the
+        # publication currently on disk; the retry sees them agree.
+        mismatched = {"status": "ready", "session_marker": "newer-marker", "unity_pid": 4242}
+        matched = {"status": "ready", "session_marker": self.MARKER, "unity_pid": 4242, "project_path": self.PROJECT}
+        state, _pub, _health = self._classify(True, self._publication(), [mismatched, matched], grace_seconds=1.0)
+        self.assertEqual(state, unity_session_endpoint.SESSION_STATE_CONTROLLED)
+
+    def test_a_persistent_foreign_identity_with_a_dead_pid_is_not_controlled(self):
+        """Task 4.9: a stale publication whose port a foreign service answers, and whose
+        own process is gone, is never adopted as a controlled session."""
+        import unity_session_endpoint
+
+        foreign = {"status": "ready", "session_marker": "someone-else", "unity_pid": 9999}
+        state, _pub, _health = self._classify(
+            True,
+            self._publication(),
+            [foreign, foreign, foreign],
+            pid_running=False,
+            grace_seconds=0.05,
+        )
+        self.assertEqual(state, unity_session_endpoint.SESSION_STATE_NOT_UNDER_CONTROL)
+
+    def test_a_restarting_service_with_a_live_pid_stays_controlled(self):
+        """Past the grace window, a live published process is a service still
+        restarting, handed to the readiness wait rather than refused."""
+        import unity_session_endpoint
+
+        state, _pub, _health = self._classify(
+            True,
+            self._publication(),
+            [None, None, None],
+            pid_running=True,
+            grace_seconds=0.05,
+        )
+        self.assertEqual(state, unity_session_endpoint.SESSION_STATE_CONTROLLED)
+
+
+class ObservationReliabilityTests(unittest.TestCase):
+    """Design D4: how safe byte-offset observation is, classified before it is taken."""
+
+    PROJECT_PRIVATE = "X:/project/Temp/UnityPuerExec/Editor.log"
+    DEFAULT = "X:/user/AppData/Local/Unity/Editor/Editor.log"
+    CALLER = "X:/somewhere/custom.log"
+
+    def _classify(self, console_log_path, other_count=0):
+        import unity_session_endpoint
+
+        return unity_session_endpoint.classify_observation_reliability(
+            console_log_path,
+            project_private_log_path=self.PROJECT_PRIVATE,
+            default_editor_log_path=self.DEFAULT,
+            other_unity_process_count=other_count,
+        )
+
+    def test_project_private_log_is_reliable(self):
+        import unity_session_endpoint
+
+        result = self._classify(self.PROJECT_PRIVATE)
+        self.assertEqual(result, unity_session_endpoint.OBSERVATION_PROJECT_PRIVATE)
+        self.assertTrue(unity_session_endpoint.observation_is_reliable(result))
+
+    def test_caller_directed_log_is_reliable_and_attributed_to_the_caller(self):
+        import unity_session_endpoint
+
+        result = self._classify(self.CALLER)
+        self.assertEqual(result, unity_session_endpoint.OBSERVATION_CALLER_DIRECTED)
+        self.assertTrue(unity_session_endpoint.observation_is_reliable(result))
+
+    def test_platform_default_with_other_editors_is_unreliable(self):
+        import unity_session_endpoint
+
+        result = self._classify(self.DEFAULT, other_count=1)
+        self.assertEqual(result, unity_session_endpoint.OBSERVATION_PLATFORM_DEFAULT_CONTENDED)
+        self.assertFalse(unity_session_endpoint.observation_is_reliable(result))
+
+    def test_platform_default_as_the_only_editor_is_usable_but_not_owned(self):
+        import unity_session_endpoint
+
+        result = self._classify(self.DEFAULT, other_count=0)
+        self.assertEqual(result, unity_session_endpoint.OBSERVATION_PLATFORM_DEFAULT_SOLE_EDITOR)
+        self.assertTrue(unity_session_endpoint.observation_is_reliable(result))
+
+
 if __name__ == "__main__":
     unittest.main()

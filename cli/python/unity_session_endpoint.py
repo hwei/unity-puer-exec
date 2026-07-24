@@ -223,16 +223,30 @@ def classify_session_state(
         verdict, payload = confirm_publication(publication, probe_health_fn, health_timeout_seconds)
         if verdict == "confirmed":
             return SESSION_STATE_CONTROLLED, publication, payload
-        if verdict == "mismatched":
-            # Something else owns the published port. Whatever holds the lockfile is
-            # not reachable through this publication, so it is not under CLI control.
-            return SESSION_STATE_NOT_UNDER_CONTROL, publication, payload
+
+        # Neither confirmed nor answered-with-a-different-identity is a conclusion on
+        # its own while the lockfile is held. Both describe the reload window as well
+        # as they describe residue: when the service restarts across a domain reload
+        # it mints a fresh session marker and rewrites the publication, so a probe
+        # taken between the new service answering and the new publication landing
+        # reads the old marker against the new one -- a transient `mismatched`, not a
+        # foreign process. A single such reading must not produce the not-opted-in
+        # status (transient-gap rule); the loop re-reads the publication and re-probes,
+        # which self-heals once the two agree.
         if time_ref.time() < deadline:
             time_ref.sleep(READ_RETRY_SECONDS)
             continue
+
+        # Past the grace window and still not confirmed. The published process
+        # decides: a live one holding the lockfile is a controlled Editor whose
+        # service is still restarting -- the caller's readiness wait handles that. A
+        # dead one, with the lockfile held by something else, is residue beside an
+        # Editor that never opted in, or a recycled port answering with a foreign
+        # identity. Consulting the published pid is safe because the Editor stated it
+        # about itself and it is only ever corroboration alongside the lockfile.
         if is_pid_running_fn(publication["unity_pid"]):
             return SESSION_STATE_CONTROLLED, publication, None
-        return SESSION_STATE_NOT_UNDER_CONTROL, publication, None
+        return SESSION_STATE_NOT_UNDER_CONTROL, publication, payload
 
 
 def classify_observation_reliability(

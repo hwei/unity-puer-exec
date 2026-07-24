@@ -203,6 +203,65 @@ process command line cannot change within a process, so survival is expected on
 structural grounds, but that is reasoning rather than evidence; task 8.9 is where
 it gets measured. Task 1.1 stays open until then.
 
+### R3: A domain reload never reads as not-under-control — measured, and it found a real defect (tasks 1.1, 8.9, 4.10)
+
+Measured on the live controlled host by triggering a script reload from inside the
+Editor (`exec` of `EditorUtility.RequestScriptReload()`) and polling the session-state
+decision densely across the reload window (`.tmp/probe_reload_window.py`).
+
+The first run **caught a defect the transient-gap rule was written to prevent.** The
+window produced one `(not_under_control, health=ready)` reading. Timeline, confirmed
+by the session marker changing (`a312e191` → `6f9ad27e`): when the service restarts
+across a reload it mints a fresh marker and rewrites the publication, and a probe
+taken between the new service answering `/health` and the new publication landing on
+disk compares the *old* published marker against the *new* health marker — a
+transient `mismatched`. The first implementation returned `not_under_control`
+immediately on `mismatched`, with no grace retry. That is exactly the "single failed
+publication read or probe while the lockfile is held" that task 4.10 forbids.
+
+The fix folds `mismatched` into the same grace retry as `unanswered`: neither is a
+conclusion on its own while the lockfile is held, the loop re-reads the publication
+and re-probes (which self-heals once the two agree), and only past the window does
+the published process's liveness decide `controlled` vs `not_under_control`. The
+re-run showed only `controlled` across the window (three `ready`, one `health=None`
+at the restart instant covered by the live pid), marker `6f9ad27e` → `785d840e`, zero
+`not_under_control`.
+
+This is why the CONTROLLED-with-reload path needed a real Editor and not only unit
+tests: the defect lived in the millisecond gap between two files agreeing, which a
+mock that returns a consistent pair never exercises. A unit test now pins the rule,
+but the reason it exists is this measurement.
+
+### R2: `OpenProject` can relaunch with arguments — confirmed, and it grants isolation too (task 1.5)
+
+Measured on the validation host with a throwaway Editor probe. The
+`EditorApplication.OpenProject(string, params string[])` overload exists, compiles,
+and the relaunched process reported:
+
+```
+Q1 -logFile honoured?          True
+     bound log = <project>/Temp/UnityPuerExec/probe_1_5.log
+Q2 activation switch present?  True
+Q3 endpoint published?         True
+full command line: Unity.exe -logFile <...>/probe_1_5.log -unityPuerExecControl
+                             -projectpath <project> -force-gles30 -force-gles30
+```
+
+Unity places the supplied arguments ahead of the `-projectpath` it appends itself,
+and does not override `-logFile`.
+
+*Consequence that changes the shape of D4.* The escape hatch was expected to be a
+one-way door: a mid-session activation grants control but can never grant isolation,
+because the log is bound at process start. That is still true of the *current*
+process — but a restart is a new process, and this result shows a restart can be
+driven from inside the Editor with both `-logFile` and the activation switch. So
+"Restart with CLI Control" is not a convenience wrapper around half a capability; it
+is a one-click return to the fully controlled state, isolation included, from an
+Editor a human opened from Hub.
+
+Task 3.5 therefore ships. The session-scoped activation action remains, because a
+restart is disruptive when an operator has unsaved work and only needs control.
+
 ### R1: Publication atomicity — confirmed, with a contention caveat (task 1.3)
 
 Measured on the Windows validation machine with a writer replacing the target and

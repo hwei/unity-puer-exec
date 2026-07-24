@@ -40,6 +40,12 @@ namespace UnityPuerExec
         internal const string SessionActivationKey = "UnityPuerExec.ControlActivated";
 
         internal const string ActivateMenuPath = "Tools/UnityPuerExec/Activate CLI Control (this session)";
+        internal const string RestartMenuPath = "Tools/UnityPuerExec/Restart with CLI Control (isolated log)";
+
+        // Where a restart-for-control Editor writes its isolated log. Matches the
+        // CLI's project-private launch log path (LAUNCH_LOG_RELATIVE_PATH), so a
+        // caller that later drives this Editor observes the same file without a flag.
+        private const string IsolatedLogRelativePath = "Temp/UnityPuerExec/Editor.log";
 
         internal static bool IsActivatedByCommandLine()
         {
@@ -102,6 +108,66 @@ namespace UnityPuerExec
             SessionState.SetBool(SessionActivationKey, true);
             WarnThatIsolationCannotBeGrantedNow();
             UnityPuerExecServer.StartIfActivated();
+        }
+
+        [MenuItem(RestartMenuPath, true)]
+        private static bool ValidateRestartWithControl()
+        {
+            // Offered whenever this Editor is not already isolated: an Editor started
+            // without -logFile writes the shared per-user log, and a restart is the
+            // only way to give a running project an isolated one.
+            return !IsActivatedByCommandLine();
+        }
+
+        [MenuItem(RestartMenuPath)]
+        private static void RestartWithControl()
+        {
+            var projectPath = "";
+            try
+            {
+                projectPath = System.IO.Path.GetDirectoryName(Application.dataPath) ?? "";
+            }
+            catch
+            {
+            }
+
+            if (string.IsNullOrEmpty(projectPath))
+            {
+                Debug.LogError("[UnityPuerExec] Cannot restart with control: project path unresolved.");
+                return;
+            }
+
+            var isolatedLogPath = System.IO.Path.Combine(
+                projectPath,
+                IsolatedLogRelativePath.Replace('/', System.IO.Path.DirectorySeparatorChar)
+            );
+            try
+            {
+                System.IO.Directory.CreateDirectory(System.IO.Path.GetDirectoryName(isolatedLogPath));
+            }
+            catch
+            {
+                // Unity creates the log file itself; a missing parent is not worth
+                // blocking the restart over.
+            }
+
+            if (!EditorUtility.DisplayDialog(
+                    "Restart with CLI Control",
+                    "Unity will restart this project with a CLI control service and an isolated log at\n\n"
+                    + isolatedLogPath
+                    + "\n\nUnsaved changes in open scenes are not saved by this action. Continue?",
+                    "Restart",
+                    "Cancel"))
+            {
+                return;
+            }
+
+            // Verified possible on this Unity version (design R2 / task 1.5): the
+            // params overload passes -logFile and the activation switch through to the
+            // relaunched process ahead of the -projectPath Unity appends, and -logFile
+            // is honored -- so unlike mid-session activation, a restart grants control
+            // AND isolation.
+            EditorApplication.OpenProject(projectPath, "-logFile", isolatedLogPath, ActivationSwitch);
         }
 
         /// <summary>
