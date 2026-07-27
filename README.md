@@ -42,8 +42,10 @@ The human describes the intent and reviews the result. Everything in between bel
 | Dynamic code execution | JS via PuerTS (interpreted, instant) | C# eval (pipeline package, experimental) | C# via Roslyn (compiles to DLL) | C# eval | JS via PuerTS |
 | Extra runtime dependency | None (self-contained .exe) | None | Node.js 22+ + Unity-bundled Roslyn | None | None |
 | Minimum Unity version | 2022.3 | 6.0 LTS | 2022.3 | 2022.3 | 2022.3 |
-| PlayMode input simulation / recording | No | No | Yes | No | No |
+| PlayMode interaction | Via JS (object-level) | No | Yes (input-layer + recording) | No | No |
 | Screenshot / multimodal feedback | Via JS | No | Yes | Yes | Yes |
+
+On PlayMode interaction: `unity-puer-exec` ships no dedicated input API — by design. `exec` scripts do run while the Editor is in PlayMode, and they can drive the UI directly through the shared C#/Unity object graph: locate the widget GameObject, invoke its event, read the resulting state. For agent-driven UI verification that usually replaces input simulation entirely. What it does not do is inject events at the input-device layer (so code paths that read the input system itself are not exercised) or record and replay a session. Widget-tree traversal and event conventions are framework-specific, so they belong in a project-local skill rather than in the CLI.
 
 Key differences vs the closest alternatives:
 

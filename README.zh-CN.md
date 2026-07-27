@@ -42,8 +42,10 @@ Agent 自行启动 Editor、编写代码、处理编译错误、解除阻塞对�
 | 动态代码执行 | JS via PuerTS（解释执行，即时） | C# eval（pipeline 包，实验性） | C# via Roslyn（编译为 DLL） | C# eval | JS via PuerTS |
 | 额外运行时依赖 | 无（自包含 .exe） | 无 | Node.js 22+ + Unity 内置 Roslyn | 无 | 无 |
 | 最低 Unity 版本 | 2022.3 | 6.0 LTS | 2022.3 | 2022.3 | 2022.3 |
-| PlayMode 输入模拟 / 录制 | 否 | 否 | 是 | 否 | 否 |
+| PlayMode 交互 | 可通过 JS 实现（对象层） | 否 | 是（输入层 + 录制） | 否 | 否 |
 | 截图 / 多模态反馈 | 可通过 JS 实现 | 否 | 是 | 是 | 是 |
+
+关于 PlayMode 交互：`unity-puer-exec` 刻意不提供专门的输入模拟 API。`exec` 脚本可以在 Editor 处于 PlayMode 时执行，并通过共享的 C#/Unity 对象图直接驱动 UI——定位控件 GameObject、触发其事件、读取结果状态。对 agent 驱动的 UI 验证来说，这通常已经足以替代输入模拟。它不做的是在输入设备层注入事件（因此读取 input system 本身的代码路径不会被覆盖），也不做会话录制回放。控件树遍历与事件调用约定是框架相关的技术，应放进项目本地的 skill，而不是 CLI 本身。
 
 与最接近替代方案的关键差异：
 
