@@ -2,7 +2,9 @@
 
 ## Purpose
 TBD - created by archiving change enforce-cli-version-compatibility. Update Purpose after archive.
+
 ## Requirements
+
 ### Requirement: The CLI resolves its own version
 
 The CLI SHALL resolve a version string identifying the package release it belongs to. A frozen executable SHALL resolve it from a version stamped into the binary at build time. A source invocation SHALL resolve it from `packages/com.txcombo.unity-puer-exec/package.json` in the source tree.
@@ -27,12 +29,18 @@ The CLI SHALL resolve a version string identifying the package release it belong
 
 ### Requirement: The Unity bridge reports its package version
 
-The Unity control service SHALL include a `bridge_version` field in its `/health` response, resolved from the Unity package metadata for the assembly that provides the service.
+The Unity control service SHALL include a `bridge_version` field in its `/health` response, resolved from the Unity package metadata for the assembly that provides the service. When that version is known, the field SHALL be present for both ready and non-ready health statuses that the bound service emits (`ready`, `compiling`, and `not_available`).
 
 #### Scenario: Health response on a package-installed bridge
 
 - **WHEN** a caller probes `/health` on a ready service whose Editor assembly belongs to an installed package
 - **THEN** the response includes `bridge_version` set to that package's version
+
+#### Scenario: Compiling health on a package-installed bridge
+
+- **WHEN** a caller probes `/health` while the Editor is compiling or reloading and the Editor assembly belongs to an installed package
+- **THEN** the response includes `status = "compiling"`
+- **AND** the response includes `bridge_version` set to that package's version
 
 #### Scenario: Bridge assembly does not belong to a package
 
@@ -98,7 +106,7 @@ When the CLI executable resolves to a location inside an installed package tree,
 
 ### Requirement: The CLI verifies its version against the control service
 
-Every command that contacts the Unity control service SHALL compare the CLI version against the `bridge_version` reported by that service before performing the command's work, in both `--project-path` and `--base-url` mode.
+Every command that contacts the Unity control service SHALL compare the CLI version against the `bridge_version` reported by that service before performing the command's work, in both `--project-path` and `--base-url` mode. A reachable health payload whose `status` is not `ready` and that omits `bridge_version` SHALL NOT, by itself, satisfy this comparison as a mismatch; the command SHALL treat that payload as not yet version-observable and continue its normal non-ready handling (wait, compiling continuation, or the command's own not-ready status).
 
 #### Scenario: Bridge version disagrees with CLI version
 
@@ -111,6 +119,18 @@ Every command that contacts the Unity control service SHALL compare the CLI vers
 
 - **WHEN** a command targets a service through `--base-url` and the reported `bridge_version` differs from the CLI version
 - **THEN** the command SHALL return `version_mismatch` on the same terms as project-scoped mode
+
+#### Scenario: Compiling health without a version is not a mixed installation
+
+- **WHEN** a command obtains a health response with `status = "compiling"` (or `not_available`) that omits `bridge_version` or reports it as null
+- **THEN** the command SHALL NOT return `version_mismatch` solely because the version is absent
+- **AND** the command SHALL continue the compile, recovery, or not-ready path that status already defines
+
+#### Scenario: Compiling health with a disagreeing version is still a mismatch
+
+- **WHEN** a command obtains a health response with `status = "compiling"` whose `bridge_version` differs from the CLI version
+- **THEN** the command SHALL return `version_mismatch` with a guard value of `bridge`
+- **AND** the command SHALL NOT perform its work
 
 ### Requirement: Version comparison uses exact equality
 
@@ -128,14 +148,19 @@ The CLI SHALL compare version strings for exact equality. The CLI SHALL NOT appl
 
 ### Requirement: An unavailable counterpart version is a mismatch
 
-When a counterpart does not report a version, the CLI SHALL treat the condition as a mismatch rather than as an unverified pass, because a counterpart that cannot state its version predates or falls outside this contract.
+When a **ready** counterpart does not report a version, the CLI SHALL treat the condition as a mismatch rather than as an unverified pass, because a ready counterpart that cannot state its version predates or falls outside this contract. This requirement SHALL NOT apply to a non-ready health payload that omits `bridge_version`.
 
 #### Scenario: Bridge reports no version
 
-- **WHEN** a health response omits `bridge_version` or reports it as null
+- **WHEN** a ready health response omits `bridge_version` or reports it as null
 - **THEN** the command SHALL return `version_mismatch`
 - **AND** the reported counterpart version SHALL be null
 - **AND** the guard value SHALL distinguish this case from a genuine version difference
+
+#### Scenario: Non-ready health without a version is not this mismatch
+
+- **WHEN** a health response is not ready and omits `bridge_version` or reports it as null
+- **THEN** the command SHALL NOT return `version_mismatch` under this requirement
 
 ### Requirement: A version mismatch refuses command work and offers no bypass
 
@@ -152,4 +177,3 @@ A `version_mismatch` result SHALL be terminal for the invocation: the command SH
 - **WHEN** a caller consults CLI help for a way to proceed despite a version mismatch
 - **THEN** help SHALL describe reconciling the installation as the resolution
 - **AND** help SHALL NOT document any flag or setting that suppresses the guard
-

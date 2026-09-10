@@ -3,7 +3,9 @@
 ## Purpose
 
 Define the Unity-side project control endpoint contract, including dynamic loopback port selection, health identity fields, and project-local session artifact validation rules, so that multiple Unity Editors loading the package can run concurrently without contending for a single fixed port.
+
 ## Requirements
+
 ### Requirement: Unity control service selects an available loopback port
 
 The Unity-side project control service SHALL bind to a loopback HTTP endpoint by trying the preferred port first and then trying later ports in a bounded range when the preferred port is unavailable. The bound port SHALL be the authoritative service port for that Editor session. Rollover to a later candidate port SHALL occur whenever a bind attempt fails because the candidate port is already in use, regardless of which concrete exception type the host runtime raises for that condition (including a `SocketException` with `SocketError.AddressAlreadyInUse` under Unity's Mono runtime, as well as an `HttpListenerException`). The scan SHALL abort early only on a genuinely fatal error that is not a port-in-use condition.
@@ -34,7 +36,7 @@ The Unity-side project control service SHALL bind to a loopback HTTP endpoint by
 
 ### Requirement: Health response exposes endpoint identity
 
-The Unity-side health endpoint SHALL expose enough identity for a project-scoped caller to verify endpoint ownership and installation consistency, and to observe the Editor without inferring where it writes. A ready health response SHALL include the selected port, base URL, Unity process id when available, resolved Unity project path, session marker, the bridge package version, and the Editor's own console log path. The bridge version SHALL be resolved from the Unity package metadata for the assembly providing the service, and SHALL be omitted or reported as null when that assembly does not belong to an installed package rather than reported as a guessed value. The console log path SHALL be resolved from the running Editor's own Unity runtime, and SHALL be omitted or reported as null when it cannot be resolved rather than reported as a platform-default guess.
+The Unity-side health endpoint SHALL expose enough identity for a project-scoped caller to verify endpoint ownership and installation consistency, and to observe the Editor without inferring where it writes. A ready health response SHALL include the selected port, base URL, Unity process id when available, resolved Unity project path, session marker, the bridge package version, and the Editor's own console log path. The bridge version SHALL be resolved from the Unity package metadata for the assembly providing the service, and SHALL be omitted or reported as null when that assembly does not belong to an installed package rather than reported as a guessed value. When that version is known, a bound non-ready health response (`compiling`, or `not_available` while the control service is listening) SHALL also include `bridge_version`. The console log path SHALL be resolved from the running Editor's own Unity runtime, and SHALL be omitted or reported as null when it cannot be resolved rather than reported as a platform-default guess.
 
 The same identity SHALL be available to a caller that has not yet connected, through the endpoint publication defined by `editor-session-discovery`, so that reaching the service never requires probing candidate ports to discover which one belongs to the target project.
 
@@ -43,6 +45,13 @@ The same identity SHALL be available to a caller that has not yet connected, thr
 - **WHEN** a caller probes `/health` on a ready UnityPuerExec service
 - **THEN** the response includes `status = "ready"`
 - **AND** the response includes `port`, `base_url`, `unity_pid`, `project_path`, `session_marker`, `bridge_version`, and `console_log_path`
+
+#### Scenario: Caller probes a compiling service
+
+- **WHEN** a caller probes `/health` while the Editor is compiling or reloading and the Editor assembly belongs to an installed package
+- **THEN** the response includes `status = "compiling"`
+- **AND** the response includes `session_marker`
+- **AND** the response includes `bridge_version` set to that package's version
 
 #### Scenario: Caller compares endpoint ownership
 
@@ -100,4 +109,3 @@ The Unity-side control service SHALL start only when activation has been explici
 - **WHEN** the package loads in a batch-mode Unity subprocess (for example an asset-import worker)
 - **THEN** the control service does not start
 - **AND** the subprocess does not bind or occupy any port in the control port range
-
