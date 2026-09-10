@@ -153,15 +153,18 @@ def check_package_layout(cli_version, argv0=None, exe_path=None):
     return _mismatch(GUARD_PACKAGE_LAYOUT, cli_version, declared, str(package_root))
 
 
-def check_bridge(cli_version, base_url, health_payload, require_version=True):
+def check_bridge(cli_version, base_url, health_payload, require_version=None):
     """Compare the CLI version against a control service's `bridge_version`.
 
-    `require_version=False` is used on pre-`ready` health payloads, which carry no
-    identity fields yet: those fire only on an observed disagreement, so the guard
-    lands on the first payload that actually carries `bridge_version`.
+    Missing versions are required only for `ready` health. A non-ready payload is
+    not yet version-observable, but a version it does carry is still compared.
+    `require_version` remains an explicit override for callers that need to model
+    a particular phase.
     """
     if not isinstance(health_payload, dict):
         return None
+    if require_version is None:
+        require_version = health_payload.get("status") == "ready"
     bridge_version = health_payload.get("bridge_version")
     if not isinstance(bridge_version, str) or not bridge_version:
         if not require_version:

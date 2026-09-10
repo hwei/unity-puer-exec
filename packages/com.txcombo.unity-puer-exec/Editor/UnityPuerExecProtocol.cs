@@ -300,9 +300,16 @@ namespace UnityPuerExec
             string consoleLogPath = ""
         )
         {
+            // The package identity is still observable while the Editor is
+            // compiling/reloading. Keep it on every bound health status so
+            // callers can distinguish a matching compile window from a mixed
+            // installation without treating the stub as ready.
+            var bridgeVersionJson = string.IsNullOrEmpty(bridgeVersion)
+                ? ""
+                : ",\"bridge_version\":\"" + JsonEscape(bridgeVersion) + "\"";
             if (isCompilingOrReloading)
             {
-                return "{\"ok\":false,\"status\":\"compiling\",\"session_marker\":\"" + JsonEscape(sessionMarker) + "\"}";
+                return "{\"ok\":false,\"status\":\"compiling\",\"session_marker\":\"" + JsonEscape(sessionMarker) + "\"" + bridgeVersionJson + "}";
             }
 
             if (string.IsNullOrEmpty(envInitError))
@@ -316,9 +323,6 @@ namespace UnityPuerExec
                     : ",\"base_url\":\"" + JsonEscape(baseUrl) + "\"";
                 // Omitted rather than guessed when the Editor assembly is not
                 // package-installed; the CLI treats the absence as unverifiable.
-                var bridgeVersionJson = string.IsNullOrEmpty(bridgeVersion)
-                    ? ""
-                    : ",\"bridge_version\":\"" + JsonEscape(bridgeVersion) + "\"";
                 // The Editor's own log path, so a caller observes where this
                 // process actually writes instead of assuming the per-user
                 // default. Omitted rather than guessed when unresolvable.
@@ -336,7 +340,7 @@ namespace UnityPuerExec
             }
 
             return "{\"ok\":false,\"status\":\"not_available\",\"session_marker\":\"" + JsonEscape(sessionMarker) +
-                   "\",\"error\":\"" + JsonEscape(envInitError) + "\"}";
+                   "\"" + bridgeVersionJson + ",\"error\":\"" + JsonEscape(envInitError) + "\"}";
         }
 
         internal static string BuildStackTraceLoggingJson(bool degraded, string log, string warning, string error)

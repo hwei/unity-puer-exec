@@ -1210,7 +1210,7 @@ def probe_health_payload(base_url, health_timeout_seconds=DEFAULT_HEALTH_TIMEOUT
     return _probe_health(base_url, health_timeout_seconds)
 
 
-def _guard_owned_endpoint_version(base_url, payload, require_version=True):
+def _guard_owned_endpoint_version(base_url, payload, require_version=None):
     """Refuse an owned endpoint whose bridge version disagrees with this CLI.
 
     Called only where ownership has just been confirmed -- never on the foreign

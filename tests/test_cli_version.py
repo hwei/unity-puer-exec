@@ -229,12 +229,12 @@ class BridgeGuardTests(unittest.TestCase):
     def test_pre_ready_payload_without_a_version_is_not_yet_a_mismatch(self):
         compiling = {"ok": False, "status": "compiling", "session_marker": "m"}
         self.assertIsNone(
-            cli_version.check_bridge("0.7.0", self.BASE_URL, compiling, require_version=False)
+            cli_version.check_bridge("0.7.0", self.BASE_URL, compiling)
         )
 
     def test_pre_ready_payload_that_does_carry_a_version_fires_immediately(self):
         compiling = {"ok": False, "status": "compiling", "bridge_version": "0.6.0"}
-        detail = cli_version.check_bridge("0.7.0", self.BASE_URL, compiling, require_version=False)
+        detail = cli_version.check_bridge("0.7.0", self.BASE_URL, compiling)
         self.assertEqual(detail["guard"], cli_version.GUARD_BRIDGE)
 
     def test_owned_endpoint_check_never_runs_on_a_foreign_project(self):
@@ -281,6 +281,40 @@ class BridgeGuardTests(unittest.TestCase):
             ])
         self.assertEqual(exit_code, 0)
         self.assertEqual(json.loads(stdout)["status"], "completed")
+
+    def test_base_url_mode_does_not_refuse_an_unversioned_compiling_bridge(self):
+        compiling = {"ok": False, "status": "compiling", "session_marker": "m"}
+        completed = {"ok": True, "status": "completed", "operation": "exec", "request_id": "R-compile", "result": 1}
+        with mock.patch.object(cli_version, "resolve_cli_version", return_value="0.7.0"), mock.patch.object(
+            unity_session, "probe_health_payload", return_value=(compiling, None)
+        ), mock.patch.object(
+            direct_exec_client, "invoke_command", return_value=(0, json.dumps(completed), "")
+        ) as invoke:
+            exit_code, stdout, stderr = unity_puer_exec.run_cli([
+                "exec", "--base-url", self.BASE_URL,
+                "--code", "export default function run() { return 1; }",
+                "--request-id", "R-compile",
+            ])
+        self.assertEqual(exit_code, 0, stderr)
+        self.assertEqual(json.loads(stdout)["status"], "completed")
+        invoke.assert_called_once()
+
+    def test_base_url_wait_for_compile_does_not_refuse_an_unversioned_compiling_bridge(self):
+        compiling = {"ok": False, "status": "compiling", "session_marker": "m"}
+        ready = {"ok": True, "status": "ready", "bridge_version": "0.7.0"}
+        with mock.patch.object(cli_version, "resolve_cli_version", return_value="0.7.0"), mock.patch.object(
+            unity_session, "probe_health_payload", return_value=(compiling, None)
+        ), mock.patch.object(
+            unity_session, "_probe_health", side_effect=[(compiling, None), (ready, None)]
+        ):
+            exit_code, stdout, stderr = unity_puer_exec.run_cli([
+                "wait-for-compile", "--base-url", self.BASE_URL,
+                "--appear-timeout-seconds", "1",
+                "--settle-timeout-seconds", "1",
+                "--health-timeout-seconds", "1",
+            ])
+        self.assertEqual(exit_code, 0, stderr)
+        self.assertEqual(json.loads(stdout)["result"]["status"], "compile_settled")
 
     def test_unreachable_endpoint_is_not_treated_as_a_guard_failure(self):
         """Nothing answered, so nothing disagreed; the command's own not_available wins."""
@@ -435,6 +469,16 @@ class BridgeGuardTests(unittest.TestCase):
                 unity_session.validate_endpoint_identity(self.BASE_URL, "X:/unity-project")
         self.assertEqual(caught.exception.detail["guard"], cli_version.GUARD_BRIDGE)
 
+    def test_project_session_post_ready_probe_allows_unversioned_compiling_payload(self):
+        session = unity_session.UnitySession(
+            owner="launched", base_url=self.BASE_URL, project_path="X:/unity-project"
+        )
+        compiling = {"ok": False, "status": "compiling", "session_marker": "m"}
+        with mock.patch.object(unity_session, "_ensure_session_ready_unguarded", return_value=session), mock.patch.object(
+            unity_session, "_probe_health", return_value=(compiling, None)
+        ):
+            self.assertIs(unity_session.ensure_session_ready(project_path="X:/unity-project"), session)
+
 
 class CliVersionOnResponsesTests(unittest.TestCase):
     def _log_file(self, content):
@@ -586,6 +630,13 @@ class BridgeVersionContractTests(unittest.TestCase):
         protocol = (self.EDITOR / "UnityPuerExecProtocol.cs").read_text(encoding="utf-8")
         self.assertIn('\\"bridge_version\\":', protocol)
         self.assertIn("string bridgeVersion", protocol)
+
+    def test_non_ready_health_keeps_known_version_and_omits_empty_version(self):
+        protocol = (self.EDITOR / "UnityPuerExecProtocol.cs").read_text(encoding="utf-8")
+        self.assertIn('status\\":\\"compiling\\"', protocol)
+        self.assertIn("+ bridgeVersionJson +", protocol)
+        self.assertIn('var bridgeVersionJson = string.IsNullOrEmpty(bridgeVersion)', protocol)
+        self.assertIn('? ""', protocol)
 
     def test_bridge_version_is_resolved_from_package_metadata(self):
         server = (self.EDITOR / "UnityPuerExecServer.cs").read_text(encoding="utf-8")
