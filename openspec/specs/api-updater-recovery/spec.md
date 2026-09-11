@@ -7,7 +7,7 @@ Recover from Unity ScriptUpdater's blocking Yes/No consent dialog without rewrit
 
 ### Requirement: API Updater consent dialog is auto-declined
 
-When the CLI observes a Unity-owned Windows dialog whose message body contains the ScriptUpdater consent text (`Some of this project's source files refer to API that has changed`), it SHALL dismiss that dialog by activating the No button. It SHALL NOT activate the Yes button. After a confirmed dismiss, the CLI SHALL continue the original wait or request instead of treating the dismiss as completion. If the same dialog reappears before the current timeout budget expires, the CLI SHALL decline it again.
+When the CLI observes a Unity-owned Windows dialog whose message body contains the ScriptUpdater consent text (matching either `Some of this project's source files refer to API that has changed`, `Some of this projects source files refer to API that has changed`, or the invariant core substring `source files refer to API that has changed`), it SHALL dismiss that dialog by activating the No button. It SHALL NOT activate the Yes button. After a confirmed dismiss, the CLI SHALL continue the original wait or request instead of treating the dismiss as completion. If the same dialog reappears before the current timeout budget expires, the CLI SHALL decline it again.
 
 #### Scenario: Consent dialog appears during a compile wait
 
