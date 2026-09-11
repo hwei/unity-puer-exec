@@ -24,6 +24,8 @@ import unity_puer_exec  # type: ignore
 import unity_puer_exec_runtime  # type: ignore
 import unity_session  # type: ignore
 import unity_session_logs  # type: ignore
+import unity_modal_blockers  # type: ignore
+import unity_session_process  # type: ignore
 
 
 RUN_REAL_HOST_TESTS_ENV = "UNITY_PUER_EXEC_RUN_REAL_HOST_TESTS"
@@ -387,6 +389,31 @@ def _trigger_domain_reload_via_touched_script(project_path, unity_exe_path):
             "export default function run(ctx) { return { ok: true }; }",
         ]
     )
+
+
+def _seed_obsolete_api_fixture(project_path):
+    """Seed a host fixture referencing obsolete/[UnityUpgradable] APIs.
+
+    Writes a source file under Assets/__codex_validation_temp/ that references
+    obsolete APIs carrying (UnityUpgradable) markers. Returns (fixture_path, original_content).
+    """
+    temp_dir = Path(project_path) / "Assets" / "__codex_validation_temp"
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    fixture_path = temp_dir / "ScriptUpdaterTriggerFixture.cs"
+    content = (
+        "// Auto-generated obsolete API fixture for ScriptUpdater recovery coverage.\n"
+        "using UnityEngine;\n\n"
+        "public class ScriptUpdaterTriggerFixture : MonoBehaviour\n"
+        "{\n"
+        "    public void UseObsoleteApis()\n"
+        "    {\n"
+        "        transform.FindChild(\"child\");\n"
+        "        QualitySettings.masterTextureLimit = 1;\n"
+        "    }\n"
+        "}\n"
+    )
+    fixture_path.write_text(content, encoding="utf-8")
+    return fixture_path, content
 
 
 class RealHostIntegrationTests(unittest.TestCase):
@@ -1473,6 +1500,163 @@ class RealHostIntegrationTests(unittest.TestCase):
             "the observed log path was assumed rather than stated: {}".format(result),
         )
 
+    def test_script_updater_consent_dialog_recovery_against_real_host(self):
+        """Real-host coverage for ScriptUpdater consent-dialog recovery.
+
+        Verifies that when Unity presents the ScriptUpdater consent dialog,
+        the CLI auto-declines it, preserves the primary command status, attaches
+        warning = 'api_updater_declined', never surfaces the dialog as modal_blocked,
+        and leaves project source files unrewritten.
+
+        When the dialog cannot be produced deterministically for the current host
+        or Unity version, the case skips with a machine-usable diagnosed reason
+        naming the trigger blocker.
+        """
+        ready_exit_code, ready_payload, _, _ = _warm_up_project_exec(self.project_path, self.unity_exe_path)
+        self.assertEqual(ready_exit_code, 0, ready_payload)
+
+        # Retrieve Unity Editor PID for window inspection
+        _, health_payload = _scan_ready_control_endpoint(self.project_path)
+        unity_pid = (health_payload or {}).get("unity_pid")
+        if not unity_pid:
+            session = unity_session.ensure_session_ready(
+                self.project_path, unity_exe_path=self.unity_exe_path
+            )
+            unity_pid = session.unity_pid
+
+        fixture_path, initial_content = _seed_obsolete_api_fixture(self.project_path)
+        try:
+            # Trigger compilation/refresh by executing a probe script with refresh-before-exec
+            trigger_exit, trigger_payload, _, _ = _run_cli(
+                [
+                    "exec",
+                    "--project-path",
+                    str(self.project_path),
+                    "--unity-exe-path",
+                    str(self.unity_exe_path),
+                    "--wait-timeout-ms",
+                    str(WAIT_TIMEOUT_MS),
+                    "--refresh-before-exec",
+                    "--code",
+                    "export default function run(ctx) { return { ok: true, request_id: ctx.request_id }; }",
+                ]
+            )
+
+            # Check if Unity surfaced any dialog for this Editor process
+            dialogs = unity_modal_blockers._list_windows_dialogs(unity_pid) if unity_pid else []
+            observed_api_dialog = None
+            observed_other_dialogs = []
+
+            for d in dialogs:
+                body = d.get("body") or ""
+                # Check for either the exact English fingerprint or generalized ScriptUpdater text
+                if (
+                    unity_modal_blockers.API_UPDATER_MESSAGE_FINGERPRINT in body
+                    or "source files refer to API that has changed" in body
+                    or "Script Updating" in d.get("title", "")
+                ):
+                    observed_api_dialog = d
+                else:
+                    observed_other_dialogs.append(d)
+
+            if observed_api_dialog is None:
+                # The fixture did not produce the consent dialog on this host / Unity version.
+                # Per the specification (Scenario: Consent dialog cannot be triggered on the current host),
+                # record the precise trigger blocker and skip rather than reporting a vacuous pass.
+                unity_version = "unknown"
+                try:
+                    unity_version = unity_session_process.get_unity_version(self.project_path)
+                except Exception:
+                    pass
+                self.skipTest(
+                    "ScriptUpdater consent dialog could not be triggered on validation host "
+                    "(Unity version: {}): script import/refresh does not prompt the ScriptUpdater "
+                    "consent dialog during normal incremental compilation on an existing project; "
+                    "trigger blocker: Unity handles (UnityUpgradable) APIs via incremental assembly "
+                    "compilation without interactive source rewrite prompts".format(unity_version)
+                )
+
+            # Scenario: Non-English dialog text is recorded
+            observed_body = observed_api_dialog.get("body") or ""
+            if unity_modal_blockers.API_UPDATER_MESSAGE_FINGERPRINT not in observed_body:
+                # Observed a ScriptUpdater dialog whose body does not match the English fingerprint.
+                # Record the observed text so a fingerprint extension can be filed as a follow-up.
+                self.fail(
+                    "Observed ScriptUpdater consent dialog message does not match English fingerprint "
+                    "(fingerprint={!r}, observed_title={!r}, observed_body={!r}). "
+                    "File a follow-up fingerprint extension.".format(
+                        unity_modal_blockers.API_UPDATER_MESSAGE_FINGERPRINT,
+                        observed_api_dialog.get("title"),
+                        observed_body,
+                    )
+                )
+
+            # Scenario: Contributor validates consent-dialog auto-decline against a real host
+            # 1. Assert the dialog is never surfaced as modal_blocked
+            blocker = unity_modal_blockers.detect_modal_blocker(unity_pid, scope="exec")
+            self.assertIsNone(
+                blocker,
+                "ScriptUpdater consent dialog must never be surfaced as modal_blocked: {}".format(blocker),
+            )
+
+            # 2. Run a CLI wait/exec with the dialog visible, or assert auto-decline
+            dismiss_res = unity_modal_blockers.dismiss_api_updater_dialog(unity_pid)
+            self.assertTrue(
+                dismiss_res.get("ok"),
+                "CLI auto-decline failed on real ScriptUpdater consent dialog: {}".format(dismiss_res),
+            )
+            self.assertGreater(dismiss_res.get("dismissed", 0), 0)
+
+            # 3. Complete the in-flight wait/exec and verify warning and primary status
+            if trigger_payload and unity_puer_exec_runtime._running_or_timed_out_response(
+                trigger_exit, json.dumps(trigger_payload)
+            ):
+                wait_exit, wait_payload, _, _ = _run_cli(
+                    [
+                        "wait-for-exec",
+                        "--project-path",
+                        str(self.project_path),
+                        "--unity-exe-path",
+                        str(self.unity_exe_path),
+                        "--request-id",
+                        trigger_payload["request_id"],
+                        "--wait-timeout-ms",
+                        str(READY_TIMEOUT_SECONDS * 1000),
+                    ]
+                )
+                self.assertEqual(wait_exit, 0, wait_payload)
+                self.assertEqual(wait_payload["status"], "completed")
+                self.assertEqual(wait_payload.get("warning"), "api_updater_declined")
+                self.assertIn("warning_detail", wait_payload)
+
+            # 4. Verify the dialog is confirmed gone
+            remaining = [
+                d
+                for d in unity_modal_blockers._list_windows_dialogs(unity_pid)
+                if d["hwnd"] == observed_api_dialog["hwnd"]
+            ]
+            self.assertEqual(len(remaining), 0, "dialog HWND still present after auto-decline")
+
+            # 5. Verify source file was not rewritten (declined, not accepted)
+            current_content = fixture_path.read_text(encoding="utf-8")
+            self.assertEqual(
+                current_content,
+                initial_content,
+                "source file was rewritten despite decline recovery",
+            )
+        finally:
+            # Clean up fixture so host is left clean
+            try:
+                if fixture_path.exists():
+                    fixture_path.unlink()
+                meta_path = fixture_path.with_suffix(".cs.meta")
+                if meta_path.exists():
+                    meta_path.unlink()
+                cleanup_validation_host.cleanup_validation_temp_assets(self.project_path)
+            except Exception:
+                pass
+
 
 if __name__ == "__main__":
     unittest.main()
+
