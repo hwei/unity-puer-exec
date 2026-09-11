@@ -25,10 +25,24 @@ WINDOWS_DIALOG_SPECS = {
 # project sources, so it is auto-declined (No) with BM_CLICK and never with Enter.
 API_UPDATER_DIALOG_TYPE = "api_updater_dialog"
 API_UPDATER_MESSAGE_FINGERPRINT = "Some of this project's source files refer to API that has changed"
+API_UPDATER_MESSAGE_FINGERPRINTS = (
+    "Some of this project's source files refer to API that has changed",
+    "Some of this projects source files refer to API that has changed",
+    "source files refer to API that has changed",
+)
+
+
+def is_api_updater_message(body):
+    if not body:
+        return False
+    return any(fingerprint in body for fingerprint in API_UPDATER_MESSAGE_FINGERPRINTS)
+
+
 WINDOWS_BODY_DIALOG_SPECS = (
     {
         "type": API_UPDATER_DIALOG_TYPE,
         "message_fingerprint": API_UPDATER_MESSAGE_FINGERPRINT,
+        "message_fingerprints": API_UPDATER_MESSAGE_FINGERPRINTS,
         "cancel_labels": ("&No", "No", "否"),
         "click_method": "bm_click",
     },
@@ -203,7 +217,11 @@ def _match_dialog_spec(dialog):
     body = dialog.get("body") or ""
     if body:
         for body_spec in WINDOWS_BODY_DIALOG_SPECS:
-            if body_spec["message_fingerprint"] in body:
+            fingerprints = body_spec.get("message_fingerprints")
+            if fingerprints:
+                if any(fp in body for fp in fingerprints):
+                    return body_spec
+            elif body_spec.get("message_fingerprint") and body_spec["message_fingerprint"] in body:
                 return body_spec
     return None
 

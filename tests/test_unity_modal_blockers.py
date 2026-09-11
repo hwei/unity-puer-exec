@@ -41,6 +41,41 @@ class ApiUpdaterDialogMatchingTests(unittest.TestCase):
         self.assertEqual(spec["click_method"], "bm_click")
         self.assertIn("No", spec["cancel_labels"])
 
+    def test_matches_typo_and_invariant_message_bodies(self):
+        bodies = [
+            (
+                "Some of this projects source files refer to API that has changed. "
+                "These can be automatically updated. It is recommended to have a backup "
+                "of the project before updating. Do you want these files to be updated?"
+            ),
+            "Warning: source files refer to API that has changed. Update now?",
+        ]
+        for idx, body in enumerate(bodies):
+            dialog = {"hwnd": 100 + idx, "title": "API Updating", "body": body}
+            spec = unity_modal_blockers._match_dialog_spec(dialog)
+            self.assertIsNotNone(spec, f"Failed to match body: {body}")
+            self.assertEqual(spec["type"], unity_modal_blockers.API_UPDATER_DIALOG_TYPE)
+
+    def test_is_api_updater_message(self):
+        self.assertTrue(
+            unity_modal_blockers.is_api_updater_message(
+                "Some of this project's source files refer to API that has changed"
+            )
+        )
+        self.assertTrue(
+            unity_modal_blockers.is_api_updater_message(
+                "Some of this projects source files refer to API that has changed"
+            )
+        )
+        self.assertTrue(
+            unity_modal_blockers.is_api_updater_message(
+                "Some arbitrary prefix source files refer to API that has changed suffix"
+            )
+        )
+        self.assertFalse(unity_modal_blockers.is_api_updater_message("Some unrelated dialog body"))
+        self.assertFalse(unity_modal_blockers.is_api_updater_message(""))
+        self.assertFalse(unity_modal_blockers.is_api_updater_message(None))
+
     def test_body_without_the_fingerprint_does_not_match(self):
         dialog = {"hwnd": 12, "title": "Unity", "body": "Some unrelated dialog body"}
 

@@ -1549,10 +1549,9 @@ class RealHostIntegrationTests(unittest.TestCase):
 
             for d in dialogs:
                 body = d.get("body") or ""
-                # Check for either the exact English fingerprint or generalized ScriptUpdater text
+                # Check for either the known fingerprints or generalized ScriptUpdater title
                 if (
-                    unity_modal_blockers.API_UPDATER_MESSAGE_FINGERPRINT in body
-                    or "source files refer to API that has changed" in body
+                    unity_modal_blockers.is_api_updater_message(body)
                     or "Script Updating" in d.get("title", "")
                 ):
                     observed_api_dialog = d
@@ -1578,14 +1577,14 @@ class RealHostIntegrationTests(unittest.TestCase):
 
             # Scenario: Non-English dialog text is recorded
             observed_body = observed_api_dialog.get("body") or ""
-            if unity_modal_blockers.API_UPDATER_MESSAGE_FINGERPRINT not in observed_body:
-                # Observed a ScriptUpdater dialog whose body does not match the English fingerprint.
+            if not unity_modal_blockers.is_api_updater_message(observed_body):
+                # Observed a ScriptUpdater dialog whose body does not match known fingerprints.
                 # Record the observed text so a fingerprint extension can be filed as a follow-up.
                 self.fail(
-                    "Observed ScriptUpdater consent dialog message does not match English fingerprint "
-                    "(fingerprint={!r}, observed_title={!r}, observed_body={!r}). "
+                    "Observed ScriptUpdater consent dialog message does not match known fingerprints "
+                    "(fingerprints={!r}, observed_title={!r}, observed_body={!r}). "
                     "File a follow-up fingerprint extension.".format(
-                        unity_modal_blockers.API_UPDATER_MESSAGE_FINGERPRINT,
+                        unity_modal_blockers.API_UPDATER_MESSAGE_FINGERPRINTS,
                         observed_api_dialog.get("title"),
                         observed_body,
                     )
