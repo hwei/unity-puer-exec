@@ -289,6 +289,9 @@ class UnityLaunchArgPassthroughTests(unittest.TestCase):
 
         args = popen.call_args.args[0]
         self.assertIn("-force-gles30", args)
+        self.assertIn("-disable-assembly-updater", args)
+        self.assertGreater(args.index("-force-gles30"), args.index("-disable-assembly-updater"))
+        self.assertGreater(args.index("-force-gles30"), args.index(unity_session_process.CONTROL_ACTIVATION_SWITCH))
 
     def test_flag_and_ambient_merge_dedupes_exact_matches(self):
         with tempfile.TemporaryDirectory() as temp_dir:

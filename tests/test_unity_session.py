@@ -14,6 +14,7 @@ if str(CLI_DIR) not in sys.path:
 
 import unity_session  # type: ignore
 import unity_session_endpoint  # type: ignore
+import unity_session_env  # type: ignore
 
 from tests import version_test_support
 
@@ -102,6 +103,48 @@ class UnitySessionTests(unittest.TestCase):
             resolved = unity_session.resolve_project_path(None, cwd="X:/from-cwd", env=env)
 
         self.assertEqual(resolved, Path("X:/from-dotenv"))
+
+    def test_resolve_project_path_loads_dotenv_even_with_explicit_argument(self):
+        env = {}
+        with tempfile.TemporaryDirectory() as temp_dir:
+            dotenv_path = Path(temp_dir) / ".env"
+            dotenv_path.write_text(
+                "UNITY_PROJECT_PATH=X:/from-dotenv\n"
+                'UNITY_PUER_EXEC_UNITY_LAUNCH_ARGS=["-force-gles30"]\n',
+                encoding="utf-8",
+            )
+            with mock.patch.object(
+                unity_session,
+                "_ensure_dotenv_loaded",
+                side_effect=lambda env=None, **kwargs: unity_session_env.load_dotenv_file(dotenv_path, env=env),
+            ):
+                resolved = unity_session.resolve_project_path(
+                    "X:/from-arg",
+                    cwd="X:/from-cwd",
+                    env=env,
+                )
+
+        self.assertEqual(resolved, Path("X:/from-arg"))
+        self.assertEqual(env.get("UNITY_PUER_EXEC_UNITY_LAUNCH_ARGS"), '["-force-gles30"]')
+        self.assertEqual(env.get(unity_session.UNITY_PROJECT_PATH_ENV), "X:/from-dotenv")
+
+    def test_resolve_project_path_preserves_explicit_process_env_launch_args(self):
+        env = {"UNITY_PUER_EXEC_UNITY_LAUNCH_ARGS": '["-force-d3d11"]'}
+        with tempfile.TemporaryDirectory() as temp_dir:
+            dotenv_path = Path(temp_dir) / ".env"
+            dotenv_path.write_text(
+                'UNITY_PUER_EXEC_UNITY_LAUNCH_ARGS=["-force-gles30"]\n',
+                encoding="utf-8",
+            )
+            with mock.patch.object(
+                unity_session,
+                "_ensure_dotenv_loaded",
+                side_effect=lambda env=None, **kwargs: unity_session_env.load_dotenv_file(dotenv_path, env=env),
+            ):
+                resolved = unity_session.resolve_project_path("X:/from-arg", cwd="X:/from-cwd", env=env)
+
+        self.assertEqual(resolved, Path("X:/from-arg"))
+        self.assertEqual(env.get("UNITY_PUER_EXEC_UNITY_LAUNCH_ARGS"), '["-force-d3d11"]')
 
     def _write_publication(self, project_path, console_log_path, marker="marker-1", unity_pid=1234, port=55231):
         publication_path = project_path / "Temp" / "UnityPuerExec" / "endpoint.json"

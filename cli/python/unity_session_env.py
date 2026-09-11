@@ -71,14 +71,14 @@ def ensure_dotenv_loaded(module_file, env=None, dotenv_file=None, force=False):
 
 
 def resolve_project_path(module_file, project_path=None, cwd=None, env=None, ensure_dotenv_loaded_fn=None, argv0=None):
-    if project_path:
-        return Path(project_path)
-
     env = os.environ if env is None else env
     if ensure_dotenv_loaded_fn is not None:
         ensure_dotenv_loaded_fn(env=env)
     else:
         ensure_dotenv_loaded(module_file, env=env)
+
+    if project_path:
+        return Path(project_path)
     env_project_path = env.get(UNITY_PROJECT_PATH_ENV)
     if env_project_path:
         return Path(env_project_path)

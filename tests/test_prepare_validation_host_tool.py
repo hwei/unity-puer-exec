@@ -266,6 +266,58 @@ class PrepareValidationHostTests(unittest.TestCase):
             manifest_after = json.loads(manifest_path.read_text(encoding="utf-8"))
             self.assertIn("com.c3.unity-puer-exec.validation", manifest_after["dependencies"])
 
+    def test_resolve_project_path_applies_dotenv_launch_args_with_explicit_project_path(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            dotenv_path = Path(temp_dir) / ".env"
+            dotenv_path.write_text(
+                "UNITY_PROJECT_PATH=X:/from-dotenv\n"
+                'UNITY_PUER_EXEC_UNITY_LAUNCH_ARGS=["-force-gles30"]\n',
+                encoding="utf-8",
+            )
+            env = {}
+            resolved = prepare_validation_host.resolve_project_path(
+                project_path="X:/explicit",
+                env=env,
+                dotenv_path=dotenv_path,
+            )
+
+            self.assertEqual(resolved, Path("X:/explicit").resolve())
+            self.assertEqual(env.get("UNITY_PUER_EXEC_UNITY_LAUNCH_ARGS"), '["-force-gles30"]')
+            self.assertEqual(env.get("UNITY_PROJECT_PATH"), "X:/from-dotenv")
+
+    def test_resolve_project_path_preserves_explicit_process_env_launch_args(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            dotenv_path = Path(temp_dir) / ".env"
+            dotenv_path.write_text(
+                'UNITY_PUER_EXEC_UNITY_LAUNCH_ARGS=["-force-gles30"]\n',
+                encoding="utf-8",
+            )
+            env = {"UNITY_PUER_EXEC_UNITY_LAUNCH_ARGS": '["-force-d3d11"]'}
+            resolved = prepare_validation_host.resolve_project_path(
+                project_path="X:/explicit",
+                env=env,
+                dotenv_path=dotenv_path,
+            )
+
+            self.assertEqual(resolved, Path("X:/explicit").resolve())
+            self.assertEqual(env.get("UNITY_PUER_EXEC_UNITY_LAUNCH_ARGS"), '["-force-d3d11"]')
+
+    def test_resolve_project_path_uses_dotenv_project_path_when_omitted(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            dotenv_path = Path(temp_dir) / ".env"
+            dotenv_path.write_text(
+                "UNITY_PROJECT_PATH=X:/from-dotenv\n",
+                encoding="utf-8",
+            )
+            env = {}
+            resolved = prepare_validation_host.resolve_project_path(
+                project_path=None,
+                env=env,
+                dotenv_path=dotenv_path,
+            )
+
+            self.assertEqual(resolved, Path("X:/from-dotenv").resolve())
+
 
 if __name__ == "__main__":
     unittest.main()

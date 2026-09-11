@@ -26,13 +26,14 @@ def _load_dotenv_path(env, dotenv_path):
     return True
 
 
-def resolve_project_path(project_path=None, env=None):
+def resolve_project_path(project_path=None, env=None, dotenv_path=None):
+    target_env = os.environ if env is None else env
+    _load_dotenv_path(target_env, REPO_ROOT / ".env" if dotenv_path is None else Path(dotenv_path))
+
     if project_path:
         return Path(project_path).resolve()
 
-    resolved_env = dict(os.environ if env is None else env)
-    _load_dotenv_path(resolved_env, REPO_ROOT / ".env")
-    env_project_path = resolved_env.get(UNITY_PROJECT_PATH_ENV)
+    env_project_path = target_env.get(UNITY_PROJECT_PATH_ENV)
     if env_project_path:
         return Path(env_project_path).resolve()
 
