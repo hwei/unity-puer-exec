@@ -36,7 +36,7 @@ The Unity-side project control service SHALL bind to a loopback HTTP endpoint by
 
 ### Requirement: Health response exposes endpoint identity
 
-The Unity-side health endpoint SHALL expose enough identity for a project-scoped caller to verify endpoint ownership and installation consistency, and to observe the Editor without inferring where it writes. A ready health response SHALL include the selected port, base URL, Unity process id when available, resolved Unity project path, session marker, the bridge package version, and the Editor's own console log path. The bridge version SHALL be resolved from the Unity package metadata for the assembly providing the service, and SHALL be omitted or reported as null when that assembly does not belong to an installed package rather than reported as a guessed value. When that version is known, a bound non-ready health response (`compiling`, or `not_available` while the control service is listening) SHALL also include `bridge_version`. The console log path SHALL be resolved from the running Editor's own Unity runtime, and SHALL be omitted or reported as null when it cannot be resolved rather than reported as a platform-default guess.
+The Unity-side health endpoint SHALL expose enough identity for a project-scoped caller to verify endpoint ownership and installation consistency, and to observe the Editor without inferring where it writes. A ready health response SHALL include the selected port, base URL, Unity process id when available, resolved Unity project path, session marker, the bridge package version, and the Editor's own console log path. The bridge version SHALL be resolved from the Unity package metadata for the assembly providing the service, and SHALL be omitted or reported as null when that assembly does not belong to an installed package rather than reported as a guessed value. When that version is known, a bound non-ready health response (`compiling`, or `not_available` while the control service is listening) SHALL also include `bridge_version`. A bound `compiling` health response SHALL also include `unity_pid` when the process id is known. The console log path SHALL be resolved from the running Editor's own Unity runtime, and SHALL be omitted or reported as null when it cannot be resolved rather than reported as a platform-default guess.
 
 The same identity SHALL be available to a caller that has not yet connected, through the endpoint publication defined by `editor-session-discovery`, so that reaching the service never requires probing candidate ports to discover which one belongs to the target project.
 
@@ -52,6 +52,7 @@ The same identity SHALL be available to a caller that has not yet connected, thr
 - **THEN** the response includes `status = "compiling"`
 - **AND** the response includes `session_marker`
 - **AND** the response includes `bridge_version` set to that package's version
+- **AND** the response includes `unity_pid` when the process id is known
 
 #### Scenario: Caller compares endpoint ownership
 
