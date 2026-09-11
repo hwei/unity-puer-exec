@@ -23,6 +23,13 @@ RECOVERABLE_HEALTH_STATUSES = ("compiling", "not_available")
 # Editor reads it without any persistence of its own. Must match
 # UnityPuerExecActivation.ActivationSwitch on the Editor side.
 CONTROL_ACTIVATION_SWITCH = "-unityPuerExecControl"
+# Always supplied on a launch this CLI owns. Disables AssemblyUpdater for DLLs so
+# a stale managed plugin cannot block the Editor; it does NOT stop ScriptUpdater
+# in an interactive Editor, so the consent-dialog recovery still applies. Bare
+# flag with no assembly-name parameter, injected before caller extras. Deliberately
+# NOT in CLI_OWNED_UNITY_LAUNCH_SWITCHES: a host may legitimately pass the same
+# token itself, which must dedupe rather than usage-error.
+DISABLE_ASSEMBLY_UPDATER_SWITCH = "-disable-assembly-updater"
 # Ambient extra Unity argv tokens for a cold launch this CLI owns. Value is a JSON
 # array of strings (e.g. ["-force-gles30"]). Parsed by launch_unity; never a way to
 # rebind CLI-owned switches (-projectPath / -logFile / activation).
@@ -131,6 +138,10 @@ class UnitySession:
         self.process = process
         self.effective_log_path = str(effective_log_path) if effective_log_path else None
         self.diagnostics = {}
+        # Count of ScriptUpdater consent dialogs this invocation declined while
+        # waiting on this session. Read by the command layer to attach the
+        # api_updater_declined warning to the terminal payload.
+        self.api_updater_declines = 0
 
     def to_payload(self):
         payload = {

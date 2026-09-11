@@ -10,6 +10,7 @@ from unity_session_common import (
     CLI_OWNED_UNITY_LAUNCH_SWITCHES,
     CONTROL_ACTIVATION_SWITCH,
     DEFAULT_STOP_TIMEOUT_SECONDS,
+    DISABLE_ASSEMBLY_UPDATER_SWITCH,
     POLL_INTERVAL_SECONDS,
     UNITY_LAUNCH_ARGS_ENV,
     UNITY_LOCKFILE_RELATIVE_PATH,
@@ -244,12 +245,24 @@ def launch_unity(project_path, unity_exe_path, unity_log_path=None, extra_args=N
     ]
     if unity_log_path:
         args.extend(["-logFile", str(unity_log_path)])
-    args.extend(merge_unity_launch_args(cli_args=extra_args, env=env))
+    extra_tokens = merge_unity_launch_args(cli_args=extra_args, env=env)
+    # Inject the bare switch before caller extras so a following token always
+    # starts with "-" (the switch would otherwise consume it as an assembly name).
+    # Dedupe case-insensitively when the caller already passed it themselves.
+    if not any(_is_disable_assembly_updater_token(token) for token in extra_tokens):
+        args.append(DISABLE_ASSEMBLY_UPDATER_SWITCH)
+    args.extend(extra_tokens)
     try:
         process = subprocess.Popen(args)
     except OSError as exc:
         raise UnityLaunchError("failed to launch Unity: {}".format(exc))
     return process
+
+
+def _is_disable_assembly_updater_token(token):
+    if token is None:
+        return False
+    return str(token).strip().split("=", 1)[0].lower() == DISABLE_ASSEMBLY_UPDATER_SWITCH.lower()
 
 
 def ensure_stopped(

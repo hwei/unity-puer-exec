@@ -372,6 +372,85 @@ class UnitySessionModuleTests(unittest.TestCase):
         self.assertEqual(probe_calls, [])
         self.assertEqual(session.base_url, preferred)
 
+    def test_wait_for_session_declines_api_updater_and_continues_to_ready(self):
+        session = unity_session_common.UnitySession(
+            owner="launched",
+            base_url="http://127.0.0.1:55231",
+            project_path="X:/unity-project",
+            unity_pid=4321,
+            launched=True,
+        )
+        log_path = Path("X:/Logs/Editor.log")
+        payloads = iter(
+            [
+                {"ok": False, "status": "compiling"},
+                {"ok": True, "status": "ready"},
+            ]
+        )
+        declined = []
+
+        def probe(_base_url, _timeout):
+            return next(payloads), None
+
+        def dismiss(pid):
+            declined.append(pid)
+            return 1
+
+        result = unity_session_wait.wait_for_session(
+            session,
+            timeout_seconds=5.0,
+            log_path=log_path,
+            default_editor_log_path_fn=lambda: log_path,
+            probe_health_fn=probe,
+            create_activity_tracker_fn=lambda _path: {"idle_seconds": 0.0},
+            update_activity_tracker_fn=lambda tracker, _path: tracker,
+            finalize_session_diagnostics_fn=lambda *_args, **_kwargs: None,
+            dismiss_api_updater_fn=dismiss,
+            time_ref=SimpleNamespace(time=lambda: 0.0, sleep=lambda _seconds: None),
+        )
+
+        self.assertIs(result, session)
+        self.assertEqual(declined, [4321])
+        self.assertEqual(session.api_updater_declines, 1)
+
+    def test_wait_for_session_uses_compiling_health_pid_when_session_has_none(self):
+        session = unity_session_common.UnitySession(
+            owner="launched",
+            base_url="http://127.0.0.1:55231",
+            project_path="X:/unity-project",
+            launched=True,
+        )
+        log_path = Path("X:/Logs/Editor.log")
+        payloads = iter(
+            [
+                {"ok": False, "status": "compiling", "unity_pid": 777},
+                {"ok": True, "status": "ready"},
+            ]
+        )
+        declined = []
+
+        def probe(_base_url, _timeout):
+            return next(payloads), None
+
+        def dismiss(pid):
+            declined.append(pid)
+            return 1
+
+        unity_session_wait.wait_for_session(
+            session,
+            timeout_seconds=5.0,
+            log_path=log_path,
+            default_editor_log_path_fn=lambda: log_path,
+            probe_health_fn=probe,
+            create_activity_tracker_fn=lambda _path: {"idle_seconds": 0.0},
+            update_activity_tracker_fn=lambda tracker, _path: tracker,
+            finalize_session_diagnostics_fn=lambda *_args, **_kwargs: None,
+            dismiss_api_updater_fn=dismiss,
+            time_ref=SimpleNamespace(time=lambda: 0.0, sleep=lambda _seconds: None),
+        )
+
+        self.assertEqual(declined, [777])
+
     def test_wait_wait_for_log_pattern_extracts_json_group(self):
         session = unity_session_common.UnitySession(
             owner="test",

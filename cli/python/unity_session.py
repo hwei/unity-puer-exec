@@ -5,6 +5,7 @@ from pathlib import Path
 
 import cli_version
 import direct_exec_client
+import unity_modal_blockers
 import unity_session_endpoint
 import unity_session_env
 import unity_session_logs
@@ -538,6 +539,12 @@ def _make_published_endpoint_resolver(project_path, health_timeout_seconds):
     return resolve
 
 
+def _dismiss_api_updater(pid):
+    """Auto-decline a ScriptUpdater consent dialog for a Unity pid; return the count."""
+    result = unity_modal_blockers.dismiss_api_updater_dialog(pid)
+    return result.get("dismissed", 0)
+
+
 def _wait_for_session(
     session,
     timeout_seconds,
@@ -564,6 +571,7 @@ def _wait_for_session(
         create_activity_tracker_fn=_create_activity_tracker,
         update_activity_tracker_fn=_update_activity_tracker,
         finalize_session_diagnostics_fn=_finalize_session_diagnostics,
+        dismiss_api_updater_fn=_dismiss_api_updater,
         time_ref=time,
     )
 

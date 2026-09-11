@@ -150,6 +150,16 @@ class PackageLayoutTests(unittest.TestCase):
         self.assertNotIn("public static class UnityPuerExecBatch", content)
         self.assertNotIn("private static string BuildStringArrayJson", content)
 
+    def test_compiling_health_response_exposes_unity_pid_when_known(self):
+        protocol_path = PACKAGE_ROOT / "Editor" / "UnityPuerExecProtocol.cs"
+        content = protocol_path.read_text(encoding="utf-8")
+
+        self.assertIn("compilingPidJson", content)
+        branch_start = content.index("isCompilingOrReloading")
+        branch_end = content.index("IsNullOrEmpty(envInitError)")
+        compiling_branch = content[branch_start:branch_end]
+        self.assertIn("compilingPidJson", compiling_branch)
+
     def test_compile_trigger_compatibility_residue_is_removed(self):
         server_path = PACKAGE_ROOT / "Editor" / "UnityPuerExecServer.cs"
         bridge_path = PACKAGE_ROOT / "Editor" / "UnityPuerExecBridge.cs"

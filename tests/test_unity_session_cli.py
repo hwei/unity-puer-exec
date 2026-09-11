@@ -3027,6 +3027,59 @@ class WaitForCompileCycleTests(unittest.TestCase):
         result = self._run(["ready", None, "ready"], appear=10.0)
         self.assertEqual(result["outcome"], unity_puer_exec_runtime.COMPILE_OUTCOME_READY)
 
+    def test_consent_dialog_is_declined_while_health_stays_compiling(self):
+        declined_pids = []
+
+        def dismiss(pid):
+            declined_pids.append(pid)
+            return 1
+
+        result = unity_puer_exec_runtime.wait_for_compile_cycle(
+            "http://127.0.0.1:55231",
+            10.0,
+            10.0,
+            unity_session.DEFAULT_HEALTH_TIMEOUT_SECONDS,
+            probe_health_fn=_probe_from(["compiling", "compiling", "ready"]),
+            time_ref=_FakeClock(),
+            unity_pid=4321,
+            dismiss_fn=dismiss,
+        )
+
+        self.assertEqual(result["outcome"], unity_puer_exec_runtime.COMPILE_OUTCOME_READY)
+        # Once while the appear window observes compiling, once while settling.
+        self.assertEqual(result["api_updater_declines"], 2)
+        self.assertEqual(declined_pids, [4321, 4321])
+
+    def test_consent_dialog_pid_falls_back_to_compiling_health(self):
+        declined_pids = []
+
+        def dismiss(pid):
+            declined_pids.append(pid)
+            return 1
+
+        payloads = iter(
+            [
+                {"ok": False, "status": "compiling", "unity_pid": 9876},
+                {"ok": True, "status": "ready"},
+            ]
+        )
+
+        def probe(_base_url, _timeout):
+            return next(payloads), None
+
+        result = unity_puer_exec_runtime.wait_for_compile_cycle(
+            "http://127.0.0.1:55231",
+            10.0,
+            10.0,
+            unity_session.DEFAULT_HEALTH_TIMEOUT_SECONDS,
+            probe_health_fn=probe,
+            time_ref=_FakeClock(),
+            dismiss_fn=dismiss,
+        )
+
+        self.assertEqual(result["outcome"], unity_puer_exec_runtime.COMPILE_OUTCOME_READY)
+        self.assertEqual(declined_pids, [9876])
+
 
 class WaitForCompileCommandTests(unittest.TestCase):
     def test_base_url_no_compile_observed_returns_distinct_outcome(self):
@@ -3109,6 +3162,184 @@ class WaitForCompileCommandTests(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         self.assertIn("asynchronously", stdout)
         self.assertIn("RequestScriptCompilation", stdout)
+
+
+class ApiUpdaterRecoveryCommandTests(unittest.TestCase):
+    def test_wait_for_compile_decline_attaches_warning_to_compile_settled(self):
+        session = _make_session()
+        session.api_updater_declines = 1
+        with mock.patch.object(
+            unity_session, "ensure_session_ready", return_value=session
+        ), mock.patch.object(
+            unity_puer_exec_runtime,
+            "wait_for_compile_cycle",
+            return_value={"outcome": "ready", "observed_health": ["compiling", "ready"], "api_updater_declines": 0},
+        ):
+            exit_code, stdout, stderr = unity_puer_exec.run_cli(
+                ["wait-for-compile", "--project-path", SAMPLE_PROJECT_PATH]
+            )
+
+        self.assertEqual(exit_code, 0)
+        body = json.loads(stdout)
+        self.assertEqual(body["result"]["status"], "compile_settled")
+        self.assertEqual(body["warning"], "api_updater_declined")
+        self.assertIn("warning_detail", body)
+
+    def test_wait_for_compile_without_decline_omits_warning(self):
+        with mock.patch.object(
+            unity_session, "ensure_session_ready", return_value=_make_session()
+        ), mock.patch.object(
+            unity_puer_exec_runtime,
+            "wait_for_compile_cycle",
+            return_value={"outcome": "ready", "observed_health": ["compiling", "ready"], "api_updater_declines": 0},
+        ):
+            exit_code, stdout, stderr = unity_puer_exec.run_cli(
+                ["wait-for-compile", "--project-path", SAMPLE_PROJECT_PATH]
+            )
+
+        body = json.loads(stdout)
+        self.assertNotIn("warning", body)
+
+    def test_assembly_updater_log_line_alone_does_not_set_the_warning(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            log_path = Path(temp_dir) / "Editor.log"
+            log_path.write_text(
+                "[Assembly Updater] warning: Ignoring assembly Library/ScriptAssemblies/Foo.dll\n",
+                encoding="utf-8",
+            )
+            with mock.patch.object(
+                unity_session, "ensure_session_ready", return_value=_make_session()
+            ), mock.patch.object(
+                unity_puer_exec_runtime,
+                "wait_for_compile_cycle",
+                return_value={
+                    "outcome": "ready",
+                    "observed_health": ["compiling", "ready"],
+                    "api_updater_declines": 0,
+                },
+            ):
+                exit_code, stdout, stderr = unity_puer_exec.run_cli(
+                    [
+                        "wait-for-compile",
+                        "--project-path",
+                        SAMPLE_PROJECT_PATH,
+                        "--unity-log-path",
+                        str(log_path),
+                    ]
+                )
+
+        body = json.loads(stdout)
+        self.assertNotIn("warning", body)
+
+    def test_exec_timeout_auto_declines_consent_dialog_instead_of_modal_blocked(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            script_path = Path(temp_dir) / "script.js"
+            script_path.write_text("export default function run(ctx) { return 7; }", encoding="utf-8")
+            with mock.patch.object(
+                unity_session, "ensure_session_ready", return_value=_make_session()
+            ), mock.patch.object(
+                unity_puer_exec.direct_exec_client,
+                "invoke_command",
+                return_value=(
+                    unity_puer_exec.EXIT_NOT_AVAILABLE,
+                    json.dumps(
+                        {"ok": False, "status": "not_available", "request_id": "req-apu-timeout", "error": "timed out"}
+                    ),
+                    "",
+                ),
+            ), mock.patch.object(
+                unity_puer_exec_runtime.unity_modal_blockers,
+                "dismiss_api_updater_dialog",
+                return_value={"ok": True, "status": "dismissed", "dismissed": 1},
+            ):
+                exit_code, stdout, stderr = unity_puer_exec.run_cli(
+                    ["exec", "--file", str(script_path), "--request-id", "req-apu-timeout"]
+                )
+
+        body = json.loads(stdout)
+        self.assertNotEqual(body.get("status"), "modal_blocked")
+        self.assertEqual(body["warning"], "api_updater_declined")
+        self.assertEqual(body["request_id"], "req-apu-timeout")
+
+    def test_wait_for_exec_running_auto_declines_consent_dialog(self):
+        with mock.patch.object(
+            unity_session, "ensure_session_ready", return_value=_make_session()
+        ), mock.patch.object(
+            unity_puer_exec.direct_exec_client,
+            "invoke_command",
+            return_value=(
+                unity_puer_exec.EXIT_RUNNING,
+                json.dumps({"ok": True, "status": "running", "request_id": "req-apu-running"}),
+                "",
+            ),
+        ), mock.patch.object(
+            unity_puer_exec_runtime.unity_modal_blockers,
+            "dismiss_api_updater_dialog",
+            return_value={"ok": True, "status": "dismissed", "dismissed": 1},
+        ):
+            exit_code, stdout, stderr = unity_puer_exec.run_cli(
+                ["wait-for-exec", "--request-id", "req-apu-running"]
+            )
+
+        body = json.loads(stdout)
+        self.assertNotEqual(body.get("status"), "modal_blocked")
+        self.assertEqual(body["status"], "running")
+        self.assertEqual(body["warning"], "api_updater_declined")
+
+    def test_exec_compile_error_after_a_decline_still_carries_the_warning(self):
+        session = _make_session()
+        session.api_updater_declines = 1
+        with tempfile.TemporaryDirectory() as temp_dir:
+            script_path = Path(temp_dir) / "script.js"
+            script_path.write_text("export default function run(ctx) { return 7; }", encoding="utf-8")
+            with mock.patch.object(
+                unity_session, "ensure_session_ready", return_value=session
+            ), mock.patch.object(
+                unity_puer_exec.direct_exec_client,
+                "invoke_command",
+                return_value=(
+                    unity_puer_exec.direct_exec_client.EXIT_UNITY_COMPILE_ERROR,
+                    json.dumps(
+                        {
+                            "ok": False,
+                            "status": "unity_compile_error",
+                            "request_id": "req-apu-compile",
+                            "compile_errors_total": 1,
+                            "compile_messages": [],
+                        }
+                    ),
+                    "",
+                ),
+            ):
+                exit_code, stdout, stderr = unity_puer_exec.run_cli(
+                    ["exec", "--file", str(script_path), "--request-id", "req-apu-compile"]
+                )
+
+        body = json.loads(stdout)
+        self.assertEqual(body["status"], "unity_compile_error")
+        self.assertEqual(body["warning"], "api_updater_declined")
+
+    def test_wait_for_compile_help_documents_auto_decline_and_warning(self):
+        exit_code, stdout, stderr = unity_puer_exec.run_cli(["wait-for-compile", "--help"])
+
+        self.assertEqual(exit_code, 0)
+        self.assertIn("ScriptUpdater consent dialog", stdout)
+        self.assertIn("api_updater_declined", stdout)
+
+        exit_code, stdout, stderr = unity_puer_exec.run_cli(["wait-for-compile", "--help-status"])
+        self.assertEqual(exit_code, 0)
+        self.assertIn("api_updater_declined", stdout)
+
+    def test_exec_help_documents_auto_decline_and_warning(self):
+        exit_code, stdout, stderr = unity_puer_exec.run_cli(["exec", "--help"])
+
+        self.assertEqual(exit_code, 0)
+        self.assertIn("ScriptUpdater consent dialog", stdout)
+        self.assertIn("api_updater_declined", stdout)
+
+        exit_code, stdout, stderr = unity_puer_exec.run_cli(["exec", "--help-status"])
+        self.assertEqual(exit_code, 0)
+        self.assertIn("api_updater_declined", stdout)
 
 
 class RefreshBeforeExecBaseUrlTests(unittest.TestCase):

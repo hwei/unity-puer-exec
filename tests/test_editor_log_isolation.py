@@ -246,7 +246,36 @@ class UnityLaunchArgPassthroughTests(unittest.TestCase):
         self.assertEqual(args[3], unity_session_process.CONTROL_ACTIVATION_SWITCH)
         self.assertEqual(args[4], "-logFile")
         self.assertEqual(args[5], str(log_path))
-        self.assertEqual(args[6], "-force-gles30")
+        self.assertEqual(args[6], unity_session_process.DISABLE_ASSEMBLY_UPDATER_SWITCH)
+        self.assertEqual(args[7], "-force-gles30")
+
+    def test_launch_always_injects_the_assembly_updater_switch(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_path = Path(temp_dir)
+            with mock.patch.object(unity_session_process.subprocess, "Popen") as popen:
+                unity_session_process.launch_unity(
+                    project_path,
+                    "X:/Unity/Unity.exe",
+                    env={},
+                )
+
+        args = popen.call_args.args[0]
+        self.assertEqual(args.count(unity_session_process.DISABLE_ASSEMBLY_UPDATER_SWITCH), 1)
+
+    def test_caller_supplied_assembly_updater_switch_is_deduped_not_rejected(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_path = Path(temp_dir)
+            with mock.patch.object(unity_session_process.subprocess, "Popen") as popen:
+                unity_session_process.launch_unity(
+                    project_path,
+                    "X:/Unity/Unity.exe",
+                    extra_args=["-DISABLE-ASSEMBLY-UPDATER"],
+                    env={},
+                )
+
+        args = popen.call_args.args[0]
+        lowered = [str(token).lower() for token in args]
+        self.assertEqual(lowered.count(unity_session_process.DISABLE_ASSEMBLY_UPDATER_SWITCH), 1)
 
     def test_ambient_env_supplies_tokens_without_cli_flags(self):
         with tempfile.TemporaryDirectory() as temp_dir:

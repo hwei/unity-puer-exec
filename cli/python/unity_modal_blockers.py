@@ -19,6 +19,25 @@ WINDOWS_DIALOG_SPECS = {
     },
 }
 
+# Unity ScriptUpdater consent dialog. Its title varies by Editor version
+# (`API Updating` / `API Updater` / `Unity`), so it is matched by the distinctive
+# sentence in its message body instead. The default button is Yes, which rewrites
+# project sources, so it is auto-declined (No) with BM_CLICK and never with Enter.
+API_UPDATER_DIALOG_TYPE = "api_updater_dialog"
+API_UPDATER_MESSAGE_FINGERPRINT = "Some of this project's source files refer to API that has changed"
+WINDOWS_BODY_DIALOG_SPECS = (
+    {
+        "type": API_UPDATER_DIALOG_TYPE,
+        "message_fingerprint": API_UPDATER_MESSAGE_FINGERPRINT,
+        "cancel_labels": ("&No", "No", "否"),
+        "click_method": "bm_click",
+    },
+)
+
+# Bounded window for the repeated No-click loop used while a command is waiting.
+DEFAULT_API_UPDATER_DISMISS_TIMEOUT_MS = 2000
+DEFAULT_API_UPDATER_DISMISS_POLL_MS = 100
+
 IDCANCEL = 2
 GW_OWNER = 4
 BM_CLICK = 0x00F5
@@ -37,8 +56,10 @@ def list_supported_modal_blockers(unity_pid, scope="exec"):
     dialogs = _list_windows_dialogs(unity_pid)
     blockers = []
     for dialog in dialogs:
-        spec = WINDOWS_DIALOG_SPECS.get(dialog["title"])
-        if spec is None:
+        spec = _match_dialog_spec(dialog)
+        if spec is None or spec["type"] == API_UPDATER_DIALOG_TYPE:
+            # The ScriptUpdater consent dialog is auto-recovered, never surfaced
+            # to an agent as a modal blocker.
             continue
         blocker = {"type": spec["type"]}
         if scope is not None:
@@ -169,21 +190,115 @@ def _get_unity_main_window_title(unity_pid):
     user32.EnumWindows(enum_proc, 0)
     return result[0]
 
+def _match_dialog_spec(dialog):
+    """Map a window to its catalog spec.
+
+    Title-keyed specs are checked first. The ScriptUpdater consent dialog is
+    matched by its message body because its title is not stable across Editor
+    versions.
+    """
+    spec = WINDOWS_DIALOG_SPECS.get(dialog["title"])
+    if spec is not None:
+        return spec
+    body = dialog.get("body") or ""
+    if body:
+        for body_spec in WINDOWS_BODY_DIALOG_SPECS:
+            if body_spec["message_fingerprint"] in body:
+                return body_spec
+    return None
+
+
+def _dialog_entry(dialog, spec):
+    entry = {
+        "hwnd": dialog["hwnd"],
+        "title": dialog["title"],
+        "type": spec["type"],
+        "cancel_labels": spec["cancel_labels"],
+        "click_method": spec.get("click_method", "bm_click"),
+    }
+    return entry
+
+
 def _list_supported_windows_dialogs(unity_pid):
     dialogs = []
     for dialog in _list_windows_dialogs(unity_pid):
-        spec = WINDOWS_DIALOG_SPECS.get(dialog["title"])
-        if spec is None:
+        spec = _match_dialog_spec(dialog)
+        if spec is None or spec["type"] == API_UPDATER_DIALOG_TYPE:
+            # resolve-blocker is defined only for the save-scene and Safe Mode
+            # dialogs; the ScriptUpdater consent dialog is auto-recovered.
             continue
-        dialogs.append(
-            {
-                "hwnd": dialog["hwnd"],
-                "title": dialog["title"],
-                "type": spec["type"],
-                "cancel_labels": spec["cancel_labels"],
-            }
-        )
+        dialogs.append(_dialog_entry(dialog, spec))
     return dialogs
+
+
+def _list_supported_api_updater_dialogs(unity_pid):
+    """Visible ScriptUpdater consent dialogs for a Unity process."""
+    dialogs = []
+    for dialog in _list_windows_dialogs(unity_pid):
+        spec = _match_dialog_spec(dialog)
+        if spec is None or spec["type"] != API_UPDATER_DIALOG_TYPE:
+            continue
+        dialogs.append(_dialog_entry(dialog, spec))
+    return dialogs
+
+
+def dismiss_api_updater_dialog(
+    unity_pid,
+    timeout_ms=DEFAULT_API_UPDATER_DISMISS_TIMEOUT_MS,
+    poll_interval_ms=DEFAULT_API_UPDATER_DISMISS_POLL_MS,
+    list_dialogs_fn=None,
+    click_fn=None,
+    time_ref=None,
+):
+    """Auto-decline every visible ScriptUpdater consent dialog for a Unity process.
+
+    Clicks No (never Yes, never Enter) and repeats while the dialog reappears
+    inside a bounded window, because Unity can prompt once per compilation unit.
+    Returns a dict with ``dismissed`` counting distinct dialogs declined.
+    """
+    time_ref = time if time_ref is None else time_ref
+    if not unity_pid or sys.platform != "win32":
+        return {"ok": False, "status": "unsupported", "dismissed": 0}
+    list_dialogs_fn = _list_supported_api_updater_dialogs if list_dialogs_fn is None else list_dialogs_fn
+    click_fn = _click_cancel_button if click_fn is None else click_fn
+
+    deadline = time_ref.time() + (max(timeout_ms, 1) / 1000.0)
+    poll_seconds = max(poll_interval_ms, 1) / 1000.0
+    dismissed_hwnds = set()
+    dismissed = 0
+
+    while True:
+        dialogs = list_dialogs_fn(unity_pid)
+        fresh = [dialog for dialog in dialogs if dialog["hwnd"] not in dismissed_hwnds]
+        if fresh:
+            if time_ref.time() >= deadline:
+                return {
+                    "ok": dismissed > 0,
+                    "status": "dismissed" if dismissed else "timeout",
+                    "dismissed": dismissed,
+                }
+            dialog = fresh[0]
+            if not click_fn(dialog):
+                return {"ok": False, "status": "click_failed", "dismissed": dismissed}
+            dismissed_hwnds.add(dialog["hwnd"])
+            dismissed += 1
+            time_ref.sleep(poll_seconds)
+            continue
+        # Nothing new to click. Confirm previously dismissed windows are gone
+        # before reporting success; a dialog that refuses to close keeps polling
+        # until the bounded window expires.
+        if dismissed == 0:
+            return {"ok": False, "status": "no_dialog", "dismissed": 0}
+        still_present = [dialog for dialog in dialogs if dialog["hwnd"] in dismissed_hwnds]
+        if not still_present:
+            return {"ok": True, "status": "dismissed", "dismissed": dismissed}
+        if time_ref.time() >= deadline:
+            return {
+                "ok": dismissed > 0,
+                "status": "dismissed" if dismissed else "timeout",
+                "dismissed": dismissed,
+            }
+        time_ref.sleep(poll_seconds)
 
 
 def _list_windows_dialogs(unity_pid):
@@ -221,7 +336,7 @@ def _list_windows_dialogs(unity_pid):
         # Note: some dialogs (e.g. Safe Mode) appear before the main window and have no owner
         title = _get_window_text(hwnd, get_window_text_length, get_window_text, ctypes)
         if title:
-            dialogs.append({"hwnd": hwnd, "title": title})
+            dialogs.append({"hwnd": hwnd, "title": title, "body": _read_dialog_body_text(hwnd)})
         return True
 
     enum_proc = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)(callback)
@@ -359,6 +474,50 @@ def _get_window_text(hwnd, get_window_text_length, get_text_fn, ctypes, buffer_s
     title_buffer = ctypes.create_unicode_buffer(buffer_size)
     get_text_fn(hwnd, title_buffer, len(title_buffer))
     return title_buffer.value
+
+
+def _read_dialog_body_text(dialog_hwnd):
+    """Concatenated Static child text of a dialog, used to fingerprint its message.
+
+    The ScriptUpdater consent dialog's title is not a stable identifier, so the
+    message sentence is read from the dialog body. Returns "" when nothing can be
+    read (non-Windows, no children, or a dialog whose tree is not standard).
+    """
+    if sys.platform != "win32":
+        return ""
+    user32, wintypes, ctypes = _load_win32_modules()
+    enum_child_windows = user32.EnumChildWindows
+    get_class_name = user32.GetClassNameW
+    get_window_text_length = user32.GetWindowTextLengthW
+    get_window_text = user32.GetWindowTextW
+
+    enum_child_windows.restype = wintypes.BOOL
+    enum_child_windows.argtypes = [
+        wintypes.HWND,
+        ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM),
+        wintypes.LPARAM,
+    ]
+    get_class_name.restype = ctypes.c_int
+    get_class_name.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+    get_window_text_length.restype = ctypes.c_int
+    get_window_text_length.argtypes = [wintypes.HWND]
+    get_window_text.restype = ctypes.c_int
+    get_window_text.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+
+    parts = []
+
+    def callback(hwnd, _l_param):
+        class_name = _get_window_text(hwnd, None, get_class_name, ctypes, buffer_size=256)
+        if class_name != "Static":
+            return True
+        text = _get_window_text(hwnd, get_window_text_length, get_window_text, ctypes)
+        if text:
+            parts.append(text)
+        return True
+
+    enum_proc = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)(callback)
+    enum_child_windows(dialog_hwnd, enum_proc, 0)
+    return "\n".join(parts)
 
 
 def _load_win32_modules():

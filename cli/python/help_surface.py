@@ -125,6 +125,7 @@ COMMAND_HELP = {
             "A refresh (`AssetDatabase.Refresh()` or `--refresh-before-exec`) starts compilation asynchronously, so polling `/health` immediately can read `ready` before `compiling` ever appears and `get-compile-errors` then returns the previous compilation's stale messages. This command is edge-aware: it first waits, within a bounded appear window, for `compiling` to appear (or detects a compile already in progress), then waits for the editor to return to `ready` -- so a just-issued recompile is observed instead of racing a stale `ready`.",
             "Trigger the recompile yourself, then call `wait-for-compile` before `get-compile-errors`; or use `exec --refresh-before-exec`, which performs the same refresh -> compile-settle -> execute lifecycle in one step.",
             "Trade-off: `AssetDatabase.Refresh()` only recompiles when it detects changed assets, so an unchanged project yields `no_compile_observed`. `CompilationPipeline.RequestScriptCompilation()` forces a recompile more deterministically; if a refresh reports `no_compile_observed` when you expected a rebuild, trigger compilation with `RequestScriptCompilation()` instead.",
+            "Unity's ScriptUpdater consent dialog (`Some of this project's source files refer to API that has changed`) is auto-declined (`No`) while this command waits, so an unattended wait does not hang on it. A settled cycle that declined the dialog still reports `compile_settled` and also carries `warning = \"api_updater_declined\"` plus `warning_detail`.",
         ],
         "related_workflows": (),
         "args": {
@@ -150,6 +151,7 @@ COMMAND_HELP = {
             "success": [
                 "`completed` with `result.status` `compile_settled` (`compile_observed` true): a compile cycle was observed and the editor is `ready` again.",
                 "`completed` with `result.status` `no_compile_observed` (`compile_observed` false): no compilation appeared within the appear window and none was in progress; retry, or trigger compilation with `RequestScriptCompilation()` if you expected a rebuild.",
+                "When a ScriptUpdater consent dialog was declined while waiting, `compile_settled` also carries `warning = \"api_updater_declined\"` plus `warning_detail`; the exit code is unchanged.",
             ],
             "failure": [
                 ("address_conflict", 2, "both selectors were provided; choose exactly one."),
@@ -324,6 +326,7 @@ COMMAND_HELP = {
             "Changed local modules are recovered by a same-invocation server-owned JsEnv reset by default; use `--stale-module-policy error` when `ctx.globals` or module singleton continuity must be preserved.",
             "Scripts use a PuerTS-style JavaScript-to-C# bridge; `puer.loadType(...)` is the normal way to load Unity or C# types inside `exec` scripts.",
             "If an earlier step wrote C# or other import-triggering project assets, make the next project-scoped `exec` use `--refresh-before-exec` and continue with `wait-for-exec` if the request stays non-terminal.",
+            "Unity's ScriptUpdater consent dialog (`Some of this project's source files refer to API that has changed`) is auto-declined (`No`) while this command waits, so an unattended run does not hang on it. When that happens the command keeps its normal status and also carries `warning = \"api_updater_declined\"` plus `warning_detail`; `get-compile-errors` / `get-compile-warnings` remain the compile surface.",
         ],
         "related_workflows": (
             "recover-exec-by-request-id",
@@ -392,6 +395,7 @@ COMMAND_HELP = {
                 "`completed`: the script finished; the accepted response includes `request_id`, `log_range`, `brief_sequence`, and the default-exported entry function's immediate return value is in `result`.",
                 "`running`: the request is still active; continue with `wait-for-exec --request-id ...` or the script's own observation workflow. The response always includes `log_range` and `brief_sequence` for the observation window so far.",
                 "When `phase` is present, it names the current request stage without changing the top-level `running` contract; first-version values may include `refreshing`, `compiling`, and `executing`.",
+                "When this command declined a ScriptUpdater consent dialog while preparing or waiting, the payload keeps its primary status and also carries `warning = \"api_updater_declined\"` plus `warning_detail`.",
             ],
             "failure": [
                 ("address_conflict", 2, "both selectors were provided; choose exactly one."),

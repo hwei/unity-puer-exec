@@ -307,9 +307,14 @@ namespace UnityPuerExec
             var bridgeVersionJson = string.IsNullOrEmpty(bridgeVersion)
                 ? ""
                 : ",\"bridge_version\":\"" + JsonEscape(bridgeVersion) + "\"";
+            // The process id is observable while the Editor is compiling, and a
+            // caller waiting on that window (e.g. --base-url wait-for-compile)
+            // needs it to auto-dismiss a blocking ScriptUpdater consent dialog
+            // without a new endpoint.
+            var compilingPidJson = unityPid > 0 ? ",\"unity_pid\":" + unityPid : "";
             if (isCompilingOrReloading)
             {
-                return "{\"ok\":false,\"status\":\"compiling\",\"session_marker\":\"" + JsonEscape(sessionMarker) + "\"" + bridgeVersionJson + "}";
+                return "{\"ok\":false,\"status\":\"compiling\",\"session_marker\":\"" + JsonEscape(sessionMarker) + "\"" + bridgeVersionJson + compilingPidJson + "}";
             }
 
             if (string.IsNullOrEmpty(envInitError))

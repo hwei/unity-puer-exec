@@ -57,10 +57,67 @@ REFRESH_BEFORE_EXEC_TEMPLATE = """export default function run(ctx) {
   return { request_id: ctx.request_id, refreshed: true };
 }
 """
+# ScriptUpdater consent dialog recovery (see api-updater-recovery spec). This is a
+# sidecar field on whatever status the command would otherwise return, never a
+# replacement for `status: "warning"` (the async-exec-result contract).
+API_UPDATER_WARNING = "api_updater_declined"
+API_UPDATER_WARNING_DETAIL = (
+    "Unity offered to rewrite project source files for changed APIs; the CLI "
+    "declined (clicked No) so no sources were modified. Existing compile errors "
+    "or (UnityUpgradable) messages may remain; use get-compile-errors / "
+    "get-compile-warnings to inspect them."
+)
 
 
 def emit_payload(payload):
     return json.dumps(payload, ensure_ascii=True)
+
+
+class _ApiUpdaterRecovery:
+    """Per-invocation count of ScriptUpdater consent dialogs declined.
+
+    A command owns one of these for its whole lifecycle and records declines from
+    every wait it performs, so the warning can be attached to whatever terminal
+    status the command produces.
+    """
+
+    def __init__(self):
+        self.declines = 0
+
+    def record(self, count):
+        if count:
+            self.declines += count
+
+
+def _attach_api_updater_warning(payload):
+    if isinstance(payload, dict):
+        payload["warning"] = API_UPDATER_WARNING
+        payload["warning_detail"] = API_UPDATER_WARNING_DETAIL
+    return payload
+
+
+def _apply_api_updater_warning(result, recovery):
+    """Attach the api_updater_declined sidecar field to a command's JSON response."""
+    if recovery is None or not recovery.declines:
+        return result
+    exit_code, stdout_text, stderr_text = result
+    if stdout_text:
+        body = json.loads(stdout_text)
+        return exit_code, emit_payload(_attach_api_updater_warning(body)), stderr_text
+    if stderr_text:
+        body = json.loads(stderr_text)
+        return exit_code, stdout_text, emit_payload(_attach_api_updater_warning(body))
+    return result
+
+
+def _dismiss_api_updater_for_pid(unity_pid):
+    if not unity_pid:
+        return 0
+    try:
+        result = unity_modal_blockers.dismiss_api_updater_dialog(unity_pid)
+    except Exception:  # noqa: BLE001 - dialog recovery never fails the command.
+        return 0
+    return result.get("dismissed", 0)
 
 
 def usage_error(message, status="failed", command=None, args=None):
@@ -885,6 +942,8 @@ def wait_for_compile_cycle(
     settle_poll_interval=unity_session.POLL_INTERVAL_SECONDS,
     probe_health_fn=None,
     time_ref=None,
+    unity_pid=None,
+    dismiss_fn=None,
 ):
     """Edge-aware wait for a single Unity compilation cycle over `/health`.
 
@@ -898,20 +957,40 @@ def wait_for_compile_cycle(
     to ``ready``. Transient transport errors during this phase are tolerated as
     still-in-progress until the ready/timeout boundary.
 
+    While waiting, a visible ScriptUpdater consent dialog for the Editor process is
+    auto-declined (No) and never treated as a settled compile. The pid comes from
+    the caller's session or a ``unity_pid`` on a compiling health payload.
+
     Returns a dict with ``outcome`` in {``ready``, ``no_compile_observed``,
-    ``settle_timeout``} and the ``observed_health`` status sequence.
+    ``settle_timeout``}, the ``observed_health`` status sequence, and
+    ``api_updater_declines``.
     """
     time_ref = time if time_ref is None else time_ref
     probe_health_fn = probe_health_fn or _probe_compile_health
+    dismiss_fn = _dismiss_api_updater_for_pid if dismiss_fn is None else dismiss_fn
     observed = []
     seen_healthy = False
     edge_observed = False
+    declines = 0
+
+    def maybe_dismiss(payload):
+        nonlocal declines
+        pid = unity_pid
+        if pid is None and isinstance(payload, dict):
+            reported = payload.get("unity_pid")
+            if isinstance(reported, int) and reported > 0:
+                pid = reported
+        if pid:
+            declines += dismiss_fn(pid)
 
     appear_deadline = time_ref.time() + appear_timeout_seconds
     while True:
         payload, _error = probe_health_fn(base_url, health_timeout_seconds)
         status = payload.get("status") if isinstance(payload, dict) else None
         _record_observed_status(observed, status)
+        # Poll for a blocking consent dialog for the whole appear window, not only
+        # once `compiling` is observed.
+        maybe_dismiss(payload)
         if status == HEALTH_STATUS_COMPILING:
             edge_observed = True
             break
@@ -927,7 +1006,11 @@ def wait_for_compile_cycle(
         time_ref.sleep(appear_poll_interval)
 
     if not edge_observed:
-        return {"outcome": COMPILE_OUTCOME_NONE, "observed_health": observed}
+        return {
+            "outcome": COMPILE_OUTCOME_NONE,
+            "observed_health": observed,
+            "api_updater_declines": declines,
+        }
 
     settle_deadline = time_ref.time() + settle_timeout_seconds
     while True:
@@ -935,25 +1018,37 @@ def wait_for_compile_cycle(
         status = payload.get("status") if isinstance(payload, dict) else None
         _record_observed_status(observed, status)
         if status == HEALTH_STATUS_READY:
-            return {"outcome": COMPILE_OUTCOME_READY, "observed_health": observed}
+            return {
+                "outcome": COMPILE_OUTCOME_READY,
+                "observed_health": observed,
+                "api_updater_declines": declines,
+            }
+        maybe_dismiss(payload)
         if time_ref.time() >= settle_deadline:
-            return {"outcome": COMPILE_OUTCOME_TIMEOUT, "observed_health": observed}
+            return {
+                "outcome": COMPILE_OUTCOME_TIMEOUT,
+                "observed_health": observed,
+                "api_updater_declines": declines,
+            }
         time_ref.sleep(settle_poll_interval)
 
 
-def _settle_base_url_after_refresh(base_url, args):
+def _settle_base_url_after_refresh(base_url, args, recovery=None):
     """Base-url analog of `_ensure_project_session_ready_after_refresh`.
 
     Re-probes the same caller-supplied endpoint, reusing the compile-wait primitive,
     so refresh-before-exec settles on the compile cycle before running the script.
     """
     settle_timeout_seconds = _post_refresh_ready_timeout_seconds(args)
-    return wait_for_compile_cycle(
+    cycle = wait_for_compile_cycle(
         base_url,
         getattr(args, "appear_timeout_seconds", unity_session.DEFAULT_COMPILE_APPEAR_TIMEOUT_SECONDS),
         settle_timeout_seconds,
         getattr(args, "health_timeout_seconds", unity_session.DEFAULT_HEALTH_TIMEOUT_SECONDS),
     )
+    if recovery is not None:
+        recovery.record(cycle.get("api_updater_declines", 0))
+    return cycle
 
 
 def _refresh_exec_code():
@@ -1100,6 +1195,12 @@ def _exec_stale_module_policy(args):
 
 
 def run_exec(args):
+    recovery = _ApiUpdaterRecovery()
+    result = _run_exec_impl(args, recovery)
+    return _apply_api_updater_warning(result, recovery)
+
+
+def _run_exec_impl(args, recovery):
     if getattr(args, "include_log_offset", False):
         return usage_error(
             "--include-log-offset has been removed; use log_range.start from exec response",
@@ -1150,6 +1251,8 @@ def run_exec(args):
             _rp1_log_end = _capture_log_offset(_rp1_log_path)
             _inject_log_range_into_payload(payload, _rp1_log_path, _rp1_log_end, _rp1_log_end)
             return EXIT_RUNNING, emit_payload(payload), ""
+        recovery.record(getattr(session, "api_updater_declines", 0))
+        session.api_updater_declines = 0
         base_url = session.base_url
     else:
         session = None
@@ -1224,6 +1327,8 @@ def run_exec(args):
             payload = _emit_running_payload("exec", exc.session, request_id, args, phase=PHASE_REFRESHING)
             _inject_log_range_into_payload(payload, log_path, log_start, _capture_log_offset(log_path))
             return EXIT_RUNNING, emit_payload(payload), ""
+        recovery.record(getattr(session, "api_updater_declines", 0))
+        session.api_updater_declines = 0
         _set_pending_phase(args, request_id, _read_pending_exec(args, request_id), PHASE_EXECUTING)
 
     if selector == "base_url" and args.refresh_before_exec:
@@ -1267,7 +1372,7 @@ def run_exec(args):
             return refresh_exit_code, refresh_stdout_text, refresh_stderr_text
         # Settle on the compile cycle by re-probing the same endpoint, then run the
         # user script below so base-url callers get refresh -> compile-settle -> execute.
-        _settle_base_url_after_refresh(base_url, args)
+        _settle_base_url_after_refresh(base_url, args, recovery=recovery)
 
     exit_code, stdout_text, stderr_text = _invoke_exec(
         base_url,
@@ -1305,6 +1410,12 @@ def run_exec(args):
 
 
 def run_wait_for_exec(args):
+    recovery = _ApiUpdaterRecovery()
+    result = _run_wait_for_exec_impl(args, recovery)
+    return _apply_api_updater_warning(result, recovery)
+
+
+def _run_wait_for_exec_impl(args, recovery):
     if getattr(args, "include_log_offset", False):
         return usage_error(
             "--include-log-offset has been removed; use log_range.start from exec response",
@@ -1346,6 +1457,8 @@ def run_wait_for_exec(args):
                 _inject_log_range_into_payload(payload, _wfe_rp1_log_path, _wfe_log_start, _capture_log_offset(_wfe_rp1_log_path), offsets_invalidated=_wfe_offsets_invalidated)
                 return EXIT_RUNNING, emit_payload(payload), ""
             raise
+        recovery.record(getattr(session, "api_updater_declines", 0))
+        session.api_updater_declines = 0
         base_url = session.base_url
         _bring_unity_to_foreground(session)
     else:
@@ -1415,6 +1528,8 @@ def run_wait_for_exec(args):
                 payload = _emit_running_payload("wait-for-exec", exc.session, args.request_id, args, phase=PHASE_REFRESHING)
                 _inject_log_range_into_payload(payload, _wfe_refresh_log_path, _wfe_log_start, _capture_log_offset(_wfe_refresh_log_path), offsets_invalidated=_wfe_offsets_invalidated)
                 return EXIT_RUNNING, emit_payload(payload), ""
+            recovery.record(getattr(session, "api_updater_declines", 0))
+            session.api_updater_declines = 0
             pending = _refresh_pending_exec(args, args.request_id, pending, PHASE_EXECUTING)
         exit_code, stdout_text, stderr_text = _invoke_exec(
             base_url,
@@ -1464,6 +1579,12 @@ def run_wait_for_exec(args):
 
 
 def run_wait_for_compile(args):
+    recovery = _ApiUpdaterRecovery()
+    result = _run_wait_for_compile_impl(args, recovery)
+    return _apply_api_updater_warning(result, recovery)
+
+
+def _run_wait_for_compile_impl(args, recovery):
     selector = resolve_selector(args)
     validate_positive(args.appear_timeout_seconds, "appear-timeout-seconds")
     validate_positive(args.settle_timeout_seconds, "settle-timeout-seconds")
@@ -1481,6 +1602,8 @@ def run_wait_for_compile(args):
             unity_launch_args=getattr(args, "unity_launch_args", None),
             argv0=getattr(args, "argv0", None),
         )
+        recovery.record(getattr(session, "api_updater_declines", 0))
+        session.api_updater_declines = 0
         base_url = session.base_url
     else:
         session = None
@@ -1491,7 +1614,9 @@ def run_wait_for_compile(args):
         args.appear_timeout_seconds,
         args.settle_timeout_seconds,
         args.health_timeout_seconds,
+        unity_pid=session.unity_pid if session is not None else None,
     )
+    recovery.record(cycle.get("api_updater_declines", 0))
     outcome = cycle["outcome"]
     diagnostics = {"observed_health": cycle["observed_health"]}
 
@@ -2038,6 +2163,14 @@ def _normalize_exec_blocker_result(exit_code, stdout_text, stderr_text, session,
     body = json.loads(stdout_text)
     if not _should_check_exec_blocker(exit_code, body):
         return exit_code, stdout_text, stderr_text
+
+    # ScriptUpdater consent dialog: auto-decline (No) and keep the original status.
+    # The agent must never see this as modal_blocked or need resolve-blocker.
+    dismissed = _dismiss_api_updater_for_pid(session.unity_pid)
+    if dismissed:
+        session.api_updater_declines = getattr(session, "api_updater_declines", 0) + dismissed
+        return exit_code, emit_payload(_attach_api_updater_warning(body)), stderr_text
+
     blocker = _detect_exec_modal_blocker(session)
     if blocker is None:
         return exit_code, stdout_text, stderr_text

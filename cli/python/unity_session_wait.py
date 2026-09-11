@@ -128,6 +128,30 @@ def build_health_snapshot(payload, error):
     return {"ok": False, "status": "transport_error", "error": error}
 
 
+def maybe_dismiss_api_updater(session, payload, dismiss_fn):
+    """Auto-decline a ScriptUpdater consent dialog during a readiness wait.
+
+    The pid comes from the session, or from a ``unity_pid`` the Editor reports on
+    a compiling health payload when the session does not know it yet. Declines are
+    accumulated on the session so the command can attach the warning.
+    """
+    if dismiss_fn is None:
+        return
+    pid = getattr(session, "unity_pid", None)
+    if pid is None and isinstance(payload, dict):
+        reported = payload.get("unity_pid")
+        if isinstance(reported, int) and reported > 0:
+            pid = reported
+    if not pid:
+        return
+    try:
+        count = dismiss_fn(pid)
+    except Exception:  # noqa: BLE001 - dialog recovery never fails the wait.
+        return
+    if count:
+        session.api_updater_declines = getattr(session, "api_updater_declines", 0) + count
+
+
 def wait_for_session(
     session,
     timeout_seconds,
@@ -143,6 +167,7 @@ def wait_for_session(
     create_activity_tracker_fn=None,
     update_activity_tracker_fn=None,
     finalize_session_diagnostics_fn=None,
+    dismiss_api_updater_fn=None,
     time_ref=None,
 ):
     time_ref = time_module if time_ref is None else time_ref
@@ -181,6 +206,8 @@ def wait_for_session(
             last_health_error = json.dumps(payload, ensure_ascii=True)
         else:
             last_health_error = error
+
+        maybe_dismiss_api_updater(session, payload, dismiss_api_updater_fn)
 
         update_activity_tracker_fn(activity_tracker, log_path)
 
