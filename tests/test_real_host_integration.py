@@ -13,10 +13,13 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CLI_DIR = REPO_ROOT / "cli" / "python"
 TOOLS_DIR = REPO_ROOT / "tools"
+TESTS_DIR = REPO_ROOT / "tests"
 if str(CLI_DIR) not in sys.path:
     sys.path.insert(0, str(CLI_DIR))
 if str(TOOLS_DIR) not in sys.path:
     sys.path.insert(0, str(TOOLS_DIR))
+if str(TESTS_DIR) not in sys.path:
+    sys.path.insert(0, str(TESTS_DIR))
 
 import prepare_validation_host  # type: ignore
 import cleanup_validation_host  # type: ignore
@@ -26,6 +29,7 @@ import unity_session  # type: ignore
 import unity_session_logs  # type: ignore
 import unity_modal_blockers  # type: ignore
 import unity_session_process  # type: ignore
+import real_host_retry  # type: ignore
 
 
 RUN_REAL_HOST_TESTS_ENV = "UNITY_PUER_EXEC_RUN_REAL_HOST_TESTS"
@@ -84,7 +88,7 @@ def _run_cli(argv):
     return exit_code, payload, stdout, stderr
 
 
-def _warm_up_project_exec(project_path, unity_exe_path, include_diagnostics=False):
+def _single_warm_up_project_exec(project_path, unity_exe_path, include_diagnostics=False):
     script = "export default function run(ctx) { return { probe: 'warmup', request_id: ctx.request_id }; }"
     argv = [
         "exec",
@@ -121,6 +125,7 @@ def _warm_up_project_exec(project_path, unity_exe_path, include_diagnostics=Fals
 
 def _ensure_clean_test_boundary(project_path):
     attempts = 0
+    payload = None
     while attempts < 3:
         attempts += 1
         exit_code, payload, _, _ = _run_cli(
@@ -134,7 +139,7 @@ def _ensure_clean_test_boundary(project_path):
             ]
         )
         if exit_code == 0:
-            return
+            return {"ok": True, "status": "stopped", "attempts": attempts, "payload": payload}
         if attempts == 2:
             _run_cli(
                 [
@@ -149,6 +154,37 @@ def _ensure_clean_test_boundary(project_path):
             )
         time.sleep(1.0)
     raise AssertionError("failed to establish a clean real-host boundary: {}".format(payload))
+
+
+def _is_editor_ready_for_project(project_path):
+    try:
+        import unity_session_endpoint
+        publication = unity_session_endpoint.read_endpoint_publication(project_path)
+        if publication and "port" in publication:
+            payload, _ = _probe_control_health(publication["port"], timeout_seconds=0.5)
+            return _health_is_ready_for_project(payload, project_path)
+    except Exception:
+        pass
+    return False
+
+
+def _warm_up_project_exec(
+    project_path,
+    unity_exe_path,
+    include_diagnostics=False,
+    max_attempts=real_host_retry.DEFAULT_MAX_ATTEMPTS,
+    transient_failure_injector=None,
+):
+    return real_host_retry.warm_up_with_retry(
+        warm_up_fn=_single_warm_up_project_exec,
+        project_path=project_path,
+        unity_exe_path=unity_exe_path,
+        ensure_clean_boundary_fn=_ensure_clean_test_boundary,
+        include_diagnostics=include_diagnostics,
+        max_attempts=max_attempts,
+        is_editor_ready_fn=_is_editor_ready_for_project,
+        transient_failure_injector=transient_failure_injector,
+    )
 
 
 def _probe_control_health(port, timeout_seconds=1.5):
@@ -1654,6 +1690,82 @@ class RealHostIntegrationTests(unittest.TestCase):
                 cleanup_validation_host.cleanup_validation_temp_assets(self.project_path)
             except Exception:
                 pass
+
+    def test_cold_launch_retries_on_transient_failure_against_real_host(self):
+        """Verify bounded retry tolerates transient cold-launch failure and preserves guardrails."""
+        # 1. Contended cold launch scenario: attempt 1 fails transiently with unity_start_failed,
+        # clean boundary is re-confirmed, and attempt 2 launches real host successfully.
+        def inject_transient_flake(attempt):
+            if attempt == 1:
+                return (
+                    20,
+                    {
+                        "ok": False,
+                        "status": "unity_start_failed",
+                        "error": "Unity exited before ready with code 0",
+                    },
+                    "",
+                    "Unity exited before ready with code 0",
+                )
+            return None
+
+        ready_exit_code, ready_payload, _, _ = _warm_up_project_exec(
+            self.project_path,
+            self.unity_exe_path,
+            include_diagnostics=True,
+            transient_failure_injector=inject_transient_flake,
+        )
+        self.assertEqual(ready_exit_code, 0, ready_payload)
+        self.assertEqual(ready_payload["status"], "completed")
+        self.assertEqual(ready_payload["attempt_count"], 2)
+        self.assertEqual(ready_payload["last_launch_status"], "completed")
+        self.assertEqual(len(ready_payload["attempts"]), 2)
+        self.assertEqual(ready_payload["attempts"][0]["status"], "unity_start_failed")
+        self.assertEqual(ready_payload["attempts"][1]["status"], "completed")
+        self.assertIsNotNone(ready_payload["boundary_result"])
+
+        # 2. Persistent regression scenario: when all attempts fail, all attempts are
+        # recorded with attempt count and last status, distinguishing it from a flake.
+        persistent_exit_code, persistent_payload, _, _ = _warm_up_project_exec(
+            self.project_path,
+            self.unity_exe_path,
+            max_attempts=2,
+            transient_failure_injector=lambda attempt: (
+                20,
+                {
+                    "ok": False,
+                    "status": "unity_start_failed",
+                    "error": f"Unity exited before ready on attempt {attempt}",
+                },
+                "",
+                "",
+            ),
+        )
+        self.assertEqual(persistent_exit_code, 20)
+        self.assertEqual(persistent_payload["attempt_count"], 2)
+        self.assertEqual(persistent_payload["last_launch_status"], "unity_start_failed")
+        self.assertEqual(len(persistent_payload["attempts"]), 2)
+
+        # 3. Non-launch failure scenario: non-launch failures are never retried.
+        non_launch_exit, non_launch_payload, _, _ = _warm_up_project_exec(
+            self.project_path,
+            self.unity_exe_path,
+            max_attempts=3,
+            transient_failure_injector=lambda attempt: (
+                4,
+                {
+                    "ok": False,
+                    "status": "compile_error",
+                    "error": "Compilation error in script",
+                },
+                "",
+                "",
+            ),
+        )
+        self.assertEqual(non_launch_exit, 4)
+        self.assertEqual(non_launch_payload["attempt_count"], 1)
+        self.assertEqual(non_launch_payload["last_launch_status"], "compile_error")
+        self.assertEqual(len(non_launch_payload["attempts"]), 1)
 
 
 if __name__ == "__main__":
