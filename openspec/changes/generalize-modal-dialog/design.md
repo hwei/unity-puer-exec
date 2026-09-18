@@ -289,8 +289,11 @@ revision. They do NOT change the specs, the chosen approach, or the task breakdo
 - **H1** *(answered on the host, 2026-09-18)*: real Unity modals do disable their owner, but the
   signal is not unique to them and the size bound was wrong. Both findings are folded into D2 and
   recorded in `validation-evidence.md`. No open question remains.
-- **H2** *(not exercised)*: entering Safe Mode needs a deliberate compile error plus an Editor
-  restart, which would disturb the host. The Safe Mode path is unchanged from prior behavior, so
-  this is a confirmation gap rather than a behavior change.
+- **H2** *(answered on the host, 2026-09-18)*: the Safe Mode dialog **does** respond to
+  `BM_CLICK` — level 1 of the chain closed it. The D5 exemption is therefore sufficient but not
+  necessary; it is kept because the keyboard path has prior host evidence and removing it would
+  change a working path for no observed gain. Note `owner=null` for this dialog (it appears before
+  the main window exists), so D2's owner test does not apply to it. See
+  `validation-evidence.md`.
 
 H3 (`default_button` derivation) is closed: the field is dropped per D3/D7 rather than resolved.

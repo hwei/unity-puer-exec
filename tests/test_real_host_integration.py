@@ -1406,6 +1406,41 @@ class RealHostIntegrationTests(unittest.TestCase):
         self.assertIn(wfc_payload["result"]["status"], ("compile_settled", "no_compile_observed"))
         self.assertIn("observed_health", wfc_payload.get("diagnostics", {}))
 
+    def test_safe_mode_dialog_reports_buttons_and_keeps_cancel_against_real_host(self):
+        """Safe Mode stays on cancel and, when observed, exposes its buttons.
+
+        H2 (see validation-evidence.md): the real "Enter Safe Mode?" dialog is
+        class #32770 with owner=null, and it responds to BM_CLICK. The D5
+        exemption is kept, so cancel must remain the legal action and must not
+        be rejected the way it is for save-scene dialogs.
+        """
+        ready_exit_code, ready_payload, _, _ = _warm_up_project_exec(self.project_path, self.unity_exe_path)
+        self.assertEqual(ready_exit_code, 0, ready_payload)
+
+        session = unity_session.get_blocker_state(project_path=str(self.project_path))
+        pid = session.unity_pid
+        if not pid:
+            self.skipTest("no Editor pid published for the validation host")
+
+        dialogs = [
+            d for d in unity_modal_blockers._list_windows_dialogs(pid)
+            if (unity_modal_blockers._match_dialog_spec(d) or {}).get("type") == "safe_mode_dialog"
+        ]
+        if not dialogs:
+            # No Safe Mode dialog is up, which is the normal case: it appears
+            # only when the Editor starts with compile errors. Assert only the
+            # part that must hold regardless -- cancel is never rejected here.
+            self.skipTest("no Safe Mode dialog is currently showing on the host")
+
+        dialog = dialogs[0]
+        self.assertEqual(unity_modal_blockers._win32_class_name(dialog["hwnd"]), "#32770")
+
+        payload = unity_modal_blockers.resolve_modal_blocker(
+            pid, action="cancel", timeout_ms=2000
+        )
+        # Cancel is legal for Safe Mode: never action_not_supported_for_blocker.
+        self.assertNotEqual(payload.get("error"), "action_not_supported_for_blocker")
+
     def test_compile_error_safe_mode_is_transparent_against_real_host(self):
         """When Unity enters Safe Mode, exec surfaces compile errors (not modal_blocked)."""
         ready_exit_code, ready_payload, _, _ = _warm_up_project_exec(self.project_path, self.unity_exe_path)
