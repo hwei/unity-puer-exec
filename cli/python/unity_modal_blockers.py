@@ -54,7 +54,26 @@ DEFAULT_API_UPDATER_DISMISS_POLL_MS = 100
 
 IDCANCEL = 2
 GW_OWNER = 4
+GWL_STYLE = -16
 BM_CLICK = 0x00F5
+WM_COMMAND = 0x0111
+WM_KEYDOWN = 0x0100
+WM_KEYUP = 0x0101
+BN_CLICKED = 0
+VK_RETURN = 0x0D
+
+WS_DISABLED = 0x08000000
+WS_POPUP = 0x80000000
+# Modal prompts are small; Editor panels are not. Used only to sanity-check an
+# ownerless window that already looks like a dialog by style.
+MAX_MODAL_DIALOG_EDGE_PX = 900
+
+# Button low-word styles that are not clickable as an action. Win32 reports
+# these under the same "Button" class as push buttons, so they must be filtered
+# by style rather than by class name.
+NON_CLICKABLE_BUTTON_STYLES = frozenset(
+    (0x0002, 0x0003, 0x0004, 0x0005, 0x0006, 0x0007, 0x0009)
+)
 
 
 def detect_modal_blocker(unity_pid, scope="exec"):
@@ -64,6 +83,20 @@ def detect_modal_blocker(unity_pid, scope="exec"):
     return blockers[0]
 
 
+UNKNOWN_DIALOG_TYPE = "unknown_modal_dialog"
+
+# Unknown dialogs sort ahead of catalog dialogs: the unknown one is the likelier
+# true stall, and catalog save-scene types are reachable on their own path.
+BLOCKER_TYPE_ORDER = (UNKNOWN_DIALOG_TYPE, "safe_mode_dialog", "save_modified_scenes_prompt", "save_scene_dialog")
+
+
+def _blocker_sort_key(blocker):
+    try:
+        return BLOCKER_TYPE_ORDER.index(blocker["type"])
+    except ValueError:
+        return len(BLOCKER_TYPE_ORDER)
+
+
 def list_supported_modal_blockers(unity_pid, scope="exec"):
     if not unity_pid or sys.platform != "win32":
         return []
@@ -71,11 +104,23 @@ def list_supported_modal_blockers(unity_pid, scope="exec"):
     blockers = []
     for dialog in dialogs:
         spec = _match_dialog_spec(dialog)
-        if spec is None or spec["type"] == API_UPDATER_DIALOG_TYPE:
+        if spec is not None and spec["type"] == API_UPDATER_DIALOG_TYPE:
             # The ScriptUpdater consent dialog is auto-recovered, never surfaced
             # to an agent as a modal blocker.
             continue
-        blocker = {"type": spec["type"]}
+        if spec is None:
+            # Outside the catalog: report it only if it actually blocks. A
+            # non-blocking Editor window is skipped rather than dropped, and an
+            # unrecognized modal is surfaced instead of being discarded.
+            if not _is_modal_window(dialog["hwnd"]):
+                continue
+            blocker = _unknown_blocker_entry(dialog)
+        else:
+            # A catalog title hit keeps reporting without modal discrimination:
+            # title is the existing contract, and adding a modality gate could
+            # stop reporting dialogs reported today.
+            blocker = {"type": spec["type"], "hwnd": dialog["hwnd"], "title": dialog["title"]}
+            blocker.update(_button_fields(dialog["hwnd"]))
         if scope is not None:
             blocker["scope"] = scope
         blockers.append(blocker)
@@ -84,8 +129,37 @@ def list_supported_modal_blockers(unity_pid, scope="exec"):
     if main_title and "SAFE MODE" in main_title.upper():
         # Avoid duplicate if already detected via dialog
         if not any(b["type"] == "safe_mode_dialog" for b in blockers):
+            # Title-only detection has no dialog to click; hwnd is omitted.
             blockers.append({"type": "safe_mode_dialog", "scope": scope})
+    blockers.sort(key=_blocker_sort_key)
     return blockers
+
+
+def _button_fields(dialog_hwnd):
+    """``buttons`` detail for a payload, or {} when nothing is enumerable."""
+    try:
+        buttons = _enumerate_buttons(dialog_hwnd)
+    except Exception:
+        return {}
+    if not buttons:
+        return {}
+    return {
+        "buttons": [
+            {"hwnd": b["hwnd"], "label": b["label"], "ctrl_id": b["ctrl_id"]}
+            for b in buttons
+        ]
+    }
+
+
+def _unknown_blocker_entry(dialog):
+    entry = {
+        "type": UNKNOWN_DIALOG_TYPE,
+        "hwnd": dialog["hwnd"],
+        "title": dialog["title"],
+        "body": dialog.get("body") or "",
+    }
+    entry.update(_button_fields(dialog["hwnd"]))
+    return entry
 
 
 def resolve_modal_blocker(unity_pid, action="cancel", timeout_ms=1500, poll_interval_ms=100):
@@ -139,6 +213,93 @@ def resolve_modal_blocker(unity_pid, action="cancel", timeout_ms=1500, poll_inte
 
 
 
+
+
+def _win32_owner(hwnd):
+    """Owner window handle for ``hwnd``, or 0 when it has none."""
+    user32, wintypes, ctypes = _load_win32_modules()
+    get_window = user32.GetWindow
+    get_window.restype = wintypes.HWND
+    get_window.argtypes = [wintypes.HWND, wintypes.UINT]
+    return get_window(hwnd, GW_OWNER)
+
+
+def _win32_is_enabled(hwnd):
+    user32, wintypes, ctypes = _load_win32_modules()
+    is_window_enabled = user32.IsWindowEnabled
+    is_window_enabled.restype = wintypes.BOOL
+    is_window_enabled.argtypes = [wintypes.HWND]
+    return bool(is_window_enabled(hwnd))
+
+
+def _win32_owner_enabled(hwnd):
+    """True when the owner window exists and is enabled (not blocked by a modal)."""
+    owner = _win32_owner(hwnd)
+    if not owner:
+        return True
+    return _win32_is_enabled(owner)
+
+
+def _win32_style(hwnd):
+    user32, wintypes, ctypes = _load_win32_modules()
+    get_window_long = user32.GetWindowLongW
+    get_window_long.restype = wintypes.LONG
+    get_window_long.argtypes = [wintypes.HWND, ctypes.c_int]
+    return get_window_long(hwnd, GWL_STYLE)
+
+
+def _win32_window_rect(hwnd):
+    """Window rect as ``(left, top, right, bottom)``, or None when unreadable."""
+    user32, wintypes, ctypes = _load_win32_modules()
+    get_window_rect = user32.GetWindowRect
+    get_window_rect.restype = wintypes.BOOL
+    get_window_rect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
+    rect = wintypes.RECT()
+    if not get_window_rect(hwnd, ctypes.byref(rect)):
+        return None
+    return (rect.left, rect.top, rect.right, rect.bottom)
+
+
+def _is_dialog_style(hwnd):
+    style = _win32_style(hwnd)
+    return bool(style & WS_POPUP)
+
+
+def _is_modal_sized(hwnd):
+    rect = _win32_window_rect(hwnd)
+    if rect is None:
+        return False
+    left, top, right, bottom = rect
+    width = right - left
+    height = bottom - top
+    if width <= 0 or height <= 0:
+        return False
+    return width <= MAX_MODAL_DIALOG_EDGE_PX and height <= MAX_MODAL_DIALOG_EDGE_PX
+
+
+def _is_modal_window(hwnd):
+    """True when ``hwnd`` blocks its owner rather than merely being visible.
+
+    The window must first look like a dialog (popup style, prompt-sized). Only
+    then is owner state consulted: a true modal disables the window that owns
+    it. Requiring both halves matters, because a disabled owner alone also
+    matches non-blocking Editor panels (Preferences, Project Settings) whenever
+    some unrelated window has disabled their owner.
+
+    Dialogs that appear before Unity's main window (Safe Mode) have no owner, so
+    dialog styling plus size is sufficient on its own for those.
+
+    Anything failing these tests is treated as non-blocking: a false positive
+    costs the caller a hang, while a false negative costs one extra re-check.
+    """
+    if not _is_dialog_style(hwnd) or not _is_modal_sized(hwnd):
+        return False
+    owner = _win32_owner(hwnd)
+    if owner and not _win32_owner_enabled(hwnd):
+        return True
+    # Ownerless dialog: style and size are the whole signal. An owned dialog
+    # whose owner is still enabled is not blocking the Editor.
+    return owner == 0
 
 
 def _get_unity_main_window_title(unity_pid):
@@ -394,6 +555,158 @@ def _click_via_keyboard(dialog_hwnd):
     keybd_event(VK_RETURN, 0, 0, 0)
     time.sleep(0.05)
     keybd_event(VK_RETURN, 0, KEYEVENTF_KEYUP, 0)
+    return True
+
+
+def _enumerate_child_controls(dialog_hwnd):
+    """Every child control of a dialog as ``{hwnd, class_name, label, ctrl_id}``."""
+    user32, wintypes, ctypes = _load_win32_modules()
+    enum_child_windows = user32.EnumChildWindows
+    get_class_name = user32.GetClassNameW
+    get_window_text_length = user32.GetWindowTextLengthW
+    get_window_text = user32.GetWindowTextW
+    get_dlg_ctrl_id = user32.GetDlgCtrlID
+
+    enum_child_windows.restype = wintypes.BOOL
+    enum_child_windows.argtypes = [
+        wintypes.HWND,
+        ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM),
+        wintypes.LPARAM,
+    ]
+    get_class_name.restype = ctypes.c_int
+    get_class_name.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+    get_window_text_length.restype = ctypes.c_int
+    get_window_text_length.argtypes = [wintypes.HWND]
+    get_window_text.restype = ctypes.c_int
+    get_window_text.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+    get_dlg_ctrl_id.restype = ctypes.c_int
+    get_dlg_ctrl_id.argtypes = [wintypes.HWND]
+
+    found = []
+
+    def callback(hwnd, _l_param):
+        class_name = _get_window_text(hwnd, None, get_class_name, ctypes, buffer_size=256)
+        label = _get_window_text(hwnd, get_window_text_length, get_window_text, ctypes)
+        found.append(
+            {
+                "hwnd": hwnd,
+                "class_name": class_name,
+                "label": label,
+                "ctrl_id": get_dlg_ctrl_id(hwnd),
+            }
+        )
+        return True
+
+    enum_proc = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)(callback)
+    enum_child_windows(dialog_hwnd, enum_proc, 0)
+    return found
+
+
+def _is_control_clickable(hwnd):
+    control_style = _win32_style(hwnd)
+    if control_style & WS_DISABLED:
+        return False
+    if not _win32_is_visible(hwnd):
+        return False
+    return (control_style & 0x000F) not in NON_CLICKABLE_BUTTON_STYLES
+
+
+def _enumerate_buttons(dialog_hwnd):
+    """Clickable push buttons of a dialog as ``{hwnd, label, ctrl_id}``.
+
+    Win32 reports checkboxes, radio buttons, and group boxes under the same
+    "Button" class as push buttons, and ``EnumChildWindows`` recurses into
+    nested containers, so filtering by class alone would surface controls a
+    caller should never click. Disabled and invisible controls are excluded for
+    the same reason: a control that cannot be clicked is not a candidate.
+    """
+    buttons = []
+    for control in _enumerate_child_controls(dialog_hwnd):
+        if control["class_name"] != "Button":
+            continue
+        if not _is_control_clickable(control["hwnd"]):
+            continue
+        buttons.append(
+            {
+                "hwnd": control["hwnd"],
+                "label": control["label"],
+                "ctrl_id": control["ctrl_id"],
+            }
+        )
+    return buttons
+
+
+def _normalize_button_label(label):
+    """Strip ``&`` mnemonics and surrounding whitespace for matching."""
+    return (label or "").replace("&", "").strip()
+
+
+def _match_button(buttons, wanted):
+    """Find a button whose label matches ``wanted``, or None."""
+    target = _normalize_button_label(wanted)
+    if not target:
+        return None
+    lowered = target.lower()
+    for button in buttons:
+        label = _normalize_button_label(button["label"])
+        if label == target or label.lower() == lowered:
+            return button
+    return None
+
+
+def _win32_is_visible(hwnd):
+    user32, wintypes, ctypes = _load_win32_modules()
+    is_window_visible = user32.IsWindowVisible
+    is_window_visible.restype = wintypes.BOOL
+    is_window_visible.argtypes = [wintypes.HWND]
+    return bool(is_window_visible(hwnd))
+
+
+def _send_button_message(button_hwnd):
+    """Level 1 of the click chain: ``BM_CLICK``, which steals no focus."""
+    user32, wintypes, ctypes = _load_win32_modules()
+    send_message = user32.SendMessageW
+    send_message.restype = wintypes.LPARAM
+    send_message.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+    send_message(button_hwnd, BM_CLICK, 0, 0)
+    return True
+
+
+def _send_command_message(dialog_hwnd, button):
+    """Level 2 of the click chain: ``WM_COMMAND`` with the button's control id."""
+    user32, wintypes, ctypes = _load_win32_modules()
+    send_message = user32.SendMessageW
+    send_message.restype = wintypes.LPARAM
+    send_message.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+    wparam = wintypes.WPARAM((BN_CLICKED << 16) | (button.get("ctrl_id") or 0))
+    send_message(dialog_hwnd, WM_COMMAND, wparam, wintypes.LPARAM(button["hwnd"]))
+    return True
+
+
+def _post_key_return(button_hwnd):
+    """Level 3 of the click chain: posted key messages, still no foregrounding."""
+    user32, wintypes, ctypes = _load_win32_modules()
+    post_message = user32.PostMessageW
+    post_message.restype = wintypes.BOOL
+    post_message.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+    post_message(button_hwnd, WM_KEYDOWN, wintypes.WPARAM(VK_RETURN), 0)
+    post_message(button_hwnd, WM_KEYUP, wintypes.WPARAM(VK_RETURN), 0)
+    return True
+
+
+def _click_button(dialog_hwnd, button):
+    """Activate a button preferring message-level methods over foregrounding.
+
+    Safe Mode is exempt and keeps the foreground keyboard path; callers dispatch
+    to ``_click_via_keyboard`` for it instead of using this chain.
+    """
+    _send_button_message(button["hwnd"])
+    if not _is_window_present(dialog_hwnd):
+        return True
+    _send_command_message(dialog_hwnd, button)
+    if not _is_window_present(dialog_hwnd):
+        return True
+    _post_key_return(button["hwnd"])
     return True
 
 
