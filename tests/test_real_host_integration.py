@@ -899,13 +899,29 @@ class RealHostIntegrationTests(unittest.TestCase):
             ]
         )
 
+        blocker_exit_code, blocker_payload, _, _ = _run_cli(
+            [
+                "get-blocker-state",
+                "--project-path",
+                str(self.project_path),
+            ]
+        )
+        self.assertEqual(blocker_exit_code, 0, blocker_payload)
+        blocker = blocker_payload["result"]["blocker"]
+        self.assertEqual(blocker["type"], "save_modified_scenes_prompt")
+        self.assertIn("hwnd", blocker, "payload must carry hwnd for --action click")
+
         resolve_exit_code, resolve_payload, _, _ = _run_cli(
             [
                 "resolve-blocker",
                 "--project-path",
                 str(self.project_path),
                 "--action",
-                "cancel",
+                "click",
+                "--hwnd",
+                str(blocker["hwnd"]),
+                "--button",
+                "Cancel",
             ]
         )
 
@@ -964,13 +980,29 @@ class RealHostIntegrationTests(unittest.TestCase):
             ]
         )
 
+        blocker_exit_code, blocker_payload, _, _ = _run_cli(
+            [
+                "get-blocker-state",
+                "--project-path",
+                str(self.project_path),
+            ]
+        )
+        self.assertEqual(blocker_exit_code, 0, blocker_payload)
+        blocker = blocker_payload["result"]["blocker"]
+        self.assertEqual(blocker["type"], "save_scene_dialog")
+        self.assertIn("hwnd", blocker, "payload must carry hwnd for --action click")
+
         resolve_exit_code, resolve_payload, _, _ = _run_cli(
             [
                 "resolve-blocker",
                 "--project-path",
                 str(self.project_path),
                 "--action",
-                "cancel",
+                "click",
+                "--hwnd",
+                str(blocker["hwnd"]),
+                "--button",
+                "Cancel",
             ]
         )
 
@@ -996,6 +1028,192 @@ class RealHostIntegrationTests(unittest.TestCase):
         self.assertEqual(wait_payload["status"], "completed")
         self.assertEqual(wait_payload["result"]["request_id"], request_id)
 
+    def test_resolve_blocker_cancel_is_rejected_for_save_scene_against_real_host(self):
+        """Cancel must not be the default unblock action for save-scene dialogs."""
+        ready_exit_code, ready_payload, _, _ = _warm_up_project_exec(self.project_path, self.unity_exe_path)
+        self.assertEqual(ready_exit_code, 0, ready_payload)
+
+        _run_cli(
+            [
+                "exec",
+                "--project-path",
+                str(self.project_path),
+                "--unity-exe-path",
+                str(self.unity_exe_path),
+                "--request-id",
+                "cancel-rejected-{}".format(os.getpid()),
+                "--wait-timeout-ms",
+                str(WAIT_TIMEOUT_MS),
+                "--code",
+                "\n".join(
+                    [
+                        "export default function run(ctx) {",
+                        "  const SceneManager = puer.loadType('UnityEngine.SceneManagement.SceneManager');",
+                        "  const EditorSceneManager = puer.loadType('UnityEditor.SceneManagement.EditorSceneManager');",
+                        "  const scene = SceneManager.GetActiveScene();",
+                        "  EditorSceneManager.MarkSceneDirty(scene);",
+                        "  EditorSceneManager.SaveCurrentModifiedScenesIfUserWantsTo();",
+                        "  return { request_id: ctx.request_id };",
+                        "}",
+                    ]
+                ),
+            ]
+        )
+
+        resolve_exit_code, resolve_payload, _, _ = _run_cli(
+            [
+                "resolve-blocker",
+                "--project-path",
+                str(self.project_path),
+                "--action",
+                "cancel",
+            ]
+        )
+
+        self.assertEqual(resolve_exit_code, 1, resolve_payload)
+        self.assertEqual(resolve_payload["status"], "resolution_failed")
+        self.assertEqual(resolve_payload["error"], "action_not_supported_for_blocker")
+
+        # The dialog must still be present: unsaved scene changes were not discarded.
+        blocker_exit_code, blocker_payload, _, _ = _run_cli(
+            [
+                "get-blocker-state",
+                "--project-path",
+                str(self.project_path),
+            ]
+        )
+        self.assertEqual(blocker_exit_code, 0, blocker_payload)
+        self.assertEqual(
+            blocker_payload["result"]["blocker"]["type"], "save_modified_scenes_prompt"
+        )
+
+        # Clean up so the suite does not leave the Editor blocked.
+        blocker = blocker_payload["result"]["blocker"]
+        if "hwnd" in blocker:
+            _run_cli(
+                [
+                    "resolve-blocker",
+                    "--project-path",
+                    str(self.project_path),
+                    "--action",
+                    "click",
+                    "--hwnd",
+                    str(blocker["hwnd"]),
+                    "--button",
+                    "Cancel",
+                ]
+            )
+
+    def test_unknown_modal_dialog_is_reported_against_real_host(self):
+        """A blocking dialog outside the catalog is reported, not dropped."""
+        ready_exit_code, ready_payload, _, _ = _warm_up_project_exec(self.project_path, self.unity_exe_path)
+        self.assertEqual(ready_exit_code, 0, ready_payload)
+
+        # EditorUtility.DisplayDialog blocks the main thread and has no catalog entry.
+        _run_cli(
+            [
+                "exec",
+                "--project-path",
+                str(self.project_path),
+                "--unity-exe-path",
+                str(self.unity_exe_path),
+                "--request-id",
+                "unknown-dialog-{}".format(os.getpid()),
+                "--wait-timeout-ms",
+                str(WAIT_TIMEOUT_MS),
+                "--code",
+                "\n".join(
+                    [
+                        "export default function run(ctx) {",
+                        "  const EditorUtility = puer.loadType('UnityEditor.EditorUtility');",
+                        "  EditorUtility.DisplayDialog('Codex Validation Prompt', 'Proceed?', 'OK', 'Cancel');",
+                        "  return { request_id: ctx.request_id };",
+                        "}",
+                    ]
+                ),
+            ]
+        )
+
+        blocker_exit_code, blocker_payload, _, _ = _run_cli(
+            [
+                "get-blocker-state",
+                "--project-path",
+                str(self.project_path),
+            ]
+        )
+
+        self.assertEqual(blocker_exit_code, 0, blocker_payload)
+        blocker = blocker_payload["result"]["blocker"]
+        self.assertEqual(blocker["type"], "unknown_modal_dialog")
+        self.assertIn("hwnd", blocker)
+        self.assertIn("title", blocker)
+        self.assertIn("body", blocker)
+        self.assertIn("buttons", blocker)
+        self.assertNotIn("known", blocker)
+        self.assertNotIn("default_button", blocker)
+
+        # Resolve it explicitly so the Editor is not left blocked.
+        labels = [b["label"] for b in blocker["buttons"]]
+        self.assertTrue(labels, "an unknown dialog must expose at least one button")
+        _run_cli(
+            [
+                "resolve-blocker",
+                "--project-path",
+                str(self.project_path),
+                "--action",
+                "click",
+                "--hwnd",
+                str(blocker["hwnd"]),
+                "--button",
+                labels[0],
+            ]
+        )
+
+    def test_non_blocking_editor_windows_are_not_blockers_against_real_host(self):
+        """Modal discrimination must not promote Editor panels to blockers."""
+        ready_exit_code, ready_payload, _, _ = _warm_up_project_exec(self.project_path, self.unity_exe_path)
+        self.assertEqual(ready_exit_code, 0, ready_payload)
+
+        # Open windows that do not block exec.
+        _run_cli(
+            [
+                "exec",
+                "--project-path",
+                str(self.project_path),
+                "--unity-exe-path",
+                str(self.unity_exe_path),
+                "--request-id",
+                "open-panels-{}".format(os.getpid()),
+                "--wait-timeout-ms",
+                str(WAIT_TIMEOUT_MS),
+                "--code",
+                "\n".join(
+                    [
+                        "export default function run(ctx) {",
+                        "  const EditorApplication = puer.loadType('UnityEditor.EditorApplication');",
+                        "  const SettingsService = puer.loadType('UnityEditor.SettingsService');",
+                        "  try { SettingsService.OpenProjectSettings('Project/Player'); } catch (e) { }",
+                        "  try { EditorApplication.ExecuteMenuItem('Edit/Preferences...'); } catch (e) { }",
+                        "  return { request_id: ctx.request_id };",
+                        "}",
+                    ]
+                ),
+            ]
+        )
+
+        blocker_exit_code, blocker_payload, _, _ = _run_cli(
+            [
+                "get-blocker-state",
+                "--project-path",
+                str(self.project_path),
+            ]
+        )
+
+        self.assertEqual(blocker_exit_code, 0, blocker_payload)
+        result = blocker_payload["result"]
+        if result["status"] == "modal_blocked":
+            self.assertNotIn("Preferences", result["blocker"].get("title", ""))
+            self.assertNotIn("Project Settings", result["blocker"].get("title", ""))
 
 
     def test_compile_error_gate_blocks_exec_against_real_host(self):
