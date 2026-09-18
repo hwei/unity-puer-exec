@@ -1631,6 +1631,35 @@ class UnityPuerExecCliTests(unittest.TestCase):
         self.assertEqual(body["compile_warnings_total"], 0)
         self.assertEqual(body["compile_messages"], [])
 
+    def test_unknown_modal_dialog_is_reported_and_never_auto_dismissed(self):
+        """An unknown dialog blocks with EXIT_MODAL_BLOCKED and no automatic action."""
+        session = _make_session()
+        stdout_text = json.dumps({"ok": True, "status": "running", "request_id": "req-unknown"})
+        blocker = {"type": "unknown_modal_dialog", "scope": "exec", "hwnd": 42}
+        with mock.patch.object(
+            unity_puer_exec_runtime.unity_modal_blockers,
+            "detect_modal_blocker",
+            return_value=blocker,
+        ), mock.patch.object(
+            unity_puer_exec_runtime.unity_modal_blockers,
+            "resolve_modal_blocker",
+            side_effect=AssertionError("must not auto-dismiss an unknown dialog"),
+        ) as resolve_mock:
+            exit_code, stdout, stderr = unity_puer_exec_runtime._normalize_exec_blocker_result(
+                unity_puer_exec.EXIT_RUNNING,
+                stdout_text,
+                "",
+                session,
+                log_path="Editor.log",
+            )
+
+        self.assertEqual(exit_code, unity_puer_exec.EXIT_MODAL_BLOCKED)
+        body = json.loads(stdout)
+        self.assertEqual(body["status"], "modal_blocked")
+        self.assertEqual(body["blocker"]["type"], "unknown_modal_dialog")
+        self.assertEqual(body["blocker"]["scope"], "exec")
+        resolve_mock.assert_not_called()
+
     def test_get_blocker_state_reports_no_blocker(self):
         with mock.patch.object(unity_session, "get_blocker_state", return_value=_make_session()), mock.patch.object(
             unity_puer_exec_runtime.unity_modal_blockers,
