@@ -307,6 +307,311 @@ class UnknownDialogReportingTests(unittest.TestCase):
         self.assertEqual(blocker["type"], "unknown_modal_dialog")
 
 
+class ButtonEnumerationTests(unittest.TestCase):
+    """D4: only clickable push buttons are candidates."""
+
+    def _dialog_with(self, *children):
+        owner = _main(1, enabled=False)
+        dialog = _dialog(2, "Options", owner=1)
+        for child in children:
+            dialog.with_children(child)
+        return owner, dialog
+
+    def test_enumerates_push_buttons_with_hwnd_label_and_ctrl_id(self):
+        owner, dialog = self._dialog_with(_button(3, "&Save"), _button(4, "Cancel"))
+
+        with fake_user32.install(unity_modal_blockers, [owner, dialog]):
+            buttons = unity_modal_blockers._enumerate_buttons(2)
+
+        self.assertEqual([b["label"] for b in buttons], ["&Save", "Cancel"])
+        for button in buttons:
+            self.assertEqual(set(button), {"hwnd", "label", "ctrl_id"})
+
+    def test_checkbox_and_radio_controls_are_excluded(self):
+        checkbox = fake_user32.FakeWindow(
+            3, title="Apply to all", class_name="Button", style=fake_user32._style(fake_user32.BS_CHECKBOX)
+        )
+        radio = fake_user32.FakeWindow(
+            4, title="Overwrite", class_name="Button", style=fake_user32._style(fake_user32.BS_RADIOBUTTON)
+        )
+        push = _button(5, "OK")
+        owner, dialog = self._dialog_with(checkbox, radio, push)
+
+        with fake_user32.install(unity_modal_blockers, [owner, dialog]):
+            buttons = unity_modal_blockers._enumerate_buttons(2)
+
+        self.assertEqual([b["label"] for b in buttons], ["OK"])
+
+    def test_group_box_is_excluded(self):
+        group = fake_user32.FakeWindow(
+            3, title="Options", class_name="Button", style=fake_user32._style(fake_user32.BS_GROUPBOX)
+        )
+        push = _button(4, "Save")
+        owner, dialog = self._dialog_with(group, push)
+
+        with fake_user32.install(unity_modal_blockers, [owner, dialog]):
+            buttons = unity_modal_blockers._enumerate_buttons(2)
+
+        self.assertEqual([b["label"] for b in buttons], ["Save"])
+
+    def test_disabled_button_is_excluded(self):
+        disabled = fake_user32.FakeWindow(
+            3,
+            title="Save",
+            class_name="Button",
+            style=fake_user32._style(0) | fake_user32.WS_DISABLED,
+        )
+        enabled = _button(4, "Cancel")
+        owner, dialog = self._dialog_with(disabled, enabled)
+
+        with fake_user32.install(unity_modal_blockers, [owner, dialog]):
+            buttons = unity_modal_blockers._enumerate_buttons(2)
+
+        self.assertEqual([b["label"] for b in buttons], ["Cancel"])
+
+    def test_invisible_button_is_excluded(self):
+        hidden = fake_user32.button(3, "Save")
+        hidden.visible = False
+        owner, dialog = self._dialog_with(hidden, _button(4, "Cancel"))
+
+        with fake_user32.install(unity_modal_blockers, [owner, dialog]):
+            buttons = unity_modal_blockers._enumerate_buttons(2)
+
+        self.assertEqual([b["label"] for b in buttons], ["Cancel"])
+
+
+class ButtonLabelMatchingTests(unittest.TestCase):
+    """D4: label matching strips mnemonics and is case-insensitive."""
+
+    def setUp(self):
+        self.buttons = [
+            {"hwnd": 3, "label": "&Save", "ctrl_id": 3},
+            {"hwnd": 4, "label": "Don't Save", "ctrl_id": 4},
+        ]
+
+    def test_mnemonic_is_stripped(self):
+        matched = unity_modal_blockers._match_button(self.buttons, "Save")
+        self.assertIsNotNone(matched)
+        self.assertEqual(matched["hwnd"], 3)
+
+    def test_match_is_case_insensitive(self):
+        matched = unity_modal_blockers._match_button(self.buttons, "save")
+        self.assertIsNotNone(matched)
+        self.assertEqual(matched["hwnd"], 3)
+
+    def test_whitespace_is_trimmed(self):
+        matched = unity_modal_blockers._match_button(self.buttons, "  Save  ")
+        self.assertIsNotNone(matched)
+        self.assertEqual(matched["hwnd"], 3)
+
+    def test_label_with_apostrophe_matches(self):
+        matched = unity_modal_blockers._match_button(self.buttons, "Don't Save")
+        self.assertIsNotNone(matched)
+        self.assertEqual(matched["hwnd"], 4)
+
+    def test_unknown_label_matches_nothing(self):
+        self.assertIsNone(unity_modal_blockers._match_button(self.buttons, "Delete Everything"))
+
+    def test_empty_label_matches_nothing(self):
+        self.assertIsNone(unity_modal_blockers._match_button(self.buttons, ""))
+
+
+class ClickChainTests(unittest.TestCase):
+    """D5: message-level first, foreground last, Safe Mode exempt."""
+
+    def test_message_level_click_does_not_foreground(self):
+        owner = _main(1, enabled=False)
+        dialog = _dialog(2, "Delete Asset?", owner=1)
+        button = _button(3, "&Delete")
+        dialog.with_children(button)
+
+        with fake_user32.install(unity_modal_blockers, [owner, dialog]) as user32:
+            unity_modal_blockers._click_button(2, {"hwnd": 3, "label": "&Delete", "ctrl_id": 3})
+
+        self.assertTrue(user32.called("SendMessageW"))
+        self.assertFalse(user32.called("SetForegroundWindow"))
+
+    def test_chain_escalates_when_first_level_does_not_close(self):
+        owner = _main(1, enabled=False)
+        dialog = _dialog(2, "Delete Asset?", owner=1)
+        dialog.with_children(_button(3, "&Delete"))
+
+        with fake_user32.install(unity_modal_blockers, [owner, dialog]) as user32:
+            unity_modal_blockers._click_button(2, {"hwnd": 3, "label": "&Delete", "ctrl_id": 3})
+
+        sends = [m for name, args in user32.calls if name == "SendMessageW" for m in [args[1]]]
+        self.assertIn(unity_modal_blockers.BM_CLICK, sends)
+        self.assertIn(unity_modal_blockers.WM_COMMAND, sends)
+        self.assertTrue(user32.called("PostMessageW"))
+
+    def test_chain_stops_early_when_dialog_closes(self):
+        owner = _main(1, enabled=False)
+        dialog = _dialog(2, "Delete Asset?", owner=1)
+        button = _button(3, "&Delete")
+        dialog.auto_close = True
+        dialog.with_children(button)
+
+        with fake_user32.install(unity_modal_blockers, [owner, dialog]) as user32:
+            unity_modal_blockers._click_button(2, {"hwnd": 3, "label": "&Delete", "ctrl_id": 3})
+
+        sends = [m for name, args in user32.calls if name == "SendMessageW" for m in [args[1]]]
+        self.assertEqual(sends, [unity_modal_blockers.BM_CLICK])
+        self.assertFalse(user32.called("PostMessageW"))
+
+    def test_safe_mode_uses_foreground_keyboard_path(self):
+        owner = _main(1, enabled=False)
+        dialog = _dialog(2, "Enter Safe Mode?", owner=1)
+        dialog.with_children(_button(3, "&Enter Safe Mode"))
+        dialog.auto_close = True
+
+        with fake_user32.install(unity_modal_blockers, [owner, dialog]) as user32:
+            result = unity_modal_blockers.resolve_modal_blocker(
+                4321, action="click", hwnd=2, button="Enter Safe Mode"
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(user32.called("SetForegroundWindow"))
+        self.assertTrue(user32.called("keybd_event"))
+
+
+class ResolveBlockerTests(unittest.TestCase):
+    """D1: cancel is Safe-Mode-only; everything else resolves by named click."""
+
+    def _scene(self, title="Save Scene", enabled_owner=False):
+        owner = _main(1, enabled=enabled_owner)
+        dialog = _dialog(2, title, owner=1)
+        dialog.with_children(_button(3, "&Save"), _button(4, "Cancel"))
+        return owner, dialog
+
+    def test_cancel_on_save_scene_is_rejected(self):
+        owner, dialog = self._scene()
+
+        with fake_user32.install(unity_modal_blockers, [owner, dialog]):
+            result = unity_modal_blockers.resolve_modal_blocker(4321, action="cancel")
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["status"], "resolution_failed")
+        self.assertEqual(result["error"], "action_not_supported_for_blocker")
+
+    def test_cancel_does_not_activate_any_control(self):
+        owner, dialog = self._scene()
+
+        with fake_user32.install(unity_modal_blockers, [owner, dialog]) as user32:
+            unity_modal_blockers.resolve_modal_blocker(4321, action="cancel")
+
+        self.assertFalse(user32.called("SendMessageW"))
+        self.assertFalse(user32.called("keybd_event"))
+
+    def test_cancel_on_safe_mode_is_allowed(self):
+        owner = _main(1, enabled=False)
+        dialog = _dialog(2, "Enter Safe Mode?", owner=1)
+        dialog.with_children(_button(3, "&Enter Safe Mode"))
+        dialog.auto_close = True
+
+        with fake_user32.install(unity_modal_blockers, [owner, dialog]):
+            result = unity_modal_blockers.resolve_modal_blocker(4321, action="cancel")
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["result"]["action"], "cancel")
+        self.assertEqual(result["result"]["blocker"]["type"], "safe_mode_dialog")
+
+    def test_click_resolves_a_save_scene_dialog(self):
+        owner, dialog = self._scene(enabled_owner=True)
+        dialog.auto_close = True
+
+        with fake_user32.install(unity_modal_blockers, [owner, dialog]):
+            result = unity_modal_blockers.resolve_modal_blocker(
+                4321, action="click", hwnd=2, button="Cancel"
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["result"]["status"], "resolved")
+        self.assertEqual(result["result"]["action"], "click")
+        self.assertEqual(result["result"]["blocker"]["type"], "save_scene_dialog")
+
+    def test_click_matches_label_without_mnemonic(self):
+        owner, dialog = self._scene(enabled_owner=True)
+        dialog.auto_close = True
+
+        with fake_user32.install(unity_modal_blockers, [owner, dialog]):
+            result = unity_modal_blockers.resolve_modal_blocker(
+                4321, action="click", hwnd=2, button="save"
+            )
+
+        self.assertTrue(result["ok"])
+
+    def test_click_with_unknown_hwnd_returns_window_not_found(self):
+        owner, dialog = self._scene(enabled_owner=True)
+
+        with fake_user32.install(unity_modal_blockers, [owner, dialog]) as user32:
+            result = unity_modal_blockers.resolve_modal_blocker(
+                4321, action="click", hwnd=99, button="Cancel"
+            )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"], "window_not_found")
+        self.assertFalse(user32.called("SendMessageW"))
+
+    def test_click_with_unmatched_label_returns_button_not_found(self):
+        owner, dialog = self._scene(enabled_owner=True)
+
+        with fake_user32.install(unity_modal_blockers, [owner, dialog]) as user32:
+            result = unity_modal_blockers.resolve_modal_blocker(
+                4321, action="click", hwnd=2, button="Delete Everything"
+            )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"], "button_not_found")
+        self.assertFalse(user32.called("SendMessageW"))
+
+    def test_click_without_hwnd_or_button_is_rejected(self):
+        owner, dialog = self._scene(enabled_owner=True)
+
+        with fake_user32.install(unity_modal_blockers, [owner, dialog]):
+            result = unity_modal_blockers.resolve_modal_blocker(4321, action="click")
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"], "button_not_found")
+
+    def test_click_targets_explicit_window_despite_multiple_blockers(self):
+        owner = _main(1, enabled=False)
+        first = _dialog(2, "Delete Asset?", owner=1)
+        first.with_children(_button(3, "&Delete"))
+        second = _dialog(4, "Save Scene", owner=1)
+        second.auto_close = True
+        second.with_children(_button(5, "Cancel"))
+
+        with fake_user32.install(unity_modal_blockers, [owner, first, second]):
+            result = unity_modal_blockers.resolve_modal_blocker(
+                4321, action="click", hwnd=4, button="Cancel"
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["result"]["blocker"]["type"], "save_scene_dialog")
+
+    def test_click_reports_failure_when_dialog_does_not_close(self):
+        owner, dialog = self._scene(enabled_owner=True)
+
+        with fake_user32.install(unity_modal_blockers, [owner, dialog]):
+            result = unity_modal_blockers.resolve_modal_blocker(
+                4321, action="click", hwnd=2, button="Cancel", timeout_ms=1, poll_interval_ms=1
+            )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"], "click_not_confirmed")
+
+    def test_cancel_with_hwnd_is_rejected(self):
+        owner, dialog = self._scene(enabled_owner=True)
+
+        with fake_user32.install(unity_modal_blockers, [owner, dialog]):
+            result = unity_modal_blockers.resolve_modal_blocker(
+                4321, action="cancel", hwnd=2, button="Cancel"
+            )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"], "action_not_supported_for_blocker")
+
+
 class DismissApiUpdaterDialogTests(unittest.TestCase):
     def _run(self, states, click_result=True):
         clock = _FakeClock()

@@ -162,11 +162,37 @@ def _unknown_blocker_entry(dialog):
     return entry
 
 
-def resolve_modal_blocker(unity_pid, action="cancel", timeout_ms=1500, poll_interval_ms=100):
+SAFE_MODE_TYPE = "safe_mode_dialog"
+
+
+def resolve_modal_blocker(
+    unity_pid,
+    action="cancel",
+    timeout_ms=1500,
+    poll_interval_ms=100,
+    hwnd=None,
+    button=None,
+):
+    """Resolve one reported modal blocker.
+
+    ``cancel`` is legal only for the Safe Mode dialog, where it preserves the
+    existing "cancel == Enter Safe Mode" semantics. Every other reported dialog
+    is resolved with ``click`` against a named window and button.
+    """
     if not unity_pid or sys.platform != "win32":
         return {"ok": False, "status": "no_supported_blocker"}
+    if action == "click":
+        return _resolve_by_click(unity_pid, hwnd, button, timeout_ms, poll_interval_ms)
     if action != "cancel":
         raise ValueError("unsupported action: {}".format(action))
+    if hwnd is not None or button is not None:
+        # --hwnd/--button belong to click; silently ignoring them would resolve
+        # a different dialog than the caller named.
+        return {
+            "ok": False,
+            "status": "resolution_failed",
+            "error": "action_not_supported_for_blocker",
+        }
 
     dialogs = _list_supported_windows_dialogs(unity_pid)
     if not dialogs:
@@ -179,6 +205,16 @@ def resolve_modal_blocker(unity_pid, action="cancel", timeout_ms=1500, poll_inte
         }
 
     dialog = dialogs[0]
+    if dialog["type"] != SAFE_MODE_TYPE:
+        # Save-scene dialogs lost automatic cancel: dismissing them that way can
+        # discard unsaved scene work, so it must be an explicit click instead.
+        return {
+            "ok": False,
+            "status": "resolution_failed",
+            "action": action,
+            "blocker": {"type": dialog["type"]},
+            "error": "action_not_supported_for_blocker",
+        }
     if not _click_cancel_button(dialog):
         return {
             "ok": False,
@@ -188,17 +224,81 @@ def resolve_modal_blocker(unity_pid, action="cancel", timeout_ms=1500, poll_inte
             "error": "cancel_control_not_found",
         }
 
+    return _confirm_disappearance(
+        dialog, action, timeout_ms=timeout_ms, poll_interval_ms=poll_interval_ms
+    )
+
+
+def _resolve_by_click(unity_pid, hwnd, button, timeout_ms, poll_interval_ms):
+    """Activate a named button on a validated window."""
+    if hwnd is None or not button:
+        return {
+            "ok": False,
+            "status": "resolution_failed",
+            "error": "button_not_found",
+        }
+    blocker = _find_blocker_by_hwnd(unity_pid, hwnd)
+    if blocker is None:
+        # Stale handle, or a window belonging to another process: never drive a
+        # click against a window we cannot confirm is the target dialog.
+        return {
+            "ok": False,
+            "status": "resolution_failed",
+            "error": "window_not_found",
+        }
+    buttons = _enumerate_buttons(hwnd)
+    target = _match_button(buttons, button)
+    if target is None:
+        return {
+            "ok": False,
+            "status": "resolution_failed",
+            "action": "click",
+            "blocker": {"type": blocker["type"]},
+            "error": "button_not_found",
+        }
+
+    if blocker["type"] == SAFE_MODE_TYPE:
+        # Safe Mode ignores message-level clicks historically; keep the
+        # foreground keyboard path for it.
+        _click_via_keyboard(hwnd)
+    else:
+        _click_button(hwnd, target)
+
+    return _confirm_disappearance(
+        blocker,
+        "click",
+        hwnd=hwnd,
+        timeout_ms=timeout_ms,
+        poll_interval_ms=poll_interval_ms,
+    )
+
+
+def _find_blocker_by_hwnd(unity_pid, hwnd):
+    """The reported blocker matching ``hwnd``, or None when it is not one.
+
+    Re-validates ownership against the project's Editor pid so a stale or
+    foreign handle cannot drive a click.
+    """
+    for blocker in list_supported_modal_blockers(unity_pid, scope=None):
+        if blocker.get("hwnd") == hwnd:
+            return blocker
+    return None
+
+
+def _confirm_disappearance(blocker, action, hwnd=None, timeout_ms=1500, poll_interval_ms=100):
+    """Poll until the dialog closes, then report the resolution result."""
+    target_hwnd = hwnd if hwnd is not None else blocker["hwnd"]
     deadline = time.time() + (max(timeout_ms, 1) / 1000.0)
     poll_seconds = max(poll_interval_ms, 1) / 1000.0
     while time.time() < deadline:
-        if not _is_window_present(dialog["hwnd"]):
+        if not _is_window_present(target_hwnd):
             return {
                 "ok": True,
                 "status": "completed",
                 "result": {
                     "status": "resolved",
                     "action": action,
-                    "blocker": {"type": dialog["type"]},
+                    "blocker": {"type": blocker["type"]},
                 },
             }
         time.sleep(poll_seconds)
@@ -207,7 +307,7 @@ def resolve_modal_blocker(unity_pid, action="cancel", timeout_ms=1500, poll_inte
         "ok": False,
         "status": "resolution_failed",
         "action": action,
-        "blocker": {"type": dialog["type"]},
+        "blocker": {"type": blocker["type"]},
         "error": "click_not_confirmed",
     }
 
@@ -367,15 +467,32 @@ def _dialog_entry(dialog, spec):
 
 
 def _list_supported_windows_dialogs(unity_pid):
+    """Dialogs a caller may resolve: catalog types plus reported unknowns."""
     dialogs = []
     for dialog in _list_windows_dialogs(unity_pid):
         spec = _match_dialog_spec(dialog)
-        if spec is None or spec["type"] == API_UPDATER_DIALOG_TYPE:
-            # resolve-blocker is defined only for the save-scene and Safe Mode
-            # dialogs; the ScriptUpdater consent dialog is auto-recovered.
+        if spec is not None and spec["type"] == API_UPDATER_DIALOG_TYPE:
+            # The ScriptUpdater consent dialog is auto-recovered, never resolved
+            # through resolve-blocker.
+            continue
+        if spec is None:
+            if not _is_modal_window(dialog["hwnd"]):
+                continue
+            dialogs.append(_unknown_dialog_entry(dialog))
             continue
         dialogs.append(_dialog_entry(dialog, spec))
     return dialogs
+
+
+def _unknown_dialog_entry(dialog):
+    entry = {
+        "hwnd": dialog["hwnd"],
+        "title": dialog["title"],
+        "type": UNKNOWN_DIALOG_TYPE,
+        "cancel_labels": (),
+        "click_method": "bm_click",
+    }
+    return entry
 
 
 def _list_supported_api_updater_dialogs(unity_pid):

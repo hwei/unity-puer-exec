@@ -65,7 +65,13 @@ def build_parser():
 
     resolve_blocker_parser = parsers["resolve-blocker"]
     resolve_blocker_parser.add_argument("--project-path", default=None)
-    resolve_blocker_parser.add_argument("--action", choices=("cancel",), required=True)
+    resolve_blocker_parser.add_argument("--action", choices=("cancel", "click"), required=True)
+    resolve_blocker_parser.add_argument(
+        "--hwnd", type=int, default=None, help="window handle from a reported blocker payload; used by --action click"
+    )
+    resolve_blocker_parser.add_argument(
+        "--button", default=None, help="button label from the blocker payload's buttons; used by --action click"
+    )
     _add_diagnostics_arg(resolve_blocker_parser)
     _add_response_file_arg(resolve_blocker_parser)
 

@@ -1870,7 +1870,12 @@ def run_resolve_blocker(args):
         return 1, emit_payload(payload), ""
 
     session = unity_session.get_blocker_state(project_path=args.project_path, argv0=getattr(args, "argv0", None))
-    result = unity_modal_blockers.resolve_modal_blocker(session.unity_pid, action=args.action)
+    result = unity_modal_blockers.resolve_modal_blocker(
+        session.unity_pid,
+        action=args.action,
+        hwnd=getattr(args, "hwnd", None),
+        button=getattr(args, "button", None),
+    )
     if result.get("ok"):
         payload = success_payload(
             "resolve-blocker",

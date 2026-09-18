@@ -160,6 +160,7 @@ class FakeUser32:
         self.windows = list(windows)
         self.pid = pid
         self.calls = []
+        self.foregrounded = None
 
     # --- lookup helpers -------------------------------------------------
 
@@ -277,9 +278,15 @@ class FakeUser32:
         return True
 
     def SetForegroundWindow(self, hwnd):
+        self.foregrounded = hwnd
         return True
 
     def keybd_event(self, vk, scan, flags, extra):
+        # The keyboard path targets the dialog itself, which the caller has just
+        # foregrounded; a scripted dialog closes on the Enter key.
+        target = self._find(getattr(self, "foregrounded", None))
+        if target is not None and target.auto_close:
+            target.visible = False
         return None
 
     def mouse_event(self, flags, dx, dy, data, extra):
@@ -290,14 +297,32 @@ class FakeUser32:
 
     def _maybe_close(self, hwnd, msg):
         """Simulate a dialog closing when a message reaches an auto_close control."""
-        window = self._find(hwnd)
-        if window is None or not window.auto_close:
+        if msg not in (BM_CLICK, WM_COMMAND, WM_KEYDOWN):
             return
-        target = self._find(window.owner) if window.owner else None
-        if target is None:
+        dialog = self._toplevel_of(hwnd)
+        # auto_close may be set on the dialog or on the clicked control.
+        clicked = self._find(hwnd)
+        if dialog is None or not (dialog.auto_close or (clicked and clicked.auto_close)):
             return
-        if msg in (BM_CLICK, WM_COMMAND, WM_KEYDOWN):
-            target.visible = False
+        dialog.visible = False
+
+    def _toplevel_of(self, hwnd):
+        """Top-level window containing ``hwnd``."""
+        for window in self.windows:
+            if window.hwnd == hwnd:
+                return window
+            if any(child.hwnd == hwnd for child in self._all_of(window)):
+                return window
+        return None
+
+    def _all_of(self, window):
+        out = []
+        pending = list(window.children)
+        while pending:
+            child = pending.pop(0)
+            out.append(child)
+            pending.extend(child.children)
+        return out
 
     # --- ctypes surface -------------------------------------------------
 
