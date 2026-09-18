@@ -229,22 +229,6 @@ When the Unity server is not running (Safe Mode), the CLI SHALL extract C# compi
 - **WHEN** the Editor log contains no lines matching the error pattern
 - **THEN** `_extract_compile_errors_from_log` returns `None`
 
-### Requirement: CLI brings Unity to foreground on every exec
-
-Before submitting an exec request in project-path mode, the CLI SHALL bring the Unity Editor main window to the foreground via `SetForegroundWindow`. This ensures Unity detects file system changes and triggers recompilation.
-
-#### Scenario: Unity window brought to foreground
-
-- **WHEN** `run_exec` or `run_wait_for_exec` is called in project-path mode
-- **THEN** `_bring_unity_to_foreground` is called before any server interaction
-- **AND** `_foreground_unity_window` locates the main Unity window by PID and window title
-- **AND** `SetForegroundWindow` is called on the found window handle
-
-#### Scenario: Foreground call is non-fatal on failure
-
-- **WHEN** `_bring_unity_to_foreground` encounters any exception (e.g., window not found, API failure)
-- **THEN** the exception is silently caught and execution continues
-
 ### Requirement: Session marker in get-compile responses enables stable pagination
 
 The `/get-compile-errors` and `/get-compile-warnings` server responses SHALL include `session_marker`. The CLI SHALL extract and surface this marker in command results. This enables the agent to detect domain reloads between paginated calls and avoid using stale index offsets.

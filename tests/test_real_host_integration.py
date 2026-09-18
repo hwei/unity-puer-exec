@@ -323,46 +323,6 @@ class _PreferredPortBinder:
             self._thread.join(timeout=5)
 
 
-def _nudge_editor_foreground_win32():
-    """Best-effort: bring a Unity Editor window to the foreground on win32.
-
-    Only needed as a focus nudge for the touched-script reload fallback when
-    Unity's auto-refresh is focus-gated. Returns True if a window was nudged.
-    Failures are swallowed -- the server-side refresh path does not require focus.
-    """
-    if sys.platform != "win32":
-        return False
-    try:
-        import ctypes
-        from ctypes import wintypes
-
-        unity_pids = set(unity_session._list_unity_pids())
-        if not unity_pids:
-            return False
-        user32 = ctypes.windll.user32
-        nudged = {"hwnd": None}
-
-        WNDENUMPROC = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
-
-        def _callback(hwnd, _lparam):
-            if not user32.IsWindowVisible(hwnd):
-                return True
-            pid = wintypes.DWORD()
-            user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
-            if pid.value in unity_pids:
-                nudged["hwnd"] = hwnd
-                return False
-            return True
-
-        user32.EnumWindows(WNDENUMPROC(_callback), 0)
-        if nudged["hwnd"] is not None:
-            user32.SetForegroundWindow(nudged["hwnd"])
-            return True
-    except Exception:
-        return False
-    return False
-
-
 def _trigger_domain_reload_via_exec(base_url):
     """Force a domain reload by exec-ing RequestScriptReload against base_url.
 
@@ -397,16 +357,14 @@ def _trigger_domain_reload_via_touched_script(project_path, unity_exe_path):
 
     Writes a uniquely-changing C# file under the validation temp directory and
     runs refresh-before-exec, which drives AssetDatabase.Refresh server-side and
-    therefore does not require Editor focus. A best-effort win32 foreground nudge
-    is attempted first for environments where auto-refresh is focus-gated.
+    therefore does not require Editor focus.
     """
-    _nudge_editor_foreground_win32()
     temp_dir = project_path / "Assets" / "__codex_validation_temp"
     temp_dir.mkdir(parents=True, exist_ok=True)
-    marker = temp_dir / "ControlPortReloadNudge.cs"
+    marker = temp_dir / "ControlPortReloadProbe.cs"
     marker.write_text(
-        "// Auto-generated reload nudge for control-port rollover regression.\n"
-        "internal static class ControlPortReloadNudge {{ internal const long Stamp = {}L; }}\n".format(
+        "// Auto-generated reload probe for control-port rollover regression.\n"
+        "internal static class ControlPortReloadProbe {{ internal const long Stamp = {}L; }}\n".format(
             time.time_ns()
         ),
         encoding="utf-8",
@@ -1153,7 +1111,6 @@ class RealHostIntegrationTests(unittest.TestCase):
 
         # 1. Base-url refresh-before-exec must no longer be rejected as project-only,
         #    and the terminal response carries the user script result, not {refreshed: true}.
-        _nudge_editor_foreground_win32()
         exec_exit_code, exec_payload, _, _ = _run_cli(
             [
                 "exec",

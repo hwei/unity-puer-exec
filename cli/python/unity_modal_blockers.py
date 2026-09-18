@@ -141,38 +141,6 @@ def resolve_modal_blocker(unity_pid, action="cancel", timeout_ms=1500, poll_inte
 
 
 
-def _foreground_unity_window(unity_pid):
-    """Bring the main Unity window to foreground."""
-    if not unity_pid or sys.platform != "win32":
-        return
-    user32, wintypes, ctypes = _load_win32_modules()
-    found = [None]
-
-    def callback(hwnd, _l_param):
-        proc_id = wintypes.DWORD()
-        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(proc_id))
-        if proc_id.value != unity_pid:
-            return True
-        if not user32.IsWindowVisible(hwnd):
-            return True
-        buf = ctypes.create_unicode_buffer(256)
-        user32.GetWindowTextW(hwnd, buf, 256)
-        title = buf.value
-        if title and ("Unity" in title or "SAFE MODE" in title.upper()):
-            rect = wintypes.RECT()
-            if user32.GetWindowRect(hwnd, ctypes.byref(rect)):
-                w = rect.right - rect.left
-                h = rect.bottom - rect.top
-                if w > 200 and h > 200:
-                    found[0] = hwnd
-                    return False
-        return True
-
-    enum_proc = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)(callback)
-    user32.EnumWindows(enum_proc, 0)
-    if found[0]:
-        user32.SetForegroundWindow(found[0])
-
 def _get_unity_main_window_title(unity_pid):
     """Return the main Unity window title for the given PID, or None."""
     user32, wintypes, ctypes = _load_win32_modules()

@@ -1260,7 +1260,6 @@ def _run_exec_impl(args, recovery):
 
     log_path = _resolve_log_path(args, session)
     log_start = _capture_log_offset(log_path)
-    _bring_unity_to_foreground(session)
 
     if selector == "project_path" and args.refresh_before_exec:
         refresh_request_id = _refresh_request_id(request_id)
@@ -1460,7 +1459,6 @@ def _run_wait_for_exec_impl(args, recovery):
         recovery.record(getattr(session, "api_updater_declines", 0))
         session.api_updater_declines = 0
         base_url = session.base_url
-        _bring_unity_to_foreground(session)
     else:
         session = None
         base_url = args.base_url
@@ -2145,17 +2143,6 @@ def _extract_compile_errors_from_log(log_path, max_errors=20):
         "errors": errors[:max_errors],
     }
 
-
-def _bring_unity_to_foreground(session):
-    """Bring the Unity Editor main window to foreground so it detects file changes."""
-    if session is None or not session.unity_pid:
-        return
-    if sys.platform != "win32":
-        return
-    try:
-        unity_modal_blockers._foreground_unity_window(session.unity_pid)
-    except Exception:
-        pass
 
 def _normalize_exec_blocker_result(exit_code, stdout_text, stderr_text, session, log_path=None):
     if session is None or not stdout_text:
