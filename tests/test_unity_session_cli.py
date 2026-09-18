@@ -1659,13 +1659,24 @@ class UnityPuerExecCliTests(unittest.TestCase):
         self.assertEqual(body["result"]["status"], "modal_blocked")
         self.assertEqual(body["result"]["blocker"]["type"], "save_scene_dialog")
 
-    def test_resolve_blocker_help_renders_cancel_guidance(self):
+    def test_resolve_blocker_help_renders_click_guidance(self):
         exit_code, stdout, stderr = unity_puer_exec.run_cli(["resolve-blocker", "--help"])
 
         self.assertEqual(exit_code, 0)
         self.assertEqual(stderr, "")
-        self.assertIn("dismissing a supported Unity modal blocker", stdout)
-        self.assertIn("resolve-blocker --project-path X:/project --action cancel", stdout)
+        self.assertIn("dismissing a reported Unity modal blocker", stdout)
+        self.assertIn("--action click --hwnd <int> --button \"<label>\"", stdout)
+
+    def test_resolve_blocker_help_scopes_cancel_to_safe_mode(self):
+        """Cancel must not be advertised as the general unblock action."""
+        exit_code, stdout, stderr = unity_puer_exec.run_cli(["resolve-blocker", "--help-args"])
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(stderr, "")
+        self.assertIn("dismiss the Safe Mode dialog", stdout)
+        self.assertIn("Rejected for every other blocker type", stdout)
+        self.assertIn("--hwnd", stdout)
+        self.assertIn("--button", stdout)
 
     def test_resolve_blocker_help_status_mentions_resolution_states(self):
         exit_code, stdout, stderr = unity_puer_exec.run_cli(["resolve-blocker", "--help-status"])

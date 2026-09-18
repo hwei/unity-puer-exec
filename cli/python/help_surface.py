@@ -275,24 +275,27 @@ COMMAND_HELP = {
     },
     "resolve-blocker": {
         "quick_start": [
-            "Secondary troubleshooting command for explicitly dismissing a supported Unity modal blocker.",
-            "`unity-puer-exec resolve-blocker --project-path X:/project --action cancel`",
-            "Use this only after you have determined that a supported save-scene blocker is present and machine-issued cancel is acceptable.",
+            "Secondary troubleshooting command for explicitly dismissing a reported Unity modal blocker.",
+            "`unity-puer-exec resolve-blocker --project-path X:/project --action click --hwnd <int> --button \"<label>\"`",
+            "Read `hwnd` and the button label from the reported blocker payload, then name the button you intend to activate.",
+            "`--action cancel` is legal only for the Safe Mode dialog; every other dialog requires `--action click`.",
         ],
         "related_workflows": ("recover-exec-by-request-id",),
         "args": {
             "Arguments": [
-                "`--project-path <path>`: select the Unity project whose current supported modal blocker should be resolved.",
-                "`--action cancel`: dismiss the supported blocker with the dialog's cancel path.",
+                "`--project-path <path>`: select the Unity project whose current modal blocker should be resolved.",
+                "`--action click` with `--hwnd <int>` and `--button \"<label>\"`: activate one named button on one reported dialog. Required for save-scene dialogs and for `unknown_modal_dialog`.",
+                "`--action cancel`: dismiss the Safe Mode dialog. Rejected for every other blocker type with `error = 'action_not_supported_for_blocker'`.",
                 "`--include-diagnostics`: include top-level debug diagnostics in the machine-readable response.",
             ],
             "Selector Rules": [
                 "`--project-path` is required for this command.",
                 "`--base-url` is intentionally unsupported in the first version.",
-                "The command is Windows-only and only applies to the supported save-scene blocker types.",
+                "The command is Windows-only.",
+                "The CLI re-checks that `--hwnd` still belongs to the requested project's Editor before activating anything, so a stale handle is refused rather than clicked.",
             ],
             "Timeout Rules": [
-                "Resolution uses an internal fixed confirmation timeout after clicking cancel; callers do not configure it.",
+                "Resolution uses an internal fixed confirmation timeout after activating the button; callers do not configure it.",
             ],
         },
         "status": {
@@ -300,8 +303,8 @@ COMMAND_HELP = {
                 "`completed`: blocker resolution succeeded and `result.status` is `resolved`.",
             ],
             "failure": [
-                ("no_supported_blocker", 1, "no supported blocker was currently detected, so the CLI did not interact with any window."),
-                ("resolution_failed", 1, "a supported blocker was detected but the cancel interaction could not be completed safely or confirmed."),
+                ("no_supported_blocker", 1, "no resolvable blocker was currently detected, so the CLI did not interact with any window."),
+                ("resolution_failed", 1, "a blocker was detected but the interaction could not be completed safely or confirmed; inspect `error` for `window_not_found`, `button_not_found`, `action_not_supported_for_blocker`, or `click_not_confirmed`."),
                 ("unsupported_operation", 1, "the command requires Windows plus `--project-path` in the first version."),
                 ("failed", 1, "an unexpected resolution failure occurred."),
             ],
@@ -897,12 +900,17 @@ GUIDANCE_MATRIX = {
             },
             {
                 "command": "resolve-blocker",
-                "when": "you have confirmed a supported modal blocker and machine-issued cancel is acceptable",
+                "when": "you have confirmed blocker.type is safe_mode_dialog and want to dismiss it with --action cancel",
                 "argv_template": [
                     "unity-puer-exec", "resolve-blocker",
                     "--project-path", "{project_path}",
                     "--action", "cancel",
                 ],
+            },
+            {
+                # No argv: hwnd and button label come from the blocker payload.
+                "command": "resolve-blocker",
+                "when": "blocker.type is not safe_mode_dialog; read hwnd and a button label from the blocker payload and pass --action click --hwnd <int> --button \"<label>\"",
             },
             {
                 "command": "wait-for-exec",
@@ -1094,12 +1102,17 @@ GUIDANCE_MATRIX = {
             },
             {
                 "command": "resolve-blocker",
-                "when": "you have confirmed a supported modal blocker and machine-issued cancel is acceptable",
+                "when": "you have confirmed blocker.type is safe_mode_dialog and want to dismiss it with --action cancel",
                 "argv_template": [
                     "unity-puer-exec", "resolve-blocker",
                     "--project-path", "{project_path}",
                     "--action", "cancel",
                 ],
+            },
+            {
+                # No argv: hwnd and button label come from the blocker payload.
+                "command": "resolve-blocker",
+                "when": "blocker.type is not safe_mode_dialog; read hwnd and a button label from the blocker payload and pass --action click --hwnd <int> --button \"<label>\"",
             },
             {
                 "command": "wait-for-exec",
@@ -1310,12 +1323,18 @@ GUIDANCE_MATRIX = {
         "next_steps": [
             {
                 "command": "resolve-blocker",
-                "when": "result.status is modal_blocked and you want to dismiss the blocker",
+                "when": "result.status is modal_blocked and blocker.type is safe_mode_dialog and you want to dismiss it with --action cancel",
                 "argv_template": [
                     "unity-puer-exec", "resolve-blocker",
                     "--project-path", "{project_path}",
                     "--action", "cancel",
                 ],
+            },
+            {
+                # No argv: hwnd and button label come from the blocker payload, not
+                # from invocation arguments, so a template cannot be filled.
+                "command": "resolve-blocker",
+                "when": "result.status is modal_blocked and blocker.type is not safe_mode_dialog; read hwnd and a button label from the blocker payload and pass --action click --hwnd <int> --button \"<label>\"",
             },
         ],
     },
@@ -1341,10 +1360,10 @@ GUIDANCE_MATRIX = {
         ],
     },
     ("resolve-blocker", "no_supported_blocker"): {
-        "situation": "No supported blocker was currently detected. The dialog may have already been dismissed or is not a supported blocker type.",
+        "situation": "No resolvable blocker was currently detected. The dialog may have already been dismissed, or it is a non-blocking Editor window.",
     },
     ("resolve-blocker", "resolution_failed"): {
-        "situation": "A supported blocker was detected but the cancel interaction could not be completed safely or confirmed.",
+        "situation": "A blocker was detected but the interaction could not be completed safely or confirmed. If `error` is `window_not_found`, the supplied --hwnd is stale or belongs to another process: re-run get-blocker-state for a current handle. If `error` is `button_not_found`, no clickable button matched the supplied label: re-read the `buttons` array from the blocker payload. If `error` is `action_not_supported_for_blocker`, use --action click for this blocker type, or --action cancel only for Safe Mode. If `error` is `click_not_confirmed`, the dialog was still present after the confirmation timeout.",
     },
     ("resolve-blocker", "unsupported_operation"): {
         "situation": "Blocker resolution requires Windows and --project-path in the first version.",
