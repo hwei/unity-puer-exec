@@ -54,8 +54,8 @@
 
 ## 9. Host spikes and closeout
 
-- [ ] 9.1 Run host spike H1 (owner-disabled detection against Unity's real dialogs, false-positive rate vs Preferences / Project Settings / Build Settings) and record the result in the change directory; verify the D2 downgrade fallback contains any observed false positive.
+- [x] 9.1 Run host spike H1 (owner-disabled detection against Unity's real dialogs, false-positive rate vs Preferences / Project Settings / Build Settings) and record the result in the change directory; verify the D2 downgrade fallback contains any observed false positive.
 - [ ] 9.2 Run host spike H2 (does the Safe Mode dialog respond to command or posted key messages) and record the result; verify the Safe Mode exemption in D5 remains correct either way.
-- [ ] 9.3 Run the full mock unit suite and verify it passes; confirm the fake-user32 harness covers the D2 downgrade branch, the D4 exclusion rules, and `button_not_found`.
-- [ ] 9.4 Run `openspec validate --change generalize-modal-dialog --strict` and verify it reports no errors.
+- [x] 9.3 Run the full mock unit suite and verify it passes; confirm the fake-user32 harness covers the D2 downgrade branch, the D4 exclusion rules, and `button_not_found`.
+- [x] 9.4 Run `openspec validate --change generalize-modal-dialog --strict` and verify it reports no errors.
 - [ ] 9.5 Confirm the durable spec deltas match the change's five capability files and touch no unrelated requirement; then recommend `git commit`, `openspec archive generalize-modal-dialog`, and a final `git commit`.

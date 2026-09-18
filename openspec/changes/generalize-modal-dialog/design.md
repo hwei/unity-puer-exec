@@ -77,36 +77,59 @@ owned by the requested project's Editor pid; if not, returns `status = "resoluti
 `error = "window_not_found"` (no action taken). This prevents a stale or foreign hwnd from
 driving a click.
 
-### D2. Modal discrimination — owner-disabled primary, style/size secondary, allowlist-downgrade fallback
+### D2. Modal discrimination — dialog class required, then owner state
 
-Pseudo-code for the inspection loop (replaces the allowlist drop at `_match_dialog_spec`):
+Two host findings (see `validation-evidence.md`) reshaped this. Owner-disabled is **not**
+sufficient, and the size bound is **not** a prompt-size test.
+
+**Dialog class is the decisive signal.** A true modal disables the Editor's whole window tree,
+so while a real `Save Scene` dialog was up, a Unity panel *also* saw a disabled owner:
+
+```
+hwnd=339396 class=UnityContainerWndClass popup=True size=(335, 581)
+    owner=5702300 owner_enabled=False    # disabled by the real modal, not by itself
+```
+
+Style plus size matched it, so it was reported as `unknown_modal_dialog` and sorted ahead of the
+real dialog. Unity's own windows are `UnityContainerWndClass`; Windows dialogs are `#32770`.
+Requiring that class is what separates them, and it holds regardless of owner state.
+
+**Real file dialogs are large.** `Save Scene` measured 1200x720, so the original 900px bound
+rejected it. It was reported only because catalog title hits bypass discrimination; as an unknown
+it would have been dropped. The bound is now 1600 — a loose sanity bound against the Editor's own
+windows, not a prompt-size test.
+
+```
+is_modal(w):
+    if class_name(w) != "#32770": return False    # Unity windows, panels, main window
+    if not (popup_style(w) and sized(w)): return False
+    owner = GetWindow(w, GW_OWNER)                # GW_OWNER = 4
+    if owner != 0:
+        return not IsWindowEnabled(owner)         # owned dialog: blocks iff owner disabled
+    return True                                   # ownerless dialog (e.g. Safe Mode)
+```
+
+Inspection loop (replaces the allowlist drop at `_match_dialog_spec`):
 
 ```
 for w in visible_titled_windows(pid):
-    owner = GetWindow(w, GW_OWNER)            # GW_OWNER = 4
-    if owner != 0 and not IsWindowEnabled(owner):
-        is_modal = True                        # true blocking: disables its owner
-    elif _is_dialog_style(w) and _is_small(w):
-        is_modal = True                        # ownerless modal (e.g. Safe Mode)
-    else:
-        is_modal = False                       # Preferences / Project Settings / etc.
-
     spec = _match_dialog_spec(w)
     if spec is None:
-        if is_modal:
-            report unknown_modal_dialog(known-absent, hwnd, title, body, buttons, default)
+        if is_modal(w):
+            report unknown_modal_dialog(hwnd, title, body, buttons)
         # else: skip non-blocking Editor window (no longer dropped silently)
     elif spec.type == api_updater_dialog:
         continue                               # never exposed; still auto-declined elsewhere
     else:
+        # Catalog title hit reports without discrimination: title is the existing
+        # contract, and gating it could stop reporting dialogs reported today.
         report known dialog (save_scene_dialog / save_modified_scenes_prompt / safe_mode_dialog)
 ```
 
-Fallback policy: if owner-disabled mis-fires on a known-harmless window (e.g. classifies a
-settings panel as modal), the window is **downgraded to non-blocking**, never promoted to a
-blocker. Prefer a missed harmless window over a false modal that hangs exec. This is a
-deliberate asymmetry: false positives cost the caller a hang, false negatives cost one
-re-check on the next stall.
+Fallback policy: when discrimination is uncertain for a window, the window is **downgraded to
+non-blocking**, never promoted to a blocker. Prefer a missed harmless window over a false modal
+that hangs exec. This is a deliberate asymmetry: false positives cost the caller a hang, false
+negatives cost one re-check on the next stall.
 
 ### D3. Blocker payload shape — `type` is the sole discriminator, no `known` field
 
@@ -263,10 +286,11 @@ against Unity's actual dialogs — which no fake can answer.
 These are genuinely host-dependent and are answered by real-host validation, not by design
 revision. They do NOT change the specs, the chosen approach, or the task breakdown.
 
-- **H1**: Does owner-disabled detection hold for Unity's real dialogs, and what is the
-  false-positive rate against Preferences / Project Settings / Build Settings? (If high,
-  D2 fallback already contains it; no design change needed.)
-- **H2**: Does Safe Mode's dialog respond to `WM_COMMAND` or posted key messages at all?
-  (If not, H2 only confirms the Safe Mode exemption in D5 is correct; no change.)
+- **H1** *(answered on the host, 2026-09-18)*: real Unity modals do disable their owner, but the
+  signal is not unique to them and the size bound was wrong. Both findings are folded into D2 and
+  recorded in `validation-evidence.md`. No open question remains.
+- **H2** *(not exercised)*: entering Safe Mode needs a deliberate compile error plus an Editor
+  restart, which would disturb the host. The Safe Mode path is unchanged from prior behavior, so
+  this is a confirmation gap rather than a behavior change.
 
 H3 (`default_button` derivation) is closed: the field is dropped per D3/D7 rather than resolved.

@@ -31,6 +31,9 @@ DS_MODALFRAME = 0x0080
 WS_OVERLAPPEDWINDOW = 0x00CF0000
 MAIN_WINDOW_STYLE = WS_OVERLAPPEDWINDOW | WS_VISIBLE
 MAIN_WINDOW_RECT = (0, 0, 1600, 1000)
+# Unity's own windows are UnityContainerWndClass, never #32770.
+UNITY_WINDOW_CLASS = "UnityContainerWndClass"
+DIALOG_CLASS = "#32770"
 PANEL_STYLE = WS_OVERLAPPEDWINDOW | WS_VISIBLE
 PANEL_RECT = (100, 100, 1100, 800)
 
@@ -59,12 +62,45 @@ def main_window(hwnd, title="Unity Editor", **kwargs):
     """A realistic Editor main window: overlapped, large, not dialog-styled."""
     kwargs.setdefault("style", MAIN_WINDOW_STYLE)
     kwargs.setdefault("rect", MAIN_WINDOW_RECT)
+    kwargs.setdefault("class_name", UNITY_WINDOW_CLASS)
     return FakeWindow(hwnd, title=title, **kwargs)
 
 
 def panel(hwnd, title, owner_hwnd):
     """A non-blocking Editor panel such as Preferences or Project Settings."""
-    return FakeWindow(hwnd, title=title, style=PANEL_STYLE, rect=PANEL_RECT, owner=owner_hwnd)
+    return FakeWindow(
+        hwnd,
+        title=title,
+        class_name=UNITY_WINDOW_CLASS,
+        style=PANEL_STYLE,
+        rect=PANEL_RECT,
+        owner=owner_hwnd,
+    )
+
+
+def unity_window(hwnd, title, owner_hwnd=None, rect=(100, 100, 700, 900)):
+    """A Unity Editor window (UnityContainerWndClass): popup-styled but not a dialog.
+
+    Observed on the validation host: these windows see a disabled owner while a
+    real modal is up, so style and size alone would report them as blockers.
+    """
+    return FakeWindow(
+        hwnd,
+        title=title,
+        class_name=UNITY_WINDOW_CLASS,
+        style=WS_POPUP | WS_VISIBLE,
+        rect=rect,
+        owner=owner_hwnd,
+    )
+
+
+def file_dialog(hwnd, title, owner_hwnd, rect=(100, 100, 1300, 820)):
+    """A Windows common dialog, class #32770, as the real Save Scene dialog is.
+
+    Measured at 1200x720 on the validation host -- larger than a prompt, so a
+    prompt-size bound must not reject it.
+    """
+    return FakeWindow(hwnd, title=title, class_name=DIALOG_CLASS, style=WS_POPUP | WS_VISIBLE, rect=rect, owner=owner_hwnd)
 
 
 def button(hwnd, label, ctrl_id=None, **kwargs):
@@ -91,7 +127,7 @@ class FakeWindow:
         self,
         hwnd,
         title="",
-        class_name="#32770",
+        class_name=DIALOG_CLASS,
         style=WS_POPUP | WS_CAPTION,
         visible=True,
         enabled=True,

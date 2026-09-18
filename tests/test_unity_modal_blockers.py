@@ -179,11 +179,45 @@ class ModalDiscriminationTests(unittest.TestCase):
         with fake_user32.install(unity_modal_blockers, [dialog]):
             self.assertTrue(unity_modal_blockers._is_modal_window(3))
 
-    def test_ownerless_large_window_is_not_a_modal(self):
-        window = fake_user32.FakeWindow(4, title="Large Panel", style=fake_user32.WS_POPUP, rect=(0, 0, 1600, 1000))
+    def test_unity_window_is_not_a_modal_even_when_owner_is_disabled(self):
+        """Host finding: Editor windows see a disabled owner while a modal is up.
 
-        with fake_user32.install(unity_modal_blockers, [window]):
+        On the validation host a UnityContainerWndClass window measured 335x581
+        with a disabled owner while the real Save Scene dialog was showing. It is
+        popup-styled and prompt-sized, so only the window class separates it.
+        """
+        owner = _main(1, enabled=False)
+        unity_win = fake_user32.unity_window(4, "ItemDropTrailPreviewWindow", owner_hwnd=1)
+
+        with fake_user32.install(unity_modal_blockers, [owner, unity_win]):
             self.assertFalse(unity_modal_blockers._is_modal_window(4))
+            blockers = unity_modal_blockers.list_supported_modal_blockers(4321, scope="exec")
+
+        self.assertEqual(blockers, [])
+
+    def test_large_file_dialog_is_still_a_modal(self):
+        """Host finding: the real Save Scene dialog measures 1200x720.
+
+        A prompt-size bound must not reject Windows file dialogs, which are much
+        larger than a confirmation prompt.
+        """
+        owner = _main(1, enabled=False)
+        dialog = fake_user32.file_dialog(2, "Save Scene", 1, rect=(100, 100, 1300, 820))
+
+        with fake_user32.install(unity_modal_blockers, [owner, dialog]):
+            self.assertTrue(unity_modal_blockers._is_modal_window(2))
+
+    def test_unity_window_does_not_outrank_a_real_dialog(self):
+        """A real dialog must be reported, not a coincidentally-modal Editor window."""
+        owner = _main(1, enabled=False)
+        unity_win = fake_user32.unity_window(9, "Preview Window", owner_hwnd=1)
+        dialog = fake_user32.file_dialog(2, "Save Scene", 1)
+
+        with fake_user32.install(unity_modal_blockers, [owner, unity_win, dialog]):
+            blockers = unity_modal_blockers.list_supported_modal_blockers(4321, scope="exec")
+
+        self.assertEqual([b["type"] for b in blockers], ["save_scene_dialog"])
+        self.assertEqual(blockers[0]["hwnd"], 2)
 
     def test_non_blocking_editor_windows_are_never_promoted(self):
         owner = _main(1, enabled=True)

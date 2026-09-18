@@ -66,7 +66,15 @@ WS_DISABLED = 0x08000000
 WS_POPUP = 0x80000000
 # Modal prompts are small; Editor panels are not. Used only to sanity-check an
 # ownerless window that already looks like a dialog by style.
-MAX_MODAL_DIALOG_EDGE_PX = 900
+# Real Unity file dialogs (`Save Scene`) are Windows common dialogs measured at
+# 1200x720 on the validation host, so a prompt-size bound cannot be used to reject
+# them. It stays only as a loose sanity bound against the Editor's own windows,
+# which are far larger in at least one dimension.
+MAX_MODAL_DIALOG_EDGE_PX = 1600
+
+# Window class of Windows dialogs (`Save Scene`, `Scene(s) Have Been Modified`).
+# Unity's own windows use `UnityContainerWndClass` and are never dialogs.
+DIALOG_WINDOW_CLASS = "#32770"
 
 # Button low-word styles that are not clickable as an action. Win32 reports
 # these under the same "Button" class as push buttons, so they must be filtered
@@ -360,9 +368,25 @@ def _win32_window_rect(hwnd):
     return (rect.left, rect.top, rect.right, rect.bottom)
 
 
+def _win32_class_name(hwnd):
+    user32, wintypes, ctypes = _load_win32_modules()
+    get_class_name = user32.GetClassNameW
+    get_class_name.restype = ctypes.c_int
+    get_class_name.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+    return _get_window_text(hwnd, None, get_class_name, ctypes, buffer_size=256)
+
+
 def _is_dialog_style(hwnd):
-    style = _win32_style(hwnd)
-    return bool(style & WS_POPUP)
+    """True for a real dialog window, not merely a popup-styled window.
+
+    Class is the decisive signal. Unity's own windows (`UnityContainerWndClass`,
+    hosting panels such as custom Editor views) are popup-styled and moderately
+    sized, so style and size alone match them. Requiring the dialog class is what
+    separates a Windows dialog from an Editor window that merely looks similar.
+    """
+    if _win32_class_name(hwnd) != DIALOG_WINDOW_CLASS:
+        return False
+    return bool(_win32_style(hwnd) & WS_POPUP)
 
 
 def _is_modal_sized(hwnd):
@@ -380,14 +404,16 @@ def _is_modal_sized(hwnd):
 def _is_modal_window(hwnd):
     """True when ``hwnd`` blocks its owner rather than merely being visible.
 
-    The window must first look like a dialog (popup style, prompt-sized). Only
-    then is owner state consulted: a true modal disables the window that owns
-    it. Requiring both halves matters, because a disabled owner alone also
-    matches non-blocking Editor panels (Preferences, Project Settings) whenever
-    some unrelated window has disabled their owner.
+    The window must first be a real dialog by class, style, and size; only then is
+    owner state consulted. Both halves are required. A disabled owner is not
+    sufficient on its own, and it is not even a signal unique to the modal:
+    observed on the validation host, while the real `Save Scene` dialog was up,
+    a Unity panel (`UnityContainerWndClass`) also saw a disabled owner, because a
+    true modal disables the whole Editor's window tree. Without the dialog-class
+    test that panel would be reported as a blocker.
 
     Dialogs that appear before Unity's main window (Safe Mode) have no owner, so
-    dialog styling plus size is sufficient on its own for those.
+    being a dialog is sufficient on its own for those.
 
     Anything failing these tests is treated as non-blocking: a false positive
     costs the caller a hang, while a false negative costs one extra re-check.
@@ -397,7 +423,7 @@ def _is_modal_window(hwnd):
     owner = _win32_owner(hwnd)
     if owner and not _win32_owner_enabled(hwnd):
         return True
-    # Ownerless dialog: style and size are the whole signal. An owned dialog
+    # Ownerless dialog: being a dialog is the whole signal. An owned dialog
     # whose owner is still enabled is not blocking the Editor.
     return owner == 0
 

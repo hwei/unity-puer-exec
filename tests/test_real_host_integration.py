@@ -81,6 +81,24 @@ def _require_unity_editor(project_path):
         raise unittest.SkipTest(str(exc))
 
 
+def _pick_cancel_button_label(blocker):
+    """Pick a cancel-like button label from a blocker payload.
+
+    The validation host runs a zh-CN Editor, so button labels are localized
+    ("取消" rather than "Cancel"). Matching a hardcoded English label would fail
+    for reasons unrelated to the behavior under test.
+    """
+    buttons = blocker.get("buttons") or []
+    normalized = []
+    for button in buttons:
+        label = button.get("label") or ""
+        normalized.append((label.replace("&", "").strip().lower(), label))
+    for bare, label in normalized:
+        if bare in {"cancel", "取消", "no", "否", "don't save", "不保存"}:
+            return label
+    return normalized[-1][1] if normalized else None
+
+
 def _run_cli(argv):
     exit_code, stdout, stderr = unity_puer_exec.run_cli(argv)
     body = stdout or stderr
@@ -910,6 +928,10 @@ class RealHostIntegrationTests(unittest.TestCase):
         blocker = blocker_payload["result"]["blocker"]
         self.assertEqual(blocker["type"], "save_modified_scenes_prompt")
         self.assertIn("hwnd", blocker, "payload must carry hwnd for --action click")
+        # Button labels are localized (zh-CN host: "取消"), so take the label
+        # straight from the payload rather than hardcoding an English one.
+        cancel_label = _pick_cancel_button_label(blocker)
+        self.assertIsNotNone(cancel_label, "no cancel-like button in payload: {}".format(blocker))
 
         resolve_exit_code, resolve_payload, _, _ = _run_cli(
             [
@@ -921,7 +943,7 @@ class RealHostIntegrationTests(unittest.TestCase):
                 "--hwnd",
                 str(blocker["hwnd"]),
                 "--button",
-                "Cancel",
+                cancel_label,
             ]
         )
 
@@ -991,6 +1013,10 @@ class RealHostIntegrationTests(unittest.TestCase):
         blocker = blocker_payload["result"]["blocker"]
         self.assertEqual(blocker["type"], "save_scene_dialog")
         self.assertIn("hwnd", blocker, "payload must carry hwnd for --action click")
+        # Button labels are localized (zh-CN host: "取消"), so take the label
+        # straight from the payload rather than hardcoding an English one.
+        cancel_label = _pick_cancel_button_label(blocker)
+        self.assertIsNotNone(cancel_label, "no cancel-like button in payload: {}".format(blocker))
 
         resolve_exit_code, resolve_payload, _, _ = _run_cli(
             [
@@ -1002,7 +1028,7 @@ class RealHostIntegrationTests(unittest.TestCase):
                 "--hwnd",
                 str(blocker["hwnd"]),
                 "--button",
-                "Cancel",
+                cancel_label,
             ]
         )
 
@@ -1090,19 +1116,21 @@ class RealHostIntegrationTests(unittest.TestCase):
         # Clean up so the suite does not leave the Editor blocked.
         blocker = blocker_payload["result"]["blocker"]
         if "hwnd" in blocker:
-            _run_cli(
-                [
-                    "resolve-blocker",
-                    "--project-path",
-                    str(self.project_path),
-                    "--action",
-                    "click",
-                    "--hwnd",
-                    str(blocker["hwnd"]),
-                    "--button",
-                    "Cancel",
-                ]
-            )
+            cancel_label = _pick_cancel_button_label(blocker)
+            if cancel_label:
+                _run_cli(
+                    [
+                        "resolve-blocker",
+                        "--project-path",
+                        str(self.project_path),
+                        "--action",
+                        "click",
+                        "--hwnd",
+                        str(blocker["hwnd"]),
+                        "--button",
+                        cancel_label,
+                    ]
+                )
 
     def test_unknown_modal_dialog_is_reported_against_real_host(self):
         """A blocking dialog outside the catalog is reported, not dropped."""
@@ -1152,9 +1180,12 @@ class RealHostIntegrationTests(unittest.TestCase):
         self.assertNotIn("known", blocker)
         self.assertNotIn("default_button", blocker)
 
-        # Resolve it explicitly so the Editor is not left blocked.
+        # Resolve it explicitly so the Editor is not left blocked. Prefer a
+        # cancel-like button: on an unknown dialog the first button can be the
+        # destructive one, and this test is about reporting, not about choosing.
         labels = [b["label"] for b in blocker["buttons"]]
         self.assertTrue(labels, "an unknown dialog must expose at least one button")
+        resolve_label = _pick_cancel_button_label(blocker) or labels[0]
         _run_cli(
             [
                 "resolve-blocker",
@@ -1165,7 +1196,7 @@ class RealHostIntegrationTests(unittest.TestCase):
                 "--hwnd",
                 str(blocker["hwnd"]),
                 "--button",
-                labels[0],
+                resolve_label,
             ]
         )
 
