@@ -1,0 +1,7 @@
+change_type: feature
+priority: P1
+blocked_by:
+- stop-foreground-nudges
+assumption_state: needs-review
+evidence: host-validation
+updated_at: 2026-09-18
