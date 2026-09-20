@@ -158,7 +158,8 @@ process-state prerequisites beyond the shared ones above:
   needs an interactive Editor on the preferred control port (`55231`). The test
   is autonomous — it runs a retry-binder for `55231` and forces a domain reload
   (via `exec` of `UnityEditor.EditorUtility.RequestScriptReload()`, with a
-  touched-script + `--refresh-before-exec` fallback) so the binder wins the
+  touched-script fallback: the written `.cs` triggers the automatic code-change
+  refresh, which starts compilation and the reload) so the binder wins the
   port in the `Stop()`→`Start()` window. No operator step is required. It
   `skip`s when `55231` is held by an unrelated process at start.
 

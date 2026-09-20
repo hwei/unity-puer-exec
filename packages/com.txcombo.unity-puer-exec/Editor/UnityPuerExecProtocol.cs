@@ -18,7 +18,6 @@ namespace UnityPuerExec
         public int wait_timeout_ms = 1000;
         public bool include_diagnostics = false;
         public bool reset_jsenv_before_exec = false;
-        public bool refresh_before_exec = false;
         public string stale_module_policy = "auto-reset";
     }
 
@@ -176,21 +175,77 @@ namespace UnityPuerExec
             return ImportDeclarationPattern.IsMatch(sanitizedCode);
         }
 
-        internal static string BuildExecResponseJson(UnityPuerExecJobSnapshot snapshot, string sessionMarker)
+        internal static bool CarriesRemovedRefreshField(string requestJson)
+        {
+            return !string.IsNullOrEmpty(requestJson)
+                && requestJson.IndexOf("\"refresh_before_exec\"", StringComparison.Ordinal) >= 0;
+        }
+
+        internal static string BuildRefreshBlockJson(
+            bool triggered,
+            string reason,
+            string skippedReason,
+            System.Collections.Generic.IEnumerable<string> pathsChanged,
+            string settleOutcome,
+            int elapsedMs
+        )
+        {
+            var paths = (pathsChanged ?? Enumerable.Empty<string>())
+                .Where(path => !string.IsNullOrEmpty(path))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(path => path, StringComparer.OrdinalIgnoreCase);
+            var pathsJson = string.Join(",", paths.Select(path => "\"" + JsonEscape(path) + "\""));
+            return "\"refresh\":{" +
+                   "\"triggered\":" + (triggered ? "true" : "false") + "," +
+                   "\"reason\":\"" + JsonEscape(reason ?? "") + "\"," +
+                   "\"paths_changed\":[" + pathsJson + "]," +
+                   "\"skipped_reason\":\"" + JsonEscape(skippedReason ?? "") + "\"," +
+                   "\"settle_outcome\":\"" + JsonEscape(settleOutcome ?? "") + "\"," +
+                   "\"elapsed_ms\":" + elapsedMs +
+                   "}";
+        }
+
+        // The automatic refresh is a non-terminal phase of the accepted exec request:
+        // the CLI settles the compile cycle this response names and re-submits the same
+        // request_id, so the terminal response carries the script result.
+        internal static string BuildRefreshRunningResponseJson(string requestId, string sessionMarker, string refreshBlockJson)
+        {
+            var json = "{" +
+                       "\"ok\":true," +
+                       "\"status\":\"running\"," +
+                       "\"phase\":\"refreshing\"," +
+                       "\"request_id\":\"" + JsonEscape(requestId) + "\"," +
+                       "\"session_marker\":\"" + JsonEscape(sessionMarker) + "\"," +
+                       "\"result\":null" +
+                       "}";
+            return InsertField(json, refreshBlockJson);
+        }
+
+        private static string InsertField(string json, string fieldJson)
+        {
+            if (string.IsNullOrEmpty(fieldJson) || string.IsNullOrEmpty(json) || json[json.Length - 1] != '}')
+            {
+                return json;
+            }
+
+            return json.Substring(0, json.Length - 1) + "," + fieldJson + "}";
+        }
+
+        internal static string BuildExecResponseJson(UnityPuerExecJobSnapshot snapshot, string sessionMarker, string refreshBlockJson = "")
         {
             var recoveryJson = BuildRecoveryJson(snapshot);
             switch (snapshot.Status)
             {
                 case UnityPuerExecJobStatus.Completed:
-                    return "{" +
+                    return InsertField("{" +
                            "\"ok\":true," +
                            "\"status\":\"completed\"," +
                            "\"request_id\":\"" + JsonEscape(snapshot.RequestId) + "\"," +
                            "\"session_marker\":\"" + JsonEscape(sessionMarker) + "\"," +
                             "\"result\":" + (snapshot.ResultJson ?? "null") + recoveryJson +
-                           "}";
+                           "}", refreshBlockJson);
                 case UnityPuerExecJobStatus.CompletedWithWarning:
-                    return "{" +
+                    return InsertField("{" +
                            "\"ok\":true," +
                            "\"status\":\"warning\"," +
                            "\"request_id\":\"" + JsonEscape(snapshot.RequestId) + "\"," +
@@ -198,10 +253,10 @@ namespace UnityPuerExec
                            "\"warning\":\"" + JsonEscape(snapshot.WarningCode) + "\"," +
                            "\"warning_detail\":\"" + JsonEscape(snapshot.WarningDetail) + "\"," +
                             "\"result\":null" + recoveryJson +
-                           "}";
+                           "}", refreshBlockJson);
                 case UnityPuerExecJobStatus.Failed:
                     var errorDetailJson = BuildErrorDetailJson(snapshot.Error);
-                    return "{" +
+                    return InsertField("{" +
                            "\"ok\":false," +
                            "\"status\":\"failed\"," +
                            "\"request_id\":\"" + JsonEscape(snapshot.RequestId) + "\"," +
@@ -209,15 +264,15 @@ namespace UnityPuerExec
                            "\"error\":\"" + JsonEscape(snapshot.Error) + "\"," +
                            errorDetailJson +
                             "\"stack\":\"" + JsonEscape(snapshot.Stack) + "\"" + recoveryJson +
-                           "}";
+                           "}", refreshBlockJson);
                 default:
-                    return "{" +
+                    return InsertField("{" +
                            "\"ok\":true," +
                            "\"status\":\"running\"," +
                            "\"request_id\":\"" + JsonEscape(snapshot.RequestId) + "\"," +
                            "\"session_marker\":\"" + JsonEscape(sessionMarker) + "\"," +
                             "\"result\":null" + recoveryJson +
-                           "}";
+                           "}", refreshBlockJson);
             }
         }
 
@@ -297,7 +352,10 @@ namespace UnityPuerExec
             int unityPid = 0,
             string projectPath = "",
             string bridgeVersion = "",
-            string consoleLogPath = ""
+            string consoleLogPath = "",
+            string refreshPending = "unknown",
+            bool refreshSuppressed = false,
+            string refreshSuppressedReason = ""
         )
         {
             // The package identity is still observable while the Editor is
@@ -334,6 +392,13 @@ namespace UnityPuerExec
                 var consoleLogPathJson = string.IsNullOrEmpty(consoleLogPath)
                     ? ""
                     : ",\"console_log_path\":\"" + JsonEscape(consoleLogPath) + "\"";
+                // Refresh state is on the ready response only: a compiling service
+                // cannot answer whether a change is pending, and reporting a value
+                // there would read as a false negative.
+                var refreshJson = ",\"refresh\":{" +
+                    "\"pending\":\"" + JsonEscape(refreshPending) + "\"," +
+                    "\"suppressed\":" + (refreshSuppressed ? "true" : "false") + "," +
+                    "\"suppressed_reason\":\"" + JsonEscape(refreshSuppressedReason) + "\"}";
                 return "{\"ok\":true,\"status\":\"ready\",\"port\":" + port +
                        ",\"session_marker\":\"" + JsonEscape(sessionMarker) + "\"" +
                        baseUrlJson +
@@ -341,6 +406,7 @@ namespace UnityPuerExec
                        projectPathJson +
                        bridgeVersionJson +
                        consoleLogPathJson +
+                       refreshJson +
                        "}";
             }
 
@@ -390,7 +456,8 @@ namespace UnityPuerExec
             int warningCount,
             System.Collections.Generic.List<CompilerMessage> errors,
             System.Collections.Generic.List<CompilerMessage> warnings,
-            string sessionMarker
+            string sessionMarker,
+            string refreshBlockJson = ""
         )
         {
             if (!hasErrors)
@@ -416,7 +483,7 @@ namespace UnityPuerExec
             }
 
             var messagesJson = BuildCompileMessagesJson(messages);
-            return "{" +
+            return InsertField("{" +
                    "\"ok\":false," +
                    "\"status\":\"unity_compile_error\"," +
                    "\"request_id\":\"" + JsonEscape(requestId) + "\"," +
@@ -424,7 +491,7 @@ namespace UnityPuerExec
                    "\"compile_errors_total\":" + errorCount + "," +
                    "\"compile_warnings_total\":" + warningCount + "," +
                    "\"compile_messages\":" + messagesJson +
-                   "}";
+                   "}", refreshBlockJson);
         }
 
         internal static string BuildCompileMessagesResponseJson(

@@ -48,7 +48,7 @@ TOP_LEVEL_COMMANDS = {
 RECOMMENDED_PATH = (
     "For normal project-scoped work, start with `exec --project-path ...` (or omit `--project-path` when the exe is invoked from its installed location inside the Unity project).",
     "If `exec` returns `running`, continue with `wait-for-exec --request-id ...` or the script-specific observation path you designed.",
-    "If an earlier step wrote C# or other import-triggering project assets, use the next project-scoped `exec --refresh-before-exec` instead of a separate readiness-only step.",
+    "If an earlier step wrote C# or assembly-definition files, no action is needed: the next project-scoped `exec` refreshes automatically for those code changes.",
     "Use `wait-for-result-marker` after `exec` only when the script deliberately exposes a `correlation_id` workflow.",
     "If you need log-based verification, continue with `wait-for-log-pattern`.",
     "Use `get-blocker-state` when an exec-side timeout or stall might be caused by a supported Unity modal dialog.",
@@ -122,8 +122,8 @@ COMMAND_HELP = {
         "quick_start": [
             "Supporting observation command that brackets a single Unity compilation cycle.",
             "`unity-puer-exec wait-for-compile --project-path X:/project`",
-            "A refresh (`AssetDatabase.Refresh()` or `--refresh-before-exec`) starts compilation asynchronously, so polling `/health` immediately can read `ready` before `compiling` ever appears and `get-compile-errors` then returns the previous compilation's stale messages. This command is edge-aware: it first waits, within a bounded appear window, for `compiling` to appear (or detects a compile already in progress), then waits for the editor to return to `ready` -- so a just-issued recompile is observed instead of racing a stale `ready`.",
-            "Trigger the recompile yourself, then call `wait-for-compile` before `get-compile-errors`; or use `exec --refresh-before-exec`, which performs the same refresh -> compile-settle -> execute lifecycle in one step.",
+            "A refresh (`AssetDatabase.Refresh()`, automatic or explicit) starts compilation asynchronously, so polling `/health` immediately can read `ready` before `compiling` ever appears and `get-compile-errors` then returns the previous compilation's stale messages. This command is edge-aware: it first waits, within a bounded appear window, for `compiling` to appear (or detects a compile already in progress), then waits for the editor to return to `ready` -- so a just-issued recompile is observed instead of racing a stale `ready`.",
+            "Automatic refresh already settles a refresh-triggered compile before running your script. When you trigger a recompile yourself (for example with `CompilationPipeline.RequestScriptCompilation()`), call `wait-for-compile` before `get-compile-errors` so you observe the new cycle instead of the old one.",
             "Trade-off: `AssetDatabase.Refresh()` only recompiles when it detects changed assets, so an unchanged project yields `no_compile_observed`. `CompilationPipeline.RequestScriptCompilation()` forces a recompile more deterministically; if a refresh reports `no_compile_observed` when you expected a rebuild, trigger compilation with `RequestScriptCompilation()` instead.",
             "Unity's ScriptUpdater consent dialog (`Some of this project's source files refer to API that has changed`) is auto-declined (`No`) while this command waits, so an unattended wait does not hang on it. A settled cycle that declined the dialog still reports `compile_settled` and also carries `warning = \"api_updater_declined\"` plus `warning_detail`.",
         ],
@@ -328,7 +328,7 @@ COMMAND_HELP = {
             "With `--project-path`, `exec` owns Unity launch or recovery for the project as part of the main work lifecycle.",
             "Changed local modules are recovered by a same-invocation server-owned JsEnv reset by default; use `--stale-module-policy error` when `ctx.globals` or module singleton continuity must be preserved.",
             "Scripts use a PuerTS-style JavaScript-to-C# bridge; `puer.loadType(...)` is the normal way to load Unity or C# types inside `exec` scripts.",
-            "If an earlier step wrote C# or other import-triggering project assets, make the next project-scoped `exec` use `--refresh-before-exec` and continue with `wait-for-exec` if the request stays non-terminal.",
+            "If an earlier step wrote C# or assembly-definition files, no action is needed: the next project-scoped `exec` refreshes automatically for those code changes. Scenes, prefabs, metadata, textures, audio, and other non-code assets are not watched and do not trigger a refresh; a caller that needs one of those imported calls `AssetDatabase.Refresh()` through the bridge. Continue with `wait-for-exec` if the request stays non-terminal.",
             "Unity's ScriptUpdater consent dialog (`Some of this project's source files refer to API that has changed`) is auto-declined (`No`) while this command waits, so an unattended run does not hang on it. When that happens the command keeps its normal status and also carries `warning = \"api_updater_declined\"` plus `warning_detail`; `get-compile-errors` / `get-compile-warnings` remain the compile surface.",
         ],
         "related_workflows": (
@@ -349,7 +349,7 @@ COMMAND_HELP = {
                 "`--wait-timeout-ms <ms>`: how long to wait before returning the current execution state.",
                 "`--request-id <id>`: optional caller-owned exec identity for recovery or idempotent replay; omitted values are generated automatically.",
                 "`--script-args <json-object>`: optional caller-supplied JSON object that becomes `ctx.args`; malformed JSON or non-object values fail before runtime execution.",
-                "`--refresh-before-exec`: refresh the Unity project before running this script, settle on the resulting (asynchronously started) compile cycle, then run the script in the reloaded environment -- a single refresh -> compile-settle -> execute request lifecycle. Works in both `--project-path` and `--base-url` mode; in base-url mode the settle re-probes the same endpoint. The intermediate refreshing/compiling phase is non-terminal, and the terminal response carries the script result, not the `{refreshed: true}` refresh confirmation.",
+                "Automatic refresh: before each exec the server checks for compile-triggering code changes (`.cs`, `.asmdef`, `.asmref`, `.rsp`) and runs `AssetDatabase.Refresh()` only when one is detected, then settles the compile cycle before running the script. Scenes (`.unity`), prefabs (`.prefab`), metadata (`.meta`), textures, audio, and other non-code assets are not watched and do not trigger a refresh; a caller that needs one of those imported calls `AssetDatabase.Refresh()` through the bridge.",
                 "`--reset-jsenv-before-exec`: ask the Unity server to perform one JsEnv reset immediately before this exec; the CLI does not issue a separate reset request.",
                 "`--stale-module-policy auto-reset|error`: default `auto-reset` recovers changed or removed loaded local modules in the same invocation; `error` withholds reset and returns `module_cache_stale`, preserving JsEnv state. Automatic or explicit recovery reports affected module paths in `recovery`.",
                 "`--include-diagnostics`: include top-level debug diagnostics in the machine-readable response.",
@@ -360,8 +360,8 @@ COMMAND_HELP = {
             "Selector Rules": [
                 "Use at most one selector: `--project-path` or `--base-url`. Supplying both is a usage error.",
                 "`--project-path` is the normal choice when the CLI should prepare Unity for the project before execution. When the exe is installed inside the target Unity project and invoked by its installed path, `--project-path` may be omitted; the CLI infers the project root from the exe location.",
-                "`--refresh-before-exec` is valid with either selector and is intended for the next step after changing project assets or C# code. Because a refresh starts compilation asynchronously, the standalone `wait-for-compile` command is the supported way to bridge that race when you trigger the recompile separately.",
-                "After a script writes C# or other import-triggering assets, prefer the next task `exec --refresh-before-exec` and stay on `wait-for-exec` for accepted continuation.",
+                "Automatic refresh works with either selector and needs no caller action after a code change. Because a refresh starts compilation asynchronously, the standalone `wait-for-compile` command is the supported way to bridge that race when you trigger the recompile separately.",
+                "After a script writes a C# or assembly-definition file, the next `exec` refreshes automatically; stay on `wait-for-exec` for accepted continuation.",
                 "`--base-url` is for a direct service that is already known.",
                 "`--unity-exe-path` is only valid with `--project-path`.",
                 "`--unity-launch-arg` is only valid with `--project-path` and only affects a cold launch this CLI performs.",
@@ -414,7 +414,7 @@ COMMAND_HELP = {
                 ("failed", 1, "execution failed unexpectedly, the module entry shape was invalid, or another non-warning execution error occurred."),
                 ("warning", 0, "the script body executed successfully but the entry function returned a Promise; the return value could not be serialized. Use console.log() with wait-for-result-marker for async result observation."),
                 ("module_cache_stale", direct_exec_client.EXIT_MODULE_CACHE_STALE, "one or more loaded local modules changed or were removed; `--stale-module-policy error` withheld reset so JsEnv state is preserved. Choose explicit reset or omit the error policy for same-invocation auto recovery."),
-                ("unity_compile_error", direct_exec_client.EXIT_UNITY_COMPILE_ERROR, "C# compilation has errors; the script was not executed. Fix the C# errors and re-run with --refresh-before-exec to trigger recompilation."),
+                ("unity_compile_error", direct_exec_client.EXIT_UNITY_COMPILE_ERROR, "C# compilation has errors; the script was not executed. Fix the C# errors and re-run `exec` -- saving the fix is itself enough to trigger recompilation on the next exec."),
             ],
         },
     },
@@ -556,7 +556,7 @@ COMMAND_HELP = {
         "quick_start": [
             "Secondary troubleshooting command for reading structured C# compile errors from the control service.",
             "`unity-puer-exec get-compile-errors --project-path X:/project`",
-            "Messages report the most recent completed compilation. A refresh starts compilation asynchronously, so reading immediately can return the previous compilation's results; call `wait-for-compile` after triggering a recompile (or use `exec --refresh-before-exec`) before reading when freshness matters.",
+            "Messages report the most recent completed compilation. A refresh starts compilation asynchronously, so reading immediately can return the previous compilation's results; call `wait-for-compile` after triggering a recompile before reading when freshness matters.",
             "Paginate with `--start` and `--count`. Compare `result.session_marker` across calls to detect a domain reload that invalidates prior offsets.",
         ],
         "related_workflows": (),
@@ -758,7 +758,7 @@ WORKFLOW_EXAMPLES = {
         ],
         "notice": [
             "This is the intended bridge model for Unity and .NET access inside `exec` scripts: use `puer.loadType(...)` to load types before calling members.",
-            "If a script in this bridge workflow writes C# or other import-triggering assets, run the next project-scoped `exec` with `--refresh-before-exec` so compile recovery stays attached to that request.",
+            "If a script in this bridge workflow writes a C# or assembly-definition file, the next project-scoped `exec` refreshes automatically, so compile recovery stays attached to that request.",
             "Treat bridged C# arrays and `List<T>` values as bridged .NET objects, not plain JS arrays with identical semantics.",
             "For deeper bridge rules such as generics, `CS.*`, or collection behavior, consult the official JS-to-C# reference: https://puerts.github.io/docs/puerts/unity/tutorial/js2cs",
         ],
@@ -1027,12 +1027,11 @@ GUIDANCE_MATRIX = {
         "next_steps": [
             {
                 "command": "exec",
-                "when": "after fixing the C# errors, re-run with --refresh-before-exec to trigger recompilation",
+                "when": "after fixing the C# errors, re-run exec; saving the fix is itself enough to trigger recompilation on the next exec",
                 "argv_template": [
                     "unity-puer-exec", "exec",
                     "--project-path", "{project_path}",
                     "--file", "{file_path}",
-                    "--refresh-before-exec",
                 ],
             },
             {
@@ -1195,12 +1194,11 @@ GUIDANCE_MATRIX = {
         "next_steps": [
             {
                 "command": "exec",
-                "when": "after fixing the C# errors, re-run exec with --refresh-before-exec to trigger recompilation",
+                "when": "after fixing the C# errors, re-run exec; saving the fix is itself enough to trigger recompilation on the next exec",
                 "argv_template": [
                     "unity-puer-exec", "exec",
                     "--project-path", "{project_path}",
                     "--file", "{file_path}",
-                    "--refresh-before-exec",
                 ],
             },
             {
@@ -1695,6 +1693,32 @@ GUIDANCE_MATRIX[("exec", "invalid_script_args_type")] = {
         {
             "command": "exec",
             "when": "inspect the script-args rules for exec",
+            "argv": ["unity-puer-exec", "exec", "--help-args"],
+        },
+    ],
+}
+
+GUIDANCE_MATRIX[("exec", "removed_refresh_flag")] = {
+    "situation": (
+        "`--refresh-before-exec` was removed. Refresh is now automatic for code changes "
+        "(`.cs`, `.asmdef`, `.asmref`, `.rsp`): saving the change is itself the trigger, so "
+        "re-run exec instead of passing the flag. Non-code assets (scenes, prefabs, metadata, "
+        "textures, audio) are not watched; call `AssetDatabase.Refresh()` through the bridge "
+        "when you need one of those imported."
+    ),
+    "next_steps": [
+        {
+            "command": "exec",
+            "when": "re-run exec without the removed flag; the code change triggers the refresh automatically",
+            "argv_template": [
+                "unity-puer-exec", "exec",
+                "--project-path", "{project_path}",
+                "--file", "{file_path}",
+            ],
+        },
+        {
+            "command": "exec",
+            "when": "inspect the automatic-refresh boundary and its non-code exclusions",
             "argv": ["unity-puer-exec", "exec", "--help-args"],
         },
     ],

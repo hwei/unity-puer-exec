@@ -90,7 +90,7 @@ def build_parser():
     exec_parser.add_argument("--request-id", default=None)
     exec_parser.add_argument("--script-args", default=None)
     exec_parser.add_argument("--include-log-offset", action="store_true")  # removed; emits usage error
-    exec_parser.add_argument("--refresh-before-exec", action="store_true")
+    exec_parser.add_argument("--refresh-before-exec", action="store_true")  # removed; emits usage error
     exec_parser.add_argument("--import-base-url", default=None)
     exec_parser.add_argument("--reset-jsenv-before-exec", action="store_true")
     exec_parser.add_argument(

@@ -166,8 +166,10 @@ class UnityPuerExecCliTests(unittest.TestCase):
         self.assertIn("Normal first command for project-scoped work", stdout)
         self.assertIn("owns Unity launch or recovery for the project", stdout)
         self.assertIn("PuerTS-style JavaScript-to-C# bridge", stdout)
-        self.assertIn("make the next project-scoped `exec` use `--refresh-before-exec`", stdout)
-        self.assertIn("continue with `wait-for-exec` if the request stays non-terminal", stdout)
+        self.assertIn("no action is needed: the next project-scoped `exec` refreshes automatically", stdout)
+        self.assertIn("non-code assets are not watched and do not trigger a refresh", stdout)
+        self.assertIn("`AssetDatabase.Refresh()` through the bridge", stdout)
+        self.assertIn("Continue with `wait-for-exec` if the request stays non-terminal", stdout)
         self.assertIn("Every script source (`--file`, `--stdin`, `--code`) must use this module entry template", stdout)
         self.assertIn("only `ctx.request_id`, `ctx.globals`, and `ctx.args` are guaranteed", stdout)
         self.assertIn("`--help-example derive-project-path-from-unity-api`", stdout)
@@ -195,7 +197,8 @@ class UnityPuerExecCliTests(unittest.TestCase):
         self.assertIn("`--file <path>`", stdout)
         self.assertIn("`--code <inline-js>`", stdout)
         self.assertIn("`--request-id <id>`", stdout)
-        self.assertIn("`--refresh-before-exec`", stdout)
+        self.assertIn("Automatic refresh: before each exec the server checks", stdout)
+        self.assertIn("not watched and do not trigger a refresh", stdout)
         self.assertIn("`--include-diagnostics`", stdout)
         self.assertIn("`export default function", stdout)
         self.assertIn("Every script source must provide a full module entry", stdout)
@@ -203,7 +206,7 @@ class UnityPuerExecCliTests(unittest.TestCase):
         self.assertIn("Promise", stdout)
         self.assertIn("`puer.loadType(...)`", stdout)
         self.assertIn("Bridged C# arrays and `List<T>` values are not plain JS arrays", stdout)
-        self.assertIn("prefer the next task `exec --refresh-before-exec`", stdout)
+        self.assertIn("the next `exec` refreshes automatically", stdout)
         self.assertIn("https://puerts.github.io/docs/puerts/unity/tutorial/js2cs", stdout)
         self.assertIn("`ctx.request_id`, `ctx.globals`, and `ctx.args`", stdout)
         self.assertIn("`--script-args <json-object>`", stdout)
@@ -1038,121 +1041,163 @@ class UnityPuerExecCliTests(unittest.TestCase):
             self.assertIn("return 7", pending["code"])
             self.assertEqual(pending["script_args"], {})
             self.assertEqual(pending["script_args_json"], "{}")
-            self.assertFalse(pending["refresh_before_exec"])
+            self.assertNotIn("refresh_before_exec", pending)
             self.assertEqual(pending["schema_version"], 2)
             self.assertIn("created_at_ms", pending)
             self.assertIn("updated_at_ms", pending)
 
-    def test_exec_refresh_before_exec_runs_internal_refresh_then_user_exec(self):
+    def test_exec_removed_refresh_flag_raises_usage_error(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             project_path = Path(temp_dir) / "Project"
             project_path.mkdir()
             script_path = Path(temp_dir) / "script.js"
             script_path.write_text("export default function run(ctx) { return 7; }", encoding="utf-8")
             with mock.patch.object(
+                unity_puer_exec.direct_exec_client,
+                "invoke_command",
+            ) as invoke_command:
+                exit_code, stdout, stderr = unity_puer_exec.run_cli(
+                    ["exec", "--project-path", str(project_path), "--file", str(script_path), "--request-id", "req-refresh", "--refresh-before-exec"]
+                )
+
+            self.assertEqual(exit_code, 2)
+            self.assertEqual(stdout, "")
+            body = json.loads(stderr)
+            self.assertEqual(body["status"], "removed_refresh_flag")
+            self.assertIn("--refresh-before-exec has been removed", body["error"])
+            self.assertNotIn("unrecognized", body["error"])
+            # The situation names the removal and the automatic replacement.
+            self.assertIn("situation", body)
+            self.assertIn("Refresh is now automatic", body["situation"])
+            # No exec was submitted and no pending request was recorded.
+            self.assertEqual(invoke_command.call_count, 0)
+            self.assertIsNone(unity_session.read_pending_exec_artifact(str(project_path), "req-refresh"))
+
+    def test_exec_automatic_refresh_settles_then_runs_user_script(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_path = Path(temp_dir) / "Project"
+            project_path.mkdir()
+            script_path = Path(temp_dir) / "script.js"
+            script_path.write_text("export default function run(ctx) { return 7; }", encoding="utf-8")
+            refresh_body = {
+                "ok": True,
+                "status": "running",
+                "phase": "refreshing",
+                "request_id": "req-refresh",
+                "refresh": {
+                    "triggered": True,
+                    "reason": "compile_triggering_change",
+                    "paths_changed": ["C:/Project/Assets/A.cs"],
+                    "skipped_reason": "",
+                    "settle_outcome": "dispatched",
+                    "elapsed_ms": 3,
+                },
+            }
+            with mock.patch.object(
                 unity_session,
                 "ensure_session_ready",
                 return_value=_make_session(project_path=str(project_path)),
-            ), mock.patch.object(
+            ) as ensure, mock.patch.object(
                 unity_puer_exec.direct_exec_client,
                 "invoke_command",
                 side_effect=[
-                    (0, json.dumps({"ok": True, "status": "completed", "request_id": "req-refresh-refresh", "result": {"refreshed": True}}), ""),
+                    (unity_puer_exec.EXIT_RUNNING, json.dumps(refresh_body), ""),
                     (0, json.dumps({"ok": True, "status": "completed", "request_id": "req-refresh", "result": {"value": 7}}), ""),
                 ],
             ) as invoke_command:
                 exit_code, stdout, stderr = unity_puer_exec.run_cli(
-                    ["exec", "--project-path", str(project_path), "--file", str(script_path), "--request-id", "req-refresh", "--refresh-before-exec"]
+                    ["exec", "--project-path", str(project_path), "--file", str(script_path), "--request-id", "req-refresh"]
                 )
 
-            self.assertEqual(exit_code, 0)
-            self.assertEqual(stderr, "")
-            self.assertEqual(invoke_command.call_count, 2)
-            self.assertEqual(invoke_command.call_args_list[0].args[0], "exec")
-            self.assertEqual(invoke_command.call_args_list[0].args[2]["request_id"], "req-refresh-refresh")
-            self.assertIn("AssetDatabase.Refresh", invoke_command.call_args_list[0].args[2]["code"])
-            self.assertEqual(invoke_command.call_args_list[1].args[2]["request_id"], "req-refresh")
-            self.assertIn("return 7", invoke_command.call_args_list[1].args[2]["code"])
-            body = json.loads(stdout)
-            self.assertEqual(body["status"], "completed")
-            self.assertIsNone(unity_session.read_pending_exec_artifact(str(project_path), "req-refresh"))
-
-    def test_exec_refresh_then_reset_jsenv_then_user_exec(self):
-        with tempfile.TemporaryDirectory() as temp_dir:
-            project_path = Path(temp_dir) / "Project"
-            project_path.mkdir()
-            script_path = Path(temp_dir) / "script.js"
-            script_path.write_text("export default function run(ctx) { return 7; }", encoding="utf-8")
-            with mock.patch.object(
-                unity_session,
-                "ensure_session_ready",
-                return_value=_make_session(project_path=str(project_path)),
-            ), mock.patch.object(
-                unity_puer_exec.direct_exec_client,
-                "invoke_command",
-                side_effect=[
-                    (0, json.dumps({"ok": True, "status": "completed", "request_id": "req-refresh-reset-refresh", "result": {"refreshed": True}}), ""),
-                    (0, json.dumps({"ok": True, "status": "completed"}), ""),
-                    (0, json.dumps({"ok": True, "status": "completed", "request_id": "req-refresh-reset", "result": {"value": 7}}), ""),
-                ],
-            ) as invoke_command:
-                exit_code, stdout, stderr = unity_puer_exec.run_cli(
-                    [
-                        "exec",
-                        "--project-path",
-                        str(project_path),
-                        "--file",
-                        str(script_path),
-                        "--request-id",
-                        "req-refresh-reset",
-                        "--refresh-before-exec",
-                        "--reset-jsenv-before-exec",
-                    ]
-                )
+            pending = unity_session.read_pending_exec_artifact(str(project_path), "req-refresh")
 
         self.assertEqual(exit_code, 0)
         self.assertEqual(stderr, "")
-        self.assertEqual(invoke_command.call_args_list[0].args[0], "exec")
-        self.assertEqual(invoke_command.call_args_list[1].args[0], "exec")
-        self.assertEqual(invoke_command.call_args_list[1].args[2]["request_id"], "req-refresh-reset")
+        # The first submit triggered the refresh; the second re-used the same request_id
+        # so the terminal response carries the script result, not a refresh confirmation.
+        self.assertEqual(invoke_command.call_count, 2)
+        self.assertNotIn("refresh_before_exec", invoke_command.call_args_list[0].args[2])
+        self.assertEqual(invoke_command.call_args_list[0].args[2]["request_id"], "req-refresh")
+        self.assertEqual(invoke_command.call_args_list[1].args[2]["request_id"], "req-refresh")
+        self.assertIn("return 7", invoke_command.call_args_list[1].args[2]["code"])
+        # One ensure_session_ready up front, one to settle the refresh-triggered compile.
+        self.assertEqual(ensure.call_count, 2)
         body = json.loads(stdout)
         self.assertEqual(body["status"], "completed")
+        self.assertEqual(body["result"]["value"], 7)
+        self.assertTrue(body["refresh"]["triggered"])
+        self.assertEqual(body["refresh"]["paths_changed"], ["C:/Project/Assets/A.cs"])
+        self.assertIsNone(pending)
 
-    def test_exec_refresh_before_exec_returns_running_with_refresh_phase(self):
+    def test_exec_automatic_refresh_reports_running_when_settle_not_ready(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             project_path = Path(temp_dir) / "Project"
             project_path.mkdir()
             script_path = Path(temp_dir) / "script.js"
             script_path.write_text("export default function run(ctx) { return 7; }", encoding="utf-8")
+            session = _make_session(project_path=str(project_path))
+            not_ready = unity_session.UnityNotReadyError("still compiling", session=session)
+            refresh_body = {
+                "ok": True,
+                "status": "running",
+                "phase": "refreshing",
+                "request_id": "req-refresh",
+                "refresh": {
+                    "triggered": True,
+                    "reason": "compile_triggering_change",
+                    "paths_changed": [],
+                    "skipped_reason": "",
+                    "settle_outcome": "dispatched",
+                    "elapsed_ms": 2,
+                },
+            }
             with mock.patch.object(
                 unity_session,
                 "ensure_session_ready",
-                return_value=_make_session(project_path=str(project_path)),
+                side_effect=[session, not_ready],
             ), mock.patch.object(
                 unity_puer_exec.direct_exec_client,
                 "invoke_command",
-                return_value=(unity_puer_exec.EXIT_RUNNING, json.dumps({"ok": True, "status": "running", "request_id": "req-refresh-refresh"}), ""),
-            ):
+                return_value=(unity_puer_exec.EXIT_RUNNING, json.dumps(refresh_body), ""),
+            ) as invoke_command:
                 exit_code, stdout, stderr = unity_puer_exec.run_cli(
-                    ["exec", "--project-path", str(project_path), "--file", str(script_path), "--request-id", "req-refresh", "--refresh-before-exec"]
+                    ["exec", "--project-path", str(project_path), "--file", str(script_path), "--request-id", "req-refresh"]
                 )
 
-            self.assertEqual(exit_code, unity_puer_exec.EXIT_RUNNING)
-            self.assertEqual(stderr, "")
-            body = json.loads(stdout)
-            self.assertEqual(body["status"], "running")
-            self.assertEqual(body["request_id"], "req-refresh")
-            self.assertEqual(body["phase"], "refreshing")
             pending = unity_session.read_pending_exec_artifact(str(project_path), "req-refresh")
-            self.assertEqual(pending["phase"], "refreshing")
-            self.assertEqual(pending["refresh_request_id"], "req-refresh-refresh")
 
-    def test_exec_refresh_before_exec_normalizes_compile_to_running_with_compile_phase(self):
+        self.assertEqual(exit_code, unity_puer_exec.EXIT_RUNNING)
+        self.assertEqual(stderr, "")
+        # The refresh phase did not settle, so the request stays non-terminal and no
+        # second submit is attempted.
+        self.assertEqual(invoke_command.call_count, 1)
+        body = json.loads(stdout)
+        self.assertEqual(body["status"], "running")
+        self.assertEqual(body["request_id"], "req-refresh")
+        self.assertEqual(body["phase"], "refreshing")
+        self.assertTrue(body["refresh"]["triggered"])
+        self.assertEqual(pending["phase"], "refreshing")
+
+    def test_exec_automatic_refresh_settle_then_compile_phase(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             project_path = Path(temp_dir) / "Project"
             project_path.mkdir()
             script_path = Path(temp_dir) / "script.js"
             script_path.write_text("export default function run(ctx) { return 7; }", encoding="utf-8")
+            refresh_body = {
+                "ok": True,
+                "status": "running",
+                "phase": "refreshing",
+                "request_id": "req-refresh",
+                "refresh": {
+                    "triggered": True,
+                    "reason": "compile_triggering_change",
+                    "paths_changed": [],
+                    "skipped_reason": "",
+                    "settle_outcome": "dispatched",
+                    "elapsed_ms": 2,
+                },
+            }
             with mock.patch.object(
                 unity_session,
                 "ensure_session_ready",
@@ -1161,24 +1206,25 @@ class UnityPuerExecCliTests(unittest.TestCase):
                 unity_puer_exec.direct_exec_client,
                 "invoke_command",
                 side_effect=[
-                    (0, json.dumps({"ok": True, "status": "completed", "request_id": "req-refresh-refresh", "result": {"refreshed": True}}), ""),
+                    (unity_puer_exec.EXIT_RUNNING, json.dumps(refresh_body), ""),
                     (unity_puer_exec.EXIT_COMPILING, json.dumps({"ok": False, "status": "compiling"}), ""),
                 ],
             ):
                 exit_code, stdout, stderr = unity_puer_exec.run_cli(
-                    ["exec", "--project-path", str(project_path), "--file", str(script_path), "--request-id", "req-refresh", "--refresh-before-exec"]
+                    ["exec", "--project-path", str(project_path), "--file", str(script_path), "--request-id", "req-refresh"]
                 )
 
-            self.assertEqual(exit_code, unity_puer_exec.EXIT_RUNNING)
-            self.assertEqual(stderr, "")
-            body = json.loads(stdout)
-            self.assertEqual(body["status"], "running")
-            self.assertEqual(body["request_id"], "req-refresh")
-            self.assertEqual(body["phase"], "compiling")
-            self.assertEqual(body["next_steps"][0]["command"], "wait-for-exec")
             pending = unity_session.read_pending_exec_artifact(str(project_path), "req-refresh")
-            self.assertEqual(pending["phase"], "compiling")
-            self.assertEqual(pending["request_id"], "req-refresh")
+
+        self.assertEqual(exit_code, unity_puer_exec.EXIT_RUNNING)
+        self.assertEqual(stderr, "")
+        body = json.loads(stdout)
+        self.assertEqual(body["status"], "running")
+        self.assertEqual(body["request_id"], "req-refresh")
+        self.assertEqual(body["phase"], "compiling")
+        self.assertEqual(body["next_steps"][0]["command"], "wait-for-exec")
+        self.assertEqual(pending["phase"], "compiling")
+        self.assertEqual(pending["request_id"], "req-refresh")
 
     def test_wait_for_exec_invokes_follow_up_surface(self):
         with mock.patch.object(
@@ -1278,7 +1324,7 @@ class UnityPuerExecCliTests(unittest.TestCase):
         body = json.loads(stdout)
         self.assertEqual(body["status"], "completed")
 
-    def test_wait_for_exec_continues_refresh_phase_then_replays_user_exec(self):
+    def test_wait_for_exec_settles_refresh_phase_then_replays_user_exec(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             project_path = Path(temp_dir) / "Project"
             project_path.mkdir()
@@ -1290,9 +1336,7 @@ class UnityPuerExecCliTests(unittest.TestCase):
                     "code": "export default function run(ctx) { return 11; }",
                     "script_args": {"value": 11},
                     "script_args_json": "{\"value\":11}",
-                    "refresh_before_exec": True,
                     "phase": "refreshing",
-                    "refresh_request_id": "req-pending-refresh",
                 },
             )
             with mock.patch.object(
@@ -1302,10 +1346,7 @@ class UnityPuerExecCliTests(unittest.TestCase):
             ), mock.patch.object(
                 unity_puer_exec.direct_exec_client,
                 "invoke_command",
-                side_effect=[
-                    (0, json.dumps({"ok": True, "status": "completed", "request_id": "req-pending-refresh", "result": {"refreshed": True}}), ""),
-                    (0, json.dumps({"ok": True, "status": "completed", "request_id": "req-pending", "result": {"value": 11}}), ""),
-                ],
+                return_value=(0, json.dumps({"ok": True, "status": "completed", "request_id": "req-pending", "result": {"value": 11}}), ""),
             ) as invoke_command:
                 exit_code, stdout, stderr = unity_puer_exec.run_cli(
                     ["wait-for-exec", "--project-path", str(project_path), "--request-id", "req-pending"]
@@ -1313,16 +1354,17 @@ class UnityPuerExecCliTests(unittest.TestCase):
 
             self.assertEqual(exit_code, 0)
             self.assertEqual(stderr, "")
-            self.assertEqual(invoke_command.call_args_list[0].args[0], "wait-for-exec")
-            self.assertEqual(invoke_command.call_args_list[0].args[2]["request_id"], "req-pending-refresh")
-            self.assertEqual(invoke_command.call_args_list[1].args[0], "exec")
-            self.assertEqual(invoke_command.call_args_list[1].args[2]["request_id"], "req-pending")
-            self.assertEqual(invoke_command.call_args_list[1].args[2]["script_args_json"], "{\"value\":11}")
+            # The refresh phase settles in-process, then the user exec replays under the
+            # same request_id; there is no separate refresh request to wait on.
+            self.assertEqual(invoke_command.call_count, 1)
+            self.assertEqual(invoke_command.call_args.args[0], "exec")
+            self.assertEqual(invoke_command.call_args.args[2]["request_id"], "req-pending")
+            self.assertEqual(invoke_command.call_args.args[2]["script_args_json"], "{\"value\":11}")
             body = json.loads(stdout)
             self.assertEqual(body["status"], "completed")
             self.assertIsNone(unity_session.read_pending_exec_artifact(str(project_path), "req-pending"))
 
-    def test_wait_for_exec_keeps_running_during_refresh_phase(self):
+    def test_wait_for_exec_keeps_running_while_refresh_phase_is_not_ready(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             project_path = Path(temp_dir) / "Project"
             project_path.mkdir()
@@ -1334,19 +1376,15 @@ class UnityPuerExecCliTests(unittest.TestCase):
                     "code": "export default function run(ctx) { return 11; }",
                     "script_args": {},
                     "script_args_json": "{}",
-                    "refresh_before_exec": True,
                     "phase": "refreshing",
-                    "refresh_request_id": "req-pending-refresh",
                 },
             )
+            session = _make_session(project_path=str(project_path))
+            not_ready = unity_session.UnityNotReadyError("compiling", session=session)
             with mock.patch.object(
                 unity_session,
                 "ensure_session_ready",
-                return_value=_make_session(project_path=str(project_path)),
-            ), mock.patch.object(
-                unity_puer_exec.direct_exec_client,
-                "invoke_command",
-                return_value=(unity_puer_exec.EXIT_RUNNING, json.dumps({"ok": True, "status": "running", "request_id": "req-pending-refresh"}), ""),
+                side_effect=not_ready,
             ):
                 exit_code, stdout, stderr = unity_puer_exec.run_cli(
                     ["wait-for-exec", "--project-path", str(project_path), "--request-id", "req-pending"]
@@ -2500,12 +2538,13 @@ class UnityPuerExecCliTests(unittest.TestCase):
         self.assertIsNotNone(entry, "GUIDANCE_MATRIX missing (exec, unity_compile_error)")
         self.assertIn("situation", entry)
         self.assertIn("next_steps", entry)
-        # Primary next_step should be exec with --refresh-before-exec
+        # The re-run guidance must not carry the removed refresh flag.
         next_steps = entry["next_steps"]
         exec_step = next((s for s in next_steps if s["command"] == "exec"), None)
         self.assertIsNotNone(exec_step, "next_steps missing exec candidate")
         self.assertIn("argv_template", exec_step)
-        self.assertIn("--refresh-before-exec", exec_step["argv_template"])
+        self.assertNotIn("--refresh-before-exec", exec_step["argv_template"])
+        self.assertIn("saving the fix is itself enough", exec_step["when"])
 
     def test_guidance_matrix_has_unity_compile_error_for_wait_for_exec(self):
         import help_surface
@@ -3382,11 +3421,25 @@ class ApiUpdaterRecoveryCommandTests(unittest.TestCase):
         self.assertIn("api_updater_declined", stdout)
 
 
-class RefreshBeforeExecBaseUrlTests(unittest.TestCase):
-    def test_base_url_refresh_before_exec_runs_user_script_after_settle(self):
+class AutomaticRefreshBaseUrlTests(unittest.TestCase):
+    def test_base_url_automatic_refresh_runs_user_script_after_settle(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             script_path = Path(temp_dir) / "script.js"
             script_path.write_text("export default function run(ctx) { return 7; }", encoding="utf-8")
+            refresh_body = {
+                "ok": True,
+                "status": "running",
+                "phase": "refreshing",
+                "request_id": "req-base",
+                "refresh": {
+                    "triggered": True,
+                    "reason": "compile_triggering_change",
+                    "paths_changed": ["C:/Project/Assets/A.cs"],
+                    "skipped_reason": "",
+                    "settle_outcome": "dispatched",
+                    "elapsed_ms": 4,
+                },
+            }
             with mock.patch.object(
                 unity_puer_exec_runtime,
                 "_settle_base_url_after_refresh",
@@ -3395,69 +3448,68 @@ class RefreshBeforeExecBaseUrlTests(unittest.TestCase):
                 unity_puer_exec.direct_exec_client,
                 "invoke_command",
                 side_effect=[
-                    (0, json.dumps({"ok": True, "status": "completed", "request_id": "req-base-refresh", "result": {"refreshed": True}}), ""),
+                    (unity_puer_exec.EXIT_RUNNING, json.dumps(refresh_body), ""),
                     (0, json.dumps({"ok": True, "status": "completed", "request_id": "req-base", "result": {"value": 7}}), ""),
                 ],
             ) as invoke_command:
                 exit_code, stdout, stderr = unity_puer_exec.run_cli(
-                    [
-                        "exec",
-                        "--base-url",
-                        "http://127.0.0.1:55231",
-                        "--file",
-                        str(script_path),
-                        "--request-id",
-                        "req-base",
-                        "--refresh-before-exec",
-                    ]
+                    ["exec", "--base-url", "http://127.0.0.1:55231", "--file", str(script_path), "--request-id", "req-base"]
                 )
 
         self.assertEqual(exit_code, 0)
         self.assertEqual(stderr, "")
         self.assertTrue(settle.called)
         self.assertEqual(invoke_command.call_count, 2)
-        # First call is the internal refresh, second is the user script.
-        self.assertIn("AssetDatabase.Refresh", invoke_command.call_args_list[0].args[2]["code"])
-        self.assertEqual(invoke_command.call_args_list[0].args[2]["request_id"], "req-base-refresh")
+        self.assertNotIn("refresh_before_exec", invoke_command.call_args_list[0].args[2])
+        self.assertEqual(invoke_command.call_args_list[0].args[2]["request_id"], "req-base")
         self.assertEqual(invoke_command.call_args_list[1].args[2]["request_id"], "req-base")
         self.assertIn("return 7", invoke_command.call_args_list[1].args[2]["code"])
         body = json.loads(stdout)
         # Terminal response carries the script result, not {refreshed: true}.
         self.assertEqual(body["status"], "completed")
         self.assertEqual(body["result"]["value"], 7)
+        self.assertTrue(body["refresh"]["triggered"])
 
-    def test_base_url_refresh_before_exec_surfaces_refresh_failure(self):
+    def test_base_url_automatic_refresh_settle_timeout_reports_running(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             script_path = Path(temp_dir) / "script.js"
             script_path.write_text("export default function run(ctx) { return 7; }", encoding="utf-8")
+            refresh_body = {
+                "ok": True,
+                "status": "running",
+                "phase": "refreshing",
+                "request_id": "req-base",
+                "refresh": {
+                    "triggered": True,
+                    "reason": "compile_triggering_change",
+                    "paths_changed": [],
+                    "skipped_reason": "",
+                    "settle_outcome": "dispatched",
+                    "elapsed_ms": 4,
+                },
+            }
             with mock.patch.object(
                 unity_puer_exec_runtime,
                 "_settle_base_url_after_refresh",
+                return_value={"outcome": "settle_timeout", "observed_health": ["compiling"]},
             ) as settle, mock.patch.object(
                 unity_puer_exec.direct_exec_client,
                 "invoke_command",
-                side_effect=[
-                    (unity_puer_exec.EXIT_UNITY_COMPILE_ERROR, json.dumps({"ok": False, "status": "unity_compile_error", "request_id": "req-base-refresh"}), ""),
-                ],
+                return_value=(unity_puer_exec.EXIT_RUNNING, json.dumps(refresh_body), ""),
             ) as invoke_command:
                 exit_code, stdout, stderr = unity_puer_exec.run_cli(
-                    [
-                        "exec",
-                        "--base-url",
-                        "http://127.0.0.1:55231",
-                        "--file",
-                        str(script_path),
-                        "--request-id",
-                        "req-base",
-                        "--refresh-before-exec",
-                    ]
+                    ["exec", "--base-url", "http://127.0.0.1:55231", "--file", str(script_path), "--request-id", "req-base"]
                 )
 
-        self.assertEqual(exit_code, unity_puer_exec.EXIT_UNITY_COMPILE_ERROR)
-        self.assertFalse(settle.called)
+        self.assertEqual(exit_code, unity_puer_exec.EXIT_RUNNING)
+        self.assertEqual(stderr, "")
+        self.assertTrue(settle.called)
+        # A settle that did not return to ready stays non-terminal; no second submit.
         self.assertEqual(invoke_command.call_count, 1)
         body = json.loads(stdout)
-        self.assertEqual(body["status"], "unity_compile_error")
+        self.assertEqual(body["status"], "running")
+        self.assertEqual(body["request_id"], "req-base")
+        self.assertEqual(body["phase"], "refreshing")
 
 
 if __name__ == "__main__":

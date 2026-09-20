@@ -374,7 +374,7 @@ def _trigger_domain_reload_via_touched_script(project_path, unity_exe_path):
     """Fallback reload trigger: touch a host script and force a recompile+reload.
 
     Writes a uniquely-changing C# file under the validation temp directory and
-    runs refresh-before-exec, which drives AssetDatabase.Refresh server-side and
+    relies on the automatic code-change refresh, which drives AssetDatabase.Refresh server-side and
     therefore does not require Editor focus.
     """
     temp_dir = project_path / "Assets" / "__codex_validation_temp"
@@ -396,7 +396,6 @@ def _trigger_domain_reload_via_touched_script(project_path, unity_exe_path):
             str(unity_exe_path),
             "--wait-timeout-ms",
             str(WAIT_TIMEOUT_MS),
-            "--refresh-before-exec",
             "--code",
             "export default function run(ctx) { return { ok: true }; }",
         ]
@@ -1265,14 +1264,14 @@ class RealHostIntegrationTests(unittest.TestCase):
             encoding="utf-8",
         )
         try:
-            # Trigger recompilation via refresh-before-exec
+            # The written .cs file is a compile-triggering change, so the next exec
+            # refreshes automatically and recompiles before the compile-error gate.
             exec_exit_code, exec_payload, _, _ = _run_cli(
                 [
                     "exec",
                     "--project-path", str(self.project_path),
                     "--unity-exe-path", str(self.unity_exe_path),
                     "--wait-timeout-ms", str(WAIT_TIMEOUT_MS),
-                    "--refresh-before-exec",
                     "--code", "export default function run(ctx) { return { ok: true }; }",
                 ]
             )
@@ -1343,29 +1342,40 @@ class RealHostIntegrationTests(unittest.TestCase):
                     "--project-path", str(self.project_path),
                     "--unity-exe-path", str(self.unity_exe_path),
                     "--wait-timeout-ms", str(WAIT_TIMEOUT_MS),
-                    "--refresh-before-exec",
                     "--code", "export default function run(ctx) { return { ok: true }; }",
                 ]
             )
 
-    def test_base_url_refresh_before_exec_and_wait_for_compile_against_real_host(self):
-        """compile-loop-tooling regression: base-url --refresh-before-exec is accepted
-        (no longer project-only) and runs the user script after settling, and
-        wait-for-compile brackets the cycle over the same endpoint without staleness."""
+    def test_base_url_automatic_refresh_and_wait_for_compile_against_real_host(self):
+        """Automatic refresh works in base-url mode: a compile-triggering code change is
+        detected server-side, the CLI settles the resulting cycle over the same
+        endpoint, and the terminal response carries the script result plus the
+        refresh decision. wait-for-compile then brackets a cycle over that endpoint.
+        """
         ready_exit_code, ready_payload, _, _ = _warm_up_project_exec(self.project_path, self.unity_exe_path)
         self.assertEqual(ready_exit_code, 0, ready_payload)
 
         base_url, _ = _scan_ready_control_endpoint(self.project_path)
         self.assertIsNotNone(base_url, "could not resolve a ready control endpoint for the base-url regression")
 
-        # 1. Base-url refresh-before-exec must no longer be rejected as project-only,
-        #    and the terminal response carries the user script result, not {refreshed: true}.
+        # A fresh compile-triggering source file makes the project dirty; the watcher
+        # (or the install-time baseline) must surface it as a pending change.
+        temp_dir = self.project_path / "Assets" / "__codex_validation_temp"
+        temp_dir.mkdir(parents=True, exist_ok=True)
+        trigger_cs = temp_dir / "BaseUrlAutomaticRefreshProbe.cs"
+        trigger_cs.write_text(
+            "// Auto-generated base-url automatic-refresh probe.\n"
+            "internal static class BaseUrlAutomaticRefreshProbe {{ internal const long Stamp = {}L; }}\n".format(
+                time.time_ns()
+            ),
+            encoding="utf-8",
+        )
+
         exec_exit_code, exec_payload, _, _ = _run_cli(
             [
                 "exec",
                 "--base-url", base_url,
                 "--wait-timeout-ms", str(WAIT_TIMEOUT_MS),
-                "--refresh-before-exec",
                 "--code", "export default function run(ctx) { return { loop: 'base-url-ok' }; }",
             ]
         )
@@ -1380,14 +1390,13 @@ class RealHostIntegrationTests(unittest.TestCase):
                     "--wait-timeout-ms", str(READY_TIMEOUT_SECONDS * 1000),
                 ]
             )
-        self.assertNotEqual(
-            (exec_payload or {}).get("error", ""),
-            "refresh-before-exec is only valid with --project-path",
-            "base-url refresh-before-exec must no longer be rejected",
-        )
         self.assertEqual(exec_exit_code, 0, exec_payload)
         self.assertEqual(exec_payload["status"], "completed")
         self.assertEqual(exec_payload["result"]["loop"], "base-url-ok")
+        # The terminal response carries the decision, not a {refreshed: true} confirmation.
+        self.assertIn("refresh", exec_payload)
+        self.assertTrue(exec_payload["refresh"]["triggered"], exec_payload["refresh"])
+        self.assertIn("compile_triggering_change", exec_payload["refresh"]["reason"])
         self.assertNotIn("refreshed", exec_payload["result"])
 
         # 2. wait-for-compile over the same endpoint returns a well-formed terminal
@@ -1464,7 +1473,6 @@ class RealHostIntegrationTests(unittest.TestCase):
                     "--project-path", str(self.project_path),
                     "--unity-exe-path", str(self.unity_exe_path),
                     "--wait-timeout-ms", str(WAIT_TIMEOUT_MS),
-                    "--refresh-before-exec",
                     "--code", "export default function run(ctx) { return { ok: true }; }",
                 ]
             )
@@ -1500,7 +1508,6 @@ class RealHostIntegrationTests(unittest.TestCase):
                     "--project-path", str(self.project_path),
                     "--unity-exe-path", str(self.unity_exe_path),
                     "--wait-timeout-ms", str(WAIT_TIMEOUT_MS),
-                    "--refresh-before-exec",
                     "--code", "export default function run(ctx) { return { ok: true }; }",
                 ]
             )
@@ -1803,7 +1810,8 @@ class RealHostIntegrationTests(unittest.TestCase):
 
         fixture_path, initial_content = _seed_obsolete_api_fixture(self.project_path)
         try:
-            # Trigger compilation/refresh by executing a probe script with refresh-before-exec
+            # The seeded obsolete-API fixture is a compile-triggering change; the next
+            # exec refreshes automatically and drives the recompile.
             trigger_exit, trigger_payload, _, _ = _run_cli(
                 [
                     "exec",
@@ -1813,7 +1821,6 @@ class RealHostIntegrationTests(unittest.TestCase):
                     str(self.unity_exe_path),
                     "--wait-timeout-ms",
                     str(WAIT_TIMEOUT_MS),
-                    "--refresh-before-exec",
                     "--code",
                     "export default function run(ctx) { return { ok: true, request_id: ctx.request_id }; }",
                 ]
@@ -2007,6 +2014,182 @@ class RealHostIntegrationTests(unittest.TestCase):
         self.assertEqual(non_launch_payload["attempt_count"], 1)
         self.assertEqual(non_launch_payload["last_launch_status"], "compile_error")
         self.assertEqual(len(non_launch_payload["attempts"]), 1)
+
+
+def _post_control_json(base_url, path, payload, timeout_seconds=5.0):
+    """POST JSON to a control endpoint, returning (http_status, body) even on 4xx/5xx."""
+    import urllib.error
+    import urllib.request
+
+    request = urllib.request.Request(
+        base_url.rstrip("/") + path,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+            return response.status, json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        return exc.code, json.loads(exc.read().decode("utf-8"))
+
+
+class RefreshOnChangeRealHostTests(unittest.TestCase):
+    """Real-host coverage for import-change-refresh (see the change's design).
+
+    The C# decision logic has no unit-test host in this repository, so its observable
+    behavior is exercised here against a live Editor: health refresh state, the
+    code-only boundary, the no-repeat property, the diagnostics block, and the
+    machine-readable rejection of the removed protocol field.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        if not _real_host_tests_enabled():
+            raise unittest.SkipTest(
+                "{} is not enabled; set {}=1 to run real-host integration tests.".format(
+                    RUN_REAL_HOST_TESTS_ENV,
+                    RUN_REAL_HOST_TESTS_ENV,
+                )
+            )
+        cls.project_path = _require_real_host_project_path()
+        cls.unity_exe_path = _require_unity_editor(cls.project_path)
+
+    def setUp(self):
+        _ensure_clean_test_boundary(self.project_path)
+        prepare_validation_host.main(["--project-path", str(self.project_path)])
+        cleanup_validation_host.cleanup_validation_temp_assets(self.project_path)
+        warm_exit_code, warm_payload, _, _ = _warm_up_project_exec(self.project_path, self.unity_exe_path)
+        self.assertEqual(warm_exit_code, 0, warm_payload)
+
+    def tearDown(self):
+        try:
+            _ensure_clean_test_boundary(self.project_path)
+        except Exception:
+            pass
+        try:
+            cleanup_validation_host.cleanup_validation_temp_assets(self.project_path)
+        except Exception:
+            pass
+
+    def _base_url(self):
+        base_url, _ = _scan_ready_control_endpoint(self.project_path)
+        self.assertIsNotNone(base_url, "no ready control endpoint for the validation host")
+        return base_url
+
+    def _write_compile_triggering_probe(self, name):
+        temp_dir = self.project_path / "Assets" / "__codex_validation_temp"
+        temp_dir.mkdir(parents=True, exist_ok=True)
+        path = temp_dir / name
+        path.write_text(
+            "// Auto-generated automatic-refresh probe.\n"
+            "internal static class {0} {{ internal const long Stamp = {1}L; }}\n".format(
+                path.stem, time.time_ns()
+            ),
+            encoding="utf-8",
+        )
+        return path
+
+    # An exec that may trigger an automatic refresh has to give the CLI's internal
+    # settle+resubmit loop enough budget: the refresh drives a full compile cycle
+    # (tens of seconds), and the terminal response carries the script result only
+    # after it settles.
+    REFRESH_WAIT_TIMEOUT_MS = 300_000
+
+    def _exec_script(self, base_url, body):
+        exit_code, payload, _, _ = _run_cli(
+            [
+                "exec",
+                "--base-url", base_url,
+                "--wait-timeout-ms", str(self.REFRESH_WAIT_TIMEOUT_MS),
+                "--code", body,
+            ]
+        )
+        if payload is not None and unity_puer_exec_runtime._running_or_timed_out_response(
+            exit_code, json.dumps(payload)
+        ):
+            exit_code, payload, _, _ = _run_cli(
+                [
+                    "wait-for-exec",
+                    "--base-url", base_url,
+                    "--request-id", payload["request_id"],
+                    "--wait-timeout-ms", str(READY_TIMEOUT_SECONDS * 1000),
+                ]
+            )
+        return exit_code, payload
+
+    def test_health_reports_not_pending_after_settle(self):
+        base_url = self._base_url()
+        payload, error = unity_session._probe_health(base_url, 1.5)
+        self.assertIsNotNone(payload, error)
+        self.assertEqual(payload["status"], "ready")
+        refresh = payload.get("refresh")
+        self.assertIsInstance(refresh, dict, payload)
+        self.assertEqual(refresh.get("pending"), "not_pending")
+        self.assertFalse(refresh.get("suppressed"))
+
+    def test_non_code_asset_change_does_not_refresh(self):
+        base_url = self._base_url()
+        temp_dir = self.project_path / "Assets" / "__codex_validation_temp"
+        temp_dir.mkdir(parents=True, exist_ok=True)
+        (temp_dir / "not_code_asset.txt").write_text("plain text; never compiles\n", encoding="utf-8")
+
+        exit_code, payload = self._exec_script(
+            base_url, "export default function run(ctx) { return { ok: true }; }"
+        )
+        self.assertEqual(exit_code, 0, payload)
+        self.assertEqual(payload["status"], "completed")
+        refresh = payload.get("refresh")
+        self.assertIsInstance(refresh, dict, payload)
+        # Non-code assets are deliberately not watched, so no refresh is triggered.
+        self.assertFalse(refresh.get("triggered"), refresh)
+
+    def test_removed_refresh_field_is_rejected(self):
+        base_url = self._base_url()
+        status, body = _post_control_json(
+            base_url,
+            "/exec",
+            {
+                "request_id": "removed-field-probe",
+                "code": "export default function run(ctx) { return null; }",
+                "refresh_before_exec": True,
+            },
+        )
+        self.assertEqual(status, 400, body)
+        self.assertFalse(body.get("ok"), body)
+        self.assertEqual(body.get("error"), "refresh_before_exec_removed")
+
+    def test_code_change_refreshes_once_then_does_not_refresh_again(self):
+        base_url = self._base_url()
+        self._write_compile_triggering_probe("AutomaticRefreshProbe.cs")
+
+        first_exit, first_payload = self._exec_script(
+            base_url, "export default function run(ctx) { return { pass: 1 }; }"
+        )
+        self.assertEqual(first_exit, 0, first_payload)
+        self.assertEqual(first_payload["status"], "completed")
+        first_refresh = first_payload.get("refresh")
+        self.assertIsInstance(first_refresh, dict, first_payload)
+        # Every decision carries the full diagnostics contract.
+        for key in ("triggered", "reason", "paths_changed", "skipped_reason", "settle_outcome", "elapsed_ms"):
+            self.assertIn(key, first_refresh)
+        if first_refresh["triggered"]:
+            self.assertEqual(first_refresh["reason"], "compile_triggering_change")
+            self.assertTrue(
+                any(path.endswith("AutomaticRefreshProbe.cs") for path in first_refresh["paths_changed"]),
+                first_refresh["paths_changed"],
+            )
+
+        # No further file change: the loop-breaking property holds -- a second exec
+        # must not refresh for the already-settled change.
+        second_exit, second_payload = self._exec_script(
+            base_url, "export default function run(ctx) { return { pass: 2 }; }"
+        )
+        self.assertEqual(second_exit, 0, second_payload)
+        self.assertEqual(second_payload["status"], "completed")
+        second_refresh = second_payload.get("refresh")
+        self.assertIsInstance(second_refresh, dict, second_payload)
+        self.assertFalse(second_refresh["triggered"], second_refresh)
 
 
 if __name__ == "__main__":

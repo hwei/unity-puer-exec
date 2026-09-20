@@ -51,12 +51,6 @@ HEALTH_STATUS_COMPILING = "compiling"
 COMPILE_OUTCOME_READY = "ready"
 COMPILE_OUTCOME_NONE = "no_compile_observed"
 COMPILE_OUTCOME_TIMEOUT = "settle_timeout"
-REFRESH_BEFORE_EXEC_TEMPLATE = """export default function run(ctx) {
-  const AssetDatabase = puer.loadType('UnityEditor.AssetDatabase');
-  AssetDatabase.Refresh();
-  return { request_id: ctx.request_id, refreshed: true };
-}
-"""
 # ScriptUpdater consent dialog recovery (see api-updater-recovery spec). This is a
 # sidecar field on whatever status the command would otherwise return, never a
 # replacement for `status: "warning"` (the async-exec-result contract).
@@ -729,18 +723,12 @@ def _inject_guidance_into_response(stdout_text, stderr_text, command, args, requ
     return stdout_text, emit_payload(body)
 
 
-def _refresh_request_id(request_id):
-    return "{}-refresh".format(request_id)
-
-
 def _pending_exec_payload(
     request_id,
     code,
     script_args,
     script_args_json,
-    refresh_before_exec=False,
     phase=None,
-    refresh_request_id=None,
     source_path=None,
     import_base_url=None,
     reset_jsenv_before_exec=False,
@@ -751,7 +739,6 @@ def _pending_exec_payload(
         "code": code,
         "script_args": script_args,
         "script_args_json": script_args_json,
-        "refresh_before_exec": bool(refresh_before_exec),
         "reset_jsenv_before_exec": bool(reset_jsenv_before_exec),
         "stale_module_policy": stale_module_policy or STALE_MODULE_POLICY_AUTO_RESET,
     }
@@ -761,8 +748,6 @@ def _pending_exec_payload(
         payload["import_base_url"] = import_base_url
     if phase:
         payload["phase"] = phase
-    if refresh_request_id:
-        payload["refresh_request_id"] = refresh_request_id
     return payload
 
 
@@ -778,9 +763,7 @@ def _write_pending_exec(
     code,
     script_args,
     script_args_json,
-    refresh_before_exec=False,
     phase=None,
-    refresh_request_id=None,
     source_path=None,
     import_base_url=None,
     reset_jsenv_before_exec=False,
@@ -795,9 +778,7 @@ def _write_pending_exec(
             code,
             script_args,
             script_args_json,
-            refresh_before_exec=refresh_before_exec,
             phase=phase,
-            refresh_request_id=refresh_request_id,
             source_path=source_path,
             import_base_url=import_base_url,
             reset_jsenv_before_exec=reset_jsenv_before_exec,
@@ -833,7 +814,7 @@ def _finalize_pending_after_submit(args, request_id, pending, exit_code, stdout_
     return None
 
 
-def _emit_running_payload(operation, session, request_id, args, phase=None):
+def _emit_running_payload(operation, session, request_id, args, phase=None, refresh=None):
     payload = {
         "ok": True,
         "status": "running",
@@ -842,6 +823,8 @@ def _emit_running_payload(operation, session, request_id, args, phase=None):
     }
     if phase:
         payload["phase"] = phase
+    if refresh is not None:
+        payload["refresh"] = refresh
     if session is not None:
         payload["session"] = session.to_payload()
     _attach_guidance(payload, operation, "running", args, request_id=request_id)
@@ -855,7 +838,6 @@ def _build_exec_payload(
     args,
     source_path=None,
     import_base_url=None,
-    refresh_before_exec=False,
     reset_jsenv_before_exec=False,
     stale_module_policy=STALE_MODULE_POLICY_AUTO_RESET,
 ):
@@ -873,8 +855,6 @@ def _build_exec_payload(
         payload["import_base_url"] = import_base_url
     if reset_jsenv_before_exec:
         payload["reset_jsenv_before_exec"] = True
-    if refresh_before_exec:
-        payload["refresh_before_exec"] = True
     return payload
 
 
@@ -887,7 +867,6 @@ def _invoke_exec(
     source_path=None,
     import_base_url=None,
     reset_jsenv_before_exec=False,
-    refresh_before_exec=False,
     stale_module_policy=STALE_MODULE_POLICY_AUTO_RESET,
 ):
     payload = _build_exec_payload(
@@ -898,7 +877,6 @@ def _invoke_exec(
         source_path=source_path,
         import_base_url=import_base_url,
         reset_jsenv_before_exec=reset_jsenv_before_exec,
-        refresh_before_exec=refresh_before_exec,
         stale_module_policy=stale_module_policy,
     )
     return direct_exec_client.invoke_command(
@@ -1037,7 +1015,7 @@ def _settle_base_url_after_refresh(base_url, args, recovery=None):
     """Base-url analog of `_ensure_project_session_ready_after_refresh`.
 
     Re-probes the same caller-supplied endpoint, reusing the compile-wait primitive,
-    so refresh-before-exec settles on the compile cycle before running the script.
+    so an automatic refresh settles on the compile cycle before running the script.
     """
     settle_timeout_seconds = _post_refresh_ready_timeout_seconds(args)
     cycle = wait_for_compile_cycle(
@@ -1051,12 +1029,69 @@ def _settle_base_url_after_refresh(base_url, args, recovery=None):
     return cycle
 
 
-def _refresh_exec_code():
-    return REFRESH_BEFORE_EXEC_TEMPLATE
+def _is_refresh_pending_response(exit_code, stdout_text):
+    """True when an exec response reports an automatic refresh phase.
+
+    Refresh is non-terminal: the CLI settles the compile cycle it started and
+    re-submits the same request_id, so a caller never receives a refresh
+    confirmation in place of the script result.
+    """
+    if not stdout_text:
+        return False
+    try:
+        body = json.loads(stdout_text)
+    except (TypeError, ValueError):
+        return False
+    if not isinstance(body, dict):
+        return False
+    if body.get("status") == "running" and body.get("phase") == PHASE_REFRESHING:
+        return True
+    refresh = body.get("refresh")
+    return isinstance(refresh, dict) and refresh.get("triggered") is True
 
 
-def _invoke_refresh_exec(base_url, request_id, args):
-    return _invoke_exec(base_url, request_id, _refresh_exec_code(), "{}", args, refresh_before_exec=True)
+def _extract_refresh_block(stdout_text):
+    if not stdout_text:
+        return None
+    try:
+        body = json.loads(stdout_text)
+    except (TypeError, ValueError):
+        return None
+    block = body.get("refresh") if isinstance(body, dict) else None
+    return block if isinstance(block, dict) else None
+
+
+def _inject_refresh_block_into_stdout(stdout_text, refresh_block):
+    if not stdout_text or refresh_block is None:
+        return stdout_text
+    try:
+        body = json.loads(stdout_text)
+    except (TypeError, ValueError):
+        return stdout_text
+    if not isinstance(body, dict):
+        return stdout_text
+    body["refresh"] = refresh_block
+    return emit_payload(body)
+
+
+def _settle_after_automatic_refresh(args, selector, session, base_url, recovery):
+    """Settle the compile cycle an automatic refresh started.
+
+    Returns ``(session, base_url)`` once the cycle settled, or ``None`` while it is
+    still running, so the caller reports a non-terminal refreshing phase.
+    """
+    try:
+        if selector == "project_path":
+            session = _ensure_project_session_ready_after_refresh(args)
+            recovery.record(getattr(session, "api_updater_declines", 0))
+            session.api_updater_declines = 0
+            return session, session.base_url
+        cycle = _settle_base_url_after_refresh(base_url, args, recovery=recovery)
+        if cycle.get("outcome") == COMPILE_OUTCOME_TIMEOUT:
+            return None
+        return session, base_url
+    except (unity_session.UnityStalledError, unity_session.UnityNotReadyError):
+        return None
 
 
 def _invoke_reset_jsenv(base_url, args):
@@ -1106,21 +1141,6 @@ def _normalize_exec_lifecycle_body(body, args, request_id=None, default_phase=No
         body.setdefault("phase", default_phase or PHASE_EXECUTING)
         return body, EXIT_RUNNING
     return body, None
-
-
-def _remap_request_id_in_response(text, request_id, args, phase=None, normalize_compiling=True):
-    if not text:
-        return text
-    body = json.loads(text)
-    body["request_id"] = request_id
-    body, _ = _normalize_exec_lifecycle_body(
-        body,
-        args,
-        request_id=request_id,
-        default_phase=phase,
-        normalize_compiling=normalize_compiling,
-    )
-    return emit_payload(body)
 
 
 def _pending_phase(pending):
@@ -1207,6 +1227,14 @@ def _run_exec_impl(args, recovery):
             command="exec",
             args=args,
         )
+    if getattr(args, "refresh_before_exec", False):
+        return usage_error(
+            "--refresh-before-exec has been removed; refresh is now automatic for code changes. "
+            "Saving the change is itself the trigger, so re-run exec instead.",
+            status="removed_refresh_flag",
+            command="exec",
+            args=args,
+        )
     request_id = args.request_id or uuid.uuid4().hex
     code = read_exec_code(args)
     script_args, script_args_json = _canonicalize_script_args(getattr(args, "script_args", None))
@@ -1219,9 +1247,6 @@ def _run_exec_impl(args, recovery):
     validate_project_mode_only(selector, "unity-exe-path", args.unity_exe_path)
     validate_project_mode_only(selector, "unity-log-path", args.unity_log_path)
     validate_project_mode_only(selector, "unity-launch-arg", getattr(args, "unity_launch_args", None))
-    # refresh-before-exec is now allowed in base-url mode: the server accepts
-    # refresh_before_exec for any selector, and the base-url settle path re-probes the
-    # same endpoint (see _settle_base_url_after_refresh).
 
     if selector == "project_path":
         _sweep_pending_exec(args)
@@ -1240,7 +1265,6 @@ def _run_exec_impl(args, recovery):
                 code,
                 script_args,
                 script_args_json,
-                refresh_before_exec=args.refresh_before_exec,
                 source_path=source_path,
                 import_base_url=import_base_url,
                 reset_jsenv_before_exec=reset_jsenv_before_exec,
@@ -1261,136 +1285,61 @@ def _run_exec_impl(args, recovery):
     log_path = _resolve_log_path(args, session)
     log_start = _capture_log_offset(log_path)
 
-    if selector == "project_path" and args.refresh_before_exec:
-        refresh_request_id = _refresh_request_id(request_id)
+    if selector == "project_path":
         _write_pending_exec(
             args,
             request_id,
             code,
             script_args,
             script_args_json,
-            refresh_before_exec=True,
-            phase=PHASE_REFRESHING,
-            refresh_request_id=refresh_request_id,
             source_path=source_path,
             import_base_url=import_base_url,
             reset_jsenv_before_exec=reset_jsenv_before_exec,
             stale_module_policy=stale_module_policy,
         )
-        exit_code, stdout_text, stderr_text = _invoke_refresh_exec(base_url, refresh_request_id, args)
+
+    refresh_block = None
+    refresh_attempts = 0
+    while True:
+        exit_code, stdout_text, stderr_text = _invoke_exec(
+            base_url,
+            request_id,
+            code,
+            script_args_json,
+            args,
+            source_path=source_path,
+            import_base_url=import_base_url,
+            reset_jsenv_before_exec=reset_jsenv_before_exec,
+            stale_module_policy=stale_module_policy,
+        )
         exit_code, stdout_text, stderr_text = _normalize_exec_blocker_result(
             exit_code,
             stdout_text,
             stderr_text,
-            session,
-            log_path=log_path,
+            session if selector == "project_path" else None,
+            log_path=log_path if selector == "project_path" else None,
         )
-        if _running_or_timed_out_response(exit_code, stdout_text):
+        if not _is_refresh_pending_response(exit_code, stdout_text):
+            break
+        # The server detected a compile-triggering change and refreshed. Refresh is a
+        # non-terminal phase of this accepted request: settle the compile cycle, then
+        # re-submit the same request_id so the terminal response carries the script
+        # result rather than a refresh confirmation.
+        refresh_block = _extract_refresh_block(stdout_text) or refresh_block
+        if selector == "project_path":
             _refresh_pending_exec(args, request_id, _read_pending_exec(args, request_id), PHASE_REFRESHING)
-            payload = _emit_running_payload("exec", session, request_id, args, phase=PHASE_REFRESHING)
+        settled = _settle_after_automatic_refresh(args, selector, session, base_url, recovery)
+        if settled is None or refresh_attempts >= 1:
+            payload = _emit_running_payload(
+                "exec", session, request_id, args, phase=PHASE_REFRESHING, refresh=refresh_block
+            )
             _inject_log_range_into_payload(payload, log_path, log_start, _capture_log_offset(log_path))
             return EXIT_RUNNING, emit_payload(payload), ""
-        if exit_code != 0:
-            _clear_pending_exec(args, request_id)
-            stdout_text = _remap_request_id_in_response(
-                stdout_text,
-                request_id,
-                args,
-                phase=PHASE_REFRESHING,
-                normalize_compiling=False,
-            )
-            stderr_text = _remap_request_id_in_response(
-                stderr_text,
-                request_id,
-                args,
-                phase=PHASE_REFRESHING,
-                normalize_compiling=False,
-            )
-            exit_code, stdout_text, stderr_text = _normalize_exec_response(
-                exit_code,
-                stdout_text,
-                stderr_text,
-                args,
-                request_id=request_id,
-                default_phase=PHASE_REFRESHING,
-                normalize_compiling=False,
-            )
-            stdout_text = _inject_log_range_into_stdout(stdout_text, log_path, log_start, _capture_log_offset(log_path))
-            stdout_text, stderr_text = _inject_guidance_into_response(stdout_text, stderr_text, "exec", args, request_id=request_id)
-            return exit_code, stdout_text, stderr_text
-        try:
-            session = _ensure_project_session_ready_after_refresh(args)
-            base_url = session.base_url
-        except (unity_session.UnityStalledError, unity_session.UnityNotReadyError) as exc:
-            _refresh_pending_exec(args, request_id, _read_pending_exec(args, request_id), PHASE_REFRESHING)
-            payload = _emit_running_payload("exec", exc.session, request_id, args, phase=PHASE_REFRESHING)
-            _inject_log_range_into_payload(payload, log_path, log_start, _capture_log_offset(log_path))
-            return EXIT_RUNNING, emit_payload(payload), ""
-        recovery.record(getattr(session, "api_updater_declines", 0))
-        session.api_updater_declines = 0
-        _set_pending_phase(args, request_id, _read_pending_exec(args, request_id), PHASE_EXECUTING)
+        session, base_url = settled
+        if selector == "project_path":
+            _set_pending_phase(args, request_id, _read_pending_exec(args, request_id), PHASE_EXECUTING)
+        refresh_attempts += 1
 
-    if selector == "base_url" and args.refresh_before_exec:
-        refresh_request_id = _refresh_request_id(request_id)
-        refresh_exit_code, refresh_stdout_text, refresh_stderr_text = _invoke_refresh_exec(
-            base_url, refresh_request_id, args
-        )
-        refresh_in_progress = _running_or_timed_out_response(
-            refresh_exit_code, refresh_stdout_text
-        ) or _is_compiling_response(refresh_exit_code, refresh_stdout_text)
-        if refresh_exit_code != 0 and not refresh_in_progress:
-            refresh_stdout_text = _remap_request_id_in_response(
-                refresh_stdout_text,
-                request_id,
-                args,
-                phase=PHASE_REFRESHING,
-                normalize_compiling=False,
-            )
-            refresh_stderr_text = _remap_request_id_in_response(
-                refresh_stderr_text,
-                request_id,
-                args,
-                phase=PHASE_REFRESHING,
-                normalize_compiling=False,
-            )
-            refresh_exit_code, refresh_stdout_text, refresh_stderr_text = _normalize_exec_response(
-                refresh_exit_code,
-                refresh_stdout_text,
-                refresh_stderr_text,
-                args,
-                request_id=request_id,
-                default_phase=PHASE_REFRESHING,
-                normalize_compiling=False,
-            )
-            refresh_stdout_text = _inject_log_range_into_stdout(
-                refresh_stdout_text, log_path, log_start, _capture_log_offset(log_path)
-            )
-            refresh_stdout_text, refresh_stderr_text = _inject_guidance_into_response(
-                refresh_stdout_text, refresh_stderr_text, "exec", args, request_id=request_id
-            )
-            return refresh_exit_code, refresh_stdout_text, refresh_stderr_text
-        # Settle on the compile cycle by re-probing the same endpoint, then run the
-        # user script below so base-url callers get refresh -> compile-settle -> execute.
-        _settle_base_url_after_refresh(base_url, args, recovery=recovery)
-
-    exit_code, stdout_text, stderr_text = _invoke_exec(
-        base_url,
-        request_id,
-        code,
-        script_args_json,
-        args,
-        source_path=source_path,
-        import_base_url=import_base_url,
-        reset_jsenv_before_exec=reset_jsenv_before_exec,
-        stale_module_policy=stale_module_policy,
-    )
-    exit_code, stdout_text, stderr_text = _normalize_exec_blocker_result(
-        exit_code,
-        stdout_text,
-        stderr_text,
-        session if selector == "project_path" else None,
-        log_path=log_path if selector == "project_path" else None,
-    )
     if selector == "project_path":
         pending = _read_pending_exec(args, request_id)
         _finalize_pending_after_submit(args, request_id, pending, exit_code, stdout_text)
@@ -1403,6 +1352,7 @@ def _run_exec_impl(args, recovery):
         request_id=request_id,
         default_phase=default_phase,
     )
+    stdout_text = _inject_refresh_block_into_stdout(stdout_text, refresh_block)
     stdout_text = _inject_log_range_into_stdout(stdout_text, log_path, log_start, _capture_log_offset(log_path))
     stdout_text, stderr_text = _inject_guidance_into_response(stdout_text, stderr_text, "exec", args, request_id=request_id)
     return exit_code, stdout_text, stderr_text
@@ -1464,70 +1414,15 @@ def _run_wait_for_exec_impl(args, recovery):
         base_url = args.base_url
         pending = None
     if pending is not None:
-        if pending.get("refresh_before_exec") and pending.get("phase") == PHASE_REFRESHING:
-            refresh_request_id = pending.get("refresh_request_id") or _refresh_request_id(args.request_id)
-            _wfe_refresh_log_path = _resolve_log_path(args, session)
-            payload = {
-                "request_id": refresh_request_id,
-                "wait_timeout_ms": args.wait_timeout_ms,
-                "include_diagnostics": args.include_diagnostics,
-            }
-            exit_code, stdout_text, stderr_text = direct_exec_client.invoke_command(
-                "wait-for-exec",
-                base_url,
-                payload,
-                args.wait_timeout_ms,
-            )
-            exit_code, stdout_text, stderr_text = _normalize_exec_blocker_result(
-                exit_code,
-                stdout_text,
-                stderr_text,
-                session if selector == "project_path" else None,
-                log_path=_wfe_refresh_log_path if selector == "project_path" else None,
-            )
-            if _running_or_timed_out_response(exit_code, stdout_text):
-                pending = _refresh_pending_exec(args, args.request_id, pending, PHASE_REFRESHING)
+        if pending.get("phase") == PHASE_REFRESHING:
+            # The recorded exec triggered an automatic refresh. Settle the compile
+            # cycle, then replay the user exec under the same request_id.
+            settled = _settle_after_automatic_refresh(args, selector, session, base_url, recovery)
+            if settled is None:
                 payload = _emit_running_payload("wait-for-exec", session, args.request_id, args, phase=PHASE_REFRESHING)
-                _inject_log_range_into_payload(payload, _wfe_refresh_log_path, _wfe_log_start, _capture_log_offset(_wfe_refresh_log_path), offsets_invalidated=_wfe_offsets_invalidated)
+                _inject_log_range_into_payload(payload, _wfe_log_path_early, _wfe_log_start, _capture_log_offset(_wfe_log_path_early), offsets_invalidated=_wfe_offsets_invalidated)
                 return EXIT_RUNNING, emit_payload(payload), ""
-            if exit_code != 0:
-                _clear_pending_exec(args, args.request_id)
-                stdout_text = _remap_request_id_in_response(
-                    stdout_text,
-                    args.request_id,
-                    args,
-                    phase=PHASE_REFRESHING,
-                    normalize_compiling=False,
-                )
-                stderr_text = _remap_request_id_in_response(
-                    stderr_text,
-                    args.request_id,
-                    args,
-                    phase=PHASE_REFRESHING,
-                    normalize_compiling=False,
-                )
-                exit_code, stdout_text, stderr_text = _normalize_exec_response(
-                    exit_code,
-                    stdout_text,
-                    stderr_text,
-                    args,
-                    request_id=args.request_id,
-                    default_phase=PHASE_REFRESHING,
-                    normalize_compiling=False,
-                )
-                stdout_text = _inject_log_range_into_stdout(stdout_text, _wfe_refresh_log_path, _wfe_log_start, _capture_log_offset(_wfe_refresh_log_path), offsets_invalidated=_wfe_offsets_invalidated)
-                stdout_text, stderr_text = _inject_guidance_into_response(stdout_text, stderr_text, "wait-for-exec", args, request_id=args.request_id)
-                return exit_code, stdout_text, stderr_text
-            try:
-                session = _ensure_project_session_ready_after_refresh(args)
-                base_url = session.base_url
-            except (unity_session.UnityStalledError, unity_session.UnityNotReadyError) as exc:
-                pending = _refresh_pending_exec(args, args.request_id, pending, PHASE_REFRESHING)
-                payload = _emit_running_payload("wait-for-exec", exc.session, args.request_id, args, phase=PHASE_REFRESHING)
-                _inject_log_range_into_payload(payload, _wfe_refresh_log_path, _wfe_log_start, _capture_log_offset(_wfe_refresh_log_path), offsets_invalidated=_wfe_offsets_invalidated)
-                return EXIT_RUNNING, emit_payload(payload), ""
-            recovery.record(getattr(session, "api_updater_declines", 0))
-            session.api_updater_declines = 0
+            session, base_url = settled
             pending = _refresh_pending_exec(args, args.request_id, pending, PHASE_EXECUTING)
         exit_code, stdout_text, stderr_text = _invoke_exec(
             base_url,
@@ -1559,6 +1454,11 @@ def _run_wait_for_exec_impl(args, recovery):
         session if selector == "project_path" else None,
         log_path=_wfe_log_path_early if selector == "project_path" else None,
     )
+    if selector == "project_path" and pending is not None and _is_refresh_pending_response(exit_code, stdout_text):
+        _refresh_pending_exec(args, args.request_id, _read_pending_exec(args, args.request_id), PHASE_REFRESHING)
+        payload = _emit_running_payload("wait-for-exec", session, args.request_id, args, phase=PHASE_REFRESHING)
+        _inject_log_range_into_payload(payload, _wfe_log_path_early, _wfe_log_start, _capture_log_offset(_wfe_log_path_early), offsets_invalidated=_wfe_offsets_invalidated)
+        return EXIT_RUNNING, emit_payload(payload), ""
     if selector == "project_path" and pending is not None:
         pending = _finalize_pending_after_submit(args, args.request_id, pending, exit_code, stdout_text)
     default_phase = PHASE_COMPILING if _is_compiling_response(exit_code, stdout_text) else None

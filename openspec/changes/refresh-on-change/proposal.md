@@ -40,3 +40,7 @@ The earlier plan to benchmark unconditional refresh is dropped: unconditional re
 - `packages/com.txcombo.unity-puer-exec/Editor/UnityPuerExecProtocol.cs` — diagnostics fields.
 - `cli/python/unity_puer_exec_runtime.py`, `cli/python/help_surface.py` — flag semantics and help text.
 - `tests/` — mock coverage for the decision logic; real-host coverage for watcher precision and false-positive rate.
+
+## Discoverability validation
+
+The formal CLI help surface changed (the `--refresh-before-exec` guidance was rewritten and the code-only refresh boundary was added). Per `agent-cli-discoverability-validation`, a help-only agent validation run is a comparison exercise for help-efficiency changes; the change's impact notes record that a help-efficiency evaluation was **not required** for this change, because the help edits remove a now-invalid flag rather than restructure discovery paths, and the behavior they describe is covered by the real-host refresh tests. If a later help-efficiency comparison is run, these sites are the baseline.

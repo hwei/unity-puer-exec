@@ -188,6 +188,10 @@ namespace UnityPuerExec
         private static volatile bool isCompiling;
         private static volatile bool isUpdating;
 
+        // Sampled on the main thread in OnEditorUpdate so the listener thread can
+        // report refresh suppression without reading a main-thread Editor API.
+        private static volatile bool isPlaying;
+
         // Stack-trace logging snapshot. Application.GetStackTraceLogType is treated as
         // main-thread-only, so these are sampled in OnEditorUpdate (main thread) and read
         // from WriteJsonAsync on the listener thread. When any log type is None, runtime
@@ -214,6 +218,8 @@ namespace UnityPuerExec
             EditorApplication.quitting += OnEditorQuitting;
             CompilationPipeline.compilationStarted += OnCompilationStarted;
             CompilationPipeline.assemblyCompilationFinished += OnAssemblyCompilationFinished;
+            CompilationPipeline.compilationFinished += OnCompilationFinished;
+            AssemblyReloadEvents.afterAssemblyReload += OnAfterAssemblyReload;
             StartIfActivated();
         }
 
@@ -373,6 +379,10 @@ namespace UnityPuerExec
             // naming the currently bound service rather than the one before the compile.
             UnityPuerExecEndpointPublication.Publish(selectedPort, sessionMarker, cachedConsoleLogPath);
             Debug.Log($"{ReadyLogPrefix} {selectedPort}");
+
+            // Install the import-change signal after the service is up so its one
+            // install-time baseline walk cannot delay the ready announcement.
+            UnityPuerExecImportChangeTracker.Install();
         }
 
 
@@ -431,6 +441,20 @@ namespace UnityPuerExec
             }
         }
 
+        // Unity's own completion signals are the only thing that advances the
+        // settled-import timestamp. Importing a file does not change its mtime, so
+        // advancing on the exec path would refresh forever; advancing here is what
+        // makes a second exec after a settled import a no-op.
+        private static void OnCompilationFinished(object obj)
+        {
+            UnityPuerExecImportChangeTracker.OnCompilationCompleted();
+        }
+
+        private static void OnAfterAssemblyReload()
+        {
+            UnityPuerExecImportChangeTracker.OnCompilationCompleted();
+        }
+
         private static bool TrySnapshotCompileErrors(
             out List<CompilerMessage> errorsSnapshot,
             out List<CompilerMessage> warningsSnapshot,
@@ -460,6 +484,7 @@ namespace UnityPuerExec
         private static void Stop()
         {
             StopListener();
+            UnityPuerExecImportChangeTracker.Shutdown();
             DisposeJsEnv();
         }
 
@@ -543,7 +568,10 @@ namespace UnityPuerExec
                             unityPid: unityPid,
                             projectPath: projectPath,
                             bridgeVersion: bridgeVersion,
-                            consoleLogPath: cachedConsoleLogPath
+                            consoleLogPath: cachedConsoleLogPath,
+                            refreshPending: DescribeRefreshPending(UnityPuerExecImportChangeTracker.GetPendingState()),
+                            refreshSuppressed: isPlaying,
+                            refreshSuppressedReason: isPlaying ? "play_mode" : ""
                         )
                     );
                     return;
@@ -591,6 +619,19 @@ namespace UnityPuerExec
             }
 
             var requestJson = await ReadRequestBodyAsync(context.Request);
+            if (UnityPuerExecProtocol.CarriesRemovedRefreshField(requestJson))
+            {
+                // The field is removed rather than accepted-and-ignored: it was the
+                // caller-facing control for a decision the server now owns, and a
+                // mixed caller must learn that from a machine-readable failure.
+                context.Response.StatusCode = 400;
+                await WriteJsonAsync(
+                    context,
+                    UnityPuerExecProtocol.BuildSimpleErrorJson("failed", "refresh_before_exec_removed")
+                );
+                return;
+            }
+
             var request = JsonUtility.FromJson<ExecRequest>(requestJson);
             if (request == null || string.IsNullOrEmpty(request.request_id) || string.IsNullOrEmpty(request.code))
             {
@@ -612,32 +653,24 @@ namespace UnityPuerExec
                 return;
             }
 
-            if (request.refresh_before_exec)
+            // Refresh decision sits after request parsing and before the compile error
+            // gate, so a code change made to fix an error is recompiled rather than
+            // reported as still failing.
+            var refresh = await EvaluateRefreshAsync();
+            if (refresh.Triggered)
             {
-                var refreshCompletion = new TaskCompletionSource<bool>();
-                MainThreadActions.Enqueue(() =>
-                {
-                    try
-                    {
-                        AssetDatabase.Refresh();
-                        refreshCompletion.TrySetResult(true);
-                    }
-                    catch (Exception ex)
-                    {
-                        Debug.LogError($"[UnityPuerExec] AssetDatabase.Refresh failed: {ex}");
-                        refreshCompletion.TrySetResult(false);
-                    }
-                });
-
-                await refreshCompletion.Task;
+                // Non-terminal phase. The CLI settles the resulting compilation and
+                // re-submits this same request_id; the job is not accepted yet, so no
+                // script has run and nothing needs rolling back.
                 await WriteJsonAsync(
                     context,
-                    "{\"ok\":true,\"status\":\"completed\",\"request_id\":\"" + UnityPuerExecProtocol.JsonEscape(request.request_id) + "\",\"result\":{\"refreshed\":true}}"
+                    UnityPuerExecProtocol.BuildRefreshRunningResponseJson(
+                        request.request_id, sessionMarker, refresh.BlockJson)
                 );
                 return;
             }
 
-            if (!request.refresh_before_exec && TrySnapshotCompileErrors(
+            if (TrySnapshotCompileErrors(
                 out var errorsSnapshot,
                 out var warningsSnapshot,
                 out var errorCountSnapshot,
@@ -651,7 +684,8 @@ namespace UnityPuerExec
                     warningCount: warningCountSnapshot,
                     errors: errorsSnapshot,
                     warnings: warningsSnapshot,
-                    sessionMarker: sessionMarker
+                    sessionMarker: sessionMarker,
+                    refreshBlockJson: refresh.BlockJson
                 );
                 await WriteJsonAsync(context, compilePayload);
                 return;
@@ -735,7 +769,7 @@ namespace UnityPuerExec
 
             Debug.Log($"[UnityPuerExec] Exec waiting request={execJob.RequestId}");
             await WaitForTerminalOrTimeoutAsync(execJob, request.wait_timeout_ms);
-            var payload = UnityPuerExecProtocol.BuildExecResponseJson(execJob.Snapshot(), sessionMarker);
+            var payload = UnityPuerExecProtocol.BuildExecResponseJson(execJob.Snapshot(), sessionMarker, refresh.BlockJson);
             Debug.Log($"[UnityPuerExec] Exec responding request={execJob.RequestId} payload={payload}");
             await WriteAcceptedExecResponseAsync(context, payload, execJob.RequestId, "exec");
         }
@@ -862,6 +896,101 @@ namespace UnityPuerExec
             await WaitForTerminalOrTimeoutAsync(execJob, request.wait_timeout_ms);
             var payload = UnityPuerExecProtocol.BuildExecResponseJson(execJob.Snapshot(), sessionMarker);
             await WriteAcceptedExecResponseAsync(context, payload, execJob.RequestId, "wait-for-exec");
+        }
+
+        private sealed class RefreshOutcome
+        {
+            internal bool Triggered;
+            internal string BlockJson = "";
+        }
+
+        /// <summary>
+        /// Decide whether an automatic refresh is required and, if so, dispatch it on
+        /// the main thread. The decision reads the play-mode state and the refresh
+        /// itself is main-thread-only. The server never waits for the resulting
+        /// compilation -- a domain reload tears this listener down -- so the CLI settles
+        /// the compile cycle and re-submits the same exec request.
+        /// </summary>
+        private static async Task<RefreshOutcome> EvaluateRefreshAsync()
+        {
+            var completion = new TaskCompletionSource<RefreshOutcome>();
+            MainThreadActions.Enqueue(() =>
+            {
+                try
+                {
+                    var decision = UnityPuerExecImportChangeTracker.Decide();
+                    if (!decision.Triggered)
+                    {
+                        completion.TrySetResult(new RefreshOutcome
+                        {
+                            Triggered = false,
+                            BlockJson = UnityPuerExecProtocol.BuildRefreshBlockJson(
+                                triggered: false,
+                                reason: "",
+                                skippedReason: decision.Reason,
+                                pathsChanged: decision.PathsChanged,
+                                settleOutcome: "not_attempted",
+                                elapsedMs: 0),
+                        });
+                        return;
+                    }
+
+                    var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+                    var applied = true;
+                    try
+                    {
+                        AssetDatabase.Refresh();
+                    }
+                    catch (Exception ex)
+                    {
+                        applied = false;
+                        Debug.LogError($"[UnityPuerExec] Automatic AssetDatabase.Refresh failed: {ex}");
+                    }
+                    stopwatch.Stop();
+
+                    completion.TrySetResult(new RefreshOutcome
+                    {
+                        Triggered = true,
+                        BlockJson = UnityPuerExecProtocol.BuildRefreshBlockJson(
+                            triggered: true,
+                            reason: decision.Reason,
+                            skippedReason: "",
+                            pathsChanged: decision.PathsChanged,
+                            settleOutcome: applied ? "dispatched" : "failed",
+                            elapsedMs: (int)stopwatch.ElapsedMilliseconds),
+                    });
+                }
+                catch (Exception ex)
+                {
+                    Debug.LogError($"[UnityPuerExec] Refresh decision failed: {ex}");
+                    completion.TrySetResult(new RefreshOutcome
+                    {
+                        Triggered = false,
+                        BlockJson = UnityPuerExecProtocol.BuildRefreshBlockJson(
+                            triggered: false,
+                            reason: "",
+                            skippedReason: "decision_failed",
+                            pathsChanged: null,
+                            settleOutcome: "not_attempted",
+                            elapsedMs: 0),
+                    });
+                }
+            });
+
+            return await completion.Task;
+        }
+
+        private static string DescribeRefreshPending(UnityPuerExecImportChangeTracker.PendingState state)
+        {
+            switch (state)
+            {
+                case UnityPuerExecImportChangeTracker.PendingState.Pending:
+                    return "pending";
+                case UnityPuerExecImportChangeTracker.PendingState.NotPending:
+                    return "not_pending";
+                default:
+                    return "unknown";
+            }
         }
 
         private static async Task<string> ReadRequestBodyAsync(HttpListenerRequest request)
@@ -1223,6 +1352,7 @@ namespace UnityPuerExec
         {
             isCompiling = EditorApplication.isCompiling;
             isUpdating = EditorApplication.isUpdating;
+            isPlaying = EditorApplication.isPlaying;
             SampleStackTraceLogTypes();
             RefreshConsoleLogPathCache();
 

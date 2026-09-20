@@ -163,7 +163,6 @@ def _coerce_pending_exec_artifact(request_id, payload):
         "schema_version": PENDING_EXEC_SCHEMA_VERSION,
         "request_id": request_id,
         "code": code,
-        "refresh_before_exec": bool(payload.get("refresh_before_exec")),
         "reset_jsenv_before_exec": bool(payload.get("reset_jsenv_before_exec")),
         "stale_module_policy": payload.get("stale_module_policy") if payload.get("stale_module_policy") in ("auto-reset", "error") else "auto-reset",
         "created_at_ms": created_at_ms,
@@ -186,9 +185,6 @@ def _coerce_pending_exec_artifact(request_id, payload):
     phase = payload.get("phase")
     if isinstance(phase, str) and phase:
         normalized["phase"] = phase
-    refresh_request_id = payload.get("refresh_request_id")
-    if isinstance(refresh_request_id, str) and refresh_request_id:
-        normalized["refresh_request_id"] = refresh_request_id
     return normalized
 
 
@@ -272,7 +268,6 @@ def write_pending_exec_artifact(project_path, request_id, payload):
         "schema_version": PENDING_EXEC_SCHEMA_VERSION,
         "request_id": request_id,
         "code": payload["code"],
-        "refresh_before_exec": bool(payload.get("refresh_before_exec")),
         "reset_jsenv_before_exec": bool(payload.get("reset_jsenv_before_exec")),
         "stale_module_policy": payload.get("stale_module_policy") if payload.get("stale_module_policy") in ("auto-reset", "error") else "auto-reset",
         "created_at_ms": existing.get("created_at_ms", now_ms) if existing else now_ms,
@@ -289,9 +284,6 @@ def write_pending_exec_artifact(project_path, request_id, payload):
     phase = payload.get("phase")
     if isinstance(phase, str) and phase:
         normalized["phase"] = phase
-    refresh_request_id = payload.get("refresh_request_id")
-    if isinstance(refresh_request_id, str) and refresh_request_id:
-        normalized["refresh_request_id"] = refresh_request_id
     _write_json_file(path, normalized)
     return normalized
 
