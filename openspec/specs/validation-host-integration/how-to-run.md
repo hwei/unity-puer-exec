@@ -6,9 +6,11 @@ This repository has two distinct test layers:
 
 **Mocked and helper-tool unit tests** (default):
 ```
-python -m unittest tests.test_cleanup_validation_host_tool tests.test_cli_version tests.test_direct_exec_client tests.test_editor_log_isolation tests.test_openspec_backlog tests.test_openspec_change_meta tests.test_package_layout tests.test_prepare_validation_host_tool tests.test_refresh_change_signal tests.test_unity_log_brief tests.test_unity_puer_session tests.test_unity_session tests.test_unity_session_cli tests.test_unity_session_modules
+python -m unittest tests.test_cleanup_validation_host_tool tests.test_cli_version tests.test_direct_exec_client tests.test_editor_log_isolation tests.test_openspec_backlog tests.test_openspec_change_meta tests.test_openspec_spec_hygiene tests.test_package_layout tests.test_prepare_validation_host_tool tests.test_refresh_change_signal tests.test_unity_log_brief tests.test_unity_puer_session tests.test_unity_session tests.test_unity_session_cli tests.test_unity_session_modules
 ```
 Cover parsing, payload contracts, status codes, packaging checks, OpenSpec tooling, and local validation-host helper logic. Run without Unity Editor or a validation-host project.
+
+`tests.test_openspec_spec_hygiene` is a pure-Python structural guard over `openspec/specs/**/spec.md`: it mirrors only two stable validator rules (every requirement needs a `#### Scenario:` and a `SHALL`/`MUST`) so this class of drift fails the default suite without the `openspec` CLI on PATH. It is not a substitute for the CLI — `openspec validate --all` remains the authority for full spec validation.
 
 This is the same default suite executed by the repository's GitHub Actions unit-test workflow for pull requests and pushes to `main`.
 

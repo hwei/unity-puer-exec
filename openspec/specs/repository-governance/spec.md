@@ -3,7 +3,9 @@
 ## Purpose
 
 Define the repository's canonical OpenSpec-first workflow, including change gating, durable-truth distillation, and retrospective handling.
+
 ## Requirements
+
 ### Requirement: OpenSpec is the canonical repository workflow
 
 The repository SHALL use OpenSpec as the canonical system for project context, durable governance rules, and active change planning. Legacy governance documents MUST NOT remain authoritative once their content has been migrated into OpenSpec artifacts, and the working tree SHALL NOT keep a parallel legacy `docs/` workflow entry path.
@@ -47,9 +49,24 @@ Stable follow-up findings discovered during implementation SHALL remain explicit
 
 ### Requirement: Apply-closeout findings require human discussion before promotion
 
-See [apply-closeout-review spec, Requirement 3](../apply-closeout-review/spec.md).
+Apply-closeout findings SHALL be surfaced for human discussion before they are promoted
+into durable governance rules, and an executor MUST NOT promote a closeout finding into
+repository governance on its own. This requirement restates the constraint that lives in
+the durable apply-closeout-review spec as a repository-governance rule and adds no
+constraint beyond it; the canonical wording is
+[apply-closeout-review spec, Requirement 3](../apply-closeout-review/spec.md).
 
-This repository requirement aligns with the durable apply-closeout-review spec and adds no additional constraints.
+#### Scenario: Executor closes out a change that produced new findings
+
+- **WHEN** a change's closeout identifies new follow-up candidates
+- **THEN** the candidates are surfaced for human discussion before any governance artifact changes
+- **AND** the executor does not promote a candidate into a durable rule without that discussion
+
+#### Scenario: Closeout produces no new findings
+
+- **WHEN** a change's closeout identifies no new follow-up work
+- **THEN** the closeout states that no new follow-up work was identified
+- **AND** no governance artifact changes as a result
 
 ### Requirement: Discovered work is triaged before scope continues
 
@@ -119,9 +136,24 @@ The repository SHALL define artifact expectations by change type so feature, har
 
 ### Requirement: Superseded changes are archived rather than deleted
 
-See [change-backlog-triage spec, Requirement 10](../change-backlog-triage/spec.md).
+Superseded changes SHALL be archived rather than deleted, so that the decision and the
+change it was replaced by remain reconstructable from repository history. Contributors
+MUST NOT retire a superseded change by deleting its artifacts or its directory. This
+requirement restates the constraint that lives in the durable change-backlog-triage spec
+and adds no constraint beyond it; the canonical wording is
+[change-backlog-triage spec, Requirement 10](../change-backlog-triage/spec.md).
 
-This repository requirement aligns with the durable change-backlog-triage spec and adds no additional constraints.
+#### Scenario: A change is replaced before it is implemented
+
+- **WHEN** a maintainer decides a non-archived change has been replaced
+- **THEN** the change is retired through an archive operation rather than deletion
+- **AND** its artifacts remain reconstructable from repository history
+
+#### Scenario: A superseded change is removed from the active set
+
+- **WHEN** a maintainer removes a superseded change from the active set
+- **THEN** the removal does not delete the change's artifacts
+- **AND** the operation is not treated as normal directory deletion
 
 ### Requirement: Repository-local scratch artifacts stay out of normal working paths
 
@@ -132,4 +164,3 @@ The repository SHALL provide a local-only place for transient validation probes 
 - **WHEN** an agent creates a short-lived probe or scratch script for local validation
 - **THEN** the artifact is placed under `.tmp/`
 - **AND** that directory does not create normal git tracking noise
-

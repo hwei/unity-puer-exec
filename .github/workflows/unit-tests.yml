@@ -29,6 +29,7 @@ jobs:
             tests.test_editor_log_isolation `
             tests.test_openspec_backlog `
             tests.test_openspec_change_meta `
+            tests.test_openspec_spec_hygiene `
             tests.test_package_layout `
             tests.test_prepare_validation_host_tool `
             tests.test_refresh_change_signal `
