@@ -104,6 +104,46 @@ The change signal SHALL NOT depend solely on a live filesystem watcher having ob
 - **AND** a new exec request arrives
 - **THEN** the server detects the change and refreshes
 
+### Requirement: An invalidated signal forces one refresh, then re-establishes trust
+
+When the service cannot trust its change signal — a watcher error event, or any
+state where events may have been dropped — the next refresh decision SHALL treat the
+project as changed and refresh it once rather than reporting no change. Because the
+decision's own scan is the authoritative signal, the service SHALL re-establish trust
+from that same decision: once a decision has consumed the invalidation, the service
+SHALL NOT keep forcing a refresh on subsequent requests that observe no change. Until
+a decision consumes it, the health endpoint SHALL keep reporting the pending state as
+unknown rather than as a false negative.
+
+This bounds the fallback so an invalidation cannot become an unconditional per-exec
+refresh — a liveliness failure the design treats as more severe than a one-shot miss.
+
+#### Scenario: An invalidated signal refreshes exactly once
+
+- **WHEN** the change signal is invalidated
+- **AND** an exec request arrives
+- **THEN** the server refreshes before executing the script
+- **AND** the response names the unavailable signal as the refresh reason
+- **AND** the script still executes
+
+#### Scenario: Trust is re-established after the invalidation is consumed
+
+- **WHEN** a refresh decision has consumed an invalidation
+- **AND** another exec request arrives with no further file change
+- **THEN** the server does not refresh again
+
+#### Scenario: Health reports unknown until a decision consumes the invalidation
+
+- **WHEN** the change signal is invalidated
+- **AND** a caller probes `/health` before any exec request arrives
+- **THEN** the response reports the pending state as unknown
+
+#### Scenario: Health resolves once the invalidation is consumed
+
+- **WHEN** a refresh decision has consumed an invalidation
+- **AND** a caller probes `/health`
+- **THEN** the response reports the pending state normally rather than unknown
+
 ### Requirement: Play mode skips the refresh without discarding the change signal
 
 Unity defers compilation while the Editor is in play mode, so refreshing there would wait for a compilation that cannot start. When the Editor is in play mode, the service SHALL skip the automatic refresh and SHALL report the skip reason. The service SHALL NOT clear the pending change signal as a result of skipping.

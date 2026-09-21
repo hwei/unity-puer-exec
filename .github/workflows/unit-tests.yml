@@ -31,6 +31,7 @@ jobs:
             tests.test_openspec_change_meta `
             tests.test_package_layout `
             tests.test_prepare_validation_host_tool `
+            tests.test_refresh_change_signal `
             tests.test_unity_log_brief `
             tests.test_unity_puer_session `
             tests.test_unity_session `

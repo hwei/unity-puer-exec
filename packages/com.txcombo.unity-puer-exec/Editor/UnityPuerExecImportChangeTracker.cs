@@ -46,6 +46,11 @@ namespace UnityPuerExec
         private static bool installed;
         private static bool signalValid;
 
+        // Set from a watcher callback (threadpool thread) and drained on the next
+        // request/main-thread access. A callback must not call any Unity API, including
+        // the logger, so the diagnostic is recorded as plain state and emitted elsewhere.
+        private static volatile string deferredSignalError;
+
         internal enum PendingState
         {
             NotPending,
@@ -83,7 +88,6 @@ namespace UnityPuerExec
             }
 
             BaselineWalk(threshold);
-            UnityEngine.Debug.Log($"[UPE-DIAG] install watchers={Watchers.Count} installed={installed} valid={signalValid} threshold={threshold} roots={string.Join("|", GetWatchedRoots())}");
         }
 
         /// <summary>Called on the main thread before every domain reload and on quit.</summary>
@@ -144,6 +148,8 @@ namespace UnityPuerExec
         /// </summary>
         internal static PendingState GetPendingState()
         {
+            DrainDeferredSignalError();
+
             long threshold;
             lock (Gate)
             {
@@ -173,11 +179,9 @@ namespace UnityPuerExec
                 {
                     if (IsPathNewerThan(path, settledImportUtcTicks))
                     {
-                        UnityEngine.Debug.Log($"[UPE-DIAG] health candidates={CandidatePaths.Count} found={found.Count} -> pending via {path}");
                         return PendingState.Pending;
                     }
                 }
-                UnityEngine.Debug.Log($"[UPE-DIAG] health candidates={CandidatePaths.Count} found={found.Count} -> not pending");
             }
 
             return PendingState.NotPending;
@@ -192,6 +196,8 @@ namespace UnityPuerExec
         /// </summary>
         internal static RefreshDecision Decide()
         {
+            DrainDeferredSignalError();
+
             var decision = new RefreshDecision();
 
             bool unavailable = false;
@@ -212,9 +218,22 @@ namespace UnityPuerExec
 
             lock (Gate)
             {
-                if (!installed || !signalValid)
+                if (!installed)
                 {
                     unavailable = true;
+                }
+                else if (!signalValid)
+                {
+                    // A watcher error (or an equivalent invalidation) means events may
+                    // have been dropped, so this decision must force a refresh rather
+                    // than report no change. But the incremental scan that just ran is
+                    // itself the authoritative signal, so trust is re-established here:
+                    // the forced refresh is a one-shot response to the invalidation, not
+                    // a permanent "always refresh" state. Without this, an error that
+                    // missed nothing would refresh on every exec forever, because no
+                    // compilation would ever fire to clear it.
+                    unavailable = true;
+                    signalValid = true;
                 }
                 else
                 {
@@ -223,7 +242,6 @@ namespace UnityPuerExec
                         CandidatePaths.Add(path);
                     }
 
-                    UnityEngine.Debug.Log($"[UPE-DIAG] decide candidates={CandidatePaths.Count} found={found.Count}");
                     foreach (var path in CandidatePaths)
                     {
                         if (IsPathNewerThan(path, settledImportUtcTicks))
@@ -299,7 +317,6 @@ namespace UnityPuerExec
                     watcher.Error += OnWatcherError;
                     watcher.EnableRaisingEvents = true;
                     Watchers.Add(watcher);
-                    UnityEngine.Debug.Log($"[UPE-DIAG] watcher root={watcher.Path} raising={watcher.EnableRaisingEvents} sub={watcher.IncludeSubdirectories}");
                 }
                 catch (Exception ex)
                 {
@@ -505,7 +522,6 @@ namespace UnityPuerExec
 
         private static void OnWatcherChanged(object sender, FileSystemEventArgs e)
         {
-            UnityEngine.Debug.Log($"[UPE-DIAG] raw event kind={e.ChangeType} path={e.FullPath} trig={IsCompileTriggeringPath(e.FullPath)}");
             if (!IsCompileTriggeringPath(e.FullPath))
             {
                 return;
@@ -516,7 +532,6 @@ namespace UnityPuerExec
 
         private static void OnWatcherRenamed(object sender, RenamedEventArgs e)
         {
-            UnityEngine.Debug.Log($"[UPE-DIAG] raw rename path={e.FullPath} old={e.OldFullPath}");
             if (!IsCompileTriggeringPath(e.FullPath))
             {
                 return;
@@ -530,12 +545,44 @@ namespace UnityPuerExec
             // Includes InternalBufferOverflowException on large projects: events were
             // dropped, so the project must be treated as possibly changed rather than
             // reported as unchanged.
+            string detail;
+            try
+            {
+                detail = e.GetException()?.Message ?? "unknown watcher error";
+            }
+            catch
+            {
+                detail = "unknown watcher error";
+            }
+
             lock (Gate)
             {
                 signalValid = false;
+                deferredSignalError = detail;
+            }
+        }
+
+        /// <summary>
+        /// Emit, once, any diagnostic a watcher callback could not log itself. Called from
+        /// the request/main threads only, so touching the Unity logger here is safe.
+        /// </summary>
+        private static void DrainDeferredSignalError()
+        {
+            string detail;
+            lock (Gate)
+            {
+                detail = deferredSignalError;
+                deferredSignalError = null;
             }
 
-            UnityEngine.Debug.LogWarning($"[UnityPuerExec] Import watcher error; treating project as changed: {e.GetException()?.Message}");
+            if (string.IsNullOrEmpty(detail))
+            {
+                return;
+            }
+
+            UnityEngine.Debug.LogWarning(
+                $"[UnityPuerExec] Import watcher error; treating project as changed: {detail}"
+            );
         }
 
         private static void AddCandidate(string path)
@@ -545,8 +592,6 @@ namespace UnityPuerExec
             {
                 CandidatePaths.Add(normalized);
             }
-
-            UnityEngine.Debug.Log($"[UPE-DIAG] candidate added {normalized}");
         }
 
         private static bool IsPathNewerThan(string path, long thresholdTicks)

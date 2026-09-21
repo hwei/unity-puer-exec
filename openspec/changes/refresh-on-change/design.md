@@ -132,6 +132,8 @@ Two responses, both of which mark dirty rather than silently missing the change:
 
 So the no-change path is O(1) — no events, no stat, no refresh — while correctness never depends on the watcher having seen everything.
 
+**Refinement during implementation: the fallback is one-shot.** The scan, not the watcher, is the authoritative signal source on this platform, so an invalidated watcher signal cannot stay invalid without turning every exec into a forced refresh that never clears (no compilation would fire a completion hook to clear it). The decision path therefore re-establishes trust after its own successful scan: the first `/exec` after an invalidation forces one refresh with `reason: watcher_signal_unavailable`, and the next is an ordinary no-change decision. `/health` continues to report `unknown` until that decision consumes the invalidation, so the degradation stays visible to a caller that only probes. This is a spec requirement, not just an implementation note — see `import-change-refresh / An invalidated signal forces one refresh, then re-establishes trust` — and it keeps the fallback from introducing a refresh loop, which the design treats as its highest-severity failure class.
+
 ### Decision 5: The server reports the refresh decision; the CLI reacts
 
 With the flag gone, the CLI cannot know whether a refresh happened. There is only one workable shape: the server includes a `refresh` block in the exec response, and the CLI settles only when the server reports it triggered one.

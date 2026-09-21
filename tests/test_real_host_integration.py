@@ -2034,6 +2034,47 @@ def _post_control_json(base_url, path, payload, timeout_seconds=5.0):
         return exc.code, json.loads(exc.read().decode("utf-8"))
 
 
+# JavaScript prelude for reaching the import-change tracker directly. The tracker is
+# internal to the Editor assembly and has no control-endpoint surface for its raw
+# state, so the real-host cases read and, where a failure mode cannot be produced from
+# outside (a watcher error, a lost install), set that state through reflection. This
+# runs inside the Editor's own JS environment, so it observes the same static state
+# the server uses -- it is a white-box probe, not a stub of the behavior under test.
+_TRACKER_REFLECTION_JS = (
+    "function trackerType() {\n"
+    "  const AppDomain = puer.loadType('System.AppDomain');\n"
+    "  const asms = AppDomain.CurrentDomain.GetAssemblies();\n"
+    "  for (let i = 0; i < asms.Length; i++) {\n"
+    "    const a = asms.get_Item(i);\n"
+    "    if (String(a.GetName().Name) === 'UnityPuerExec.Editor') {\n"
+    "      const t = a.GetType('UnityPuerExec.UnityPuerExecImportChangeTracker');\n"
+    "      if (t) return t;\n"
+    "    }\n"
+    "  }\n"
+    "  return null;\n"
+    "}\n"
+    "const TRACKER_NONPUBLIC_STATIC = 40; // BindingFlags.Static | BindingFlags.NonPublic\n"
+    "function trackerField(name) {\n"
+    "  return trackerType().GetField(name, TRACKER_NONPUBLIC_STATIC).GetValue(null);\n"
+    "}\n"
+    "function setTrackerField(name, value) {\n"
+    "  trackerType().GetField(name, TRACKER_NONPUBLIC_STATIC).SetValue(null, value);\n"
+    "}\n"
+    "function invokeTracker(name) {\n"
+    "  return trackerType().GetMethod(name, TRACKER_NONPUBLIC_STATIC).Invoke(null, []);\n"
+    "}\n"
+    "function trackerState() {\n"
+    "  const value = Number(String(invokeTracker('GetPendingState')));\n"
+    "  return value === 0 ? 'NotPending' : (value === 1 ? 'Pending' : 'Unknown');\n"
+    "}\n"
+)
+
+
+def _js_string_literal(value):
+    """Render a filesystem path as a single-quoted JS string (forward slashes)."""
+    return "'" + str(value).replace("\\", "/").replace("'", "\\'") + "'"
+
+
 class RefreshOnChangeRealHostTests(unittest.TestCase):
     """Real-host coverage for import-change-refresh (see the change's design).
 
@@ -2118,6 +2159,91 @@ class RefreshOnChangeRealHostTests(unittest.TestCase):
             )
         return exit_code, payload
 
+    # --- shared probes for the import-change signal ---------------------------
+
+    def _health(self, base_url):
+        payload, error = unity_session._probe_health(base_url, 1.5)
+        self.assertIsNotNone(payload, error)
+        return payload
+
+    def _exec_raw(self, base_url, code, wait_ms=None):
+        """Exec without the waiting shortcut, so a non-terminal refresh phase is visible."""
+        exit_code, payload, _, _ = _run_cli(
+            [
+                "exec",
+                "--base-url", base_url,
+                "--wait-timeout-ms", str(wait_ms or self.REFRESH_WAIT_TIMEOUT_MS),
+                "--code", code,
+            ]
+        )
+        return exit_code, payload
+
+    def _tracker_script(self, body):
+        return _TRACKER_REFLECTION_JS + body
+
+    def _read_settled_ticks(self, base_url):
+        exit_code, payload = self._exec_script(
+            base_url,
+            self._tracker_script(
+                "export default function run(ctx) {"
+                " return { ticks: String(trackerField('settledImportUtcTicks')) }; }"
+            ),
+        )
+        self.assertEqual(exit_code, 0, payload)
+        return int(payload["result"]["ticks"])
+
+    def _read_persisted_ticks(self, base_url):
+        exit_code, payload = self._exec_script(
+            base_url,
+            "export default function run(ctx) {"
+            " const SessionState = puer.loadType('UnityEditor.SessionState');"
+            " return { persisted: SessionState.GetString('UnityPuerExec.SettledImportUtcTicks', '') }; }",
+        )
+        self.assertEqual(exit_code, 0, payload)
+        return payload["result"]["persisted"]
+
+    def _wait_for_ready_project(self, timeout_seconds=READY_TIMEOUT_SECONDS):
+        deadline = time.time() + timeout_seconds
+        while time.time() < deadline:
+            base_url, payload = _scan_ready_control_endpoint(self.project_path)
+            if base_url is not None and payload.get("status") == "ready":
+                return base_url
+            time.sleep(1.0)
+        self.fail("validation host did not return to a ready state within {}s".format(timeout_seconds))
+
+    def _wait_for_refresh_state(self, base_url, suppressed, timeout_seconds=60):
+        deadline = time.time() + timeout_seconds
+        last = None
+        while time.time() < deadline:
+            refresh = self._health(base_url).get("refresh")
+            last = refresh
+            if isinstance(refresh, dict) and bool(refresh.get("suppressed")) == suppressed:
+                return refresh
+            time.sleep(0.5)
+        self.fail("refresh suppressed state did not become {}: {}".format(suppressed, last))
+
+    def _hidden_probe_dir(self):
+        """A probe directory Unity's asset pipeline ignores.
+
+        The import-change signal is the unit under test here, not Unity's importer.
+        Unity ignores any folder whose name starts with a dot, so files placed here
+        are still enumerated by the tracker's scan (which walks the raw filesystem)
+        but never imported or compiled. That isolates the extension filter and the
+        decision logic from compiler side effects.
+        """
+        return self.project_path / "Assets" / "__codex_validation_temp" / ".not_imported"
+
+    def _set_play_mode(self, base_url, playing):
+        literal = "true" if playing else "false"
+        exit_code, payload = self._exec_raw(
+            base_url,
+            "export default function run(ctx) {"
+            " const EditorApplication = puer.loadType('UnityEditor.EditorApplication');"
+            " EditorApplication.isPlaying = " + literal + ";"
+            " return { requested: " + literal + " }; }",
+        )
+        self.assertEqual(exit_code, 0, payload)
+
     def test_health_reports_not_pending_after_settle(self):
         base_url = self._base_url()
         payload, error = unity_session._probe_health(base_url, 1.5)
@@ -2190,6 +2316,235 @@ class RefreshOnChangeRealHostTests(unittest.TestCase):
         second_refresh = second_payload.get("refresh")
         self.assertIsInstance(second_refresh, dict, second_payload)
         self.assertFalse(second_refresh["triggered"], second_refresh)
+
+    # --- settled-import timestamp (tasks 2.1, 2.2) ----------------------------
+
+    def test_exec_and_refresh_do_not_advance_settled_timestamp(self):
+        base_url = self._base_url()
+        before = self._read_settled_ticks(base_url)
+        self.assertGreater(before, 0)
+
+        # A plain exec never advances the timestamp.
+        exit_code, payload = self._exec_script(
+            base_url, "export default function run(ctx) { return { n: 1 }; }"
+        )
+        self.assertEqual(exit_code, 0, payload)
+        self.assertEqual(self._read_settled_ticks(base_url), before)
+
+        # An explicit AssetDatabase.Refresh() that triggers no compilation must not
+        # advance it either: Unity's own completion signal is the only writer.
+        exit_code, payload = self._exec_script(
+            base_url,
+            self._tracker_script(
+                "export default function run(ctx) {"
+                " const AssetDatabase = puer.loadType('UnityEditor.AssetDatabase');"
+                " AssetDatabase.Refresh();"
+                " return { ticks: String(trackerField('settledImportUtcTicks')) }; }"
+            ),
+        )
+        self.assertEqual(exit_code, 0, payload)
+        self.assertEqual(payload["result"]["ticks"], str(before))
+        self.assertEqual(self._read_settled_ticks(base_url), before)
+
+    def test_settled_timestamp_survives_domain_reload(self):
+        base_url = self._base_url()
+        before_ticks = self._read_settled_ticks(base_url)
+        self.assertGreater(before_ticks, 0)
+        # Every advance is persisted as it happens, so the live field and the
+        # SessionState value agree before the reload.
+        self.assertEqual(self._read_persisted_ticks(base_url), str(before_ticks))
+        self.assertEqual(self._health(base_url)["refresh"]["pending"], "not_pending")
+
+        # A forced domain reload with no file change is not a pending change.
+        exit_code, payload = self._exec_raw(
+            base_url,
+            "export default function run(ctx) {"
+            " const EditorUtility = puer.loadType('UnityEditor.EditorUtility');"
+            " EditorUtility.RequestScriptReload();"
+            " return { requested: true }; }",
+            wait_ms=60_000,
+        )
+        self.assertEqual(exit_code, 0, payload)
+
+        base_url = self._wait_for_ready_project()
+        after_ticks = self._read_settled_ticks(base_url)
+        self.assertGreater(after_ticks, 0)
+        # The reload's own completion signal legitimately advances the timestamp (the
+        # spec requires that), so exact equality across the reload is not the contract.
+        # What must hold is that the baseline was never lost: it is still present,
+        # still persisted, and the reload is not mistaken for a change.
+        self.assertGreaterEqual(after_ticks, before_ticks)
+        self.assertEqual(self._read_persisted_ticks(base_url), str(after_ticks))
+        refresh = self._health(base_url)["refresh"]
+        self.assertEqual(refresh["pending"], "not_pending")
+        self.assertFalse(refresh["suppressed"])
+        exit_code, payload = self._exec_script(
+            base_url, "export default function run(ctx) { return { afterReload: true }; }"
+        )
+        self.assertEqual(exit_code, 0, payload)
+        self.assertFalse(payload["refresh"]["triggered"], payload["refresh"])
+
+        # The persistence load path itself: drop in-memory state, plant a known
+        # persisted baseline, and let Install() restore it. If the timestamp did not
+        # survive a reload, Install() would lose that value.
+        planted = after_ticks - 1
+        exit_code, payload = self._exec_script(
+            base_url,
+            self._tracker_script(
+                "export default function run(ctx) {"
+                " const SessionState = puer.loadType('UnityEditor.SessionState');"
+                " invokeTracker('Shutdown');"
+                " setTrackerField('settledImportUtcTicks', 0);"
+                " SessionState.SetString('UnityPuerExec.SettledImportUtcTicks', '"
+                + str(planted) + "');"
+                " invokeTracker('Install');"
+                " return { restored: String(trackerField('settledImportUtcTicks')) }; }"
+            ),
+        )
+        self.assertEqual(exit_code, 0, payload)
+        self.assertEqual(payload["result"]["restored"], str(planted), payload["result"])
+
+        # Restore a real settled baseline so later cases start clean.
+        exit_code, payload = self._exec_script(
+            base_url,
+            self._tracker_script(
+                "export default function run(ctx) {"
+                " invokeTracker('OnCompilationCompleted');"
+                " return { settled: true }; }"
+            ),
+        )
+        self.assertEqual(exit_code, 0, payload)
+        self.assertEqual(self._health(base_url)["refresh"]["pending"], "not_pending")
+
+    # --- change signal (tasks 3.2, 3.4, 3.5, 4.4) -----------------------------
+
+    def test_non_code_writes_do_not_mark_dirty(self):
+        base_url = self._base_url()
+        self.assertEqual(self._health(base_url)["refresh"]["pending"], "not_pending")
+        probe_dir = self._hidden_probe_dir()
+        probe_dir.mkdir(parents=True, exist_ok=True)
+        cases = {
+            "Probe.unity": "%YAML 1.1\n--- !u!29 &1\nOcclusionCullingSettings:\n",
+            "Probe.prefab": "%YAML 1.1\n--- !u!1 &1\nGameObject:\n",
+            "Probe.meta": "fileFormatVersion: 2\nguid: 00000000000000000000000000000000\n",
+            "Probe.png": "not-an-image",
+            "Probe.wav": "not-audio",
+        }
+        for name, content in cases.items():
+            (probe_dir / name).write_text(content, encoding="utf-8")
+            refresh = self._health(base_url)["refresh"]
+            # Each non-code extension must leave the pending state untouched.
+            self.assertEqual(refresh["pending"], "not_pending", (name, refresh))
+
+        exit_code, payload = self._exec_script(
+            base_url, "export default function run(ctx) { return { ok: true }; }"
+        )
+        self.assertEqual(exit_code, 0, payload)
+        self.assertFalse(payload["refresh"]["triggered"], payload["refresh"])
+
+    def test_watcher_error_invalidates_signal_then_forces_one_refresh(self):
+        base_url = self._base_url()
+        # A real watcher error cannot be produced from outside on Windows (the
+        # embedded-Mono watcher is silent), so the state an error event sets is
+        # applied directly: the signal becomes untrusted and records why. Health must
+        # surface that as unknown, never as not-pending.
+        exit_code, payload = self._exec_script(
+            base_url,
+            self._tracker_script(
+                "export default function run(ctx) {"
+                " setTrackerField('signalValid', false);"
+                " setTrackerField('deferredSignalError', 'simulated InternalBufferOverflowException');"
+                " return { signalValid: String(trackerField('signalValid')) }; }"
+            ),
+        )
+        self.assertEqual(exit_code, 0, payload)
+        self.assertEqual(payload["result"]["signalValid"], "false")
+        self.assertEqual(self._health(base_url)["refresh"]["pending"], "unknown")
+
+        # The next exec must treat the project as possibly changed and refresh rather
+        # than report no change. The scan re-establishes trust, so this is one-shot.
+        exit_code, payload = self._exec_script(
+            base_url, "export default function run(ctx) { return { afterError: true }; }"
+        )
+        self.assertEqual(exit_code, 0, payload)
+        self.assertEqual(payload["status"], "completed")
+        self.assertTrue(payload["refresh"]["triggered"], payload["refresh"])
+        self.assertEqual(payload["refresh"]["reason"], "watcher_signal_unavailable")
+        self.assertEqual(self._health(base_url)["refresh"]["pending"], "not_pending")
+
+        exit_code, payload = self._exec_script(
+            base_url, "export default function run(ctx) { return { settled: true }; }"
+        )
+        self.assertEqual(exit_code, 0, payload)
+        self.assertFalse(payload["refresh"]["triggered"], payload["refresh"])
+
+    def test_change_made_before_install_is_caught_by_baseline_walk(self):
+        base_url = self._base_url()
+        self.assertEqual(self._health(base_url)["refresh"]["pending"], "not_pending")
+        probe_dir = self._hidden_probe_dir()
+        probe_file = probe_dir / "BaselineWalkProbe.cs"
+        exit_code, payload = self._exec_script(
+            base_url,
+            self._tracker_script(
+                "export default function run(ctx) {"
+                " const Directory = puer.loadType('System.IO.Directory');"
+                " const File = puer.loadType('System.IO.File');"
+                # Drop all in-memory signal state, change a file, then install: this is
+                # the "changed before the watcher was attached" gap the baseline walk
+                # exists to close.
+                " invokeTracker('Shutdown');"
+                " Directory.CreateDirectory(" + _js_string_literal(probe_dir) + ");"
+                " File.WriteAllText(" + _js_string_literal(probe_file)
+                + ", 'internal static class BaselineWalkProbe { internal const int N = 1; }\\n');"
+                " invokeTracker('Install');"
+                " return { state: trackerState() }; }"
+            ),
+        )
+        self.assertEqual(exit_code, 0, payload)
+        self.assertEqual(payload["result"]["state"], "Pending", payload["result"])
+        self.assertEqual(self._health(base_url)["refresh"]["pending"], "pending")
+
+    def test_play_mode_skips_refresh_and_preserves_pending_change(self):
+        base_url = self._base_url()
+        self.assertEqual(self._health(base_url)["refresh"]["pending"], "not_pending")
+
+        self._set_play_mode(base_url, True)
+        self._wait_for_refresh_state(base_url, suppressed=True)
+
+        # A compile-triggering change made while playing: Unity defers importing it.
+        probe_dir = self._hidden_probe_dir()
+        probe_dir.mkdir(parents=True, exist_ok=True)
+        (probe_dir / "PendingPlayProbe.cs").write_text(
+            "internal static class PendingPlayProbe { internal const int P = 1; }\n",
+            encoding="utf-8",
+        )
+        refresh = self._health(base_url)["refresh"]
+        self.assertEqual(refresh["pending"], "pending")
+        self.assertTrue(refresh["suppressed"])
+        self.assertEqual(refresh["suppressed_reason"], "play_mode")
+
+        # The skip is reported, and the script still runs.
+        exit_code, payload = self._exec_script(
+            base_url, "export default function run(ctx) { return { executedInPlay: true }; }"
+        )
+        self.assertEqual(exit_code, 0, payload)
+        self.assertEqual(payload["status"], "completed")
+        self.assertFalse(payload["refresh"]["triggered"], payload["refresh"])
+        self.assertEqual(payload["refresh"]["skipped_reason"], "play_mode")
+
+        # The skip must not discard the pending signal.
+        self.assertEqual(self._health(base_url)["refresh"]["pending"], "pending")
+
+        # Leaving play mode and execing again refreshes for the still-pending change.
+        self._set_play_mode(base_url, False)
+        self._wait_for_refresh_state(base_url, suppressed=False)
+        self.assertEqual(self._health(base_url)["refresh"]["pending"], "pending")
+        exit_code, payload = self._exec_raw(
+            base_url, "export default function run(ctx) { return { afterPlayExit: true }; }"
+        )
+        self.assertIsInstance(payload, dict, (exit_code, payload))
+        self.assertTrue(payload["refresh"]["triggered"], payload["refresh"])
+        self.assertEqual(payload["refresh"]["reason"], "compile_triggering_change")
 
 
 if __name__ == "__main__":
