@@ -1,0 +1,21 @@
+## 1. Root-Cause Investigation
+
+- [ ] 1.1 Read the base-url automatic-refresh path end to end (`_settle_after_automatic_refresh`, `_settle_base_url_after_refresh`, `_ensure_project_session_ready_after_refresh`, `_run_exec_impl`, `_run_wait_for_exec_impl`) and map where an accepted request can lose its recoverable record across a refresh-triggered domain reload. Verify: the map names the exact call site(s) that decide `missing`, and whether the pending artifact is written before or after the reload.
+- [ ] 1.2 Inspect the pending exec artifact (`unity_session_logs.py`, `Temp/UnityPuerExec/pending_exec/`) across a reload: does the artifact survive the reload, and does its recorded `log_range.start` stay valid? The observed payload carries `log_range.start = 1690261`, which recurs across runs — confirm whether that is a pre-reload offset that no longer resolves. Verify: the finding states whether the artifact is lost, invalidated, or intact-but-unrecovered.
+- [ ] 1.3 Decide, from the evidence, which side of the seam is wrong: the artifact failing to survive its own reload, or the recovery/resubmit path refusing to continue on a `missing` response (`_running_or_timed_out_response`). Verify: the decision names the single owning call site and rules out the alternative with evidence, not inference.
+- [ ] 1.4 Write a minimal reproduction (unit-level if possible, real-host if not) that turns the observed failure into a deterministic failing check. Verify: the reproduction fails on current code and is specific to the delete/reload case, not to a generic timeout.
+- [ ] 1.5 Record the confirmed root cause in `design.md`'s Decisions section, replacing the placeholder text. Verify: a reader can see the observed sequence, the rejected alternative, and why.
+
+## 2. Fix and Regression Coverage
+
+- [ ] 2.1 Implement the minimal fix at the identified site so an automatic-refresh-triggered reload keeps the accepted request recoverable (or resubmits it) and the terminal response carries the script result. Verify: the reproduction from 1.4 passes and no other exec lifecycle status changes shape.
+- [ ] 2.2 Add regression coverage for the reload-loss scenario (unit first; add a focused real-host assertion only if the unit layer cannot express it). Verify: the regression fails without 2.1's fix.
+- [ ] 2.3 Re-run the existing exec lifecycle coverage (`tests.test_unity_session_cli`, `tests.test_unity_session_modules`, `tests.test_exec_*`, `tests.test_response_file_output`) to confirm the recoverable/terminal contract and the pending-artifact rules are not regressed — in particular that genuinely expired or malformed artifacts still surface as non-recoverable `missing`. Verify: the durable contract still holds for the cases it was written for.
+- [ ] 2.4 If 1.3 finds the `missing` classification is correct and the defect is upstream (the artifact should not have been lost), fix upstream and leave the `missing` outcome unchanged; if 1.3 finds the recovery path is the gap, fix there. Either way, state which invariant changed. Verify: the fix does not simply silence `missing` for all requests.
+
+## 3. Validation and Closeout
+
+- [ ] 3.1 Run the focused Python suites relevant to `unity_puer_exec_runtime.py`, `unity_session_logs.py`, and the exec lifecycle. Verify: green.
+- [ ] 3.2 Re-run `tests.test_real_host_integration.RealHostIntegrationTests.test_base_url_automatic_refresh_and_wait_for_compile_against_real_host` on `c3-client-tree2/Project` (see `openspec/specs/validation-host-integration/how-to-run.md`) and confirm it passes. Verify: the previously deterministic failure is gone, and the fix is confirmed against a real reload rather than a mock.
+- [ ] 3.3 Run `openspec validate diagnose-exec-missing-after-auto-refresh` and confirm the change is archive-ready. If investigation concluded the durable requirement text itself needs strengthening, revise the provisional delta before finalizing. Verify: the delta is either confirmed as-is or replaced by the substantive revision.
+- [ ] 3.4 Complete the required apply closeout review and record either `No new follow-up work identified` or human-discussed follow-up candidates in an allowed category. Verify: the closeout distinguishes the auto-refresh defect from the separately-observed intermittent launch-recovery and CLI-response flakes, which are not part of this change.
