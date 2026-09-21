@@ -3,7 +3,9 @@
 ## Purpose
 
 Define the durable contract for ES module import support in `unity-puer-exec`, including import resolution behavior for file, code, and stdin execution paths and the JsEnv reset workflow used to clear the module cache.
+
 ## Requirements
+
 ### Requirement: Exec entry scripts may use static ES module imports
 The exec execution model SHALL support ES module context. Entry scripts MAY contain static `import` declarations. The runtime SHALL resolve imported modules according to the entry specifier and the active base URL. Scripts without `import` statements SHALL continue to execute unchanged.
 
@@ -67,7 +69,7 @@ The runtime SHALL maintain an in-memory map of per-request virtual modules. The 
 - **AND** no file is written to disk for the harness
 
 ### Requirement: --reset-jsenv-before-exec clears the JS module cache
-The CLI SHALL accept `--reset-jsenv-before-exec` on the `exec` command. When set, the CLI SHALL express the reset intent in the exec request and the Unity server SHALL dispose the current JsEnv singleton and initialize a fresh one exactly once before executing the script. The CLI SHALL NOT separately invoke `/reset-jsenv` for the same exec. This clears PuerTS's module cache so updated JS library files are reloaded.
+The CLI SHALL accept `--reset-jsenv-before-exec` on the `exec` command. When set, the CLI SHALL express the reset intent in the exec request and the Unity server SHALL dispose the current JsEnv singleton and initialize a fresh one exactly once before executing the script. The CLI SHALL NOT separately invoke `/reset-jsenv` for the same exec. This clears PuerTS's module cache so updated JS library files are reloaded. When the server has also triggered an automatic refresh for pending code changes, the reset SHALL occur after that refresh's compilation settles.
 
 #### Scenario: Module cache is cleared once before exec
 - **WHEN** `exec --reset-jsenv-before-exec --file entry.js` is invoked after a JS library file has changed
@@ -76,7 +78,8 @@ The CLI SHALL accept `--reset-jsenv-before-exec` on the `exec` command. When set
 - **AND** the CLI does not issue a separate reset endpoint call
 
 #### Scenario: Ordering when combined with --refresh-before-exec
-- **WHEN** both `--refresh-before-exec` and `--reset-jsenv-before-exec` are provided
+- **WHEN** an exec request carrying `reset_jsenv_before_exec = true` arrives
+- **AND** the server triggers an automatic refresh for pending compile-triggering changes
 - **THEN** the refresh step runs first and waits for any compilation to complete
 - **AND** the server-owned JsEnv reset runs after compilation, ensuring the fresh JsEnv is not immediately discarded by a compile-triggered reload
 
@@ -115,4 +118,3 @@ The mtime-based staleness detection defined by `cache-staleness-detection` SHALL
 - **WHEN** `--reset-jsenv-before-exec` and `--stale-module-policy error` are both provided
 - **THEN** the explicit reset request causes exactly one server-owned reset before execution
 - **AND** the exec is not rejected merely because tracked modules were stale
-

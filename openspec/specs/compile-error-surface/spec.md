@@ -38,7 +38,7 @@ The Unity execution server SHALL subscribe to `CompilationPipeline.compilationSt
 
 ### Requirement: Exec endpoint returns unity_compile_error when compilation had errors
 
-When the `/exec` endpoint receives a valid execution request, the server SHALL check `_lastCompilationHadErrors` after the `IsCompilingOrReloading()` check and before JavaScript execution. When the flag is true, the server SHALL return `{"ok": false, "status": "unity_compile_error"}` with inline compile diagnostics instead of proceeding to execution.
+When the `/exec` endpoint receives a valid execution request, the server SHALL check `_lastCompilationHadErrors` after the `IsCompilingOrReloading()` check and before JavaScript execution. When the flag is true, the server SHALL return `{"ok": false, "status": "unity_compile_error"}` with inline compile diagnostics instead of proceeding to execution. The gate SHALL be evaluated after the automatic refresh decision, so that a code change made to fix a compilation error is recompiled rather than reported as still failing. The gate SHALL NOT be evaluated against a caller-supplied refresh flag, because no such flag exists.
 
 #### Scenario: Exec with compile errors present
 
@@ -56,9 +56,23 @@ When the `/exec` endpoint receives a valid execution request, the server SHALL c
 
 #### Scenario: Compile error gate is checked after request parsing
 
-- **WHEN** `/exec` receives a request with `refresh_before_exec: true`
-- **THEN** the server handles the refresh path first (triggers `AssetDatabase.Refresh()` and returns)
-- **AND** the compile error gate is skipped for refresh requests
+- **WHEN** a valid `/exec` request arrives
+- **THEN** the server parses and validates the request before evaluating the compile error gate
+- **AND** the gate is evaluated after the automatic refresh decision and before JavaScript execution
+
+#### Scenario: Compile error gate yields to an automatic refresh
+
+- **WHEN** a valid `/exec` request arrives while `_lastCompilationHadErrors` is true
+- **AND** the server detects a pending compile-triggering change
+- **THEN** the server performs the automatic refresh first so the change can be recompiled
+- **AND** the compile error gate is evaluated against the refreshed compilation result, not the pre-refresh one
+
+#### Scenario: Compile error gate applies when no change is pending
+
+- **WHEN** a valid `/exec` request arrives while `_lastCompilationHadErrors` is true
+- **AND** the server detects no pending compile-triggering change
+- **THEN** the server returns `unity_compile_error` without refreshing
+- **AND** JavaScript execution is not started
 
 ### Requirement: Wait-for-exec endpoint returns unity_compile_error
 
@@ -70,24 +84,6 @@ The `/wait-for-exec` endpoint SHALL also check `_lastCompilationHadErrors` befor
 - **AND** `_lastCompilationHadErrors` is true
 - **THEN** the response has `status: "unity_compile_error"` with inline compile diagnostics
 - **AND** the server does not attempt to look up or wait on the job
-
-### Requirement: refresh_before_exec triggers native AssetDatabase.Refresh
-
-The `ExecRequest` protocol SHALL accept a `refresh_before_exec` boolean field (default false). When true, the server SHALL enqueue `AssetDatabase.Refresh()` on the main thread via `MainThreadActions`, await its completion, and return a confirmation response without executing JavaScript.
-
-#### Scenario: Refresh-before-exec is requested
-
-- **WHEN** `/exec` receives a request with `refresh_before_exec: true`
-- **THEN** the server calls `AssetDatabase.Refresh()` on the main thread
-- **AND** the server returns `{"ok": true, "status": "completed", "result": {"refreshed": true}}`
-- **AND** no JavaScript execution occurs
-
-#### Scenario: Refresh-before-exec bypasses the compile error gate
-
-- **WHEN** `/exec` receives a request with `refresh_before_exec: true`
-- **AND** `_lastCompilationHadErrors` is true from a prior compilation
-- **THEN** the server still performs the refresh
-- **AND** the compile error gate (which would normally block execution) is not applied to the refresh request
 
 ### Requirement: Exec responses include inline compile messages
 

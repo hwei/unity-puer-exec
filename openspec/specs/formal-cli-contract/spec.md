@@ -122,6 +122,8 @@ The exec HTTP request payload SHALL accept four optional fields alongside the ex
 - `reset_jsenv_before_exec` (bool): when true, the server resets the JsEnv before evaluating; populated when `--reset-jsenv-before-exec` is set.
 - `stale_module_policy` (string): `auto-reset` or `error`; omission SHALL mean `auto-reset`.
 
+The payload SHALL NOT carry a `refresh_before_exec` field. Refresh is a server-side decision under `import-change-refresh`, reported in the exec response, and is not caller-selectable.
+
 Requests that omit the first three fields retain their existing import-context behavior. A request that omits `stale_module_policy` adopts the new default automatic stale recovery behavior.
 
 #### Scenario: --file populates source_path automatically
@@ -138,6 +140,12 @@ Requests that omit the first three fields retain their existing import-context b
 
 - **WHEN** a direct HTTP client submits a non-empty `stale_module_policy` other than `auto-reset` or `error`
 - **THEN** the server returns a machine-readable validation failure without executing code or resetting the JsEnv
+
+#### Scenario: Payload carrying the removed refresh field is rejected
+
+- **WHEN** a direct HTTP client submits an exec payload carrying `refresh_before_exec`
+- **THEN** the server rejects the request with a machine-readable failure naming the removed field
+- **AND** it does not execute code or refresh
 
 ### Requirement: Exec responses expose a recoverable request identity
 
@@ -620,7 +628,7 @@ When neither a session artifact nor the preferred port yields a ready endpoint o
 
 ### Requirement: Direct base-url mode remains explicit
 
-Base-url selector mode SHALL continue to target the caller-supplied endpoint directly. Direct mode SHALL NOT require project artifact validation and SHALL NOT imply Unity launch ownership. Base-url mode SHALL support `--refresh-before-exec`: because requesting a refresh does not launch Unity and does not change endpoint ownership, the refresh option is compatible with the direct-mode boundary. In base-url mode the post-refresh readiness settle SHALL re-probe the same caller-supplied endpoint rather than performing project-scoped re-acquisition.
+Base-url selector mode SHALL continue to target the caller-supplied endpoint directly. Direct mode SHALL NOT require project artifact validation and SHALL NOT imply Unity launch ownership. When the server reports that it triggered an automatic refresh before an exec, the CLI SHALL settle the resulting compilation cycle by re-probing the same caller-supplied endpoint rather than performing project-scoped re-acquisition. Automatic refresh SHALL be compatible with the direct-mode boundary: it is a server-side decision reported in the exec response, not a CLI-side launch or ownership action.
 
 #### Scenario: Caller supplies base-url
 
@@ -630,10 +638,16 @@ Base-url selector mode SHALL continue to target the caller-supplied endpoint dir
 
 #### Scenario: Base-url caller requests refresh-before-exec
 
-- **WHEN** a caller invokes `exec --base-url <url> --refresh-before-exec`
-- **THEN** the CLI performs the refresh against that endpoint instead of rejecting the option as project-only
-- **AND** it settles the compile cycle by re-probing the same endpoint before running the user script
+- **WHEN** a caller invokes `exec --base-url <url>` and the server reports an automatic refresh for a pending code change
+- **THEN** the CLI settles the compile cycle by re-probing that same endpoint before running the user script
 - **AND** it does not launch Unity or rewrite the endpoint from a session artifact
+
+#### Scenario: Base-url caller with no pending change
+
+- **WHEN** a caller invokes `exec --base-url <url>`
+- **AND** the server reports that no refresh was triggered
+- **THEN** the CLI does not perform a compile settle
+- **AND** the command does not wait for a compilation that was never started
 
 ### Requirement: Help warns that bridged arrays and generic lists are not plain JS arrays
 The formal CLI help surface SHALL include a short warning that bridged C# arrays and generic lists remain bridge objects with .NET-oriented semantics and should not be assumed to behave exactly like native JavaScript arrays.
@@ -869,22 +883,6 @@ The `resolve-blocker` command SHALL support dismissing the "Enter Safe Mode?" di
 - **THEN** the dialog spec dictionary includes `click_method: "keyboard"`
 - **AND** `_click_cancel_button` dispatches to `_click_via_keyboard` which sends Enter
 - **AND** the resolution follows the existing confirmation and timeout contract
-
-### Requirement: Refresh-before-exec is a single refresh-settle-execute lifecycle
-
-For both selector modes, `--refresh-before-exec` SHALL define a single accepted-request lifecycle that performs the refresh, settles on the resulting compilation cycle, and then runs the caller's script in the resulting environment. The intermediate refreshing and compiling phases SHALL be non-terminal phases of the accepted exec request, and the server's `{"refreshed": true}` refresh confirmation SHALL NOT be presented as the caller's script result. The CLI SHALL make the next action explicit when the request is still refreshing or compiling so a caller does not mistake an intermediate phase for completion.
-
-#### Scenario: Refresh-before-exec runs the script after settling
-
-- **WHEN** a caller invokes `exec --refresh-before-exec` and the refresh triggers a compilation
-- **THEN** the CLI settles on the compile cycle before running the caller's script
-- **AND** the terminal response carries the script result, not the `{"refreshed": true}` refresh confirmation
-
-#### Scenario: Caller observes an intermediate refreshing or compiling phase
-
-- **WHEN** a refresh-before-exec request is still refreshing or compiling when a response is returned
-- **THEN** the response represents a non-terminal accepted state rather than a terminal result
-- **AND** the response makes the continuation path explicit so the caller can wait for the eventual script result
 
 ### Requirement: Help distinguishes structured results from diagnostic logging
 
@@ -1315,3 +1313,51 @@ The CLI SHALL support `resolve-blocker --action click --hwnd <int> --button "<la
 - **WHEN** `resolve-blocker --action click --hwnd <int>` is invoked and more than one blocking dialog is detected
 - **THEN** the CLI resolves the named dialog
 - **AND** it does not return `multiple_supported_blockers` merely because other dialogs are present
+
+### Requirement: Automatic refresh is a non-terminal phase of the accepted exec request
+
+When the server reports that it triggered an automatic refresh, the CLI SHALL treat the refresh and the resulting compilation as non-terminal phases of the same accepted exec request. The CLI SHALL NOT present a refresh confirmation as the caller's script result, and SHALL make the continuation path explicit so a caller does not mistake an intermediate phase for completion.
+
+#### Scenario: Automatic refresh runs the script after settling
+
+- **WHEN** the server triggers an automatic refresh and the refresh triggers a compilation
+- **THEN** the CLI settles on the compile cycle before running the caller's script
+- **AND** the terminal response carries the script result, not a refresh confirmation
+
+#### Scenario: Caller observes an intermediate refreshing or compiling phase
+
+- **WHEN** an exec request is still refreshing or compiling when a response is returned
+- **THEN** the response represents a non-terminal accepted state rather than a terminal result
+- **AND** the response makes the continuation path explicit so the caller can wait for the eventual script result
+
+### Requirement: Help states that only code changes trigger automatic refresh
+
+The formal CLI help surface SHALL state explicitly that automatic refresh watches code changes only — C# sources, assembly definitions and references, and compiler response files — and that scenes, prefabs, metadata files, textures, audio, and other non-code assets do not trigger it. The statement SHALL appear wherever refresh behavior is described, not only in an option list, so that a caller relying on asset import discovers the boundary without inference. Help SHALL direct callers who need a non-code asset imported to invoke `AssetDatabase.Refresh()` through the bridge.
+
+#### Scenario: Agent reads exec help and learns the code-only boundary
+
+- **WHEN** a caller reads `exec --help`
+- **THEN** the help states that refresh is automatic for code changes
+- **AND** it names that non-code assets are not watched
+- **AND** it names `AssetDatabase.Refresh()` through the bridge as the remedy for a non-code import
+
+#### Scenario: Agent reads compile-error guidance and learns the code-only boundary
+
+- **WHEN** a caller reads guidance that mentions refresh or recompilation
+- **THEN** that guidance does not imply that saving a scene or prefab triggers a refresh
+
+### Requirement: Removed --refresh-before-exec reports an actionable usage error
+
+The CLI SHALL retain `--refresh-before-exec` in the `exec` parser solely to produce a machine-readable usage error. Supplying it SHALL raise a usage failure carrying a `situation` that explains the removal and states that refresh is now automatic for code changes. The CLI SHALL NOT treat it as an unrecognized argument, and SHALL NOT honor it as a refresh request.
+
+#### Scenario: Caller supplies the removed flag
+
+- **WHEN** `exec --project-path <path> --refresh-before-exec --file entry.js` is invoked
+- **THEN** the command fails as a usage error before contacting the server
+- **AND** the payload includes a `situation` explaining that refresh is automatic for code changes
+- **AND** the payload does not describe the flag as unrecognized
+
+#### Scenario: Usage failure does not partially apply
+
+- **WHEN** a caller supplies the removed flag alongside otherwise valid arguments
+- **THEN** no exec request is submitted and no refresh occurs
