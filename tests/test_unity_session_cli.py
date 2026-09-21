@@ -3421,7 +3421,97 @@ class ApiUpdaterRecoveryCommandTests(unittest.TestCase):
         self.assertIn("api_updater_declined", stdout)
 
 
+class _CompileCycleClock:
+    """Deterministic stand-in for wall time across a refresh-triggered compile.
+
+    `wait_for_compile_cycle` sleeps in real seconds; a compile plus the domain
+    reload it ends with cannot be produced in a unit test, so the cycle is modelled
+    as a clock the probe reads. Advancing only on `sleep` keeps the settle loop's
+    own budget arithmetic intact -- which is the thing under test.
+    """
+
+    def __init__(self, ready_after_seconds):
+        self.now = 0.0
+        self.ready_after_seconds = ready_after_seconds
+
+    def time(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.now += seconds
+
+
 class AutomaticRefreshBaseUrlTests(unittest.TestCase):
+    def test_base_url_automatic_refresh_settles_cycle_longer_than_wait_timeout(self):
+        """A base-url refresh must settle the compile+reload it triggered.
+
+        Regression for the deterministic real-host failure of
+        `test_base_url_automatic_refresh_and_wait_for_compile_against_real_host`: the
+        automatic-refresh settle budget was derived from `--wait-timeout-ms`, which
+        bounds one HTTP wait for an already-accepted job, not a compile cycle. With
+        the test's 1000 ms budget no compile+domain-reload can settle, so `exec`
+        returned `running`/`refreshing` without resubmitting -- and in base-url mode
+        there is no pending artifact to replay, while the server never accepted the
+        job, so the promised `wait-for-exec --request-id` continuation answers
+        `missing` with no script result.
+
+        The cycle here takes longer than the caller's `--wait-timeout-ms` but far
+        inside a compile-scale budget, so a correct CLI settles, resubmits under the
+        same request_id, and returns the script result.
+        """
+        with tempfile.TemporaryDirectory() as temp_dir:
+            script_path = Path(temp_dir) / "script.js"
+            script_path.write_text("export default function run(ctx) { return 7; }", encoding="utf-8")
+            refresh_body = {
+                "ok": True,
+                "status": "running",
+                "phase": "refreshing",
+                "request_id": "req-base",
+                "refresh": {
+                    "triggered": True,
+                    "reason": "compile_triggering_change",
+                    "paths_changed": ["C:/Project/Assets/A.cs"],
+                    "skipped_reason": "",
+                    "settle_outcome": "dispatched",
+                    "elapsed_ms": 4,
+                },
+            }
+            clock = _CompileCycleClock(ready_after_seconds=3.0)
+
+            def probe(base_url, timeout_seconds):
+                status = "compiling" if clock.now < clock.ready_after_seconds else "ready"
+                return {"ok": True, "status": status, "session_marker": "m1"}, None
+
+            with mock.patch.object(unity_puer_exec_runtime, "time", clock), mock.patch.object(
+                unity_puer_exec_runtime, "_probe_compile_health", side_effect=probe
+            ), mock.patch.object(
+                unity_puer_exec.direct_exec_client,
+                "invoke_command",
+                side_effect=[
+                    (unity_puer_exec.EXIT_RUNNING, json.dumps(refresh_body), ""),
+                    (0, json.dumps({"ok": True, "status": "completed", "request_id": "req-base", "result": {"value": 7}}), ""),
+                ],
+            ) as invoke_command:
+                exit_code, stdout, stderr = unity_puer_exec.run_cli(
+                    [
+                        "exec",
+                        "--base-url", "http://127.0.0.1:55231",
+                        "--wait-timeout-ms", "1000",
+                        "--file", str(script_path),
+                        "--request-id", "req-base",
+                    ]
+                )
+
+        self.assertEqual(stderr, "")
+        # The settle must outlive the caller's per-request wait budget, then resubmit
+        # under the same request_id.
+        self.assertEqual(invoke_command.call_count, 2)
+        self.assertEqual(exit_code, 0)
+        body = json.loads(stdout)
+        self.assertEqual(body["status"], "completed")
+        self.assertEqual(body["result"], {"value": 7})
+        self.assertTrue(body["refresh"]["triggered"])
+
     def test_base_url_automatic_refresh_runs_user_script_after_settle(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             script_path = Path(temp_dir) / "script.js"

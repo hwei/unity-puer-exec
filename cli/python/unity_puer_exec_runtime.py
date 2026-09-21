@@ -888,7 +888,17 @@ def _invoke_exec(
 
 
 def _post_refresh_ready_timeout_seconds(args):
-    return max(float(args.wait_timeout_ms) / 1000.0, 0.001)
+    """Budget for settling the compile cycle an automatic refresh started.
+
+    Deliberately not `--wait-timeout-ms`. That option bounds one HTTP wait for an
+    already-accepted job, while this bounds a compile plus the domain reload it ends
+    with -- tens of seconds, not one. Deriving one from the other is what let a
+    base-url `exec` bail out of its own settle, return the refreshing phase without
+    resubmitting, and leave the caller a request the server had never accepted (see
+    diagnose-exec-missing-after-auto-refresh). It is the same budget
+    `wait-for-compile --settle-timeout-seconds` gives the identical cycle.
+    """
+    return max(float(unity_session.DEFAULT_READY_TIMEOUT_SECONDS), 0.001)
 
 
 def _ensure_project_session_ready_after_refresh(args):
