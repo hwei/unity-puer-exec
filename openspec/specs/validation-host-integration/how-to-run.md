@@ -41,6 +41,65 @@ Run command:
 UNITY_PUER_EXEC_RUN_REAL_HOST_TESTS=1 python -m unittest tests.test_real_host_integration
 ```
 
+### One Editor per suite (host reuse)
+
+Each real-host class brings the Editor up **once** in a class-level fixture
+(`_SharedRealHostDevice.setUpClass`), through the same
+`real_host_retry.warm_up_with_retry` path the per-case model used, and stops it
+once in `tearDownClass` — including when a case fails, so a broken case cannot
+leak a running Editor into the next invocation. Ordinary cases reuse that
+Editor; adding a case no longer adds a full Editor launch.
+
+Per-case isolation is a **reset**, not a relaunch. `setUp` resets the state a
+reused process can carry that a killed process could not:
+
+- **Filesystem** — repository-owned validation temp assets (including probe
+  subdirectories) are removed.
+- **Modal dialogs** — a residual blocker left up by a previous case is resolved
+  with an explicit cancel-like click, so it cannot block the next case's exec.
+- **Play mode** — the Editor is returned to edit mode, and the case fails loudly
+  if it will not leave play mode.
+- **Compile state** — a compile-error case removes its broken source, but the
+  change tracker does not treat a deletion as a compile-triggering change, so a
+  reused Editor can stay stuck on the stale error. The reset touches a
+  repository-owned probe to force the recompile and waits it out. The endpoint
+  is re-resolved on every attempt because a reload can rebind the control port.
+- **Change signal** — the test-owned import-change tracker is re-installed and
+  re-settled so the next case starts from `not_pending`. When health already
+  reports a settled signal this is skipped, so an ordinary case pays no extra
+  full-filesystem walk.
+
+### Cases that own their own boundary
+
+Four cases need a process the shared Editor cannot be, and are listed in
+`RealHostIntegrationTests.OWN_HOST_BOUNDARY_TESTS` with the pre-state they need
+(`"stop"` or `"running"`):
+
+| Case | Boundary | Why |
+|---|---|---|
+| `test_batch_mode_process_follows_uniform_activation_rule_against_real_host` | `running` → stops lazily | launches its own one-shot `Unity.exe -batchMode` processes and needs the exclusive project lock; it stops the shared host only after its skip check |
+| `test_control_port_rolls_over_when_preferred_port_occupied_against_real_host` | `running` | stages an occupy-then-rebind condition around a forced domain reload on the live host |
+| `test_exec_discovers_rolled_over_control_port_against_real_host` | `running` | stages the same rollover and asserts range-aware discovery |
+| `test_cold_launch_retries_on_transient_failure_against_real_host` | `stop` | asserts the cold-launch retry boundary itself, which needs a stopped host to observe |
+
+Each such case reports the boundary it owned in a machine-usable
+`_own_boundary_report` (`mode`, `stopped`/`perturbed`, and the observed result).
+Their `setUp` no longer stops a host that a case will only skip, and the shared
+host is restored after them — reusing a healthy Editor when the case's own
+launch left one, and relaunching only when it did not.
+
+A case that later discovers it needs a pristine process is added to that map and
+says why, rather than silently failing only on reuse.
+
+### Shared-host failure semantics
+
+A shared host that dies mid-suite is detected by the per-case health scan. The
+suite first gives a mid-reload Editor a chance to come back, then re-establishes
+the host through `real_host_retry.warm_up_with_retry` within its bounded budget.
+If it cannot, the case fails with the recorded `attempt_count`,
+`last_launch_status`, and per-attempt history rather than reporting a pass
+against a host that was not running.
+
 ### Activation is required for a controllable host
 
 The control service no longer starts implicitly when the package loads. A process is

@@ -427,7 +427,102 @@ def _seed_obsolete_api_fixture(project_path):
     return fixture_path, content
 
 
-class RealHostIntegrationTests(unittest.TestCase):
+# --- shared real-host lifecycle -------------------------------------------
+#
+# One Editor per suite. The class-level fixture establishes the clean boundary
+# from project-local state and brings the host up through the existing
+# real_host_retry path exactly once. Ordinary cases reuse that Editor and get a
+# cheap per-case state reset instead of a relaunch.
+#
+# The per-case reset covers the state a reused process can carry that a
+# relaunched one could not: repository-owned validation temp assets, Editor play
+# mode, a residual modal dialog, and the test-owned change signal.
+#
+# A case that genuinely needs a process the shared Editor cannot be names itself
+# in OWN_HOST_BOUNDARY_TESTS and owns its own launch/stop boundary; the shared
+# host is re-established for the cases that follow it.
+
+HOST_READY_RESET_TIMEOUT_SECONDS = 240
+EDIT_MODE_RESET_TIMEOUT_SECONDS = 180
+COMPILE_RECOVERY_PROBE_NAME = "_host_reset_compile_probe.cs"
+BOUNDARY_ATTEMPTS = 3
+BOUNDARY_RETRY_SLEEP_SECONDS = 10.0
+
+
+def _start_shared_host(project_path, unity_exe_path):
+    """Establish the clean boundary and bring the host up once, with bounded retry.
+
+    Returns a report carrying the resolved base URL and the launch payload. Raises
+    AssertionError with machine-usable attempt diagnostics when the host cannot be
+    brought up, so a persistent launch regression stays distinguishable from a
+    transient flake.
+    """
+    last_exit_code = 1
+    last_payload = None
+    for boundary_attempt in range(1, BOUNDARY_ATTEMPTS + 1):
+        _ensure_clean_test_boundary(project_path)
+        prepare_validation_host.main(["--project-path", str(project_path)])
+        cleanup_validation_host.cleanup_validation_temp_assets(project_path)
+        last_exit_code, last_payload, _, _ = _warm_up_project_exec(
+            project_path, unity_exe_path, include_diagnostics=True
+        )
+        # The warm-up can return a non-terminal "running" while the Editor is
+        # still settling; the test's own endpoint oracle is the authority on
+        # whether the host is actually up, so resolve from that.
+        base_url, health = _scan_ready_control_endpoint(project_path)
+        if base_url is None:
+            base_url, health = _await_ready_endpoint(project_path)
+        if base_url is not None:
+            return {"base_url": base_url, "health": health, "launch": last_payload}
+        # A previous Editor can leave a short-lived asset-import worker holding
+        # the project lock after it is stopped, which makes the next launch
+        # refuse ("editor_not_under_cli_control"). That window is transient, so
+        # re-establish the boundary and try again before declaring failure.
+        status = last_payload.get("status") if isinstance(last_payload, dict) else None
+        if status not in {"editor_not_under_cli_control", "running", "unknown"}:
+            break
+        time.sleep(BOUNDARY_RETRY_SLEEP_SECONDS)
+    detail = last_payload if isinstance(last_payload, dict) else {}
+    raise AssertionError(
+        "shared validation host did not come up after {} boundary attempts: "
+        "exit_code={} status={} attempt_count={} last_launch_status={} "
+        "attempts={} payload={}".format(
+            BOUNDARY_ATTEMPTS,
+            last_exit_code,
+            detail.get("status"),
+            detail.get("attempt_count"),
+            detail.get("last_launch_status"),
+            detail.get("attempts"),
+            last_payload,
+        )
+    )
+
+
+def _await_ready_endpoint(project_path, timeout_seconds=HOST_READY_RESET_TIMEOUT_SECONDS):
+    """Poll for a ready control endpoint owned by project_path.
+
+    Used between cases to ride out a reload a case triggered (for example a
+    deliberate compile-error case recovering asynchronously) before deciding the
+    host is actually gone.
+    """
+    deadline = time.time() + timeout_seconds
+    while time.time() < deadline:
+        base_url, payload = _scan_ready_control_endpoint(project_path)
+        if base_url is not None:
+            return base_url, payload
+        time.sleep(1.0)
+    return None, None
+
+
+class _SharedRealHostDevice:
+    """Mixin: one Editor per suite, per-case state reset, explicit opt-out.
+
+    Subclasses set ``OWN_HOST_BOUNDARY_TESTS`` to the test method names that need a
+    pristine process. List this mixin before ``unittest.TestCase`` in the bases.
+    """
+
+    OWN_HOST_BOUNDARY_TESTS = {}
+
     @classmethod
     def setUpClass(cls):
         if not _real_host_tests_enabled():
@@ -439,21 +534,336 @@ class RealHostIntegrationTests(unittest.TestCase):
             )
         cls.project_path = _require_real_host_project_path()
         cls.unity_exe_path = _require_unity_editor(cls.project_path)
+        cls._shared_host = _start_shared_host(cls.project_path, cls.unity_exe_path)
+        cls._shared_host_base_url = cls._shared_host["base_url"]
 
-    def setUp(self):
-        _ensure_clean_test_boundary(self.project_path)
-        prepare_validation_host.main(["--project-path", str(self.project_path)])
-        cleanup_validation_host.cleanup_validation_temp_assets(self.project_path)
-
-    def tearDown(self):
+    @classmethod
+    def tearDownClass(cls):
+        # Stop the host even when a case failed, so a broken case cannot leak a
+        # running Editor into the next suite invocation.
+        cls._shared_host_base_url = None
         try:
-            _ensure_clean_test_boundary(self.project_path)
+            _ensure_clean_test_boundary(cls.project_path)
         except Exception:
             pass
+        try:
+            cleanup_validation_host.cleanup_validation_temp_assets(cls.project_path)
+        except Exception:
+            pass
+
+    # -- per-case lifecycle ------------------------------------------------
+
+    def setUp(self):
+        mode = self._own_boundary_mode()
+        if mode is not None:
+            # Pristine-process case. ``stop`` hands it a stopped host; ``running``
+            # gives it a live host it may perturb to stage its own condition.
+            # Either way the case owns its launch/stop boundary and reports it,
+            # and the shared host is restored for the cases after it.
+            self._own_boundary_report = {
+                "case": self._testMethodName,
+                "owns_boundary": True,
+                "mode": mode,
+                "stopped": False,
+                "perturbed": False,
+                "reestablished": False,
+            }
+            if mode == "stop":
+                self._own_boundary_stop()
+            else:
+                self._ensure_shared_host_ready()
+            self.addCleanup(self._restore_shared_host_after_own_boundary)
+            return
+        self._reset_shared_host_state()
+
+    def tearDown(self):
+        report = getattr(self, "_own_boundary_report", None)
+        if report is not None:
+            # A pristine-process case reports the boundary it owned rather than
+            # silently riding the shared host.
+            self.assertTrue(report.get("owns_boundary"), report)
+
+    def _owns_host_boundary(self):
+        return self._testMethodName in type(self).OWN_HOST_BOUNDARY_TESTS
+
+    def _own_boundary_mode(self):
+        return type(self).OWN_HOST_BOUNDARY_TESTS.get(self._testMethodName)
+
+    def _own_boundary_stop(self):
+        """Stop the shared host so this case has a virgin project lock."""
+        result = _ensure_clean_test_boundary(self.project_path)
+        cleanup_validation_host.cleanup_validation_temp_assets(self.project_path)
+        report = getattr(self, "_own_boundary_report", None)
+        if report is not None:
+            report["stopped"] = True
+            report["stop"] = result
+        return result
+
+    def _mark_own_boundary_perturbed(self):
+        """Mark that this case changed the shared host's process/port state."""
+        report = getattr(self, "_own_boundary_report", None)
+        if report is not None:
+            report["perturbed"] = True
+
+    def _record_own_boundary(self, boundary, **details):
+        """Record the launch/stop boundary a pristine-process case owned.
+
+        The report is machine-usable: it names the boundary kind and its observed
+        result, so a reader can tell this case did not ride the shared host.
+        """
+        report = getattr(self, "_own_boundary_report", None)
+        if report is None:
+            report = {"case": self._testMethodName, "owns_boundary": True}
+            self._own_boundary_report = report
+        report["boundary"] = boundary
+        report.update(details)
+        return report
+
+    def _restore_shared_host_after_own_boundary(self):
+        """Return the suite to a clean shared host after a pristine-process case.
+
+        A ``stop`` case removed the host; a ``running`` case only needs restoring
+        when it actually staged its own condition. A ``running`` case that skipped
+        before touching anything leaves the shared host untouched, so no relaunch
+        is paid for a skip.
+        """
+        own = getattr(self, "_own_boundary_report", None) or {}
+        if not own.get("stopped") and not own.get("perturbed"):
+            return
         try:
             cleanup_validation_host.cleanup_validation_temp_assets(self.project_path)
         except Exception:
             pass
+        # If the case (or its own launch) left a healthy Editor, adopt it rather
+        # than paying for a redundant stop/relaunch. The next case's reset
+        # supplies the per-case state isolation either way.
+        base_url, health = _scan_ready_control_endpoint(self.project_path)
+        if base_url is not None:
+            type(self)._shared_host_base_url = base_url
+            type(self)._shared_host = {
+                "base_url": base_url,
+                "health": health,
+                "launch": None,
+            }
+            own["reestablished"] = True
+            own["reused_after_boundary"] = True
+            own["base_url"] = base_url
+            return
+        try:
+            _ensure_clean_test_boundary(self.project_path)
+        except Exception:
+            pass
+        report = _start_shared_host(self.project_path, self.unity_exe_path)
+        type(self)._shared_host = report
+        type(self)._shared_host_base_url = report["base_url"]
+        own["reestablished"] = True
+        own["base_url"] = report["base_url"]
+
+    # -- per-case reset (the isolation the per-case relaunch used to provide) --
+
+    def _reset_shared_host_state(self):
+        cleanup_validation_host.cleanup_validation_temp_assets(self.project_path)
+        self._ensure_shared_host_ready()
+        self._clear_residual_modal_blocker()
+        self._return_editor_to_edit_mode()
+        self._reset_change_signal_state()
+
+    def _ensure_shared_host_ready(self):
+        """Return a ready shared host, re-establishing it only if it is gone.
+
+        A case that deliberately broke the project recovers asynchronously, so a
+        missing endpoint is first given a chance to come back before the host is
+        declared dead and relaunched within the retry budget. The health payload
+        is cached so the reset does not have to re-probe (and re-walk the project)
+        just to decide whether the change signal needs re-settling.
+        """
+        base_url, health = _scan_ready_control_endpoint(self.project_path)
+        if base_url is None:
+            base_url, health = _await_ready_endpoint(self.project_path)
+        if base_url is None:
+            report = _start_shared_host(self.project_path, self.unity_exe_path)
+            type(self)._shared_host = report
+            base_url, health = report["base_url"], report["health"]
+        type(self)._shared_host_base_url = base_url
+        self._last_host_health = health
+        return base_url
+
+    def _base_url(self):
+        base_url = self._ensure_shared_host_ready()
+        self.assertIsNotNone(base_url, "no ready control endpoint for the validation host")
+        return base_url
+
+    def _exec_settled(self, base_url, code, wait_ms=None):
+        """Run an exec and ride out a refresh/reload by resubmitting via wait-for-exec."""
+        exit_code, payload, _, _ = _run_cli(
+            [
+                "exec",
+                "--base-url", base_url,
+                "--wait-timeout-ms", str(wait_ms or WAIT_TIMEOUT_MS),
+                "--code", code,
+            ]
+        )
+        if payload is not None and unity_puer_exec_runtime._running_or_timed_out_response(
+            exit_code, json.dumps(payload)
+        ):
+            exit_code, payload, _, _ = _run_cli(
+                [
+                    "wait-for-exec",
+                    "--base-url", base_url,
+                    "--request-id", payload["request_id"],
+                    "--wait-timeout-ms", str(READY_TIMEOUT_SECONDS * 1000),
+                ]
+            )
+        return exit_code, payload
+
+    def _clear_residual_modal_blocker(self):
+        """Resolve a modal dialog a previous case left up.
+
+        A relaunched Editor dropped any dialog with the process; a reused one keeps
+        it, and a modal dialog blocks the main thread the next case's exec needs.
+        """
+        try:
+            exit_code, payload, _, _ = _run_cli(
+                ["get-blocker-state", "--project-path", str(self.project_path)]
+            )
+        except Exception:
+            return
+        result = payload.get("result") if isinstance(payload, dict) else None
+        if exit_code != 0 or not isinstance(result, dict):
+            return
+        if result.get("status") != "modal_blocked":
+            return
+        blocker = result.get("blocker") or {}
+        hwnd = blocker.get("hwnd")
+        label = _pick_cancel_button_label(blocker)
+        if hwnd is None or label is None:
+            return
+        try:
+            _run_cli(
+                [
+                    "resolve-blocker",
+                    "--project-path", str(self.project_path),
+                    "--action", "click",
+                    "--hwnd", str(hwnd),
+                    "--button", label,
+                ]
+            )
+        except Exception:
+            pass
+
+    def _return_editor_to_edit_mode(self):
+        """Leave the shared Editor out of play mode, failing loudly if it will not.
+
+        A case that deliberately broke the build deletes its broken source and
+        recovers asynchronously, but the change tracker does not treat a deletion
+        as a compile-triggering change. When an attempt is refused by the compile
+        gate, touch a compile-triggering probe under the repository-owned temp
+        root so the next attempt's automatic refresh recompiles the now-clean
+        project instead of leaving the reused Editor stuck on the stale error.
+
+        The host endpoint is re-resolved on every attempt because a reload can
+        rebind the control service to a different port.
+        """
+        code = (
+            "export default function run(ctx) {"
+            " const EditorApplication = puer.loadType('UnityEditor.EditorApplication');"
+            " EditorApplication.isPlaying = false;"
+            " EditorApplication.isPaused = false;"
+            " return { isPlaying: EditorApplication.isPlaying }; }"
+        )
+        deadline = time.time() + EDIT_MODE_RESET_TIMEOUT_SECONDS
+        last_error = None
+        while time.time() < deadline:
+            base_url = self._ensure_shared_host_ready()
+            exit_code, payload = self._exec_settled(base_url, code)
+            last_error = payload
+            if exit_code == 0:
+                health, _ = unity_session._probe_health(base_url, 1.5)
+                refresh = health.get("refresh") if isinstance(health, dict) else None
+                if not (isinstance(refresh, dict) and refresh.get("suppressed")):
+                    return
+            elif isinstance(payload, dict) and payload.get("status") == "unity_compile_error":
+                self._touch_compile_probe()
+            time.sleep(1.0)
+        self.fail(
+            "shared Editor did not return to edit mode within {}s: {}".format(
+                EDIT_MODE_RESET_TIMEOUT_SECONDS, last_error
+            )
+        )
+
+    def _touch_compile_probe(self):
+        """Write a fresh compile-triggering probe under the repository-owned temp root."""
+        probe_dir = self.project_path / "Assets" / "__codex_validation_temp"
+        try:
+            probe_dir.mkdir(parents=True, exist_ok=True)
+            (probe_dir / COMPILE_RECOVERY_PROBE_NAME).write_text(
+                "// repository-owned compile recovery probe; see test_real_host_integration\n"
+                "internal static class UpeHostResetCompileProbe {{ internal const long Stamp = {}L; }}\n".format(
+                    time.time_ns()
+                ),
+                encoding="utf-8",
+            )
+        except OSError:
+            pass
+
+    def _reset_change_signal_state(self):
+        """Clear test-owned change-signal state so the next case starts not_pending.
+
+        The refresh cases deliberately leave candidates and synthetic pending
+        changes behind; a reused Editor must re-install the tracker and re-settle
+        the signal rather than let a prior case gate the next one.
+        """
+        code = _TRACKER_REFLECTION_JS + (
+            "export default function run(ctx) {"
+            " invokeTracker('Shutdown');"
+            " invokeTracker('Install');"
+            " invokeTracker('OnCompilationCompleted');"
+            " return { pending: trackerState() }; }"
+        )
+        deadline = time.time() + EDIT_MODE_RESET_TIMEOUT_SECONDS
+        last_payload = None
+        while time.time() < deadline:
+            base_url = self._ensure_shared_host_ready()
+            health = getattr(self, "_last_host_health", None)
+            refresh = health.get("refresh") if isinstance(health, dict) else None
+            if (
+                isinstance(refresh, dict)
+                and refresh.get("pending") == "not_pending"
+                and not refresh.get("suppressed")
+            ):
+                # Already installed and settled: no candidates or synthetic
+                # pending change to clear, so skip the re-install walk.
+                return
+            exit_code, payload = self._exec_settled(base_url, code)
+            last_payload = payload
+            if (
+                exit_code == 0
+                and isinstance(payload, dict)
+                and (payload.get("result") or {}).get("pending") == "NotPending"
+            ):
+                return
+            time.sleep(1.0)
+        self.fail("shared Editor change signal did not reset to not_pending: {}".format(last_payload))
+
+
+# Test methods that need a process the shared Editor cannot be, mapped to the
+# pre-state they need:
+#   "stop"    -> setUp stops the shared host; the case owns it from a virgin lock
+#   "running" -> setUp leaves a live host the case may perturb to stage its own
+#                 condition; the shared host is restored only if it was used
+# The run always reports the boundary it owned. A "running" case that skips
+# before touching the host (for example an occupied preferred port) pays no
+# relaunch.
+_OWN_BOUNDARY_INTEGRATION_TESTS = {
+    "test_batch_mode_process_follows_uniform_activation_rule_against_real_host": "running",
+    "test_control_port_rolls_over_when_preferred_port_occupied_against_real_host": "running",
+    "test_exec_discovers_rolled_over_control_port_against_real_host": "running",
+    "test_cold_launch_retries_on_transient_failure_against_real_host": "stop",
+}
+
+
+class RealHostIntegrationTests(_SharedRealHostDevice, unittest.TestCase):
+    OWN_HOST_BOUNDARY_TESTS = _OWN_BOUNDARY_INTEGRATION_TESTS
 
     def test_component_detection_example_executes_against_real_host(self):
         import help_surface
@@ -1525,11 +1935,20 @@ class RealHostIntegrationTests(unittest.TestCase):
         inherited setUp force-stops the host Editor, so this normally holds.
         """
         running_pids = unity_session._list_unity_pids()
+        self._record_own_boundary(
+            "batch_mode_one_shot_processes",
+            interactive_pids=running_pids,
+        )
         if running_pids:
             self.skipTest(
                 "host project appears open in an interactive Editor (unity pids={}); "
                 "batch-mode launch needs the exclusive project lock".format(running_pids)
             )
+
+        # This case owns a stopped host: batch-mode launches need the exclusive
+        # project lock. Stopping lazily (after the skip check) means a skip does
+        # not pay for a stop/relaunch it did not need.
+        self._own_boundary_stop()
 
         # Direction 1: no activation switch → service does not start.
         try:
@@ -1540,6 +1959,7 @@ class RealHostIntegrationTests(unittest.TestCase):
             self.skipTest("batch-mode Unity (no switch) did not exit within the timeout")
             return
 
+        self._record_own_boundary("batch_mode_one_shot_processes", no_switch_exit_code=exit_code)
         try:
             self.assertIn(
                 BATCH_NOT_ACTIVATED_LOG_LINE,
@@ -1580,6 +2000,7 @@ class RealHostIntegrationTests(unittest.TestCase):
             self.skipTest("batch-mode Unity (with switch) did not exit within the timeout")
             return
 
+        self._record_own_boundary("batch_mode_one_shot_processes", with_switch_exit_code=exit_code)
         try:
             self.assertNotIn(
                 BATCH_NOT_ACTIVATED_LOG_LINE,
@@ -1610,6 +2031,7 @@ class RealHostIntegrationTests(unittest.TestCase):
         domain reload so the binder wins the port in the Stop()->Start() window,
         then assert the interactive service became ready on a later port.
         """
+        self._record_own_boundary("preferred_port_rollover")
         ready_exit_code, ready_payload, _, _ = _warm_up_project_exec(self.project_path, self.unity_exe_path)
         self.assertEqual(ready_exit_code, 0, ready_payload)
 
@@ -1632,6 +2054,7 @@ class RealHostIntegrationTests(unittest.TestCase):
             )
             return
 
+        self._mark_own_boundary_perturbed()
         binder = _PreferredPortBinder()
         binder.start()
         try:
@@ -1651,6 +2074,12 @@ class RealHostIntegrationTests(unittest.TestCase):
             self.assertLess(rolled_payload["port"], CONTROL_PORT_RANGE_END)
             self.assertEqual(rolled_base_url, "http://127.0.0.1:{}".format(rolled_payload["port"]))
             self.assertEqual(rolled_payload.get("base_url"), rolled_base_url)
+            self._record_own_boundary(
+                "preferred_port_rollover",
+                preferred_port=PREFERRED_CONTROL_PORT,
+                rolled_port=rolled_payload["port"],
+                rolled_base_url=rolled_base_url,
+            )
         finally:
             # Release the preferred port so the Editor can reclaim it on its next reload.
             binder.stop()
@@ -1691,6 +2120,7 @@ class RealHostIntegrationTests(unittest.TestCase):
         CLI only probed the preferred port and the session artifact, so it would
         fail or time out staging exactly this multi-instance condition.
         """
+        self._record_own_boundary("preferred_port_rollover_discovery")
         ready_exit_code, ready_payload, _, _ = _warm_up_project_exec(self.project_path, self.unity_exe_path)
         self.assertEqual(ready_exit_code, 0, ready_payload)
 
@@ -1712,6 +2142,7 @@ class RealHostIntegrationTests(unittest.TestCase):
             )
             return
 
+        self._mark_own_boundary_perturbed()
         binder = _PreferredPortBinder()
         binder.start()
         try:
@@ -1736,6 +2167,12 @@ class RealHostIntegrationTests(unittest.TestCase):
                 "exec --project-path failed to discover the rolled-over endpoint {}: {}".format(
                     rolled_base_url, exec_payload
                 ),
+            )
+            self._record_own_boundary(
+                "preferred_port_rollover_discovery",
+                preferred_port=PREFERRED_CONTROL_PORT,
+                rolled_port=rolled_payload["port"],
+                discovery_exit_code=exec_exit_code,
             )
         finally:
             # Release the preferred port so the Editor can reclaim it on its next reload.
@@ -1971,6 +2408,12 @@ class RealHostIntegrationTests(unittest.TestCase):
         self.assertEqual(ready_payload["attempts"][0]["status"], "unity_start_failed")
         self.assertEqual(ready_payload["attempts"][1]["status"], "completed")
         self.assertIsNotNone(ready_payload["boundary_result"])
+        self._record_own_boundary(
+            "cold_launch_retry",
+            attempt_count=ready_payload["attempt_count"],
+            last_launch_status=ready_payload["last_launch_status"],
+            boundary_result=ready_payload["boundary_result"],
+        )
 
         # 2. Persistent regression scenario: when all attempts fail, all attempts are
         # recorded with attempt count and last status, distinguishing it from a flake.
@@ -2075,48 +2518,18 @@ def _js_string_literal(value):
     return "'" + str(value).replace("\\", "/").replace("'", "\\'") + "'"
 
 
-class RefreshOnChangeRealHostTests(unittest.TestCase):
+class RefreshOnChangeRealHostTests(_SharedRealHostDevice, unittest.TestCase):
     """Real-host coverage for import-change-refresh (see the change's design).
 
     The C# decision logic has no unit-test host in this repository, so its observable
     behavior is exercised here against a live Editor: health refresh state, the
     code-only boundary, the no-repeat property, the diagnostics block, and the
     machine-readable rejection of the removed protocol field.
+
+    Every case here reuses the suite Editor; the per-case reset in the shared
+    fixture clears the candidates and re-settles the change signal, so the cases
+    run in any order against one host.
     """
-
-    @classmethod
-    def setUpClass(cls):
-        if not _real_host_tests_enabled():
-            raise unittest.SkipTest(
-                "{} is not enabled; set {}=1 to run real-host integration tests.".format(
-                    RUN_REAL_HOST_TESTS_ENV,
-                    RUN_REAL_HOST_TESTS_ENV,
-                )
-            )
-        cls.project_path = _require_real_host_project_path()
-        cls.unity_exe_path = _require_unity_editor(cls.project_path)
-
-    def setUp(self):
-        _ensure_clean_test_boundary(self.project_path)
-        prepare_validation_host.main(["--project-path", str(self.project_path)])
-        cleanup_validation_host.cleanup_validation_temp_assets(self.project_path)
-        warm_exit_code, warm_payload, _, _ = _warm_up_project_exec(self.project_path, self.unity_exe_path)
-        self.assertEqual(warm_exit_code, 0, warm_payload)
-
-    def tearDown(self):
-        try:
-            _ensure_clean_test_boundary(self.project_path)
-        except Exception:
-            pass
-        try:
-            cleanup_validation_host.cleanup_validation_temp_assets(self.project_path)
-        except Exception:
-            pass
-
-    def _base_url(self):
-        base_url, _ = _scan_ready_control_endpoint(self.project_path)
-        self.assertIsNotNone(base_url, "no ready control endpoint for the validation host")
-        return base_url
 
     def _write_compile_triggering_probe(self, name):
         temp_dir = self.project_path / "Assets" / "__codex_validation_temp"
