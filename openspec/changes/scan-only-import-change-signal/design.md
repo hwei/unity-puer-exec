@@ -87,6 +87,42 @@ guarantees (pre-attach detection, reload-independence) without the watcher premi
 health requirement drops its `unknown` cause for the same reason: an unreachable degraded
 state in a contract is a lie a future reader will believe.
 
+### Decision 5: Reconcile with the real-host reuse harness, not just with the tracker
+
+The real-host suite no longer relaunches the Editor per case.
+`reuse-real-host-editor-across-suite` (archived 2026-09-21) made each class bring one
+Editor up and reset test-owned state between cases, and its per-case reset in
+`tests/test_real_host_integration.py` reaches into this tracker through reflection:
+
+```
+invokeTracker('Shutdown')
+invokeTracker('Install')
+invokeTracker('OnCompilationCompleted')
+```
+
+and its fast path reads `health.refresh.pending == "not_pending"` to decide whether the
+tracker needs re-settling at all.
+
+Those touch points are exactly what this change removes or reshapes:
+
+- `Shutdown`'s job in the reset was to drop watcher-fed candidates and reinstall. With
+  `CandidatePaths` gone, that call is at best a no-op and at worst a missing member.
+- The `Unknown` pending state the reset falls back on no longer exists, so any reset
+  branch keyed on it is dead.
+- The reset relied on the install-time baseline walk to establish the settled baseline
+  for a case. Decision 3 removes that walk, so the reset must not assume a warm baseline.
+
+So this change owns the reconciliation of the shared-host reset with the scan-only
+tracker. It is not optional cleanup: leaving the reset calling into deleted members
+breaks every refresh case in the suite during `setUp`, and leaving it asserting `unknown`
+asserts a state the contract no longer has.
+
+This change also rewrites the refresh real-host cases — the same surface where
+`diagnose-exec-missing-after-auto-refresh` adds its reload-loss regression (the
+deterministic `test_base_url_automatic_refresh_and_wait_for_compile` failure). The
+recommended apply order lands that change first; if it has landed, the rewrite must
+preserve its regression rather than drop it alongside the watcher-error case.
+
 ## Risks / Trade-offs
 
 **[A future platform wants a watcher]** → Out of scope by explicit decision; macOS/Linux
@@ -108,6 +144,13 @@ proved pre-attach detection (`test_change_made_before_install_is_caught_by_basel
 and non-code filtering are rewritten to assert the scan directly, so the guarantee stays
 tested.
 
+**[The shared-host per-case reset is coupled to the tracker members this change deletes]**
+→ The reset from `reuse-real-host-editor-across-suite` calls
+`Shutdown`/`Install`/`OnCompilationCompleted` by reflection and reads the
+`not_pending`/`unknown` pending contract. Test task 6.1 reconciles it. The failure mode if
+skipped is loud rather than subtle: the whole refresh class errors in `setUp`, because the
+reset runs before every case against a reused Editor.
+
 ## Migration Plan
 
 1. Remove the watcher and its callbacks from the tracker; make `Decide`/`GetPendingState`
@@ -117,7 +160,10 @@ tested.
 3. Update the health mapping in `UnityPuerExecServer.cs` to the two-state contract.
 4. Rewrite the affected tests: drop the watcher-error real-host case and the watcher
    source-invariant assertions; keep and retarget the scan cases; keep the settled
-   timestamp, extension-filter, play-mode, and diagnostics coverage.
+   timestamp, extension-filter, play-mode, and diagnostics coverage. Reconcile the
+   shared-host per-case reset with the scan-only tracker (Decision 5) in the same pass,
+   and preserve the reload-loss regression if `diagnose-exec-missing-after-auto-refresh`
+   has landed.
 5. Update the run/help documentation that mentions a watcher; re-run the mock suite and
    the real-host suite and record the result.
 
