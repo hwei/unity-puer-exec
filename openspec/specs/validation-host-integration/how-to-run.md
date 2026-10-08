@@ -78,8 +78,8 @@ Four cases need a process the shared Editor cannot be, and are listed in
 | Case | Boundary | Why |
 |---|---|---|
 | `test_batch_mode_process_follows_uniform_activation_rule_against_real_host` | `running` → stops lazily | launches its own one-shot `Unity.exe -batchMode` processes and needs the exclusive project lock; it stops the shared host only after its skip check |
-| `test_control_port_rolls_over_when_preferred_port_occupied_against_real_host` | `running` | stages an occupy-then-rebind condition around a forced domain reload on the live host |
-| `test_exec_discovers_rolled_over_control_port_against_real_host` | `running` | stages the same rollover and asserts range-aware discovery |
+| `test_control_port_rolls_over_when_preferred_port_occupied_against_real_host` | `running` | asserts the later-port rollover (P1) whenever the preferred port is occupied, and stages the binder's mid-reload win (P2) only when the port is free for it |
+| `test_exec_discovers_rolled_over_control_port_against_real_host` | `running` | asserts range-aware discovery of the same later-port endpoint (P1) and stages the same rollover (P2) when it can |
 | `test_cold_launch_retries_on_transient_failure_against_real_host` | `stop` | asserts the cold-launch retry boundary itself, which needs a stopped host to observe |
 
 Each such case reports the boundary it owned in a machine-usable
@@ -215,21 +215,46 @@ process-state prerequisites beyond the shared ones above:
   suite's setUp force-stops the host Editor, so this normally holds — but if you
   keep the project open in your own Editor it will skip.
 - **Occupied-preferred-port rollover**
-  (`test_control_port_rolls_over_when_preferred_port_occupied_against_real_host`):
-  needs an interactive Editor on the preferred control port (`55231`). The test
-  is autonomous — it runs a retry-binder for `55231` and forces a domain reload
-  (via `exec` of `UnityEditor.EditorUtility.RequestScriptReload()`, with a
-  touched-script fallback: the written `.cs` triggers the automatic code-change
-  refresh, which starts compilation and the reload) so the binder wins the
-  port in the `Stop()`→`Start()` window. No operator step is required. It
-  `skip`s when `55231` is held by an unrelated process at start.
+  (`test_control_port_rolls_over_when_preferred_port_occupied_against_real_host`)
+  and **rolled-over discovery**
+  (`test_exec_discovers_rolled_over_control_port_against_real_host`):
+  need an interactive Editor and a preferred control port (`55231`) that is
+  occupied. The occupied port is the condition these cases exist to exercise, so
+  they **run** when it is already held — including by another project's ready
+  Editor — rather than skipping. The suite then asserts the part it can observe
+  (P1): the host project's service is ready on a later port in the bounded range,
+  and (for the discovery case) `exec --project-path` with no `--base-url` discovers
+  that endpoint. When `55231` is free, the test is still autonomous: it runs a
+  retry-binder for `55231` and forces a domain reload (via `exec` of
+  `UnityEditor.EditorUtility.RequestScriptReload()`, with a touched-script
+  fallback: the written `.cs` triggers the automatic code-change refresh, which
+  starts compilation and the reload) so the binder wins the port in the
+  `Stop()`→`Start()` window. No operator step is required.
+
+  Two dispositions are distinct here and must not be read as a skip:
+
+  - A mid-reload rebind race (P2) can only be staged when the suite's binder can
+    contend for `55231`. Held by something the suite cannot displace (another
+    project's Editor or an unrelated process), the case still asserts P1 and its
+    boundary record states `mid_reload_rebind=not_staged` together with
+    `preferred_port_held_by`.
+  - If the host was launched successfully but the suite's own endpoint oracle still
+    cannot see its ready endpoint anywhere in the bounded range after bounded
+    retries, the case **fails** and reports the bound launch outcome and the ports
+    probed. That is an endpoint-discovery observation, not a missing prerequisite.
+
+  The cases skip only when the expectation cannot be evaluated at all — the gate is
+  disabled, Unity or the host project is absent, or a required trigger cannot be
+  staged for reasons outside the suite's control (for example a free preferred port
+  whose `Stop()`→`Start()` window the binder loses).
 
 ## Result Interpretation
 
 | Result | Meaning |
 |--------|---------|
-| `skip` | Prerequisites not met (env not set, `UNITY_PROJECT_PATH` missing, Unity Editor not found, or host manifest not wired). Not a product regression. |
-| `fail` / `error` | Prerequisites were satisfied but the CLI chain, runtime, log observation, or assertion failed. This is a real-host regression. |
+| `run` | The condition the expectation exists to exercise. The occupied-preferred-port rollover cases run — and assert the later-port rollover (P1) — whenever `55231` is already occupied, including by another project's ready Editor. Not a skip and not a failure. |
+| `fail` / `error` | Prerequisites were satisfied but the CLI chain, runtime, log observation, or assertion failed; or a launched host's own ready endpoint could not be observed in the bounded control-port range after bounded retries. This is a real-host regression. |
+| `skip` | The expectation cannot be evaluated at all: the real-host gate is disabled, `UNITY_PROJECT_PATH` is missing, Unity or the host project/manifest is absent, or a required trigger cannot be staged for reasons outside the suite's control. Not a product regression. A partially-stageable case does not report `skip`: it asserts what it can and records the unstageable sub-assertion in its boundary record. |
 
 Mocked test passes do **not** substitute for real-host regression. They protect parsing, payload, and local contract logic only.
 The default GitHub Actions workflow excludes `tests/test_real_host_integration.py` on purpose; real-host coverage remains a separate manual validation path.

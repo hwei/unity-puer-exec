@@ -812,9 +812,9 @@ class RangeAwareDiscoveryTests(unittest.TestCase):
         self.assertEqual(probe.call_count, len(unity_session.direct_exec_client.control_port_candidates()))
 
     def test_recovery_resolver_locks_onto_non_preferred_bound_port(self):
-        # A starting/compiling Editor for our project is bound on a non-preferred port.
-        compiling = {"ok": True, "status": "compiling", "project_path": SAMPLE_PROJECT_PATH}
-        probe = mock.Mock(side_effect=_probe_by_url({self.ROLLED_OVER: (compiling, None)}))
+        # A ready Editor for our project is bound on a non-preferred port (for
+        # example after a cold-start rollover); the resolver must lock onto it.
+        probe = mock.Mock(side_effect=_probe_by_url({self.ROLLED_OVER: (_ready_payload(SAMPLE_PROJECT_PATH), None)}))
         with mock.patch.object(unity_session, "_probe_health", probe):
             resolve = unity_session._make_recovery_endpoint_resolver(SAMPLE_PROJECT_PATH, 1.0)
             first = resolve()
@@ -831,19 +831,6 @@ class RangeAwareDiscoveryTests(unittest.TestCase):
         with mock.patch.object(unity_session, "_probe_health", probe):
             resolve = unity_session._make_recovery_endpoint_resolver(SAMPLE_PROJECT_PATH, 1.0)
             self.assertIsNone(resolve())
-
-    def test_scan_any_status_finds_rolled_over_cold_start_editor(self):
-        # Cold-start launch rolled over off the preferred port; Editor is still compiling.
-        compiling = {"ok": True, "status": "compiling", "project_path": SAMPLE_PROJECT_PATH}
-        other = _ready_payload("X:/other-project")
-        probe = mock.Mock(side_effect=_probe_by_url({
-            self.PREFERRED: (other, None),
-            self.ROLLED_OVER: (compiling, None),
-        }))
-        with mock.patch.object(unity_session, "_probe_health", probe):
-            found = unity_session._scan_for_project_endpoint_any_status(SAMPLE_PROJECT_PATH, 1.0)
-
-        self.assertEqual(found, self.ROLLED_OVER)
 
 
 class _FakeTime:

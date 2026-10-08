@@ -1,18 +1,23 @@
-"""Shared retry and classification helpers for real-host harness cold launches.
+"""Shared retry and classification helpers for the real-host harness.
 
 Tolerates bounded transient cold-launch failures (e.g. unity_start_failed,
 or Unity exiting before ready due to shutdown races) while never retrying
-non-launch failures, compile errors, or genuine assertion failures.
+non-launch failures, compile errors, or genuine assertion failures. Also hosts
+the bounded retry used to observe an endpoint the suite launched and therefore
+expected to be able to see.
 """
 from __future__ import annotations
 
 import json
+import time
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 
 TRANSIENT_LAUNCH_STATUS = "unity_start_failed"
 EXITED_BEFORE_READY_MARKER = "Unity exited before ready"
 DEFAULT_MAX_ATTEMPTS = 3
+DEFAULT_ENDPOINT_ORACLE_ATTEMPTS = 3
+DEFAULT_ENDPOINT_ORACLE_RETRY_SLEEP_SECONDS = 2.0
 
 
 def is_transient_cold_launch_failure(
@@ -199,3 +204,41 @@ def warm_up_with_retry(
         attempts=attempts_history,
     )
     return last_exit_code, last_payload, last_stdout, last_stderr
+
+
+def resolve_ready_endpoint_with_retry(
+    scan_fn: Callable[[], Tuple[Any, Optional[Dict[str, Any]]]],
+    launch_exit_code: int,
+    launch_payload: Optional[Dict[str, Any]],
+    ports_probed: Any,
+    max_attempts: int = DEFAULT_ENDPOINT_ORACLE_ATTEMPTS,
+    retry_sleep_seconds: float = DEFAULT_ENDPOINT_ORACLE_RETRY_SLEEP_SECONDS,
+    sleep_fn: Callable[[float], None] = time.sleep,
+) -> Tuple[Any, Optional[Dict[str, Any]]]:
+    """Resolve a successfully launched host's ready endpoint with bounded retry.
+
+    A host the suite launched successfully but whose own ready endpoint the suite's
+    oracle cannot see is a product-observable condition, not an absent prerequisite.
+    A single failed sweep can still be a transient unbind during a domain reload, so
+    the sweep is retried a bounded number of times; if the endpoint is still
+    unobservable the call raises ``AssertionError`` carrying the launch outcome and
+    the ports probed, so an endpoint-discovery regression fails instead of being
+    reported as a missing prerequisite.
+    """
+    if max_attempts < 1:
+        max_attempts = 1
+    for attempt in range(1, max_attempts + 1):
+        base_url, payload = scan_fn()
+        if base_url is not None:
+            return base_url, payload
+        if attempt < max_attempts:
+            sleep_fn(retry_sleep_seconds)
+    raise AssertionError(
+        "host launched but no ready control endpoint owned by it was observed after "
+        "{} oracle sweeps; exit_code={} launch_payload={} ports_probed={}".format(
+            max_attempts,
+            launch_exit_code,
+            launch_payload,
+            list(ports_probed),
+        )
+    )

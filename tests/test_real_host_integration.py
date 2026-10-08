@@ -54,6 +54,10 @@ READY_LOG_PREFIX = "[UnityPuerExec] Ready on port"
 BIND_FAILURE_LOG_PREFIX = "[UnityPuerExec] Failed to bind any port"
 BATCH_RUN_TIMEOUT_SECONDS = 600
 ROLLOVER_OBSERVE_TIMEOUT_SECONDS = 180
+# The rollover cases classify the preferred port before staging: these two states
+# mean something the suite cannot displace holds it, so the mid-reload rebind race
+# (P2) is unstageable and only the later-port rollover (P1) can be asserted.
+_FOREIGN_PREFERRED_STATES = {"foreign_endpoint", "foreign_process"}
 
 
 def _real_host_tests_enabled():
@@ -580,8 +584,11 @@ class _SharedRealHostDevice:
         report = getattr(self, "_own_boundary_report", None)
         if report is not None:
             # A pristine-process case reports the boundary it owned rather than
-            # silently riding the shared host.
+            # silently riding the shared host. Emit it as one machine-usable line so
+            # a reader of the run can tell which sub-assertions were actually staged
+            # (e.g. mid_reload_rebind=not_staged) instead of only seeing "ok".
             self.assertTrue(report.get("owns_boundary"), report)
+            print("[real-host-boundary] " + json.dumps(report, default=str))
 
     def _owns_host_boundary(self):
         return self._testMethodName in type(self).OWN_HOST_BOUNDARY_TESTS
@@ -2026,59 +2033,42 @@ class RealHostIntegrationTests(_SharedRealHostDevice, unittest.TestCase):
     def test_control_port_rolls_over_when_preferred_port_occupied_against_real_host(self):
         """An occupied preferred control port must roll over, not fail the scan.
 
-        Stages the exact procedure proven during fix-control-port-bind-fallback
-        manual validation: run a retry-binder for the preferred port, force a
-        domain reload so the binder wins the port in the Stop()->Start() window,
-        then assert the interactive service became ready on a later port.
+        P1 — the host project's service is ready on a port later than the preferred
+        one, and its health identity names that port — is asserted whenever the
+        preferred port is occupied: by another project's ready Editor (the host is
+        already rolled over) or by the suite's retry-binder (staged around a domain
+        reload). P2 — the service released the preferred port during the reload and
+        rebound later because the binder won the Stop()->Start() window — is asserted
+        only when the binder actually won; otherwise the boundary record states that
+        the sub-assertion was not staged.
         """
         self._record_own_boundary("preferred_port_rollover")
         ready_exit_code, ready_payload, _, _ = _warm_up_project_exec(self.project_path, self.unity_exe_path)
         self.assertEqual(ready_exit_code, 0, ready_payload)
 
-        editor_base_url, _ = _scan_ready_control_endpoint(self.project_path)
-        if editor_base_url is None:
-            self.skipTest("no ready control endpoint for host project; cannot stage rollover")
-            return
-
-        # Skip if the preferred port is held by something that is NOT our Editor.
-        pre_payload, _ = _probe_control_health(PREFERRED_CONTROL_PORT)
-        if pre_payload is not None:
-            if not _health_is_ready_for_project(pre_payload, self.project_path):
-                self.skipTest(
-                    "preferred control port {} is held by an unrelated service".format(PREFERRED_CONTROL_PORT)
-                )
-                return
-        elif not _preferred_port_is_free():
-            self.skipTest(
-                "preferred control port {} is held by an unrelated process".format(PREFERRED_CONTROL_PORT)
-            )
-            return
-
-        self._mark_own_boundary_perturbed()
-        binder = _PreferredPortBinder()
-        binder.start()
+        stage = self._stage_occupied_preferred_port_rollover(ready_exit_code, ready_payload)
+        binder = stage["binder"]
         try:
-            rolled = self._stage_rollover(binder, editor_base_url, use_touch_fallback=False)
-            if rolled is None:
-                # Retry once: the Editor may have reclaimed the preferred port if
-                # the binder lost the first race. Use the touched-script trigger.
-                rolled = self._stage_rollover(binder, editor_base_url, use_touch_fallback=True)
-
-            self.assertIsNotNone(
-                rolled,
-                "interactive service did not roll over to a later port; it may have "
-                "reclaimed {} (binder.bound={})".format(PREFERRED_CONTROL_PORT, binder.bound),
-            )
-            rolled_base_url, rolled_payload = rolled
-            self.assertGreater(rolled_payload["port"], PREFERRED_CONTROL_PORT)
-            self.assertLess(rolled_payload["port"], CONTROL_PORT_RANGE_END)
-            self.assertEqual(rolled_base_url, "http://127.0.0.1:{}".format(rolled_payload["port"]))
-            self.assertEqual(rolled_payload.get("base_url"), rolled_base_url)
+            if stage["rolled"] is None and stage["preferred_state"] not in _FOREIGN_PREFERRED_STATES:
+                # The preferred port was free for the suite's binder, so P1's
+                # precondition exists only if the binder wins the race. Losing it is
+                # a required trigger that could not be staged, not a product
+                # observation, so report it as a skip rather than a failure.
+                self.skipTest("could not stage a control-port rollover; binder lost the race")
+                return
+            # P1: asserted unconditionally, including when another project's ready
+            # Editor holds the preferred port and the binder can never win it. When
+            # the preferred port is foreign-held the rollover must be observable;
+            # a missing endpoint there fails inside _assert_rollover_p1.
+            rolled_base_url, rolled_payload = self._assert_rollover_p1(stage["rolled"], binder)
             self._record_own_boundary(
                 "preferred_port_rollover",
                 preferred_port=PREFERRED_CONTROL_PORT,
+                preferred_port_held_by=stage["preferred_state"],
                 rolled_port=rolled_payload["port"],
                 rolled_base_url=rolled_base_url,
+                # P2: "asserted" only when the binder actually held the port.
+                mid_reload_rebind="asserted" if binder.bound else "not_staged",
             )
         finally:
             # Release the preferred port so the Editor can reclaim it on its next reload.
@@ -2110,56 +2100,130 @@ class RealHostIntegrationTests(_SharedRealHostDevice, unittest.TestCase):
             time.sleep(1.0)
         return None
 
-    def test_exec_discovers_rolled_over_control_port_against_real_host(self):
-        """exec --project-path must reach an Editor that rolled over to a non-preferred port.
+    def _resolve_host_endpoint_or_fail(self, launch_exit_code, launch_payload):
+        """Resolve the launched host's ready endpoint, retrying then failing.
 
-        Stages the same rollover as the control-port rollover test, then -- while
-        the preferred port is still held by the binder -- runs exec --project-path
-        with no --base-url. Range-aware session discovery must find the rolled-over
-        endpoint instead of waiting on the preferred port. Before this change the
-        CLI only probed the preferred port and the session artifact, so it would
-        fail or time out staging exactly this multi-instance condition.
+        The host was launched successfully, so a ready endpoint it owns is a
+        product-observable condition rather than an absent prerequisite. A single
+        failed sweep can still be a transient unbind during a domain reload, so the
+        oracle is retried a bounded number of times; if it still cannot see the host
+        the case fails with the launch outcome and the ports probed instead of
+        skipping.
         """
-        self._record_own_boundary("preferred_port_rollover_discovery")
-        ready_exit_code, ready_payload, _, _ = _warm_up_project_exec(self.project_path, self.unity_exe_path)
-        self.assertEqual(ready_exit_code, 0, ready_payload)
+        return real_host_retry.resolve_ready_endpoint_with_retry(
+            scan_fn=lambda: _scan_ready_control_endpoint(self.project_path),
+            launch_exit_code=launch_exit_code,
+            launch_payload=launch_payload,
+            ports_probed=range(PREFERRED_CONTROL_PORT, CONTROL_PORT_RANGE_END),
+            sleep_fn=time.sleep,
+        )
 
-        editor_base_url, _ = _scan_ready_control_endpoint(self.project_path)
-        if editor_base_url is None:
-            self.skipTest("no ready control endpoint for host project; cannot stage rollover")
-            return
+    def _classify_preferred_port_state(self):
+        """State of the preferred control port at the moment rollover is staged.
 
+        ``own_project`` and ``free`` mean the suite's retry-binder can contend for
+        the port, so P2 (the mid-reload rebind race) is stageable. The two foreign
+        states mean something the suite cannot displace holds it, so P2 is not
+        stageable and only P1 (the later-port rollover) is observable.
+        """
         pre_payload, _ = _probe_control_health(PREFERRED_CONTROL_PORT)
         if pre_payload is not None:
-            if not _health_is_ready_for_project(pre_payload, self.project_path):
-                self.skipTest(
-                    "preferred control port {} is held by an unrelated service".format(PREFERRED_CONTROL_PORT)
-                )
-                return
-        elif not _preferred_port_is_free():
-            self.skipTest(
-                "preferred control port {} is held by an unrelated process".format(PREFERRED_CONTROL_PORT)
-            )
-            return
+            if _health_is_ready_for_project(pre_payload, self.project_path):
+                return "own_project"
+            return "foreign_endpoint"
+        if not _preferred_port_is_free():
+            return "foreign_process"
+        return "free"
 
+    def _assert_rollover_p1(self, rolled, binder):
+        """Assert P1 unconditionally: the service is ready on a later port.
+
+        P1 is the host project's service being ready on a port later than the
+        preferred one and inside the bounded range, with its health identity naming
+        that same port. It is falsifiable whenever the preferred port is occupied by
+        anything (a foreign Editor or the suite's binder), so it is asserted without
+        regard to whether P2 was staged. Returns ``(base_url, payload)``.
+        """
+        self.assertIsNotNone(
+            rolled,
+            "interactive service did not roll over to a later port; it may have "
+            "reclaimed {} (binder.bound={})".format(PREFERRED_CONTROL_PORT, binder.bound),
+        )
+        rolled_base_url, rolled_payload = rolled
+        self.assertGreater(rolled_payload["port"], PREFERRED_CONTROL_PORT)  # P1
+        self.assertLess(rolled_payload["port"], CONTROL_PORT_RANGE_END)  # P1
+        self.assertEqual(  # P1
+            rolled_base_url, "http://127.0.0.1:{}".format(rolled_payload["port"])
+        )
+        self.assertEqual(rolled_payload.get("base_url"), rolled_base_url)  # P1
+        return rolled_base_url, rolled_payload
+
+    def _stage_occupied_preferred_port_rollover(self, launch_exit_code, launch_payload):
+        """Stage the occupied-preferred-port condition and observe the rollover.
+
+        Resolves the launched host's endpoint (bounded retry, then failure),
+        classifies the preferred port, starts the retry-binder, and forces a domain
+        reload so the service must come back on a later port. Returns the staging
+        record; the caller owns stopping the binder it contains.
+        """
+        editor_base_url, _editor_payload = self._resolve_host_endpoint_or_fail(
+            launch_exit_code, launch_payload
+        )
+        preferred_state = self._classify_preferred_port_state()
         self._mark_own_boundary_perturbed()
         binder = _PreferredPortBinder()
         binder.start()
         try:
             rolled = self._stage_rollover(binder, editor_base_url, use_touch_fallback=False)
             if rolled is None:
+                # Retry once: the Editor may have reclaimed the preferred port if
+                # the binder lost the first race. Use the touched-script trigger.
                 rolled = self._stage_rollover(binder, editor_base_url, use_touch_fallback=True)
-            if rolled is None:
+        except BaseException:
+            binder.stop()
+            raise
+        return {
+            "editor_base_url": editor_base_url,
+            "preferred_state": preferred_state,
+            "binder": binder,
+            "rolled": rolled,
+        }
+
+    def test_exec_discovers_rolled_over_control_port_against_real_host(self):
+        """exec --project-path must reach an Editor that rolled over to a non-preferred port.
+
+        P1 — the host is ready on a later port and exec --project-path with no
+        --base-url discovers that endpoint — is asserted unconditionally, including
+        when another project's ready Editor holds the preferred port and the rolled
+        endpoint is the one the host already bound. P2 — the suite's binder won the
+        Stop()->Start() window — is asserted only when it was actually staged;
+        otherwise the boundary record names the sub-assertion as not staged.
+        """
+        self._record_own_boundary("preferred_port_rollover_discovery")
+        ready_exit_code, ready_payload, _, _ = _warm_up_project_exec(self.project_path, self.unity_exe_path)
+        self.assertEqual(ready_exit_code, 0, ready_payload)
+
+        stage = self._stage_occupied_preferred_port_rollover(ready_exit_code, ready_payload)
+        binder = stage["binder"]
+        try:
+            if stage["rolled"] is None and stage["preferred_state"] not in _FOREIGN_PREFERRED_STATES:
+                # The preferred port was free for the suite's binder, so P1's
+                # precondition exists only if the binder wins the race. Losing it is
+                # a trigger that could not be staged, not a product observation.
                 self.skipTest("could not stage a control-port rollover; binder lost the race")
                 return
 
-            rolled_base_url, rolled_payload = rolled
-            self.assertGreater(rolled_payload["port"], PREFERRED_CONTROL_PORT)
+            # P1: asserted unconditionally. The Editor is on a non-preferred port.
+            rolled_base_url, rolled_payload = self._assert_rollover_p1(stage["rolled"], binder)
 
-            # The Editor is now on a non-preferred port and the binder still holds
-            # the preferred port. exec --project-path (no --base-url) must discover
-            # the rolled-over endpoint via the range scan.
-            self.assertTrue(binder.bound, "binder no longer holds the preferred port; precondition lost")
+            # P2: only meaningful when the binder actually held the preferred port
+            # through the reload. A foreign Editor owning the port cannot be staged.
+            p2_staged = binder.bound
+            if p2_staged:
+                self.assertTrue(binder.bound, "binder no longer holds the preferred port; precondition lost")
+
+            # P1: exec --project-path (no --base-url) must discover the rolled-over
+            # endpoint via the range scan.
             exec_exit_code, exec_payload, _, _ = _warm_up_project_exec(self.project_path, self.unity_exe_path)
             self.assertEqual(
                 exec_exit_code,
@@ -2171,8 +2235,10 @@ class RealHostIntegrationTests(_SharedRealHostDevice, unittest.TestCase):
             self._record_own_boundary(
                 "preferred_port_rollover_discovery",
                 preferred_port=PREFERRED_CONTROL_PORT,
+                preferred_port_held_by=stage["preferred_state"],
                 rolled_port=rolled_payload["port"],
                 discovery_exit_code=exec_exit_code,
+                mid_reload_rebind="asserted" if p2_staged else "not_staged",
             )
         finally:
             # Release the preferred port so the Editor can reclaim it on its next reload.

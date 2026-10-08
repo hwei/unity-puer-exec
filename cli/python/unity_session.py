@@ -1306,27 +1306,6 @@ def discover_project_endpoint(project_path, health_timeout_seconds=DEFAULT_HEALT
     return None, None, last_error, saw_other_project
 
 
-def _scan_for_project_endpoint_any_status(project_path, health_timeout_seconds, candidate_base_urls=None):
-    """Find a candidate whose health identity names the target project.
-
-    Identity is the payload's ``project_path``, which only a ``ready`` payload
-    carries: a ``compiling`` or ``not_available`` payload reports the session marker
-    and process id but not the project. Ownership is therefore never inferred from a
-    port or a pid, and a pre-ready endpoint is reached through the published-endpoint
-    fast path instead of through this scan.
-    """
-    if candidate_base_urls is None:
-        candidate_base_urls = direct_exec_client.candidate_base_urls()
-    for candidate in candidate_base_urls:
-        payload, _error = _probe_health(candidate, health_timeout_seconds)
-        if payload is not None and _payload_matches_project(payload, project_path):
-            # Pre-ready payloads carry no identity fields yet, so an absent
-            # bridge_version here is "not observable yet", not a mismatch.
-            _guard_owned_endpoint_version(candidate, payload, require_version=False)
-            return candidate
-    return None
-
-
 def _make_recovery_endpoint_resolver(project_path, health_timeout_seconds):
     """Build the stateful range scan a readiness wait falls back to.
 
@@ -1341,12 +1320,15 @@ def _make_recovery_endpoint_resolver(project_path, health_timeout_seconds):
     def resolve():
         locked = state["locked"]
         if locked is not None:
-            payload, _error = _probe_health(locked, health_timeout_seconds)
-            if payload is not None and _payload_matches_project(payload, project_path):
-                _guard_owned_endpoint_version(locked, payload, require_version=False)
+            is_valid, _payload, _error = validate_endpoint_identity(
+                locked, project_path, health_timeout_seconds
+            )
+            if is_valid:
                 return locked
             state["locked"] = None
-        found = _scan_for_project_endpoint_any_status(project_path, health_timeout_seconds)
+        found, _payload, _error, _saw_other_project = discover_project_endpoint(
+            project_path, health_timeout_seconds
+        )
         if found is not None:
             state["locked"] = found
         return found

@@ -95,16 +95,34 @@ a flaky red, which is why the retry is part of this decision and not an implemen
 
 ### Decision 4: The ride-along scan fidelity fix
 
-`_scan_for_project_endpoint_any_status` cannot match a non-ready endpoint, because only a
-`ready` payload carries `project_path`. Its name and its unit test's fixture
-(`{"ok": True, "status": "compiling", "project_path": ...}`) both claim otherwise. The fixture
-asserts something the bridge can never emit, so the test's ordering and identity-matching
-checks are real but its premise is not.
+`_scan_for_project_endpoint_any_status` (now removed) could not match a non-ready
+endpoint, because only a `ready` payload carries `project_path`. Its name and its unit
+test's fixture (`{"ok": True, "status": "compiling", "project_path": ...}`) both
+claimed otherwise. The fixture asserted something the bridge can never emit, so the
+test's ordering and identity-matching checks were real but its premise was not.
 
-Once named honestly, the function may be identical in role to `discover_project_endpoint`
-(differing only in the bridge-version requirement it enforces for a ready payload). The task
-is to resolve that by evidence, not assumption: rename and align the fixture, and collapse the
-duplicate only if the two are in fact equivalent.
+Once named honestly, the function was identical in role to `discover_project_endpoint`.
+The evidence:
+
+1. `_payload_matches_project` requires the payload's `project_path`.
+2. `UnityPuerExecProtocol.BuildHealthResponseJson` emits `project_path` only on the
+   `ready` branch; the `compiling` branch reports the session marker and pid but not the
+   project. So any payload the old scan could return was already `ready`.
+3. For a `ready` payload both paths run `_guard_owned_endpoint_version`; the only
+   divergence was the old scan's `require_version=False`, which would have accepted a
+   version-less ready endpoint. That is exactly what the CLI refuses everywhere else,
+   and the pre-ready case where leniency is legitimate (a publication's session-marker
+   match) carries no `project_path` and never reaches this scan.
+
+So the duplicate was collapsed: the readiness resolver's fallback scan now calls
+`discover_project_endpoint`, and its locked-port re-probe uses
+`validate_endpoint_identity` rather than re-implementing the probe/match/version
+sequence. The single identity-matching rule for a `ready` endpoint now lives in that
+function and `validate_endpoint_identity` alone. (The publication fast path keeps its
+separate session-marker rule; that is a distinct identity, and its pre-ready leniency is
+legitimate because the marker is present while `project_path` is not.) The unit tests
+were updated to use a `ready` payload with a matching bridge version, which is the shape
+the bridge actually emits.
 
 ## Risks / Trade-offs
 

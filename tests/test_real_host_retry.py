@@ -4,6 +4,7 @@ from pathlib import Path
 from tests.real_host_retry import (
     is_transient_cold_launch_failure,
     record_retry_metadata,
+    resolve_ready_endpoint_with_retry,
     warm_up_with_retry,
     DEFAULT_MAX_ATTEMPTS,
 )
@@ -244,6 +245,55 @@ class TestRealHostBoundedRetry(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         self.assertEqual(len(boundaries), 0, "must not wipe boundary when editor is already ready")
         self.assertEqual(payload["attempt_count"], 1)
+
+
+class TestReadyEndpointOracleRetry(unittest.TestCase):
+    """Verify the rollover cases' endpoint oracle fails instead of skipping."""
+
+    def test_ready_endpoint_is_returned_and_not_retried(self):
+        sweeps = []
+
+        def scan():
+            sweeps.append(1)
+            return "http://127.0.0.1:55233", {"ok": True, "status": "ready"}
+
+        base_url, payload = resolve_ready_endpoint_with_retry(
+            scan_fn=scan,
+            launch_exit_code=0,
+            launch_payload={"status": "completed"},
+            ports_probed=range(55231, 55251),
+            sleep_fn=lambda _seconds: None,
+        )
+
+        self.assertEqual(base_url, "http://127.0.0.1:55233")
+        self.assertEqual(payload["status"], "ready")
+        self.assertEqual(len(sweeps), 1)
+
+    def test_unobservable_endpoint_retries_then_fails_with_launch_outcome_and_ports(self):
+        sweeps = []
+
+        def scan():
+            sweeps.append(1)
+            return None, None
+
+        with self.assertRaises(AssertionError) as caught:
+            resolve_ready_endpoint_with_retry(
+                scan_fn=scan,
+                launch_exit_code=0,
+                launch_payload={"ok": True, "status": "completed", "attempt_count": 1},
+                ports_probed=range(55231, 55234),
+                max_attempts=3,
+                sleep_fn=lambda _seconds: None,
+            )
+
+        message = str(caught.exception)
+        self.assertEqual(len(sweeps), 3, "must retry the bounded number of sweeps before failing")
+        # The failure must name the bound launch outcome and the ports probed so an
+        # endpoint-discovery regression is not read as a missing prerequisite.
+        self.assertIn("exit_code=0", message)
+        self.assertIn("'status': 'completed'", message)
+        self.assertIn("55231", message)
+        self.assertIn("55233", message)
 
 
 if __name__ == "__main__":
