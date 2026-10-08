@@ -6,6 +6,8 @@ Project-scoped selector commands SHALL discover the Unity control endpoint from 
 
 When neither a session artifact nor the preferred port yields a ready endpoint owned by the requested project, the CLI SHALL perform an active discovery scan across the bounded control-port range that the Unity control service binds within, probing live `/health` on each candidate and claiming the candidate whose health identity matches the requested project. The scan SHALL try the preferred port first so the single-instance case keeps its fast path, and SHALL stop at the first ready, project-matched endpoint. Range-aware discovery SHALL apply at every project-scoped readiness site — initial discovery, any re-probe after a launch claim, recovery waiting, and the wait that follows a cold-start launch — so the CLI never waits on the preferred port while the project's actual endpoint is a different port in the range. A ready endpoint whose health identity belongs to a different project SHALL never be claimed, on any port.
 
+A readiness site that already holds a candidate endpoint — a session artifact, a published endpoint, or an endpoint resolved on an earlier poll — SHALL treat that candidate as a fast path only. Whenever the candidate cannot be confirmed against live health as the requested project's own endpoint, the site SHALL fall back to range-scan discovery rather than waiting on the unconfirmed candidate, so a stale candidate never substitutes for discovery and never leaves the CLI reporting a non-terminal outcome while a ready, project-matched endpoint exists on the host.
+
 #### Scenario: Valid artifact endpoint is reused
 
 - **WHEN** a project-scoped command finds a session artifact with a candidate base URL
@@ -46,6 +48,12 @@ When neither a session artifact nor the preferred port yields a ready endpoint o
 - **THEN** the post-launch readiness wait discovers the launched Editor by range scan with health-identity matching
 - **AND** the command does not report the launched project as not ready merely because the preferred port did not become ready
 
+#### Scenario: The discovery scan covers every port the control service can bind
+
+- **WHEN** the requested project's Editor has rolled over to the last port in the range that the Unity control service is able to bind
+- **THEN** the CLI's discovery scan probes that port and claims the endpoint
+- **AND** the scan range is exactly the service's own bind range rather than stopping short of it
+
 #### Scenario: Preferred port is occupied by a different, already-ready project with no local artifact
 
 - **WHEN** a project-scoped command runs for a requested project that has no session artifact and is not yet running
@@ -57,7 +65,7 @@ When neither a session artifact nor the preferred port yields a ready endpoint o
 #### Scenario: A recovery wait claims the ready endpoint after a stale candidate
 
 - **WHEN** a project-scoped command is waiting for the requested project to recover or finish launching
-- **AND** the wait holds a candidate endpoint that is stale (its recorded process is gone, or its live `/health` no longer reports ready identity for the requested project)
-- **AND** the requested project's Editor then becomes ready on another port in the control-port range, with its own log recording that readiness
+- **AND** the wait holds a candidate endpoint that is stale — its recorded process is gone, or its live `/health` no longer confirms ready identity for the requested project, including when the published session marker has been replaced by the live service on the candidate's own port
+- **AND** the requested project's Editor is or becomes ready, on that same candidate port or on another port in the control-port range, with its own log recording that readiness
 - **THEN** the wait re-runs range-scan discovery and claims the ready, project-matched endpoint
 - **AND** it does not report a non-terminal `running` until the wait budget expires, and does not surface `no endpoint matched the target project yet` while a matched ready endpoint exists on the host

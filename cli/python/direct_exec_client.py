@@ -21,9 +21,16 @@ EXIT_VERSION_MISMATCH = 24
 # first and rolls over to later ports in [CONTROL_PORT_PREFERRED, CONTROL_PORT_END)
 # when the preferred port is occupied, so multiple Editors can run concurrently.
 # The CLI mirrors this same range when discovering a project's live endpoint.
+#
+# These three values MUST equal PreferredPort and MaxPortAttempts in
+# packages/com.txcombo.unity-puer-exec/Editor/UnityPuerExecServer.cs, which binds
+# `for (port = PreferredPort; port < PreferredPort + MaxPortAttempts; port++)`.
+# An earlier 55250 exclusive bound silently omitted 55250 -- the last port the
+# service can bind -- so an Editor there was invisible to range-scan discovery.
+# tests/test_package_layout.py pins the equality against the package source.
 CONTROL_PORT_HOST = "127.0.0.1"
 CONTROL_PORT_PREFERRED = 55231
-CONTROL_PORT_END = 55250  # exclusive upper bound: ports [55231, 55250)
+CONTROL_PORT_END = 55251  # exclusive upper bound: ports [55231, 55251) == [55231, 55250]
 CONTROL_PORT_COUNT = CONTROL_PORT_END - CONTROL_PORT_PREFERRED
 
 

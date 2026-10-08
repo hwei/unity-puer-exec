@@ -1,5 +1,6 @@
 import json
 import re
+import sys
 import unittest
 from pathlib import Path
 
@@ -8,6 +9,12 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 PACKAGE_ROOT = REPO_ROOT / "packages" / "com.txcombo.unity-puer-exec"
 RELEASE_WORKFLOW_PATH = REPO_ROOT / ".github" / "workflows" / "release.yml"
 UNITY_IMPORTED_PUBLISHABLE_ASSETS = ("Editor", "package.json", "LICENSE", "README.md")
+
+CLI_DIR = REPO_ROOT / "cli" / "python"
+if str(CLI_DIR) not in sys.path:
+    sys.path.insert(0, str(CLI_DIR))
+
+import direct_exec_client  # type: ignore
 
 
 class PackageLayoutTests(unittest.TestCase):
@@ -266,6 +273,33 @@ class PackageLayoutTests(unittest.TestCase):
         self.assertIn("Encoding.UTF8.GetByteCount(resultJson)", method_body)
         # The stored job result and HTTP response are unaffected by the log change.
         self.assertIn("job.Complete(resultJson);", method_body)
+
+    def test_cli_control_port_range_covers_every_port_the_service_can_bind(self):
+        # The CLI discovers a project's endpoint by range scan, so the range it walks
+        # must cover the range the control service binds. An earlier CLI bound of
+        # 55250-exclusive omitted 55250 -- the last port the service can bind -- which
+        # made an Editor there undiscoverable. The two sides live in different
+        # languages, so pin the equality against the package source rather than
+        # trusting the mirrored constants to stay in step.
+        server_content = (PACKAGE_ROOT / "Editor" / "UnityPuerExecServer.cs").read_text(encoding="utf-8")
+        preferred_match = re.search(r"PreferredPort\s*=\s*(\d+)", server_content)
+        attempts_match = re.search(r"MaxPortAttempts\s*=\s*(\d+)", server_content)
+        self.assertIsNotNone(preferred_match, "PreferredPort should be declared in the server")
+        self.assertIsNotNone(attempts_match, "MaxPortAttempts should be declared in the server")
+        service_preferred = int(preferred_match.group(1))
+        service_attempts = int(attempts_match.group(1))
+
+        self.assertEqual(direct_exec_client.CONTROL_PORT_PREFERRED, service_preferred)
+        self.assertEqual(direct_exec_client.CONTROL_PORT_COUNT, service_attempts)
+        self.assertEqual(
+            direct_exec_client.CONTROL_PORT_END,
+            service_preferred + service_attempts,
+        )
+        candidates = direct_exec_client.control_port_candidates()
+        self.assertEqual(len(candidates), service_attempts)
+        # The last port the service can bind is the last port the CLI scans.
+        self.assertEqual(candidates[0], service_preferred)
+        self.assertEqual(candidates[-1], service_preferred + service_attempts - 1)
 
 
 if __name__ == "__main__":

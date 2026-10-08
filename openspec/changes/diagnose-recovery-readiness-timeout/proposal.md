@@ -40,9 +40,18 @@ precondition, and the fix depends on which resolution step actually dropped the 
   "Recovery-vs-launch decisions are project-scoped" requirements as written.
 - Add a regression at the unit layer (mocked health transitions: stale candidate port,
   ready endpoint on a later port) plus a real-host confirmation.
-- The durable contract delta below is **provisional**: it names the observed case as an
-  explicit scenario without changing the requirement's normative text, and is revised if
-  investigation finds the text itself needs different substance.
+- Widen the CLI's control-port scan bound from 55231–55249 to the service's actual bind
+  range 55231–55250 (`MaxPortAttempts = 20`). A mismatch rather than the observed failure,
+  but the fallback scan makes full-range coverage load-bearing, and the durable requirement
+  already promised "the bounded control-port range that the Unity control service binds
+  within". Pinned against the package source by a layout test.
+- The durable contract delta: investigation confirmed that the requirement's normative
+  text was too weak, because its stated purpose was only "never waits on the preferred
+  port" while the observed wait held a stale candidate on the endpoint's own port. The
+  delta therefore adds one explicit scenario **and** one normative sentence: a readiness
+  site holding a candidate endpoint must treat it as a fast path only and fall back to
+  range-scan discovery when it cannot be confirmed. See `design.md` for the confirmed
+  root cause and `validation-evidence.md` for the real-host before/after.
 
 ## Capabilities
 
@@ -60,12 +69,12 @@ precondition, and the fix depends on which resolution step actually dropped the 
 
 ## Impact
 
-- Affected code (investigation targets): `cli/python/unity_session.py`
-  (`ensure_session_ready`, recovery waiting, `_has_recoverable_editor_signal`,
-  endpoint re-probe), `cli/python/unity_session_wait.py`, and the `wait-for-exec`
-  resolution path in `cli/python/unity_puer_exec_runtime.py`.
+- Affected code: `cli/python/unity_session.py` (the readiness resolvers),
+  `cli/python/direct_exec_client.py` (the control-port range bound), and the
+  `wait-for-exec` resolution path in `cli/python/unity_puer_exec_runtime.py`.
 - Affected behavior: project-scoped recovery readiness resolution after a cold launch
   when the preferred port is unavailable and a candidate endpoint is stale.
 - Affected validation: `tests.test_unity_session`, `tests.test_unity_session_cli`,
-  `tests.test_unity_session_modules`, and the real-host case that surfaced it.
+  `tests.test_unity_session_modules`, `tests.test_package_layout`, and the real-host case
+  that surfaced it.
 - No change to the launch itself, the log-isolation model, or the port-binding contract.

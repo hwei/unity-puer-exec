@@ -2,6 +2,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -745,6 +746,8 @@ def _probe_by_url(mapping, default=(None, "connection refused")):
 class RangeAwareDiscoveryTests(unittest.TestCase):
     PREFERRED = "http://127.0.0.1:55231"
     ROLLED_OVER = "http://127.0.0.1:55233"
+    # The last port the control service can bind (PreferredPort + MaxPortAttempts - 1).
+    LAST_IN_RANGE = "http://127.0.0.1:55250"
 
     def test_discover_project_endpoint_hits_preferred_port_first(self):
         probe = mock.Mock(side_effect=_probe_by_url({self.PREFERRED: (_ready_payload(SAMPLE_PROJECT_PATH), None)}))
@@ -780,6 +783,21 @@ class RangeAwareDiscoveryTests(unittest.TestCase):
         self.assertIsNone(base_url)
         self.assertIsNone(payload)
         self.assertTrue(saw_other)
+
+    def test_discover_project_endpoint_reaches_the_last_port_the_service_binds(self):
+        # The control service binds PreferredPort + MaxPortAttempts ports, so the
+        # scan must not stop one short of the end: an Editor that rolled over to the
+        # very last port would otherwise be undiscoverable.
+        probe = mock.Mock(side_effect=_probe_by_url({
+            self.LAST_IN_RANGE: (_ready_payload(SAMPLE_PROJECT_PATH), None),
+        }))
+        with mock.patch.object(unity_session, "_probe_health", probe):
+            base_url, payload, error, saw_other = unity_session.discover_project_endpoint(SAMPLE_PROJECT_PATH)
+
+        self.assertEqual(base_url, self.LAST_IN_RANGE)
+        self.assertEqual(payload["project_path"], SAMPLE_PROJECT_PATH)
+        self.assertIsNone(error)
+        self.assertFalse(saw_other)
 
     def test_discover_project_endpoint_reports_no_match_when_nothing_reachable(self):
         probe = mock.Mock(return_value=(None, "connection refused"))
@@ -826,6 +844,246 @@ class RangeAwareDiscoveryTests(unittest.TestCase):
             found = unity_session._scan_for_project_endpoint_any_status(SAMPLE_PROJECT_PATH, 1.0)
 
         self.assertEqual(found, self.ROLLED_OVER)
+
+
+class _FakeTime:
+    """Real strftime/localtime with virtual time()/sleep() so a budget costs nothing."""
+
+    def __init__(self, start=1_700_000_000.0):
+        self._now = start
+
+    def time(self):
+        return self._now
+
+    def sleep(self, seconds):
+        self._now += seconds
+
+    def strftime(self, *args, **kwargs):
+        return time.strftime(*args, **kwargs)
+
+    def localtime(self, *args, **kwargs):
+        return time.localtime(*args, **kwargs)
+
+
+class RecoveryReadinessStaleCandidateTests(unittest.TestCase):
+    """Regression for the recovery-readiness timeout (diagnose-recovery-readiness-timeout).
+
+    The observed real-host failure: `wait-for-exec` reported `running` for its whole
+    budget with `no endpoint matched the target project yet` while the requested
+    project's Editor was logged `Ready on port 55234`, with
+    `owner=published_endpoint_recovery` and a live `unity_pid`. The readiness waits
+    resolved through a resolver pinned to the published endpoint that returned `None`
+    whenever that publication could not be confirmed, and never re-ran range-scan
+    discovery. The last case here drives the real `ensure_session_ready` -> classify ->
+    wait loop, so it fails on the resolver alone and not merely on a mock.
+    """
+
+    PREFERRED = "http://127.0.0.1:55231"
+    STALE = "http://127.0.0.1:55233"
+    LIVE = "http://127.0.0.1:55234"
+    LIVE_PID = 87640
+
+    def _publication(self, port, marker, unity_pid=LIVE_PID):
+        return {
+            "port": port,
+            "unity_pid": unity_pid,
+            "project_path": SAMPLE_PROJECT_PATH,
+            "session_marker": marker,
+            "base_url": "http://127.0.0.1:{}".format(port),
+        }
+
+    def _live_payload(self, marker):
+        payload = _ready_payload(SAMPLE_PROJECT_PATH)
+        payload.update({"port": 55234, "session_marker": marker, "unity_pid": self.LIVE_PID})
+        return payload
+
+    def test_published_resolver_falls_back_to_range_scan_for_a_stale_candidate(self):
+        # Publication names a port the Editor has rolled over from; the project's
+        # Editor is ready one port up. The wait must claim the later port.
+        publication = self._publication(55233, "STALE-MARKER")
+        probe = _probe_by_url({self.LIVE: (self._live_payload("LIVE-MARKER"), None)})
+
+        with mock.patch.object(unity_session, "_probe_health", probe), mock.patch.object(
+            unity_session, "read_endpoint_publication", return_value=publication
+        ), mock.patch.object(unity_session, "_guard_owned_endpoint_version", return_value=None):
+            resolve = unity_session._make_published_endpoint_resolver(SAMPLE_PROJECT_PATH, 1.0)
+
+            self.assertEqual(resolve(), self.LIVE)
+
+    def test_published_resolver_falls_back_when_the_pinned_marker_is_stale(self):
+        # The recorded shape: the publication names the live port, but its session
+        # marker is the one the service has already replaced. Confirming it is
+        # impossible, so identity by project_path is what resolves the endpoint.
+        publication = self._publication(55234, "PUBLISHED-MARKER")
+        probe = _probe_by_url({self.LIVE: (self._live_payload("LIVE-NEW-MARKER"), None)})
+
+        with mock.patch.object(unity_session, "_probe_health", probe), mock.patch.object(
+            unity_session, "read_endpoint_publication", return_value=publication
+        ), mock.patch.object(unity_session, "_guard_owned_endpoint_version", return_value=None):
+            resolve = unity_session._make_published_endpoint_resolver(SAMPLE_PROJECT_PATH, 1.0)
+
+            self.assertEqual(resolve(), self.LIVE)
+
+    def test_published_resolver_never_claims_another_projects_endpoint(self):
+        # The fallback scan must not widen ownership: a stale candidate reclaimed by
+        # another project answers on the pinned port, and with no project-matched
+        # endpoint anywhere the resolver stays unresolved.
+        publication = self._publication(55233, "STALE-MARKER")
+        probe = _probe_by_url({self.STALE: (_ready_payload("X:/other-project"), None)})
+
+        with mock.patch.object(unity_session, "_probe_health", probe), mock.patch.object(
+            unity_session, "read_endpoint_publication", return_value=publication
+        ), mock.patch.object(unity_session, "_guard_owned_endpoint_version", return_value=None):
+            resolve = unity_session._make_published_endpoint_resolver(SAMPLE_PROJECT_PATH, 1.0)
+
+            self.assertIsNone(resolve())
+
+    def test_published_resolver_keeps_the_publication_fast_path(self):
+        # A confirmable publication still costs exactly one probe and no sweep.
+        publication = self._publication(55234, "LIVE-MARKER")
+        probe = mock.Mock(side_effect=_probe_by_url({self.LIVE: (self._live_payload("LIVE-MARKER"), None)}))
+
+        with mock.patch.object(unity_session, "_probe_health", probe), mock.patch.object(
+            unity_session, "read_endpoint_publication", return_value=publication
+        ), mock.patch.object(unity_session, "_guard_owned_endpoint_version", return_value=None):
+            resolve = unity_session._make_published_endpoint_resolver(SAMPLE_PROJECT_PATH, 1.0)
+
+            self.assertEqual(resolve(), self.LIVE)
+            self.assertEqual(probe.call_count, 1)
+
+    def test_published_resolver_locks_the_fallback_onto_the_later_port(self):
+        # After the sweep matches, steady state is one probe on the locked port.
+        publication = self._publication(55233, "STALE-MARKER")
+        probe = mock.Mock(side_effect=_probe_by_url({self.LIVE: (self._live_payload("LIVE-MARKER"), None)}))
+
+        with mock.patch.object(unity_session, "_probe_health", probe), mock.patch.object(
+            unity_session, "read_endpoint_publication", return_value=publication
+        ), mock.patch.object(unity_session, "_guard_owned_endpoint_version", return_value=None):
+            resolve = unity_session._make_published_endpoint_resolver(SAMPLE_PROJECT_PATH, 1.0)
+
+            self.assertEqual(resolve(), self.LIVE)
+            calls_after_first = probe.call_count
+            self.assertEqual(resolve(), self.LIVE)
+            # Publication probe + one locked re-probe, not another full sweep.
+            self.assertEqual(probe.call_count - calls_after_first, 2)
+
+    def _run_recovery_wait(self, publication, probes, ready_timeout_seconds=180.0, probe_calls=None, clock_out=None):
+        """Drive the real readiness path with mocked transitions and a fake clock."""
+        log_sizes = {"value": 0}
+
+        def read_log_size(_path):
+            # Keeps the editor log active so a terminal case is observed as the
+            # full-budget timeout rather than the 20s activity stall.
+            log_sizes["value"] += 4096
+            return log_sizes["value"]
+
+        def probe(base_url, _timeout):
+            if probe_calls is not None:
+                probe_calls.append(base_url)
+            return probes.get(base_url, (None, "connection refused"))
+
+        fake_time = _FakeTime()
+        if clock_out is not None:
+            clock_out["start"] = fake_time.time()
+            clock_out["time"] = fake_time
+        with mock.patch.object(unity_session, "time", fake_time), mock.patch.object(
+            unity_session, "_guard_owned_endpoint_version", return_value=None
+        ), mock.patch.object(
+            unity_session, "_probe_health", side_effect=probe
+        ), mock.patch.object(
+            unity_session, "read_endpoint_publication", return_value=publication
+        ), mock.patch.object(
+            unity_session, "_project_lockfile_is_held", return_value=True
+        ), mock.patch.object(
+            unity_session, "_resolve_effective_log_path", return_value=Path("X:/Logs/Editor.log")
+        ), mock.patch.object(
+            unity_session, "_list_unity_pids", return_value=[self.LIVE_PID]
+        ), mock.patch.object(
+            unity_session, "_read_editor_log_size", side_effect=read_log_size
+        ), mock.patch.object(
+            unity_session, "_read_recent_editor_log_lines", return_value=["(log)"]
+        ), mock.patch.object(
+            unity_session, "_default_editor_log_path", return_value=Path("X:/Logs/Editor.log")
+        ), mock.patch.object(
+            unity_session, "_project_lock_details",
+            return_value={"path": "x", "exists": True, "fresh": True},
+        ), mock.patch.object(
+            unity_session, "read_launch_claim", return_value=None
+        ), mock.patch.object(
+            unity_session, "resolve_project_path", return_value=Path(SAMPLE_PROJECT_PATH)
+        ), mock.patch.object(
+            unity_session, "_is_pid_running", side_effect=lambda pid: pid == self.LIVE_PID
+        ), mock.patch.object(
+            unity_session, "_detach_session_process", side_effect=lambda session: session
+        ):
+            return unity_session.ensure_session_ready(
+                project_path=SAMPLE_PROJECT_PATH,
+                ready_timeout_seconds=ready_timeout_seconds,
+                health_timeout_seconds=1.0,
+            )
+
+    def test_recovery_wait_claims_the_ready_endpoint_on_a_later_port(self):
+        # Stale candidate then ready on a later port: this is the reproduction from
+        # task 1.2, driven through the real classify + wait loop. It fails with the
+        # pinned resolver, which returned None every tick and surfaced
+        # `no endpoint matched the target project yet` for the whole budget.
+        session = self._run_recovery_wait(
+            self._publication(55233, "STALE-MARKER"),
+            {self.LIVE: (self._live_payload("LIVE-MARKER"), None)},
+        )
+
+        self.assertEqual(session.base_url, self.LIVE)
+        self.assertEqual(session.owner, "published_endpoint_recovery")
+        self.assertIsNone(session.diagnostics.get("last_health_error"))
+
+    def test_recovery_wait_claims_the_live_endpoint_behind_a_stale_marker(self):
+        # The recorded real-host shape, end to end: publication and live service
+        # agree on the port and the pid, and disagree only on the session marker.
+        session = self._run_recovery_wait(
+            self._publication(55234, "PUBLISHED-MARKER"),
+            {self.LIVE: (self._live_payload("LIVE-NEW-MARKER"), None)},
+        )
+
+        self.assertEqual(session.base_url, self.LIVE)
+        self.assertEqual(session.unity_pid, self.LIVE_PID)
+        self.assertIsNone(session.diagnostics.get("last_health_error"))
+
+    def test_recovery_wait_still_times_out_when_no_endpoint_ever_appears(self):
+        # Task 2.4: convergence must stay bounded. With nothing reachable anywhere,
+        # the wait still ends with its terminal outcome inside its budget, and the
+        # fallback sweep runs once per poll rather than growing without bound.
+        budget_seconds = 30.0
+        probe_calls = []
+        clock = {}
+        with self.assertRaises(unity_session.UnityNotReadyError) as ctx:
+            self._run_recovery_wait(
+                self._publication(55233, "STALE-MARKER"),
+                {},
+                ready_timeout_seconds=budget_seconds,
+                probe_calls=probe_calls,
+                clock_out=clock,
+            )
+
+        self.assertEqual(ctx.exception.session.owner, "published_endpoint_recovery")
+        self.assertEqual(
+            ctx.exception.session.diagnostics.get("last_health_error"),
+            "no endpoint matched the target project yet",
+        )
+        # Terminal outcome inside the budget, not an unbounded poll. The classify
+        # grace window advances the fake clock before the wait loop's deadline is set.
+        elapsed = clock["time"].time() - clock["start"]
+        self.assertLessEqual(
+            elapsed,
+            budget_seconds + unity_session.SERVICE_RESTART_GRACE_SECONDS + unity_session.POLL_INTERVAL_SECONDS,
+        )
+        # One publication probe plus one full sweep per poll, and the classify grace
+        # window's re-reads -- a bounded multiple, not a growing one.
+        candidates = len(unity_session.direct_exec_client.control_port_candidates())
+        polls = int(budget_seconds / unity_session.POLL_INTERVAL_SECONDS) + 2
+        grace_reads = int(
+            unity_session.SERVICE_RESTART_GRACE_SECONDS / unity_session_endpoint.READ_RETRY_SECONDS
+        ) + 2
+        self.assertLessEqual(len(probe_calls), (polls * (candidates + 1)) + grace_reads)
 
 
 class ExecEndpointMisrouteRegressionTests(unittest.TestCase):

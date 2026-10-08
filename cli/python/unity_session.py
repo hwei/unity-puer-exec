@@ -515,26 +515,41 @@ def _raise_editor_not_under_control(
 
 
 def _make_published_endpoint_resolver(project_path, health_timeout_seconds):
-    """Keep a wait loop pointed at whatever this project currently publishes.
+    """Keep a wait loop pointed at this project's live control endpoint.
 
-    Replaces the control-port scan on the readiness path. An Editor publishes as
-    soon as it binds and republishes after every domain reload, so re-reading the
-    publication follows a rolled-over port without ever probing a port that does not
-    belong to this project.
+    Fast path: the publication. An Editor publishes as soon as it binds and
+    republishes after every domain reload, so re-reading the publication follows a
+    rolled-over port without ever probing a port that does not belong to this
+    project -- one request per poll, and a pre-ready endpoint is reachable through it
+    because the marker is present before ``project_path`` is.
+
+    The fast path alone is not enough to *resolve* an endpoint, and treating it as if
+    it were is the defect this fixes. A publication can be absent, name a port the
+    Editor has since rolled over from, or carry a session marker the live service has
+    already replaced (a republish that did not land). Confirming it is then impossible
+    no matter how long the wait runs, so the wait would report `no endpoint matched the
+    target project yet` for its whole budget while the project's own Editor sat ready
+    on another port in the range.
+
+    So when the publication cannot be confirmed, fall back to the stateful range scan
+    rather than returning nothing. The scan matches ownership by ``project_path``
+    identity -- never by port or pid -- so a ready endpoint belonging to another
+    project stays unclaimable, and it locks onto its match so steady-state waiting
+    returns to a single probe per poll.
     """
+    scan_fallback = _make_recovery_endpoint_resolver(project_path, health_timeout_seconds)
 
     def resolve():
         publication = read_endpoint_publication(project_path)
-        if publication is None:
-            return None
-        base_url = publication["base_url"]
-        payload, _error = _probe_health(base_url, health_timeout_seconds)
-        if payload is None or payload.get("session_marker") != publication["session_marker"]:
-            return None
-        # Pre-ready payloads carry no version yet, so an absent bridge_version here
-        # is "not observable yet", not a mismatch.
-        _guard_owned_endpoint_version(base_url, payload, require_version=False)
-        return base_url
+        if publication is not None:
+            base_url = publication["base_url"]
+            payload, _error = _probe_health(base_url, health_timeout_seconds)
+            if payload is not None and payload.get("session_marker") == publication["session_marker"]:
+                # Pre-ready payloads carry no version yet, so an absent bridge_version
+                # here is "not observable yet", not a mismatch.
+                _guard_owned_endpoint_version(base_url, payload, require_version=False)
+                return base_url
+        return scan_fallback()
 
     return resolve
 
@@ -1292,11 +1307,13 @@ def discover_project_endpoint(project_path, health_timeout_seconds=DEFAULT_HEALT
 
 
 def _scan_for_project_endpoint_any_status(project_path, health_timeout_seconds, candidate_base_urls=None):
-    """Find a candidate whose health identity matches the project at any status.
+    """Find a candidate whose health identity names the target project.
 
-    Unlike :func:`discover_project_endpoint`, this matches a starting, compiling, or
-    reloading Editor that reports the target ``project_path`` but is not yet ``ready``,
-    so a readiness wait can lock onto the actually-bound port before it goes ready.
+    Identity is the payload's ``project_path``, which only a ``ready`` payload
+    carries: a ``compiling`` or ``not_available`` payload reports the session marker
+    and process id but not the project. Ownership is therefore never inferred from a
+    port or a pid, and a pre-ready endpoint is reached through the published-endpoint
+    fast path instead of through this scan.
     """
     if candidate_base_urls is None:
         candidate_base_urls = direct_exec_client.candidate_base_urls()
@@ -1311,11 +1328,13 @@ def _scan_for_project_endpoint_any_status(project_path, health_timeout_seconds, 
 
 
 def _make_recovery_endpoint_resolver(project_path, health_timeout_seconds):
-    """Build a stateful resolver that keeps a wait loop pointed at the project's port.
+    """Build the stateful range scan a readiness wait falls back to.
 
-    While unlocked it scans the control-port range for a project-matched endpoint
-    (any status). Once locked it re-probes only the locked port and re-scans solely
-    if that port stops matching, so steady-state waiting stays a single probe per poll.
+    While unlocked it scans the control-port range for an endpoint whose health
+    identity names the project. Once locked it re-probes only the locked port and
+    re-scans solely if that port stops matching, so steady-state waiting stays a single
+    probe per poll. Used by :func:`_make_published_endpoint_resolver` for every tick on
+    which the publication cannot be confirmed.
     """
     state = {"locked": None}
 
