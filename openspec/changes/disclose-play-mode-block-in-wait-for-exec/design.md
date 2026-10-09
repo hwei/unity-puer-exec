@@ -25,3 +25,33 @@ response, not on the non-terminal return paths.
 
 The `wait-for-exec` replay invokes the server's exec path, so the refresh block is already
 present on the response. The CLI needs no new field or endpoint.
+
+### D4. `compile_blocked` is a CLI-owned guidance selector, and guidance merges
+
+The collision (`warning: async_result_not_supported` plus a `compile_blocked` object) cannot
+be fixed by the warning code alone, because the response has one `situation` and one
+`next_steps` while two durable guidance requirements apply. Replacing the single `warning`
+code with a `warnings[]` list does not fix it either: the response would still have one
+`situation`, so guidance would still have to merge, and the change would break the
+established single-code contract that `async_result_not_supported` and `api_updater_declined`
+rely on.
+
+Instead, guidance composition treats the presence of a `compile_blocked` object as a
+CLI-composed selector, the same idea as the `version_mismatch` `guard` already in
+`_attach_guidance`. When it is present:
+
+- the play-mode exit `situation` is merged with the warning's own situation (one string
+  covering both conditions);
+- the play-mode `next_steps` lead, followed by the warning's own steps (for the async case,
+  `wait-for-result-marker`).
+
+The selector reads a CLI-owned envelope field, never a script-authored `result` field, so it
+does not violate the durable rule that script-authored result fields never drive candidate
+selection. It does extend selection past `(command, status)` for this edge, which is the same
+kind of CLI-owned extension the `guard` already is.
+
+### D5. The merge applies wherever the collision can occur
+
+The collision is a property of any warning response carrying `compile_blocked`, so the merge
+is implemented in the shared guidance composition, not only in the `wait-for-exec` path. `exec`
+benefits from the same fix.
