@@ -1,0 +1,7 @@
+change_type: feature
+priority: P1
+blocked_by:
+  - surface-play-mode-compile-block
+assumption_state: valid
+evidence: host-validation
+updated_at: 2026-10-09
