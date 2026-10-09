@@ -22,6 +22,7 @@ if str(TESTS_DIR) not in sys.path:
     sys.path.insert(0, str(TESTS_DIR))
 
 import prepare_validation_host  # type: ignore
+import preflight_compile_check  # type: ignore
 import cleanup_validation_host  # type: ignore
 import unity_puer_exec  # type: ignore
 import unity_puer_exec_runtime  # type: ignore
@@ -538,6 +539,14 @@ class _SharedRealHostDevice:
             )
         cls.project_path = _require_real_host_project_path()
         cls.unity_exe_path = _require_unity_editor(cls.project_path)
+        # A batch-mode compile preflight needs the project lock to itself, so
+        # establish the clean boundary before it, then compile-check before the
+        # interactive launch. The helper caches its result for the process, so
+        # this still costs one batch launch per suite invocation, not one per
+        # class; a compile failure raises here, before any interactive Editor is
+        # launched, and an unavailable host is skipped rather than failed.
+        _ensure_clean_test_boundary(cls.project_path)
+        preflight_compile_check.require_preflight(cls.project_path, cls.unity_exe_path)
         cls._shared_host = _start_shared_host(cls.project_path, cls.unity_exe_path)
         cls._shared_host_base_url = cls._shared_host["base_url"]
 

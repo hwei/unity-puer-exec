@@ -6,7 +6,7 @@ This repository has two distinct test layers:
 
 **Mocked and helper-tool unit tests** (default):
 ```
-python -m unittest tests.test_cleanup_validation_host_tool tests.test_cli_version tests.test_direct_exec_client tests.test_editor_log_isolation tests.test_openspec_backlog tests.test_openspec_change_meta tests.test_openspec_spec_hygiene tests.test_package_layout tests.test_prepare_validation_host_tool tests.test_refresh_change_signal tests.test_unity_log_brief tests.test_unity_puer_session tests.test_unity_session tests.test_unity_session_cli tests.test_unity_session_modules
+python -m unittest tests.test_cleanup_validation_host_tool tests.test_cli_version tests.test_direct_exec_client tests.test_editor_log_isolation tests.test_openspec_backlog tests.test_openspec_change_meta tests.test_openspec_spec_hygiene tests.test_package_layout tests.test_preflight_compile_check tests.test_prepare_validation_host_tool tests.test_refresh_change_signal tests.test_unity_log_brief tests.test_unity_puer_session tests.test_unity_session tests.test_unity_session_cli tests.test_unity_session_modules
 ```
 Cover parsing, payload contracts, status codes, packaging checks, OpenSpec tooling, and local validation-host helper logic. Run without Unity Editor or a validation-host project.
 
@@ -40,6 +40,34 @@ Run command:
 ```
 UNITY_PUER_EXEC_RUN_REAL_HOST_TESTS=1 python -m unittest tests.test_real_host_integration
 ```
+
+### Compile preflight before the interactive launch
+
+A package that does not compile cannot be reported to this suite by the
+interactive launch: the Editor intercepts it with its **Safe Mode** dialog and
+blocks an unattended run. So `_SharedRealHostDevice.setUpClass` establishes the
+clean boundary, then runs `tools/preflight_compile_check.py` once per suite
+invocation — before the first interactive Editor is launched.
+
+The helper resolves the host and Editor through the same paths the suite uses
+(`prepare_validation_host` / `unity_session._resolve_unity_exe_path`) plus the
+`.env` launch-argument input, then runs
+`Unity -batchMode -quit -nographics -projectPath <host> -logFile <private log>`.
+On a non-zero exit it parses the `error CS` lines and fails the run with the
+file, line, and error code — never the Safe Mode dialog. A non-zero exit with no
+`error CS` reports the exit code and log path instead, so a launch failure is
+distinguishable from a compile failure.
+
+The result is cached for the process, so several classes still cost one batch
+launch, and it runs only when the real-host gate is enabled. It is skipped —
+never turned into a failure — when the gate is off, or the host project,
+manifest, or Editor executable is unavailable. To compile-check by hand:
+
+```
+python tools/preflight_compile_check.py
+```
+
+It prints a JSON result (`status`, `exit_code`, `log_path`, `diagnostics`).
 
 ### One Editor per suite (host reuse)
 
