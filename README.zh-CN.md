@@ -15,7 +15,11 @@ Agent 自行启动 Editor、编写代码、处理编译错误、解除阻塞对�
 
 - **从零到结果的会话生命周期。** CLI 自动定位项目所需的 Unity 版本并启动，等待就绪，恢复崩溃的会话，防止重复启动，并自动解除模态阻塞（Safe Mode、保存场景对话框等）。全程无需人类介入。
 - **结构化编译错误闭环。** `exec --refresh-before-exec` 完整包裹 refresh → 等待编译稳定 → 执行 的周期。编译失败时返回机器可读的诊断信息（exit code 23 + 内联错误列表），Agent 可以直接修代码重试，无需解析日志。
-- **多项目并行操作。** 动态端口分配、per-project 会话产物、launch claim 机制，让一个（或多个）Agent 可以同时驱动多个 Unity 项目而互不干扰。
+- **多 Agent、多 Editor 并行，互不干扰。** 每个 Unity 项目配一个 Agent（包括同一游戏的多份 checkout / worktree），各自无人值守地驱动自己的 Editor。路由到正确的 Editor 只是基础；`unity-puer-exec` 还消除了并行 Editor 之间互相踩踏的途径：
+  - **端口冲突：** 每个 Editor 先尝试 preferred control port，被占用时在有界范围内 rollover 到后续端口；CLI 通过范围扫描发现实际 endpoint。
+  - **共享日志：** Unity 默认的 `Editor.log` 是每个 OS 用户一份，多个 Editor 并发时会互相覆盖、轮转。由 CLI 启动的 Editor 写入项目私有日志，编译和就绪观测因此保持可信。
+  - **抢焦点：** 模态对话框优先通过窗口消息解除，失败时才回退到置前窗口（Safe Mode 例外，始终走置前路径）。一个 Agent 处理弹窗不会打断其它 Editor，也不会抢走人正在用的窗口。
+  - **启动竞争：** launch claim 与 per-project 会话产物防止两个 Agent 同时冷启动同一个项目。
 - **基于 PuerTS 的即时执行。** 脚本通过 PuerTS JavaScript 桥接执行——解释执行，无编译步骤，无外部编译器依赖。如果你的项目已经在使用 PuerTS，则无需安装任何额外依赖。
 
 ### 真实场景：资源管线自动化
@@ -38,7 +42,10 @@ Agent 自行启动 Editor、编写代码、处理编译错误、解除阻塞对�
 | 结构化编译错误重试闭环 | 是 | 否 | 部分（compile + get-logs） | 否 | 否 |
 | 自动解除模态阻塞（Safe Mode 等） | 是 | 否 | 否 | 否 | 否 |
 | 会话恢复与防重复启动 | 是 | 否 | 基础 | 否 | 否 |
-| 多项目并行（一等公民） | 是 | 否 | 基础（端口参数） | 否 | 否 |
+| 在多个运行中的 Editor 中指定目标 | 是（per-project endpoint） | 是（`--project-path`） | 是（per-project named pipe） | 未见文档 | 未见文档 |
+| Control port 冲突 rollover | 是 | 未见文档 | 不适用（named pipe） | 未见文档 | 未见文档 |
+| 每个 Editor 独立的项目私有 `Editor.log` | 是 | 未见文档 | 未见文档 | 未见文档 | 未见文档 |
+| 处理弹窗不抢焦点 | 是（Safe Mode 例外） | 不处理弹窗 | 不处理弹窗 | 否（reload 后把 Editor 置前） | 不处理弹窗 |
 | 动态代码执行 | JS via PuerTS（解释执行，即时） | C# eval（pipeline 包，实验性） | C# via Roslyn（编译为 DLL） | C# eval | JS via PuerTS |
 | 额外运行时依赖 | 无（自包含 .exe） | 无 | Node.js 22+ + Unity 内置 Roslyn | 无 | 无 |
 | 最低 Unity 版本 | 2022.3 | 6.0 LTS | 2022.3 | 2022.3 | 2022.3 |
@@ -50,7 +57,8 @@ Agent 自行启动 Editor、编写代码、处理编译错误、解除阻塞对�
 与最接近替代方案的关键差异：
 
 - **vs unity-cli-loop**：其 `execute-dynamic-code` 通过 Unity 内置 Roslyn（`csc.dll` / `Microsoft.CodeAnalysis.CSharp.dll`）将 C# 编译为 DLL，并维护一个热的编译器工作进程——每次执行成本更高，活动部件更多。`unity-puer-exec` 通过 PuerTS 解释执行 JavaScript，无编译步骤。对于已经使用 PuerTS 的项目，依赖 footprint 显著更小：无需 Roslyn 路径解析、无编译器进程管理、无 Node.js 运行时。
-- **vs Unity CLI（官方）**：方向正确，但连接运行中 Editor 的 `com.unity.pipeline` 包仍为实验性，且要求 Unity 6.0 LTS+。尚无编译错误闭环、阻塞恢复和多项目管理。
+- **vs Unity CLI（官方）**：方向正确，但连接运行中 Editor 的 `com.unity.pipeline` 包仍为实验性，且要求 Unity 6.0 LTS+。可以用 `--project-path` 在多个 Editor 中指定目标，但尚无编译错误闭环、阻塞恢复，也不隔离并行 Editor。
+- **vs [MCP for Unity](https://github.com/CoplayDev/unity-mcp) 等 MCP server**：其多实例支持是指一个 MCP server 路由到多个由人打开的 Editor（`set_active_instance`），不负责启动 Editor、解除阻塞，也不隔离各 Editor 的日志和焦点。
 - **vs UniCli / Puerts Agent**：两者都要求人类预先打开 Editor，均不管理会话、编译错误或模态阻塞。
 
 ## Design Philosophy

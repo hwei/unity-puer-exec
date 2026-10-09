@@ -15,7 +15,11 @@ Most Unity automation tools assume a human has already opened the Editor and wil
 
 - **Zero-to-result session lifecycle.** The CLI launches the correct Unity version for the project, waits for readiness, recovers crashed sessions, avoids duplicate launches, and auto-dismisses modal blockers (Safe Mode, save-scene dialogs). No human at the Editor, ever.
 - **Structured compile-error closed loop.** `exec --refresh-before-exec` brackets a full refresh → compile-settle → execute cycle. Compile failures return machine-readable diagnostics (exit code 23, inline error list) so the agent can fix code and retry until clean — no log scraping.
-- **Multi-project parallel operation.** Dynamic port allocation, per-project session artifacts, and launch claims let one agent (or many) drive several Unity projects concurrently without cross-talk.
+- **Many agents, many Editors, no interference.** Run one agent per Unity project — including several checkouts or worktrees of the same game — each driving its own Editor unattended. Routing to the right Editor is the easy part; `unity-puer-exec` also removes the ways parallel Editors step on each other:
+  - **Port collisions:** each Editor tries the preferred control port first and rolls over to a later port in a bounded range when it is taken; the CLI discovers the actual endpoint by range scan.
+  - **Shared log:** Unity's default `Editor.log` is one file per OS user, so concurrent Editors overwrite and rotate each other's log. Editors launched by the CLI write to a project-private log, so compile and readiness observation stays trustworthy.
+  - **Focus stealing:** modal dialogs are dismissed with window messages first and only fall back to bringing the window to the foreground (Safe Mode always takes the foreground path). One agent clearing a dialog does not disrupt the other Editors or the human's active window.
+  - **Launch races:** launch claims and per-project session artifacts stop two agents from cold-launching the same project at once.
 - **PuerTS-powered instant execution.** Scripts run through the PuerTS JavaScript bridge — interpreted, no compilation step, no external compiler dependency. If your project already uses PuerTS, there is nothing extra to install.
 
 ### Real-world scenario: asset pipeline automation
@@ -38,7 +42,10 @@ The human describes the intent and reviews the result. Everything in between bel
 | Structured compile-error retry loop | Yes | No | Partial (compile + get-logs) | No | No |
 | Auto-dismiss modal blockers (Safe Mode, etc.) | Yes | No | No | No | No |
 | Session recovery & duplicate-launch prevention | Yes | No | Basic | No | No |
-| Multi-project parallel (first-class) | Yes | No | Basic (port flag) | No | No |
+| Target one of several running Editors | Yes (per-project endpoint) | Yes (`--project-path`) | Yes (per-project named pipe) | Not documented | Not documented |
+| Control-port collision rollover | Yes | Not documented | N/A (named pipe) | Not documented | Not documented |
+| Project-private `Editor.log` per Editor | Yes | Not documented | Not documented | Not documented | Not documented |
+| Dialog handling without stealing focus | Yes (Safe Mode excepted) | No dialog handling | No dialog handling | No (brings Editor to front after reload) | No dialog handling |
 | Dynamic code execution | JS via PuerTS (interpreted, instant) | C# eval (pipeline package, experimental) | C# via Roslyn (compiles to DLL) | C# eval | JS via PuerTS |
 | Extra runtime dependency | None (self-contained .exe) | None | Node.js 22+ + Unity-bundled Roslyn | None | None |
 | Minimum Unity version | 2022.3 | 6.0 LTS | 2022.3 | 2022.3 | 2022.3 |
@@ -50,7 +57,8 @@ On PlayMode interaction: `unity-puer-exec` ships no dedicated input API — by d
 Key differences vs the closest alternatives:
 
 - **vs unity-cli-loop**: Its `execute-dynamic-code` compiles C# to a DLL through Unity-bundled Roslyn (`csc.dll` / `Microsoft.CodeAnalysis.CSharp.dll`) with a warm compiler worker process — heavier per-execution cost and more moving parts. `unity-puer-exec` interprets JavaScript through PuerTS with no compilation step. For projects already on PuerTS, the dependency footprint is dramatically smaller: no Roslyn resolution, no compiler process management, no Node.js runtime.
-- **vs Unity CLI (official)**: Right direction, but the `com.unity.pipeline` package that connects to a running Editor is still experimental and requires Unity 6.0 LTS+. No compile-error loop, no blocker recovery, no multi-project management yet.
+- **vs Unity CLI (official)**: Right direction, but the `com.unity.pipeline` package that connects to a running Editor is still experimental and requires Unity 6.0 LTS+. It can target one of several Editors with `--project-path`, but has no compile-error loop, no blocker recovery, and no isolation between parallel Editors yet.
+- **vs MCP servers such as [MCP for Unity](https://github.com/CoplayDev/unity-mcp)**: Multi-instance support there means routing one MCP server to several human-opened Editors (`set_active_instance`). It does not launch Editors, resolve blockers, or isolate their logs and focus.
 - **vs UniCli / Puerts Agent**: Both require a human-opened Editor. Neither manages sessions, compile errors, or modal blockers.
 
 ## Design Philosophy
