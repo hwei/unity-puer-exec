@@ -2691,10 +2691,21 @@ class RefreshOnChangeRealHostTests(_SharedRealHostDevice, unittest.TestCase):
         self.fail("validation host did not return to a ready state within {}s".format(timeout_seconds))
 
     def _wait_for_refresh_state(self, base_url, suppressed, timeout_seconds=60):
+        """Wait for the health refresh suppression flag to reach ``suppressed``.
+
+        Tolerates the transient transport failures a domain reload produces (play
+        mode exit and a deferred compile both end in one) by re-resolving the
+        project's published endpoint instead of failing on the first drop.
+        """
         deadline = time.time() + timeout_seconds
         last = None
         while time.time() < deadline:
-            refresh = self._health(base_url).get("refresh")
+            health, _error = unity_session._probe_health(base_url, 1.5)
+            if health is None:
+                resolved, resolved_health = _scan_ready_control_endpoint(self.project_path)
+                if resolved is not None:
+                    base_url, health = resolved, resolved_health
+            refresh = health.get("refresh") if isinstance(health, dict) else None
             last = refresh
             if isinstance(refresh, dict) and bool(refresh.get("suppressed")) == suppressed:
                 return refresh
@@ -2722,6 +2733,78 @@ class RefreshOnChangeRealHostTests(_SharedRealHostDevice, unittest.TestCase):
             " return { requested: " + literal + " }; }",
         )
         self.assertEqual(exit_code, 0, payload)
+
+    def _script_compilation_during_play(self, base_url):
+        return self._health(base_url)["refresh"].get("script_changes_while_playing")
+
+    def _set_script_compilation_during_play(self, base_url, pref_value):
+        """Set the Editor's Script Changes While Playing preference via the bridge."""
+        exit_code, payload = self._exec_raw(
+            base_url,
+            "export default function run(ctx) {"
+            " const EditorPrefs = puer.loadType('UnityEditor.EditorPrefs');"
+            " EditorPrefs.SetInt('ScriptCompilationDuringPlay', " + str(int(pref_value)) + ");"
+            " return { set: " + str(int(pref_value)) + " }; }",
+        )
+        self.assertEqual(exit_code, 0, payload)
+
+    def _restore_script_compilation_during_play(self, base_url, original):
+        label_to_value = {
+            "recompile_and_continue_playing": 0,
+            "recompile_after_finished_playing": 1,
+            "stop_playing_and_recompile": 2,
+        }
+        if original in label_to_value:
+            self._set_script_compilation_during_play(base_url, label_to_value[original])
+            return
+        # The key was absent (or unreadable): drop the override so the Editor's own
+        # default applies again instead of leaving the test's value behind.
+        exit_code, payload = self._exec_raw(
+            base_url,
+            "export default function run(ctx) {"
+            " const EditorPrefs = puer.loadType('UnityEditor.EditorPrefs');"
+            " EditorPrefs.DeleteKey('ScriptCompilationDuringPlay');"
+            " return { deleted: true }; }",
+        )
+        self.assertEqual(exit_code, 0, payload)
+
+    def _wait_for_play_exit(self, base_url, timeout_seconds=180):
+        """Wait until the Editor has left play mode, or until the compile starts.
+
+        Stops as soon as the deferred compile edge is visible so a following
+        `wait-for-compile` can settle it rather than waiting the edge out. Tolerates
+        the domain reload that a deferred compile ends with by re-resolving the
+        endpoint from the project's published control port.
+        """
+        deadline = time.time() + timeout_seconds
+        last = None
+        while time.time() < deadline:
+            health, _error = unity_session._probe_health(base_url, 1.5)
+            if health is None:
+                resolved, resolved_health = _scan_ready_control_endpoint(self.project_path)
+                if resolved is not None:
+                    base_url, health = resolved, resolved_health
+            if health is not None:
+                last = health
+                if health.get("status") == "compiling":
+                    return base_url, health
+                refresh = health.get("refresh")
+                if isinstance(refresh, dict) and not refresh.get("suppressed"):
+                    return base_url, health
+            time.sleep(0.25)
+        self.fail("Editor did not leave play mode within {}s: {}".format(timeout_seconds, last))
+        return base_url, last
+
+    def _wait_for_refresh_pending(self, base_url, timeout_seconds=30):
+        deadline = time.time() + timeout_seconds
+        last = None
+        while time.time() < deadline:
+            refresh = self._health(base_url).get("refresh")
+            last = refresh
+            if isinstance(refresh, dict) and refresh.get("pending") == "pending":
+                return refresh
+            time.sleep(0.25)
+        self.fail("change signal did not become pending: {}".format(last))
 
     def test_health_reports_not_pending_after_settle(self):
         base_url = self._base_url()
@@ -3007,7 +3090,14 @@ class RefreshOnChangeRealHostTests(_SharedRealHostDevice, unittest.TestCase):
             base_url, "export default function run(ctx) { return { executedInPlay: true }; }"
         )
         self.assertEqual(exit_code, 0, payload)
-        self.assertEqual(payload["status"], "completed")
+        self.assertEqual(payload["status"], "warning")
+        self.assertEqual(payload["warning"], "compile_blocked_by_play_mode")
+        self.assertIn("warning_detail", payload)
+        blocked = payload["compile_blocked"]
+        self.assertEqual(blocked["reason"], "play_mode")
+        self.assertTrue(
+            any("PendingPlayProbe" in path for path in blocked["pending_paths"]), blocked
+        )
         self.assertFalse(payload["refresh"]["triggered"], payload["refresh"])
         self.assertEqual(payload["refresh"]["skipped_reason"], "play_mode")
 
@@ -3024,6 +3114,286 @@ class RefreshOnChangeRealHostTests(_SharedRealHostDevice, unittest.TestCase):
         self.assertIsInstance(payload, dict, (exit_code, payload))
         self.assertTrue(payload["refresh"]["triggered"], payload["refresh"])
         self.assertEqual(payload["refresh"]["reason"], "compile_triggering_change")
+
+
+class PlayModeCompileBlockRealHostTests(_SharedRealHostDevice, unittest.TestCase):
+    """Real-host coverage for a compile blocked by play mode.
+
+    Kept in its own class because the case forces the Editor's "Script Changes While
+    Playing" preference to defer the changed script to play mode exit. That
+    preference is machine-global Editor state, so the case runs against its own host
+    and restores the saved value before any later class reuses a host.
+    """
+
+    REFRESH_WAIT_TIMEOUT_MS = 300_000
+    _LABEL_TO_VALUE = {
+        "recompile_and_continue_playing": 0,
+        "recompile_after_finished_playing": 1,
+        "stop_playing_and_recompile": 2,
+    }
+
+    def setUp(self):
+        super().setUp()
+        self._saved_preference = None
+
+    def tearDown(self):
+        self._exit_play_mode_best_effort()
+        self._restore_preference_best_effort()
+        super().tearDown()
+
+    # -- transport helpers ---------------------------------------------------
+
+    def _health(self, base_url):
+        payload, error = unity_session._probe_health(base_url, 1.5)
+        self.assertIsNotNone(payload, error)
+        return payload
+
+    def _exec_raw(self, base_url, code, wait_ms=None):
+        exit_code, payload, _, _ = _run_cli(
+            [
+                "exec",
+                "--base-url", base_url,
+                "--wait-timeout-ms", str(wait_ms or self.REFRESH_WAIT_TIMEOUT_MS),
+                "--code", code,
+            ]
+        )
+        return exit_code, payload
+
+    def _exec_script(self, base_url, body):
+        exit_code, payload, _, _ = _run_cli(
+            [
+                "exec",
+                "--base-url", base_url,
+                "--wait-timeout-ms", str(self.REFRESH_WAIT_TIMEOUT_MS),
+                "--code", body,
+            ]
+        )
+        if payload is not None and unity_puer_exec_runtime._running_or_timed_out_response(
+            exit_code, json.dumps(payload)
+        ):
+            exit_code, payload, _, _ = _run_cli(
+                [
+                    "wait-for-exec",
+                    "--base-url", base_url,
+                    "--request-id", payload["request_id"],
+                    "--wait-timeout-ms", str(READY_TIMEOUT_SECONDS * 1000),
+                ]
+            )
+        return exit_code, payload
+
+    def _write_compile_triggering_probe(self, name):
+        temp_dir = self.project_path / "Assets" / "__codex_validation_temp"
+        temp_dir.mkdir(parents=True, exist_ok=True)
+        path = temp_dir / name
+        path.write_text(
+            "// Auto-generated play-mode probe.\n"
+            "internal static class {0} {{ internal const long Stamp = {1}L; }}\n".format(
+                path.stem, time.time_ns()
+            ),
+            encoding="utf-8",
+        )
+        return path
+
+    def _set_play_mode(self, base_url, playing):
+        literal = "true" if playing else "false"
+        exit_code, payload = self._exec_raw(
+            base_url,
+            "export default function run(ctx) {"
+            " const EditorApplication = puer.loadType('UnityEditor.EditorApplication');"
+            " EditorApplication.isPlaying = " + literal + ";"
+            " return { requested: " + literal + " }; }",
+        )
+        self.assertIsInstance(payload, dict, payload)
+        self.assertEqual(exit_code, 0, payload)
+
+    # -- Script Changes While Playing preference -----------------------------
+
+    def _read_preference(self, base_url):
+        return self._health(base_url)["refresh"].get("script_changes_while_playing")
+
+    def _set_preference(self, base_url, value):
+        exit_code, payload = self._exec_raw(
+            base_url,
+            "export default function run(ctx) {"
+            " const EditorPrefs = puer.loadType('UnityEditor.EditorPrefs');"
+            " EditorPrefs.SetInt('ScriptCompilationDuringPlay', " + str(int(value)) + ");"
+            " return { set: " + str(int(value)) + " }; }",
+        )
+        self.assertIsInstance(payload, dict, payload)
+        self.assertEqual(exit_code, 0, payload)
+
+    def _delete_preference(self, base_url):
+        exit_code, payload = self._exec_raw(
+            base_url,
+            "export default function run(ctx) {"
+            " const EditorPrefs = puer.loadType('UnityEditor.EditorPrefs');"
+            " EditorPrefs.DeleteKey('ScriptCompilationDuringPlay');"
+            " return { deleted: true }; }",
+        )
+        self.assertIsInstance(payload, dict, payload)
+        self.assertEqual(exit_code, 0, payload)
+
+    def _restore_preference_best_effort(self):
+        saved = self._saved_preference
+        if saved is None:
+            return
+        deadline = time.time() + 120
+        while time.time() < deadline:
+            try:
+                base_url = self._ensure_shared_host_ready()
+                if base_url is None:
+                    time.sleep(1.0)
+                    continue
+                if saved in self._LABEL_TO_VALUE:
+                    self._set_preference(base_url, self._LABEL_TO_VALUE[saved])
+                else:
+                    self._delete_preference(base_url)
+                return
+            except Exception:  # noqa: BLE001 - cleanup retries until restored.
+                time.sleep(1.0)
+
+    def _exit_play_mode_best_effort(self):
+        try:
+            base_url = self._ensure_shared_host_ready()
+            if base_url is not None:
+                self._set_play_mode(base_url, False)
+        except Exception:  # noqa: BLE001 - cleanup only.
+            pass
+
+    # -- waits ---------------------------------------------------------------
+
+    def _wait_for_refresh_state(self, base_url, suppressed, timeout_seconds=60):
+        deadline = time.time() + timeout_seconds
+        last = None
+        while time.time() < deadline:
+            health, _error = unity_session._probe_health(base_url, 1.5)
+            if health is None:
+                resolved, resolved_health = _scan_ready_control_endpoint(self.project_path)
+                if resolved is not None:
+                    base_url, health = resolved, resolved_health
+            refresh = health.get("refresh") if isinstance(health, dict) else None
+            last = refresh
+            if isinstance(refresh, dict) and bool(refresh.get("suppressed")) == suppressed:
+                return base_url, refresh
+            time.sleep(0.5)
+        self.fail("refresh suppressed state did not become {}: {}".format(suppressed, last))
+
+    def _wait_for_refresh_pending(self, base_url, timeout_seconds=30):
+        deadline = time.time() + timeout_seconds
+        last = None
+        while time.time() < deadline:
+            refresh = self._health(base_url).get("refresh")
+            last = refresh
+            if isinstance(refresh, dict) and refresh.get("pending") == "pending":
+                return refresh
+            time.sleep(0.25)
+        self.fail("change signal did not become pending: {}".format(last))
+
+    def _wait_for_play_exit(self, base_url, timeout_seconds=180):
+        """Wait until the Editor has left play mode, or until the compile starts."""
+        deadline = time.time() + timeout_seconds
+        last = None
+        while time.time() < deadline:
+            health, _error = unity_session._probe_health(base_url, 1.5)
+            if health is None:
+                resolved, resolved_health = _scan_ready_control_endpoint(self.project_path)
+                if resolved is not None:
+                    base_url, health = resolved, resolved_health
+            if health is not None:
+                last = health
+                if health.get("status") == "compiling":
+                    return base_url, health
+                refresh = health.get("refresh")
+                if isinstance(refresh, dict) and not refresh.get("suppressed"):
+                    return base_url, health
+            time.sleep(0.25)
+        self.fail("Editor did not leave play mode within {}s: {}".format(timeout_seconds, last))
+
+    # -- case ----------------------------------------------------------------
+
+    def test_play_mode_compile_block_then_settles_after_play_exit(self):
+        """End-to-end play-mode block: exec warning, wait block, exit, settle.
+
+        Forces "Recompile After Finished Playing" so the change made during play is
+        deferred and then compiled on exit -- the D6 hypothesis-2 path. tearDown
+        restores the saved preference.
+        """
+        base_url = self._base_url()
+        self.assertEqual(self._health(base_url)["refresh"]["pending"], "not_pending")
+        self._saved_preference = self._read_preference(base_url)
+
+        self._set_preference(base_url, 1)
+        self.assertEqual(
+            self._read_preference(base_url), "recompile_after_finished_playing"
+        )
+
+        self._set_play_mode(base_url, True)
+        base_url, _ = self._wait_for_refresh_state(base_url, suppressed=True)
+
+        # A real (imported) code change while playing: Unity defers it.
+        self._write_compile_triggering_probe("PlayBlockProbe.cs")
+        self._wait_for_refresh_pending(base_url)
+
+        exit_code, payload = self._exec_script(
+            base_url, "export default function run(ctx) { return { executedInPlay: true }; }"
+        )
+        self.assertEqual(exit_code, 0, payload)
+        self.assertEqual(payload["status"], "warning", payload)
+        self.assertEqual(payload["warning"], "compile_blocked_by_play_mode")
+        self.assertEqual(
+            payload["compile_blocked"]["script_changes_while_playing"],
+            "recompile_after_finished_playing",
+        )
+        self.assertTrue(
+            any("PlayBlockProbe" in path for path in payload["compile_blocked"]["pending_paths"]),
+            payload,
+        )
+
+        exit_code, payload, _, _ = _run_cli(
+            ["wait-for-compile", "--base-url", base_url, "--appear-timeout-seconds", "2"]
+        )
+        self.assertEqual(exit_code, 0, payload)
+        self.assertEqual(payload["result"]["status"], "compile_blocked", payload)
+        self.assertEqual(payload["result"]["reason"], "play_mode")
+        self.assertFalse(payload["result"]["compile_observed"])
+
+        # Leaving play mode lets the deferred compile start. That compile crosses a
+        # domain reload which can hide the compile edge from /health (the listener
+        # stops before the reload), so completion is confirmed by the pending signal
+        # clearing. wait-for-compile must then no longer report the play-mode block.
+        self._set_play_mode(base_url, False)
+        base_url, _ = self._wait_for_play_exit(base_url)
+        deadline = time.time() + 180
+        pending_state = None
+        while time.time() < deadline:
+            health, _err = unity_session._probe_health(base_url, 1.5)
+            if health is None:
+                resolved, resolved_health = _scan_ready_control_endpoint(self.project_path)
+                if resolved is not None:
+                    base_url, health = resolved, resolved_health
+            if health is not None:
+                refresh = health.get("refresh")
+                if isinstance(refresh, dict):
+                    pending_state = refresh.get("pending")
+                    if pending_state == "not_pending":
+                        break
+            time.sleep(0.5)
+        self.assertEqual(
+            pending_state,
+            "not_pending",
+            "the change made in play mode was not compiled after play mode exited",
+        )
+
+        exit_code, payload, _, _ = _run_cli(
+            ["wait-for-compile", "--base-url", base_url, "--appear-timeout-seconds", "2"]
+        )
+        self.assertEqual(exit_code, 0, payload)
+        self.assertNotEqual(payload["result"]["status"], "compile_blocked", payload)
+        self.assertIn(
+            payload["result"]["status"],
+            ("compile_settled", "no_compile_observed"),
+            payload,
+        )
 
 
 if __name__ == "__main__":

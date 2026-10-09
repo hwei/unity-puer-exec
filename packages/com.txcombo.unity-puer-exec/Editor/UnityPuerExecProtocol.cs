@@ -355,7 +355,8 @@ namespace UnityPuerExec
             string consoleLogPath = "",
             string refreshPending = "unknown",
             bool refreshSuppressed = false,
-            string refreshSuppressedReason = ""
+            string refreshSuppressedReason = "",
+            string scriptChangesWhilePlaying = "unknown"
         )
         {
             // The package identity is still observable while the Editor is
@@ -398,7 +399,8 @@ namespace UnityPuerExec
                 var refreshJson = ",\"refresh\":{" +
                     "\"pending\":\"" + JsonEscape(refreshPending) + "\"," +
                     "\"suppressed\":" + (refreshSuppressed ? "true" : "false") + "," +
-                    "\"suppressed_reason\":\"" + JsonEscape(refreshSuppressedReason) + "\"}";
+                    "\"suppressed_reason\":\"" + JsonEscape(refreshSuppressedReason) + "\"," +
+                    "\"script_changes_while_playing\":\"" + JsonEscape(scriptChangesWhilePlaying) + "\"}";
                 return "{\"ok\":true,\"status\":\"ready\",\"port\":" + port +
                        ",\"session_marker\":\"" + JsonEscape(sessionMarker) + "\"" +
                        baseUrlJson +

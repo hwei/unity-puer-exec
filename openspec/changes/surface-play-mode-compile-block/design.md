@@ -89,7 +89,10 @@ recompile_and_continue_playing / recompile_after_finished_playing /
 stop_playing_and_recompile) is sampled on the main thread in `OnEditorUpdate`, the same
 tick that already caches `isPlaying` / `isCompiling`, and stored in a volatile field. The
 health handler runs off the main thread and cannot call `EditorPrefs`. The key name is an Editor implementation detail, so a missing key or an
-unexpected value reports `unknown` rather than guessing.
+unexpected value reports `unknown` rather than guessing. In 2022.3.62f2 the backing enum
+is `UnityEditor.ScriptChangesDuringPlayOptions`, which is `internal` to the Editor
+assembly, so the server matches the stable integer values directly (the mapping above)
+rather than referencing the enum.
 
 ### D5. Interim continuation uses `exec`
 
@@ -116,6 +119,15 @@ Hypotheses, in the order they are cheapest to rule out on the validation host:
 The fix depends on which of these holds. 1 and 2 are CLI or guidance fixes within this
 change. 3 is routed to the existing blocker surface. 4 is host-specific and only
 recorded. 5 is passed on to `add-play-mode-commands`.
+
+**Reproduction outcome (validation host, 2022.3.62f2, Enter Play Mode Options on):**
+hypothesis 2 held, and only hypothesis 2. With `recompile_after_finished_playing`, the
+stop request returns success immediately but the Editor then runs the deferred compile
+and reloads the domain: the control endpoint was unreachable for ~15 s and play mode did
+not finish exiting for ~58 s. Settings 0 and 2 completed in under a second with no
+unreachable window. The measured record is in `validation.md`. Acting on this, the
+group-4 guidance names the reload window and orders `exec` (exit) -> `exec` (confirm play
+state) -> `wait-for-compile`, so an unreachable endpoint is not read as a failed stop.
 
 ## Risks / Trade-offs
 

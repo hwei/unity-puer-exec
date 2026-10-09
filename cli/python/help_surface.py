@@ -124,7 +124,7 @@ COMMAND_HELP = {
             "`unity-puer-exec wait-for-compile --project-path X:/project`",
             "A refresh (`AssetDatabase.Refresh()`, automatic or explicit) starts compilation asynchronously, so polling `/health` immediately can read `ready` before `compiling` ever appears and `get-compile-errors` then returns the previous compilation's stale messages. This command is edge-aware: it first waits, within a bounded appear window, for `compiling` to appear (or detects a compile already in progress), then waits for the editor to return to `ready` -- so a just-issued recompile is observed instead of racing a stale `ready`.",
             "Automatic refresh already settles a refresh-triggered compile before running your script. When you trigger a recompile yourself (for example with `CompilationPipeline.RequestScriptCompilation()`), call `wait-for-compile` before `get-compile-errors` so you observe the new cycle instead of the old one.",
-            "Trade-off: `AssetDatabase.Refresh()` only recompiles when it detects changed assets, so an unchanged project yields `no_compile_observed`. `CompilationPipeline.RequestScriptCompilation()` forces a recompile more deterministically; if a refresh reports `no_compile_observed` when you expected a rebuild, trigger compilation with `RequestScriptCompilation()` instead.",
+            "Trade-off: `AssetDatabase.Refresh()` only recompiles when it detects changed assets, so an unchanged project yields `no_compile_observed`. `CompilationPipeline.RequestScriptCompilation()` forces a recompile more deterministically; if a refresh reports `no_compile_observed` when you expected a rebuild, trigger compilation with `RequestScriptCompilation()` instead. That forced compile cannot help while the Editor is in play mode: Unity defers compilation until play mode exits, and this command reports `compile_blocked` for that case instead.",
             "Unity's ScriptUpdater consent dialog (`Some of this project's source files refer to API that has changed`) is auto-declined (`No`) while this command waits, so an unattended wait does not hang on it. A settled cycle that declined the dialog still reports `compile_settled` and also carries `warning = \"api_updater_declined\"` plus `warning_detail`.",
         ],
         "related_workflows": (),
@@ -150,7 +150,8 @@ COMMAND_HELP = {
         "status": {
             "success": [
                 "`completed` with `result.status` `compile_settled` (`compile_observed` true): a compile cycle was observed and the editor is `ready` again.",
-                "`completed` with `result.status` `no_compile_observed` (`compile_observed` false): no compilation appeared within the appear window and none was in progress; retry, or trigger compilation with `RequestScriptCompilation()` if you expected a rebuild.",
+                "`completed` with `result.status` `no_compile_observed` (`compile_observed` false): no compilation appeared within the appear window and none was in progress; retry, or trigger compilation with `RequestScriptCompilation()` if you expected a rebuild. Forcing a compile cannot help while the Editor is in play mode.",
+                "`completed` with `result.status` `compile_blocked` (`compile_observed` false): a compile-triggering change is pending but the Editor is in play mode, so Unity defers compilation. The result names `play_mode` as the reason and the command returns immediately without waiting out the appear window; exit play mode, then re-run `wait-for-compile`.",
                 "When a ScriptUpdater consent dialog was declined while waiting, `compile_settled` also carries `warning = \"api_updater_declined\"` plus `warning_detail`; the exit code is unchanged.",
             ],
             "failure": [
@@ -397,6 +398,7 @@ COMMAND_HELP = {
             "success": [
                 "`completed`: the script finished; the accepted response includes `request_id`, `log_range`, `brief_sequence`, and the default-exported entry function's immediate return value is in `result`.",
                 "`running`: the request is still active; continue with `wait-for-exec --request-id ...` or the script's own observation workflow. The response always includes `log_range` and `brief_sequence` for the observation window so far.",
+                "When the Editor is in play mode with a compile-triggering change pending, the response is `status: warning` with `warning: compile_blocked_by_play_mode`, a `compile_blocked` object naming `play_mode`, and `warning_detail`. The script ran, but against code that does not include the pending change; exit play mode before waiting for the deferred compile.",
                 "When `phase` is present, it names the current request stage without changing the top-level `running` contract; first-version values may include `refreshing`, `compiling`, and `executing`.",
                 "When this command declined a ScriptUpdater consent dialog while preparing or waiting, the payload keeps its primary status and also carries `warning = \"api_updater_declined\"` plus `warning_detail`.",
             ],
@@ -849,6 +851,38 @@ _OPTIONAL_FORWARDED_ARGS = {
         ("--unity-log-path", "unity_log_path"),
     ),
 }
+
+_PLAY_MODE_EXIT_STEPS = [
+    {
+        "command": "exec",
+        "when": "exit play mode so Unity can compile the pending change; a successful response only means the transition was requested, and the Editor may take tens of seconds to finish exiting while it reloads the domain",
+        "argv_template": [
+            "unity-puer-exec", "exec",
+            "--project-path", "{project_path}",
+            "--code",
+            "export default function run(ctx) { const EditorApplication = puer.loadType('UnityEditor.EditorApplication'); EditorApplication.isPlaying = false; return { requested: false }; }",
+        ],
+    },
+    {
+        "command": "exec",
+        "when": "confirm the Editor actually left play mode before waiting for the compile; an unreachable control endpoint during this window is the domain reload in progress, not a failed stop",
+        "argv_template": [
+            "unity-puer-exec", "exec",
+            "--project-path", "{project_path}",
+            "--code",
+            "export default function run(ctx) { const EditorApplication = puer.loadType('UnityEditor.EditorApplication'); return { isPlaying: EditorApplication.isPlaying }; }",
+        ],
+    },
+    {
+        "command": "wait-for-compile",
+        "when": "the Editor is back in edit mode; wait for the deferred compile to settle",
+        "argv_template": [
+            "unity-puer-exec", "wait-for-compile",
+            "--project-path", "{project_path}",
+        ],
+    },
+]
+
 
 GUIDANCE_MATRIX = {
     # --- exec ---
@@ -1405,7 +1439,7 @@ GUIDANCE_MATRIX = {
         ],
     },
     ("wait-for-compile", "no_compile_observed"): {
-        "situation": "No compilation appeared within the appear window and none was in progress. If a refresh ran but no assets changed, AssetDatabase.Refresh() triggers no compile; trigger CompilationPipeline.RequestScriptCompilation() if you expected a rebuild, otherwise proceed.",
+        "situation": "No compilation appeared within the appear window and none was in progress. If a refresh ran but no assets changed, AssetDatabase.Refresh() triggers no compile. If the Editor is in play mode, compilation is deferred until play mode exits and forcing a script compilation will not help; otherwise, trigger CompilationPipeline.RequestScriptCompilation() only if you expected a rebuild.",
         "next_steps": [
             {
                 "command": "get-compile-errors",
@@ -1416,6 +1450,18 @@ GUIDANCE_MATRIX = {
                 ],
             },
         ],
+    },
+    ("wait-for-compile", "compile_blocked"): {
+        "situation": (
+            "The compile cannot start while the Editor is in play mode: a "
+            "compile-triggering change is pending, but Unity defers compilation until "
+            "play mode exits. The pending change is preserved. Forcing a script "
+            "compilation will not help until play mode ends. Exiting play mode may take "
+            "tens of seconds while the Editor compiles and reloads the domain, and the "
+            "control endpoint can be unreachable during that window: that is progress, "
+            "not a failed stop."
+        ),
+        "next_steps": _PLAY_MODE_EXIT_STEPS,
     },
     # --- get-compile-errors / get-compile-warnings ---
     ("get-compile-errors", "completed"): {
@@ -1537,6 +1583,27 @@ GUIDANCE_MATRIX = {
     },
     ("get-compile-warnings", "failed"): {
         "situation": "An unexpected failure occurred while retrieving compile warnings. Check the error field for details.",
+    },
+}
+
+
+# Warning-code-keyed guidance. A response has only one `warning` code, and the same
+# top-level status can carry different warnings (for example async_result_not_supported
+# versus compile_blocked_by_play_mode), so the matrix lookup uses the CLI-owned warning
+# code as the most specific key and falls back to (command, status).
+# The play-mode exit sequence itself is defined above GUIDANCE_MATRIX
+# (_PLAY_MODE_EXIT_STEPS) so both matrices can reference it at import time.
+WARNING_GUIDANCE_MATRIX = {
+    ("exec", "compile_blocked_by_play_mode"): {
+        "situation": (
+            "The script ran, but a compile-triggering change is still pending and the "
+            "Editor is in play mode. Unity defers compilation until play mode exits, so "
+            "the code that just ran does not include that change. The pending change is "
+            "preserved. Exiting play mode may take tens of seconds while the Editor "
+            "compiles and reloads the domain, and the control endpoint can be "
+            "unreachable during that window: that is progress, not a failed stop."
+        ),
+        "next_steps": _PLAY_MODE_EXIT_STEPS,
     },
 }
 
@@ -1768,8 +1835,10 @@ def _build_argv(template, target_command, context):
     return argv
 
 
-def build_next_steps(command, status, context):
-    entry = GUIDANCE_MATRIX.get((command, status))
+def build_next_steps(command, status, context, warning=None):
+    entry = WARNING_GUIDANCE_MATRIX.get((command, warning)) if warning else None
+    if entry is None:
+        entry = GUIDANCE_MATRIX.get((command, status))
     if entry is None:
         return None
     templates = entry.get("next_steps")
@@ -1790,10 +1859,12 @@ def build_next_steps(command, status, context):
     return result if result else None
 
 
-def build_situation(command, status, guard=None):
+def build_situation(command, status, guard=None, warning=None):
     if guard is not None and guard in VERSION_MISMATCH_SITUATIONS:
         return VERSION_MISMATCH_SITUATIONS[guard]
-    entry = GUIDANCE_MATRIX.get((command, status))
+    entry = WARNING_GUIDANCE_MATRIX.get((command, warning)) if warning else None
+    if entry is None:
+        entry = GUIDANCE_MATRIX.get((command, status))
     if entry is None:
         return None
     return entry.get("situation")

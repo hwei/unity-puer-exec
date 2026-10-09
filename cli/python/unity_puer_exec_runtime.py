@@ -50,7 +50,20 @@ HEALTH_STATUS_COMPILING = "compiling"
 # Edge-aware wait-for-compile outcomes (see openspec compile-wait spec).
 COMPILE_OUTCOME_READY = "ready"
 COMPILE_OUTCOME_NONE = "no_compile_observed"
+COMPILE_OUTCOME_BLOCKED = "compile_blocked"
 COMPILE_OUTCOME_TIMEOUT = "settle_timeout"
+
+# Play-mode compile block (see surface-play-mode-compile-block). Unity defers
+# compilation until play mode exits, so a pending change cannot compile while the
+# Editor is playing. The condition is named rather than reported as a plain success.
+PLAY_MODE_REASON = "play_mode"
+WARNING_COMPILE_BLOCKED_BY_PLAY_MODE = "compile_blocked_by_play_mode"
+WARNING_DETAIL_COMPILE_BLOCKED_BY_PLAY_MODE = (
+    "The script ran, but a compile-triggering change is still pending and the Editor "
+    "is in play mode. Unity defers compilation until play mode exits, so the result "
+    "does not include the pending change."
+)
+SCRIPT_CHANGES_WHILE_PLAYING_UNKNOWN = "unknown"
 # ScriptUpdater consent dialog recovery (see api-updater-recovery spec). This is a
 # sidecar field on whatever status the command would otherwise return, never a
 # replacement for `status: "warning"` (the async-exec-result contract).
@@ -686,12 +699,14 @@ def _attach_guidance(payload, command, status, args, request_id=None):
         _log_end = log_range.get("end")
         if _log_start is not None and _log_end is not None:
             context["log_range_span"] = "{}-{}".format(_log_start, _log_end)
-    next_steps = help_surface.build_next_steps(command, status, context)
+    next_steps = help_surface.build_next_steps(command, status, context, warning=payload.get("warning"))
     if next_steps:
         payload["next_steps"] = next_steps
     detail = payload.get("version_mismatch")
     guard = detail.get("guard") if isinstance(detail, dict) else None
-    situation = help_surface.build_situation(command, status, guard=guard)
+    situation = help_surface.build_situation(
+        command, status, guard=guard, warning=payload.get("warning")
+    )
     if situation:
         payload["situation"] = situation
     _maybe_hint_puer_prefix(payload, command, args=args)
@@ -916,6 +931,53 @@ def _probe_compile_health(base_url, health_timeout_seconds):
     return unity_session._probe_health(base_url, health_timeout_seconds)
 
 
+def _script_changes_while_playing_from_health(payload):
+    """Read the Editor's play-time compile preference from a health payload.
+
+    The server reports one of the three preference labels, or ``unknown`` when the
+    key is absent or unrecognized. A missing or blank field is treated the same as
+    ``unknown`` rather than guessing.
+    """
+    refresh = payload.get("refresh") if isinstance(payload, dict) else None
+    if isinstance(refresh, dict):
+        value = refresh.get("script_changes_while_playing")
+        if isinstance(value, str) and value:
+            return value
+    return SCRIPT_CHANGES_WHILE_PLAYING_UNKNOWN
+
+
+def _read_play_mode_preference(base_url, health_timeout_seconds):
+    """Best-effort health read of the play-time compile preference.
+
+    Only called when the Editor is already known to be blocking a compile in play
+    mode, so the extra probe never runs on the ordinary exec path. A transport
+    failure degrades to ``unknown`` rather than failing the exec response.
+    """
+    try:
+        payload, _error = _probe_compile_health(base_url, health_timeout_seconds)
+    except Exception:  # noqa: BLE001 - preference is advisory only.
+        return SCRIPT_CHANGES_WHILE_PLAYING_UNKNOWN
+    return _script_changes_while_playing_from_health(payload)
+
+
+def _is_play_mode_compile_block(payload):
+    """True when health shows a pending change suppressed by play mode.
+
+    Requires a positive pending state. ``unknown`` is not treated as pending, so an
+    invalidated signal never fabricates a compile block.
+    """
+    if not isinstance(payload, dict):
+        return False
+    refresh = payload.get("refresh")
+    if not isinstance(refresh, dict):
+        return False
+    return (
+        refresh.get("pending") == "pending"
+        and bool(refresh.get("suppressed"))
+        and refresh.get("suppressed_reason") == PLAY_MODE_REASON
+    )
+
+
 def _record_observed_status(observed, status):
     if status is not None and (not observed or observed[-1] != status):
         observed.append(status)
@@ -976,6 +1038,17 @@ def wait_for_compile_cycle(
         payload, _error = probe_health_fn(base_url, health_timeout_seconds)
         status = payload.get("status") if isinstance(payload, dict) else None
         _record_observed_status(observed, status)
+        # A pending change that cannot compile because the Editor is in play mode is
+        # named immediately, before the appear window settles. An already-running
+        # compile (status compiling) has no refresh block and still settles normally.
+        if _is_play_mode_compile_block(payload):
+            return {
+                "outcome": COMPILE_OUTCOME_BLOCKED,
+                "observed_health": observed,
+                "api_updater_declines": declines,
+                "reason": PLAY_MODE_REASON,
+                "script_changes_while_playing": _script_changes_while_playing_from_health(payload),
+            }
         # Poll for a blocking consent dialog for the whole appear window, not only
         # once `compiling` is observed.
         maybe_dismiss(payload)
@@ -1082,6 +1155,70 @@ def _inject_refresh_block_into_stdout(stdout_text, refresh_block):
         return stdout_text
     body["refresh"] = refresh_block
     return emit_payload(body)
+
+
+def _response_body_and_stream(stdout_text, stderr_text):
+    """Return the JSON response body and which stream carried it.
+
+    exec routes successes to stdout and some failures (a thrown script) to stderr,
+    so the play-mode rewrite has to consider both. stdout is preferred when both
+    parse, matching the CLI's normal stream selection.
+    """
+    for stream, text in (("stdout", stdout_text), ("stderr", stderr_text)):
+        if not text:
+            continue
+        try:
+            body = json.loads(text)
+        except (TypeError, ValueError):
+            continue
+        if isinstance(body, dict):
+            return body, stream
+    return None, None
+
+
+def _build_compile_blocked(pending_paths, script_changes_while_playing):
+    return {
+        "reason": PLAY_MODE_REASON,
+        "pending_paths": list(pending_paths),
+        "script_changes_while_playing": (
+            script_changes_while_playing or SCRIPT_CHANGES_WHILE_PLAYING_UNKNOWN
+        ),
+    }
+
+
+def _apply_play_mode_compile_block(stdout_text, stderr_text, base_url, args):
+    """Disclose a compile-triggering change that play mode prevents from compiling.
+
+    The refresh block already reports ``skipped_reason: play_mode`` and the pending
+    paths, but a ``completed`` exec then reads as an ordinary success. When a change
+    is actually pending, attach a ``compile_blocked`` object and turn a plain
+    ``completed`` into a warning. A failure status or an existing warning (for
+    example ``async_result_not_supported``) keeps its status and code; the object is
+    the reliable signal in every case.
+    """
+    body, source = _response_body_and_stream(stdout_text, stderr_text)
+    if body is None:
+        return stdout_text, stderr_text
+    refresh = body.get("refresh")
+    if not isinstance(refresh, dict) or refresh.get("skipped_reason") != PLAY_MODE_REASON:
+        return stdout_text, stderr_text
+    pending_paths = refresh.get("paths_changed")
+    if not isinstance(pending_paths, list) or not pending_paths:
+        return stdout_text, stderr_text
+
+    preference = _read_play_mode_preference(
+        base_url,
+        getattr(args, "health_timeout_seconds", unity_session.DEFAULT_HEALTH_TIMEOUT_SECONDS),
+    )
+    body["compile_blocked"] = _build_compile_blocked(pending_paths, preference)
+    if body.get("status") == "completed":
+        body["status"] = "warning"
+        body["warning"] = WARNING_COMPILE_BLOCKED_BY_PLAY_MODE
+        body["warning_detail"] = WARNING_DETAIL_COMPILE_BLOCKED_BY_PLAY_MODE
+    serialized = emit_payload(body)
+    if source == "stdout":
+        return serialized, stderr_text
+    return stdout_text, serialized
 
 
 def _settle_after_automatic_refresh(args, selector, session, base_url, recovery):
@@ -1364,6 +1501,7 @@ def _run_exec_impl(args, recovery):
     )
     stdout_text = _inject_refresh_block_into_stdout(stdout_text, refresh_block)
     stdout_text = _inject_log_range_into_stdout(stdout_text, log_path, log_start, _capture_log_offset(log_path))
+    stdout_text, stderr_text = _apply_play_mode_compile_block(stdout_text, stderr_text, base_url, args)
     stdout_text, stderr_text = _inject_guidance_into_response(stdout_text, stderr_text, "exec", args, request_id=request_id)
     return exit_code, stdout_text, stderr_text
 
@@ -1527,6 +1665,27 @@ def _run_wait_for_compile_impl(args, recovery):
     recovery.record(cycle.get("api_updater_declines", 0))
     outcome = cycle["outcome"]
     diagnostics = {"observed_health": cycle["observed_health"]}
+
+    if outcome == COMPILE_OUTCOME_BLOCKED:
+        # The pending change cannot compile until play mode exits. Name the block
+        # instead of reporting no_compile_observed, and return without waiting out
+        # the appear window.
+        payload = success_payload(
+            "wait-for-compile",
+            session=session,
+            result={
+                "status": "compile_blocked",
+                "compile_observed": False,
+                "reason": cycle.get("reason", PLAY_MODE_REASON),
+                "script_changes_while_playing": cycle.get(
+                    "script_changes_while_playing", SCRIPT_CHANGES_WHILE_PLAYING_UNKNOWN
+                ),
+            },
+            include_diagnostics=args.include_diagnostics,
+            diagnostics=diagnostics,
+        )
+        _attach_guidance(payload, "wait-for-compile", "compile_blocked", args)
+        return 0, emit_payload(payload), ""
 
     if outcome == COMPILE_OUTCOME_READY:
         payload = success_payload(

@@ -17,6 +17,7 @@ import unity_puer_exec_runtime  # type: ignore
 import unity_session  # type: ignore
 import unity_session_common  # type: ignore
 import unity_session_logs  # type: ignore
+import help_surface  # type: ignore
 
 from tests import version_test_support
 
@@ -3066,6 +3067,34 @@ def _probe_from(statuses):
     return probe
 
 
+def _probe_payloads(payloads):
+    """Build a probe_health_fn returning full health payloads.
+
+    The final payload repeats once the sequence is exhausted, so a single-element
+    sequence models a steady state. A None entry simulates a transport error.
+    """
+    seq = list(payloads)
+
+    def probe(base_url, timeout_seconds):
+        item = seq.pop(0) if len(seq) > 1 else seq[0]
+        if item is None:
+            return None, "connection refused"
+        return item, None
+
+    return probe
+
+
+def _play_mode_health(**refresh_overrides):
+    refresh = {
+        "pending": "pending",
+        "suppressed": True,
+        "suppressed_reason": "play_mode",
+        "script_changes_while_playing": "recompile_after_finished_playing",
+    }
+    refresh.update(refresh_overrides)
+    return {"ok": True, "status": "ready", "refresh": refresh}
+
+
 class WaitForCompileCycleTests(unittest.TestCase):
     def _run(self, statuses, appear=10.0, settle=10.0):
         return unity_puer_exec_runtime.wait_for_compile_cycle(
@@ -3159,6 +3188,64 @@ class WaitForCompileCycleTests(unittest.TestCase):
         self.assertEqual(result["outcome"], unity_puer_exec_runtime.COMPILE_OUTCOME_READY)
         self.assertEqual(declined_pids, [9876])
 
+    def test_play_mode_pending_change_returns_compile_blocked_without_waiting(self):
+        clock = _FakeClock()
+        result = unity_puer_exec_runtime.wait_for_compile_cycle(
+            "http://127.0.0.1:55231",
+            30.0,
+            30.0,
+            unity_session.DEFAULT_HEALTH_TIMEOUT_SECONDS,
+            probe_health_fn=_probe_payloads([_play_mode_health()]),
+            time_ref=clock,
+        )
+
+        self.assertEqual(result["outcome"], unity_puer_exec_runtime.COMPILE_OUTCOME_BLOCKED)
+        self.assertEqual(result["reason"], "play_mode")
+        self.assertEqual(
+            result["script_changes_while_playing"], "recompile_after_finished_playing"
+        )
+        # The appear window was never entered: only one probe, no sleeping.
+        self.assertEqual(clock.now, 0.0)
+        self.assertEqual(result["observed_health"], ["ready"])
+
+    def test_play_mode_with_nothing_pending_still_reports_no_compile_observed(self):
+        result = unity_puer_exec_runtime.wait_for_compile_cycle(
+            "http://127.0.0.1:55231",
+            2.0,
+            2.0,
+            unity_session.DEFAULT_HEALTH_TIMEOUT_SECONDS,
+            probe_health_fn=_probe_payloads([
+                _play_mode_health(pending="not_pending")
+            ]),
+            time_ref=_FakeClock(),
+        )
+
+        self.assertEqual(result["outcome"], unity_puer_exec_runtime.COMPILE_OUTCOME_NONE)
+
+    def test_play_mode_unknown_pending_is_not_treated_as_a_block(self):
+        result = unity_puer_exec_runtime.wait_for_compile_cycle(
+            "http://127.0.0.1:55231",
+            2.0,
+            2.0,
+            unity_session.DEFAULT_HEALTH_TIMEOUT_SECONDS,
+            probe_health_fn=_probe_payloads([_play_mode_health(pending="unknown")]),
+            time_ref=_FakeClock(),
+        )
+
+        self.assertEqual(result["outcome"], unity_puer_exec_runtime.COMPILE_OUTCOME_NONE)
+
+    def test_compile_already_in_progress_during_play_mode_still_settles(self):
+        result = unity_puer_exec_runtime.wait_for_compile_cycle(
+            "http://127.0.0.1:55231",
+            10.0,
+            10.0,
+            unity_session.DEFAULT_HEALTH_TIMEOUT_SECONDS,
+            probe_health_fn=_probe_payloads([{"ok": False, "status": "compiling"}, {"ok": True, "status": "ready"}]),
+            time_ref=_FakeClock(),
+        )
+
+        self.assertEqual(result["outcome"], unity_puer_exec_runtime.COMPILE_OUTCOME_READY)
+
 
 class WaitForCompileCommandTests(unittest.TestCase):
     def test_base_url_no_compile_observed_returns_distinct_outcome(self):
@@ -3180,6 +3267,53 @@ class WaitForCompileCommandTests(unittest.TestCase):
         self.assertEqual(body["operation"], "wait-for-compile")
         self.assertEqual(body["result"]["status"], "no_compile_observed")
         self.assertFalse(body["result"]["compile_observed"])
+
+    def test_base_url_play_mode_block_returns_compile_blocked(self):
+        with mock.patch.object(
+            unity_puer_exec_runtime, "time", _FakeClock()
+        ), mock.patch.object(
+            unity_puer_exec_runtime,
+            "_probe_compile_health",
+            _probe_payloads([_play_mode_health()]),
+        ):
+            exit_code, stdout, stderr = unity_puer_exec.run_cli(
+                ["wait-for-compile", "--base-url", "http://127.0.0.1:55231", "--appear-timeout-seconds", "2"]
+            )
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(stderr, "")
+        body = json.loads(stdout)
+        self.assertEqual(body["status"], "completed")
+        self.assertEqual(body["result"]["status"], "compile_blocked")
+        self.assertFalse(body["result"]["compile_observed"])
+        self.assertEqual(body["result"]["reason"], "play_mode")
+        self.assertEqual(
+            body["result"]["script_changes_while_playing"],
+            "recompile_after_finished_playing",
+        )
+        # Guidance leads out of play mode and never suggests forcing a compile.
+        self.assertIn("play mode", body["situation"])
+        self.assertIn("reload", body["situation"].lower())
+        steps = body["next_steps"]
+        self.assertTrue(any(step["command"] == "wait-for-compile" for step in steps))
+        self.assertTrue(any(step["command"] == "exec" for step in steps))
+        self.assertNotIn("RequestScriptCompilation", json.dumps(steps))
+
+    def test_base_url_play_mode_block_uses_unknown_preference_fallback(self):
+        health = _play_mode_health()
+        del health["refresh"]["script_changes_while_playing"]
+        with mock.patch.object(
+            unity_puer_exec_runtime, "time", _FakeClock()
+        ), mock.patch.object(
+            unity_puer_exec_runtime, "_probe_compile_health", _probe_payloads([health])
+        ):
+            exit_code, stdout, stderr = unity_puer_exec.run_cli(
+                ["wait-for-compile", "--base-url", "http://127.0.0.1:55231"]
+            )
+
+        body = json.loads(stdout)
+        self.assertEqual(body["result"]["status"], "compile_blocked")
+        self.assertEqual(body["result"]["script_changes_while_playing"], "unknown")
 
     def test_base_url_compile_settled_returns_completed(self):
         with mock.patch.object(
@@ -3419,6 +3553,201 @@ class ApiUpdaterRecoveryCommandTests(unittest.TestCase):
         exit_code, stdout, stderr = unity_puer_exec.run_cli(["exec", "--help-status"])
         self.assertEqual(exit_code, 0)
         self.assertIn("api_updater_declined", stdout)
+
+
+class ExecPlayModeCompileBlockTests(unittest.TestCase):
+    """Exec discloses a compile blocked by play mode (surface-play-mode-compile-block)."""
+
+    SCRIPT = "export default function run(ctx) { return { value: 1 }; }"
+
+    def _play_mode_refresh(self, paths):
+        return {
+            "triggered": False,
+            "reason": "",
+            "paths_changed": paths,
+            "skipped_reason": "play_mode",
+            "settle_outcome": "not_attempted",
+            "elapsed_ms": 0,
+        }
+
+    def _completed_body(self, paths):
+        return {
+            "ok": True,
+            "status": "completed",
+            "operation": "exec",
+            "request_id": "R-play",
+            "result": {"value": 1},
+            "refresh": self._play_mode_refresh(paths),
+        }
+
+    def _run_exec(self, invoke_return, health_preference=None):
+        health = _play_mode_health()
+        if health_preference is not None:
+            health["refresh"]["script_changes_while_playing"] = health_preference
+        with mock.patch.object(
+            unity_puer_exec.direct_exec_client, "invoke_command", return_value=invoke_return
+        ), mock.patch.object(
+            unity_puer_exec_runtime, "time", _FakeClock()
+        ), mock.patch.object(
+            unity_puer_exec_runtime, "_probe_compile_health", _probe_payloads([health])
+        ):
+            return unity_puer_exec.run_cli(
+                [
+                    "exec",
+                    "--base-url", "http://127.0.0.1:55231",
+                    "--code", self.SCRIPT,
+                    "--request-id", "R-play",
+                ]
+            )
+
+    def test_completed_becomes_warning_with_compile_blocked(self):
+        exit_code, stdout, stderr = self._run_exec(
+            (0, json.dumps(self._completed_body(["C:/Project/Assets/A.cs"])), ""),
+            health_preference="stop_playing_and_recompile",
+        )
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(stderr, "")
+        body = json.loads(stdout)
+        self.assertEqual(body["status"], "warning")
+        self.assertEqual(body["warning"], "compile_blocked_by_play_mode")
+        self.assertIn("warning_detail", body)
+        # The script still ran and its return value survives.
+        self.assertEqual(body["result"], {"value": 1})
+        blocked = body["compile_blocked"]
+        self.assertEqual(blocked["reason"], "play_mode")
+        self.assertEqual(blocked["pending_paths"], ["C:/Project/Assets/A.cs"])
+        self.assertEqual(blocked["script_changes_while_playing"], "stop_playing_and_recompile")
+        # Guidance leads out of play mode and never picks the wrong remedy.
+        self.assertIn("play mode", body["situation"])
+        self.assertIn("reload", body["situation"].lower())
+        self.assertTrue(any(step["command"] == "wait-for-compile" for step in body["next_steps"]))
+        self.assertTrue(any(step["command"] == "exec" for step in body["next_steps"]))
+        self.assertNotIn("RequestScriptCompilation", json.dumps(body["next_steps"]))
+        # The reload window is named so an unreachable endpoint is not read as a failure.
+        self.assertIn("unreachable", json.dumps(body["next_steps"]))
+
+    def test_nothing_pending_stays_completed_without_compile_blocked(self):
+        exit_code, stdout, stderr = self._run_exec(
+            (0, json.dumps(self._completed_body([])), "")
+        )
+
+        body = json.loads(stdout)
+        self.assertEqual(body["status"], "completed")
+        self.assertNotIn("compile_blocked", body)
+        self.assertNotIn("warning", body)
+
+    def test_script_failure_keeps_failure_status_and_still_carries_object(self):
+        failure = {
+            "ok": False,
+            "status": "failed",
+            "operation": "exec",
+            "request_id": "R-play",
+            "error": "TypeError: boom",
+            "refresh": self._play_mode_refresh(["C:/Project/Assets/B.cs"]),
+        }
+        exit_code, stdout, stderr = self._run_exec((1, "", json.dumps(failure)))
+
+        self.assertEqual(exit_code, 1)
+        body = json.loads(stderr)
+        self.assertEqual(body["status"], "failed")
+        self.assertEqual(body["compile_blocked"]["reason"], "play_mode")
+        self.assertEqual(body["compile_blocked"]["pending_paths"], ["C:/Project/Assets/B.cs"])
+
+    def test_async_warning_keeps_its_code_alongside_the_block(self):
+        async_warning = {
+            "ok": True,
+            "status": "warning",
+            "operation": "exec",
+            "request_id": "R-play",
+            "warning": "async_result_not_supported",
+            "warning_detail": "The entry function returned a Promise.",
+            "refresh": self._play_mode_refresh(["C:/Project/Assets/C.cs"]),
+        }
+        exit_code, stdout, stderr = self._run_exec((0, json.dumps(async_warning), ""))
+
+        self.assertEqual(exit_code, 0)
+        body = json.loads(stdout)
+        self.assertEqual(body["status"], "warning")
+        self.assertEqual(body["warning"], "async_result_not_supported")
+        self.assertEqual(body["compile_blocked"]["reason"], "play_mode")
+
+    def test_completed_without_play_mode_skip_is_untouched(self):
+        completed = {
+            "ok": True,
+            "status": "completed",
+            "operation": "exec",
+            "request_id": "R-play",
+            "result": {"value": 1},
+            "refresh": {
+                "triggered": False,
+                "reason": "no_pending_change",
+                "paths_changed": [],
+                "skipped_reason": "",
+                "settle_outcome": "not_attempted",
+                "elapsed_ms": 0,
+            },
+        }
+        exit_code, stdout, stderr = self._run_exec((0, json.dumps(completed), ""))
+
+        body = json.loads(stdout)
+        self.assertEqual(body["status"], "completed")
+        self.assertNotIn("compile_blocked", body)
+
+    def test_help_status_lists_compile_blocked_by_play_mode(self):
+        exit_code, stdout, stderr = unity_puer_exec.run_cli(["exec", "--help-status"])
+        self.assertEqual(exit_code, 0)
+        self.assertIn("compile_blocked_by_play_mode", stdout)
+
+        entry = help_surface.WARNING_GUIDANCE_MATRIX[("exec", "compile_blocked_by_play_mode")]
+        self.assertIn("situation", entry)
+        self.assertIn("play mode", entry["situation"])
+        self.assertNotIn("RequestScriptCompilation", json.dumps(entry["next_steps"]))
+
+    def test_wait_for_compile_help_status_lists_compile_blocked(self):
+        exit_code, stdout, stderr = unity_puer_exec.run_cli(["wait-for-compile", "--help-status"])
+        self.assertEqual(exit_code, 0)
+        self.assertIn("compile_blocked", stdout)
+
+        entry = help_surface.GUIDANCE_MATRIX[("wait-for-compile", "compile_blocked")]
+        self.assertIn("play mode", entry["situation"])
+        self.assertNotIn("RequestScriptCompilation", json.dumps(entry["next_steps"]))
+        self.assertNotIn("RequestScriptCompilation", entry["situation"])
+
+    def test_no_compile_observed_guidance_warns_about_play_mode(self):
+        entry = help_surface.GUIDANCE_MATRIX[("wait-for-compile", "no_compile_observed")]
+        self.assertIn("play mode", entry["situation"])
+        self.assertNotIn("RequestScriptCompilation", json.dumps(entry["next_steps"]))
+
+
+class ScriptChangesWhilePlayingParsingTests(unittest.TestCase):
+    """Python-side read of the server's Script Changes While Playing preference."""
+
+    def test_known_labels_are_passed_through(self):
+        for label in (
+            "recompile_and_continue_playing",
+            "recompile_after_finished_playing",
+            "stop_playing_and_recompile",
+        ):
+            payload = {"refresh": {"script_changes_while_playing": label}}
+            self.assertEqual(
+                unity_puer_exec_runtime._script_changes_while_playing_from_health(payload),
+                label,
+            )
+
+    def test_missing_field_or_payload_falls_back_to_unknown(self):
+        self.assertEqual(
+            unity_puer_exec_runtime._script_changes_while_playing_from_health({"refresh": {}}),
+            "unknown",
+        )
+        self.assertEqual(
+            unity_puer_exec_runtime._script_changes_while_playing_from_health({}),
+            "unknown",
+        )
+        self.assertEqual(
+            unity_puer_exec_runtime._script_changes_while_playing_from_health(None),
+            "unknown",
+        )
 
 
 class _CompileCycleClock:

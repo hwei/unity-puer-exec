@@ -192,6 +192,13 @@ namespace UnityPuerExec
         // report refresh suppression without reading a main-thread Editor API.
         private static volatile bool isPlaying;
 
+        // The Editor's "Script Changes While Playing" preference, sampled on the main
+        // thread for the same reason as isPlaying. EditorPrefs is main-thread-only, so
+        // the health handler (listener thread) reads this snapshot instead. The key is
+        // an Editor implementation detail; a missing key or an unexpected value reports
+        // "unknown" rather than guessing.
+        private static volatile string scriptChangesWhilePlaying = "unknown";
+
         // Stack-trace logging snapshot. Application.GetStackTraceLogType is treated as
         // main-thread-only, so these are sampled in OnEditorUpdate (main thread) and read
         // from WriteJsonAsync on the listener thread. When any log type is None, runtime
@@ -571,7 +578,8 @@ namespace UnityPuerExec
                             consoleLogPath: cachedConsoleLogPath,
                             refreshPending: DescribeRefreshPending(UnityPuerExecImportChangeTracker.GetPendingState()),
                             refreshSuppressed: isPlaying,
-                            refreshSuppressedReason: isPlaying ? "play_mode" : ""
+                            refreshSuppressedReason: isPlaying ? "play_mode" : "",
+                            scriptChangesWhilePlaying: scriptChangesWhilePlaying
                         )
                     );
                     return;
@@ -1348,11 +1356,46 @@ namespace UnityPuerExec
                 || error == StackTraceLogType.None;
         }
 
+        // Maps the Editor's "Script Changes While Playing" preference to its stable
+        // label. Sampled every tick alongside the other main-thread editor state.
+        private static void SampleScriptChangesWhilePlaying()
+        {
+            scriptChangesWhilePlaying = DescribeScriptChangesWhilePlaying();
+        }
+
+        private static string DescribeScriptChangesWhilePlaying()
+        {
+            try
+            {
+                // The int overload treats an absent key as the supplied default, so -1
+                // unambiguously means "not configured" rather than the enum's zero value.
+                // The Editor's ScriptChangesDuringPlayOptions enum is internal, so the
+                // stable int values are matched directly: 0 RecompileAndContinuePlaying,
+                // 1 RecompileAfterFinishedPlaying, 2 StopPlayingAndRecompile.
+                switch (EditorPrefs.GetInt("ScriptCompilationDuringPlay", -1))
+                {
+                    case 0:
+                        return "recompile_and_continue_playing";
+                    case 1:
+                        return "recompile_after_finished_playing";
+                    case 2:
+                        return "stop_playing_and_recompile";
+                    default:
+                        return "unknown";
+                }
+            }
+            catch
+            {
+                return "unknown";
+            }
+        }
+
         private static void OnEditorUpdate()
         {
             isCompiling = EditorApplication.isCompiling;
             isUpdating = EditorApplication.isUpdating;
             isPlaying = EditorApplication.isPlaying;
+            SampleScriptChangesWhilePlaying();
             SampleStackTraceLogTypes();
             RefreshConsoleLogPathCache();
 
