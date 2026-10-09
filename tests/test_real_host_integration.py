@@ -881,6 +881,13 @@ _OWN_BOUNDARY_INTEGRATION_TESTS = {
 class RealHostIntegrationTests(_SharedRealHostDevice, unittest.TestCase):
     OWN_HOST_BOUNDARY_TESTS = _OWN_BOUNDARY_INTEGRATION_TESTS
 
+    # An exec that may trigger an automatic refresh has to give the CLI's internal
+    # settle+resubmit loop enough budget: the refresh drives a full compile cycle
+    # (tens of seconds), and the terminal response carries the script result plus
+    # the refresh decision only after it settles. WAIT_TIMEOUT_MS (1 s) is a
+    # request-wait budget and expires long before the cycle does.
+    REFRESH_WAIT_TIMEOUT_MS = 300_000
+
     def test_component_detection_example_executes_against_real_host(self):
         import help_surface
 
@@ -1801,21 +1808,21 @@ class RealHostIntegrationTests(_SharedRealHostDevice, unittest.TestCase):
             [
                 "exec",
                 "--base-url", base_url,
-                "--wait-timeout-ms", str(WAIT_TIMEOUT_MS),
+                "--wait-timeout-ms", str(self.REFRESH_WAIT_TIMEOUT_MS),
                 "--code", "export default function run(ctx) { return { loop: 'base-url-ok' }; }",
             ]
         )
-        if exec_payload and unity_puer_exec_runtime._running_or_timed_out_response(
-            exec_exit_code, json.dumps(exec_payload)
-        ):
-            exec_exit_code, exec_payload, _, _ = _run_cli(
-                [
-                    "wait-for-exec",
-                    "--base-url", base_url,
-                    "--request-id", exec_payload["request_id"],
-                    "--wait-timeout-ms", str(READY_TIMEOUT_SECONDS * 1000),
-                ]
-            )
+        # The refresh decision only rides the terminal exec response; a
+        # wait-for-exec continuation does not re-emit it. So a non-terminal response
+        # means this request's budget ended before the settle completed, and the case
+        # must fail with that named rather than assert on a different command's payload.
+        self.assertFalse(
+            exec_payload is not None
+            and unity_puer_exec_runtime._running_or_timed_out_response(
+                exec_exit_code, json.dumps(exec_payload)
+            ),
+            "refresh-triggering exec did not reach a terminal response: {!r}".format(exec_payload),
+        )
         self.assertEqual(exec_exit_code, 0, exec_payload)
         self.assertEqual(exec_payload["status"], "completed")
         self.assertEqual(exec_payload["result"]["loop"], "base-url-ok")
