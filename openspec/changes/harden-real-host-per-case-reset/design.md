@@ -14,6 +14,13 @@ See proposal.md — Why. Relevant current state:
   state, and the change signal, but not the active scene.
 - The save-scene dialog cases call `MarkSceneDirty` + `SaveCurrentModifiedScenesIfUserWantsTo()`
   and assume the active scene yields Unity's standard save dialog.
+- `RefreshOnChangeRealHostTests._health` / `_wait_for_refresh_pending` and
+  `PlayModeCompileBlockRealHostTests._health` / `_wait_for_refresh_pending` probe the endpoint
+  once per call and treat a `None` payload as a failure. `_wait_for_play_exit` and
+  `_wait_for_refresh_state` already tolerate the reload window, in two per-class copies.
+- The endpoint can rebind to a different port across a reload when the preferred port is
+  occupied (`harden-control-port-rollover-validation`), so tolerance has to re-resolve the
+  endpoint, not only retry the same URL.
 
 ## Goals / Non-Goals
 
@@ -21,10 +28,12 @@ See proposal.md — Why. Relevant current state:
 - Remove validation temp assets without leaving the Editor opening a deleted `.cs`/`.cs.meta`.
 - Make scene-dependent cases independent of the previous case's scene.
 - Keep the declared-inventory limit and the recorded cleanup outcome.
+- Make every endpoint probe in the suite survive a domain reload, with one shared helper.
 
 **Non-Goals:**
 - Changing the CLI contract, the control endpoint, or the compile preflight.
 - Building a general-purpose remote asset-deletion API.
+- Any change to `cli/` or `packages/` for endpoint tolerance; it is harness-only.
 
 ## Decisions
 
@@ -52,6 +61,20 @@ freshly saved empty scene) before each case, and clears any residual modal — c
 unknown — so a scene-dependent case cannot inherit a pathless/new scene or a stale dialog.
 Scene-dependent cases additionally stage their own scene, so they assert only what they set up.
 
+### D4. One tolerant shared endpoint probe
+
+`_SharedRealHostDevice` gains one probe that retries transport failures within a bound,
+re-resolves through `_scan_ready_control_endpoint(self.project_path)`, and returns
+`(base_url, payload)` or raises a named timeout that names the reload window. The per-class
+`_health`, `_wait_for_refresh_pending`, `_wait_for_play_exit`, and `_wait_for_refresh_state`
+move onto the shared device on top of it. D1 and D3 reach the Editor through `exec` right after
+cases that reload the domain, so they use this probe to find a live endpoint first; it is built
+first for that reason.
+
+Call sites are classified before routing: (a) must tolerate a reload window, (b) genuinely
+requires a live endpoint now, (c) already tolerant. Only (b) keeps a one-shot assertion, with a
+message that says why.
+
 ## Risks / Trade-offs
 
 - [An `exec`-based delete adds a round-trip per cleanup] → Only issued when the declared roots
@@ -60,6 +83,9 @@ Scene-dependent cases additionally stage their own scene, so they assert only wh
   scene (D3), so the reset only needs to guarantee "not the previous case's scene".
 - [A failed Editor-side delete silently leaves residue] → The existing cleanup result is still
   computed and recorded after the attempt.
+- [A tolerant probe hides a real endpoint failure] → The retry is bounded, and the timeout
+  fails the case with a message naming the reload window, so a never-returning endpoint still
+  fails.
 
 ## Migration Plan
 

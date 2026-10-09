@@ -50,6 +50,8 @@ re-trigger a compile or read stale compile messages.
 - `tests/test_unity_session_cli.py` and `tests/test_real_host_integration.py`.
 - Related: `scan-only-import-change-signal` (pending-state model) and the play-mode
   `compile_blocked` path.
+- `add-play-mode-commands` lists this change in `blocked_by`: its `stop` command settles the
+  deferred compile across exactly this reload (its design D4).
 
 ## Open Questions
 

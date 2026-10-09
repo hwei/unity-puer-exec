@@ -28,6 +28,9 @@ request that the server never accepted: `HandleExecAsync` returns the refreshing
 - Keep `missing` meaning what it means: the addressed service has no recoverable record.
 - Preserve the accepted-job lifecycle: no resubmit of a request that may already have run.
 
+- Make the two budgets distinguishable from the help alone: the per-request wait a caller
+  chooses, and the compile-scale budget the CLI settles a refresh on.
+
 **Non-Goals:**
 
 - Re-litigating the settle budget, the server's refresh decision, or the non-terminal refresh
@@ -35,6 +38,10 @@ request that the server never accepted: `HandleExecAsync` returns the refreshing
 - Redesigning the pending-exec artifact lifecycle for project-path mode.
 - The intermittent launch-recovery and CLI empty-response flakes, which have their own
   changes.
+- A caller-facing settle-budget knob on `exec`. `wait-for-compile` has
+  `--settle-timeout-seconds`; adding one to `exec` would let a caller make the very mistake the
+  help statement documents. If the investigation finds a reason to want one, it is recorded as
+  a follow-up candidate.
 
 ## Decisions
 
@@ -67,6 +74,16 @@ The fix must not treat `missing` as resubmittable in general. A genuinely absent
 record still reports `missing`; only the branches where the CLI itself left the request
 unsettled change shape.
 
+### Decision 4: Help states the budget's nature, not a literal number
+
+Help SHALL say the settle runs on a compile-scale budget independent of `--wait-timeout-ms`,
+without naming a number, so the prose cannot drift from
+`unity_session.DEFAULT_READY_TIMEOUT_SECONDS`. The statement goes in the wait/timeout guidance
+as well as the automatic-refresh line. It is written after Decision 1, so it describes the
+continuation that actually ships (with in-process retry, `exec` may block for the settle budget,
+and help must say so). `wait-for-compile --settle-timeout-seconds` describes the same cycle,
+and the two surfaces must not contradict each other.
+
 ## Risks / Trade-offs
 
 **[Blocking longer on a stuck refresh is a worse failure mode than returning early]** → If
@@ -79,6 +96,10 @@ record, it needs a home, a key, a retention bound, and a sweep, and it must not 
 second source of truth that disagrees with the server. The project-path artifact's rules
 (`PENDING_EXEC_RETENTION_MS`, schema version, malformed-file deletion) are the precedent to
 follow or explicitly reject.
+
+**[A new help line weakens an existing help assertion]** → Help-content tests assert on
+strings; adding text must not remove or relax an existing guarantee. Each touched assertion is
+reviewed deliberately rather than deleted when it fails.
 
 **[The unit layer may not reproduce the real ordering]** → The clock-modelled settle harness
 introduced by the previous change expresses the budget arithmetic deterministically. Whether

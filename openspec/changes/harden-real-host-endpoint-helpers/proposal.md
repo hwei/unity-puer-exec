@@ -1,3 +1,7 @@
+> **Superseded** by `harden-real-host-per-case-reset` (2026-10-09), which absorbs this
+> change's tolerant shared probe and helper de-duplication. Archive this change without
+> applying it.
+
 ## Why
 
 The real-host suite assumes the control endpoint is stable between a request and the next

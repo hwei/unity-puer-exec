@@ -1,3 +1,7 @@
+> **Superseded** by `make-base-url-exec-refresh-recoverable` (2026-10-09), which absorbs this
+> change's help requirement and tasks so the wording matches the chosen base-url continuation.
+> Archive this change without applying it.
+
 ## Why
 
 The `exec` help surface describes `--wait-timeout-ms` as "how long to wait before returning

@@ -80,6 +80,15 @@ Errors stay `status: "completed"`, because the play-state request succeeded, and
 `get-compile-errors` next step (spec: "Stop settles the compile cycle deferred by play
 mode").
 
+The deferred compile runs behind a domain reload that drops the control endpoint, so a
+plain compile-wait after `edit` can miss the whole cycle and report `no_compile_observed`
+for a compile that did happen. That false negative is the subject of
+`observe-compile-across-domain-reload` (a `blocked_by` prerequisite). `stop` uses the
+completion signal that spike settles on; because `stop` drives the play exit itself, it can
+also take its pending baseline before posting, which is the CLI-baseline candidate the spike
+evaluates. `no_compile_observed` is reported only when no pending change existed or the
+spike's signal confirms none ran.
+
 ### D5. `runInBackground` via SessionState plus `EnteredPlayMode`
 
 `Application.runInBackground` resets from Player Settings when play mode starts, and the

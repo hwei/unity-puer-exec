@@ -14,9 +14,17 @@
 - [ ] 2.3 Add regression coverage for the branch(es) fixed in 2.1, including the exhausted-budget outcome. Verify: each regression fails without 2.1's fix.
 - [ ] 2.4 Re-run the exec lifecycle coverage (`tests.test_unity_session_cli`, `tests.test_unity_session_modules`, `tests.test_response_file_output`) and confirm genuinely absent or expired records still report non-recoverable `missing`. Verify: the durable contract still holds for the cases it was written for, and `missing` was not silenced.
 
-## 3. Validation and Closeout
+## 3. State the settle budget on the help surfaces
 
-- [ ] 3.1 Run the focused Python suites relevant to `unity_puer_exec_runtime.py` and the exec lifecycle. Verify: green.
-- [ ] 3.2 Confirm against the real host that a base-url `exec` interrupted across a real reload converges instead of answering `missing`, using the validation host and the reload-triggering pattern already in `tests/test_real_host_integration.py`. Verify: the confirmation crosses a real domain reload, not a mock, and the previously observed continuation failure is gone.
-- [ ] 3.3 Run `openspec validate make-base-url-exec-refresh-recoverable` and confirm the change is archive-ready; revise the delta if investigation concluded the durable text needs different substance. Verify: the delta matches the implemented behavior.
-- [ ] 3.4 Complete the required apply closeout review and record either `No new follow-up work identified` or human-discussed follow-up candidates in an allowed category. Verify: the closeout separates this continuation gap from the intermittent launch-recovery and CLI empty-response flakes, which are not part of this change.
+- [ ] 3.1 Read the `exec` help surface end to end (`cli/python/help_surface.py`: the option list, the "Automatic refresh" line, "Timeout Rules", and the `--help-status` status section) and name every sentence from which a caller could infer that `--wait-timeout-ms` bounds an automatic refresh's settle. Confirm the two budgets in code (`--wait-timeout-ms` in `_run_exec_impl` / `direct_exec_client`, and `_post_refresh_ready_timeout_seconds`). Verify: the finding lists the exact sentences per surface and cites both call sites.
+- [ ] 3.2 Enumerate the existing help-content assertions that touch these strings so none is relaxed to make room for the new text. Verify: the list names each test case and the guarantee it holds.
+- [ ] 3.3 Add the statement to `exec --help` in the wait/timeout guidance as well as the automatic-refresh line, worded for the continuation chosen in 1.3 (design Decision 4, no literal number). Make `exec --help-status` consistent, and leave `wait-for-compile --settle-timeout-seconds` describing the same cycle. Verify: `exec --help` read as plain text carries both facts, and neither status nor `wait-for-compile` help contradicts it.
+- [ ] 3.4 Add regression assertions on the new statement to the help-content tests, and review each pre-existing assertion from 3.2 rather than deleting any. Verify: the new assertions fail without 3.3, and no pre-existing help guarantee was dropped.
+
+## 4. Validation and Closeout
+
+- [ ] 4.1 Run the focused Python suites relevant to `unity_puer_exec_runtime.py`, the exec lifecycle, and the help surfaces (`tests.test_unity_session_cli`, `tests.test_cli_version`, `tests.test_openspec_spec_hygiene`). Verify: green.
+- [ ] 4.2 Capture the `exec --help` and `exec --help-status` output as evidence. Verify: the transcript shows the settle-budget statement and the corrected continuation guidance without running the CLI.
+- [ ] 4.3 Confirm against the real host that a base-url `exec` interrupted across a real reload converges instead of answering `missing`, using the validation host and the reload-triggering pattern already in `tests/test_real_host_integration.py`. Verify: the confirmation crosses a real domain reload, not a mock, and the previously observed continuation failure is gone.
+- [ ] 4.4 Run `openspec validate make-base-url-exec-refresh-recoverable` and confirm the change is archive-ready; revise the delta if investigation concluded the durable text needs different substance. Verify: the delta matches the implemented behavior.
+- [ ] 4.5 Complete the required apply closeout review and record either `No new follow-up work identified` or human-discussed follow-up candidates in an allowed category. Verify: the closeout separates this continuation and help gap from the intermittent launch-recovery and CLI empty-response flakes, which are not part of this change.

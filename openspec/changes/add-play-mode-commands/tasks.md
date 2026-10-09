@@ -13,7 +13,7 @@
 
 - [ ] 3.1 Extract the refresh-decision and settle path that `exec` uses so `play` can call it without an exec request. Verify: the existing `AutomaticRefresh*` unit tests pass unchanged.
 - [ ] 3.2 Implement `play`: prepare the Editor in project mode, settle pending code first (return `unity_compile_error` without entering play mode), post `/play-mode`, wait for `playing` across a domain reload, and disclose `run_in_background`. Add `--no-run-in-background` and `--timeout-seconds`. Verify: unit tests cover a clean pre-settle, a compile-error abort, `already_in_state`, `resumed`, a reload during entering, and a timeout returning `running`.
-- [ ] 3.3 Implement `pause` and `stop`. `stop` reads pending state, waits for `edit`, and then settles the deferred compile on the compile-scale budget, reporting the `compile` outcome. Fold in any handling required by the `surface-play-mode-compile-block` D6 outcome. Verify: unit tests cover pause in edit mode → `invalid_play_state`, stop with and without a pending change, and stop with compile errors → completed plus a `get-compile-errors` next step.
+- [ ] 3.3 Implement `pause` and `stop`. `stop` reads pending state, waits for `edit`, and then settles the deferred compile on the compile-scale budget, reporting the `compile` outcome. Fold in any handling required by the `surface-play-mode-compile-block` D6 outcome. Detect the deferred compile's completion with the signal chosen by `observe-compile-across-domain-reload`, so a compile hidden behind the play-exit domain reload is not reported as `no_compile_observed`. Verify: unit tests cover pause in edit mode → `invalid_play_state`, stop with and without a pending change, and stop with compile errors → completed plus a `get-compile-errors` next step.
 - [ ] 3.4 Surface modal blockers during transitions in the same shape `exec` uses, and map an absent `/play-mode` to the version-mismatch result. Verify: unit tests cover a blocker during `stop` and an old package.
 - [ ] 3.5 Register `play` / `pause` / `stop` in "Primary Execution" and add help tiers, `--help-status`, and guidance entries. Update the PlayMode help to present the commands as the normal path. Switch the `surface-play-mode-compile-block` `next_steps` to `stop`. Verify: help-content tests assert the PlayMode wording, the run-in-background disclosure and option, and that no guidance still uses the exec-based stop.
 
@@ -28,6 +28,6 @@
 
 ## Workflow follow-up
 
-- Apply only after `surface-play-mode-compile-block` is archived (`blocked_by`).
+- `surface-play-mode-compile-block` is archived. Apply only after `observe-compile-across-domain-reload` has settled its compile-completion signal (`blocked_by`), because `stop` depends on it (design D4).
 - After review, commit, run `openspec archive add-play-mode-commands`, and commit again.
 - Tell host-project skill owners (for example tree2/tree5 AGENTS files) to migrate from `ensure-stopped` to `ensure-closed`.
