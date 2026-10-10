@@ -2,7 +2,9 @@
 
 ## Purpose
 TBD - created by archiving change automate-validation-temp-asset-cleanup. Update Purpose after archive.
+
 ## Requirements
+
 ### Requirement: Harness cleans repository-owned validation temp assets
 The validation harness SHALL clean repository-owned temporary assets that were created in the external Unity validation host as part of repository validation workflows. The cleanup scope SHALL be limited to an explicit inventory of validation-temp roots or files that the repository declares safe to remove.
 
@@ -27,3 +29,22 @@ The validation harness SHALL verify whether declared validation-temp assets rema
 - **THEN** the durable validation record MUST report cleanup as partial or failed
 - **AND** the record MUST identify the remaining residue at a concise file-or-directory level
 
+### Requirement: Cleanup does not remove a temp asset the live Editor still references
+
+The validation harness SHALL remove repository-owned validation temp assets only after the
+live Editor's asset pipeline has released them, so removing a `.cs` or its `.meta` never
+leaves the Editor opening a file that no longer exists.
+
+#### Scenario: Cleanup runs while the shared Editor still holds a temp asset
+
+- **WHEN** a cleanup targets a declared validation-temp root while the shared Editor still
+  references a file under it
+- **THEN** the harness removes the asset through the Editor's own asset pipeline, or waits
+  until the Editor has released it
+- **AND** it does not leave the Editor opening a deleted `.cs` or `.cs.meta`
+
+#### Scenario: A skipped case leaves no trigger fixture
+
+- **WHEN** the ScriptUpdater consent-dialog case is skipped after seeding its trigger fixture
+- **THEN** the harness removes that fixture on the skip path
+- **AND** a later cleanup does not encounter a file the Editor still references
