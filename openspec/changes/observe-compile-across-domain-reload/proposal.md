@@ -9,9 +9,7 @@ endpoint is back, the Editor is already `ready`, the change signal has cleared, 
 
 Observed while landing `surface-play-mode-compile-block` on the validation host: the
 deferred compile ran on play exit, but `wait-for-compile` returned `no_compile_observed`
-because the compile edge was hidden behind the reload. The current real-host case works
-around this by confirming completion through `refresh.pending` clearing to `not_pending`
-rather than through `wait-for-compile`.
+because the compile edge was hidden behind the reload.
 
 This is a false negative against the command's purpose: a compile did happen, and the
 caller is told none was observed. An agent that branches on `no_compile_observed` may
@@ -19,16 +17,23 @@ re-trigger a compile or read stale compile messages.
 
 ## What Changes
 
-- Determine whether a compile that completes across a control-endpoint reload can be made
-  observable to `wait-for-compile`, and by what signal.
-- Candidate signals to evaluate (not commitments):
-  - a monotonic compile generation / "last compile finished at" epoch reported on `/health`,
-    so the CLI can tell a compile settled since a baseline it took earlier;
-  - a persisted settle marker keyed to the request or to the play-exit transition;
-  - a CLI-maintained baseline established before the reload (for the sequence where the CLI
-    drives the play exit), which does not help a caller that starts after the reload.
-- Recommend one approach with its limits, then (if the spike graduates) implement it with
-  unit and real-host coverage.
+This spike determined whether the hidden compile can be made observable and by what signal.
+The investigation (reproduction, timeline, and signal comparison in `design.md`) concluded:
+
+- The deferred compile is Unity's **forced synchronous recompile**. `beforeAssemblyReload`
+  stops the listener before compilation finishes, so `/health` never serves `compiling`;
+  the endpoint is unreachable for the whole compile + reload and returns already `ready`.
+- `CompilationPipeline.compilationFinished` **does** fire for it, **before** the reload, and a
+  `SessionState`-backed compile generation survives the reload.
+- `session_marker` and `SettledImportUtcTicks` are **reload** epochs, not compile epochs:
+  they also advance on a reload that compiled nothing.
+- The only reliable discriminator is a compile-specific generation combined with a baseline
+  taken before the transition; a caller that starts after the reload without a baseline
+  cannot be satisfied.
+
+**Recommendation:** expose a monotonic compile generation on `/health` and let a caller that
+holds a pre-transition baseline settle the compile from it. The implementation is split into
+the follow-up change `add-compile-generation-signal`.
 
 ## Capabilities
 
@@ -38,26 +43,14 @@ re-trigger a compile or read stale compile messages.
 
 ### Modified Capabilities
 
-- `compile-wait` (provisional, only if the spike graduates): the command SHALL NOT report
-  `no_compile_observed` for a compile that demonstrably completed across a reload it could
-  not observe, once a reliable signal exists.
+(none — no durable requirement changes here; the requirements for the recommended signal are
+written in the follow-up change `add-compile-generation-signal`)
 
 ## Impact
 
-- `cli/python/unity_puer_exec_runtime.py`: the compile-wait outcome logic.
-- `packages/com.txcombo.unity-puer-exec/Editor/`: possibly a compile-epoch signal on
-  `/health` or a persisted settle marker.
-- `tests/test_unity_session_cli.py` and `tests/test_real_host_integration.py`.
-- Related: `scan-only-import-change-signal` (pending-state model) and the play-mode
-  `compile_blocked` path.
-- `add-play-mode-commands` lists this change in `blocked_by`: its `stop` command settles the
-  deferred compile across exactly this reload (its design D4).
+(none in this spike; the implementation impact — server, protocol, CLI, and tests — is
+recorded in `add-compile-generation-signal`)
 
 ## Open Questions
 
-- Does the pending signal clear on the reload itself, or only after the post-reload import?
-  The answer decides whether a pre-reload baseline is usable.
-- Is a server-side compile epoch worth a protocol field, or can the CLI infer completion
-  from an existing signal (`refresh.pending` plus an observed endpoint drop)?
-- Should the outcome be `compile_settled` with a note that the edge was inferred, rather
-  than a new status?
+(resolved by the investigation; see `design.md`)
