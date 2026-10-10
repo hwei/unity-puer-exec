@@ -3615,6 +3615,26 @@ class PlayModeCompileBlockRealHostTests(_SharedRealHostDevice, unittest.TestCase
             payload,
         )
 
+        # Continuing the same request must disclose the same block, not a plain
+        # success: the recovery surface is where the signal matters most.
+        exit_code, continued, _, _ = _run_cli(
+            [
+                "wait-for-exec",
+                "--base-url", base_url,
+                "--request-id", payload["request_id"],
+                "--wait-timeout-ms", str(READY_TIMEOUT_SECONDS * 1000),
+            ]
+        )
+        self.assertEqual(exit_code, 0, continued)
+        self.assertEqual(continued["status"], "warning", continued)
+        self.assertEqual(continued["warning"], "compile_blocked_by_play_mode", continued)
+        self.assertEqual(continued["compile_blocked"]["reason"], "play_mode", continued)
+        self.assertTrue(
+            any("PlayBlockProbe" in path for path in continued["compile_blocked"]["pending_paths"]),
+            continued,
+        )
+        self.assertIn("play mode", continued["situation"], continued)
+
         exit_code, payload, _, _ = _run_cli(
             ["wait-for-compile", "--base-url", base_url, "--appear-timeout-seconds", "2"]
         )

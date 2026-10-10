@@ -798,6 +798,15 @@ namespace UnityPuerExec
                 return;
             }
 
+            if (refresh.SuppressedByPlayMode)
+            {
+                // Retain the exec-time refresh block so a later `wait-for-exec` replay
+                // of this terminal request carries the same play-mode skip evidence the
+                // direct exec response did. Other refresh outcomes are not replayed, so
+                // the ordinary wait-for-exec terminal contract is unchanged.
+                execJob.RetainRefreshBlock(refresh.BlockJson);
+            }
+
             Debug.Log($"[UnityPuerExec] Exec request accepted request={execJob.RequestId} new={isNewRequest}");
             if (isNewRequest)
             {
@@ -953,13 +962,17 @@ namespace UnityPuerExec
             }
 
             await WaitForTerminalOrTimeoutAsync(execJob, request.wait_timeout_ms);
-            var payload = UnityPuerExecProtocol.BuildExecResponseJson(execJob.Snapshot(), sessionMarker);
+            var snapshot = execJob.Snapshot();
+            // A retained play-mode skip block is replayed so the continuation discloses
+            // the same compile block the direct exec response did.
+            var payload = UnityPuerExecProtocol.BuildExecResponseJson(snapshot, sessionMarker, snapshot.RefreshBlockJson);
             await WriteAcceptedExecResponseAsync(context, payload, execJob.RequestId, "wait-for-exec");
         }
 
         private sealed class RefreshOutcome
         {
             internal bool Triggered;
+            internal bool SuppressedByPlayMode;
             internal string BlockJson = "";
         }
 
@@ -983,6 +996,7 @@ namespace UnityPuerExec
                         completion.TrySetResult(new RefreshOutcome
                         {
                             Triggered = false,
+                            SuppressedByPlayMode = decision.SuppressedByPlayMode,
                             BlockJson = UnityPuerExecProtocol.BuildRefreshBlockJson(
                                 triggered: false,
                                 reason: "",

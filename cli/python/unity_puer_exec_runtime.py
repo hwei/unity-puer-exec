@@ -705,13 +705,19 @@ def _attach_guidance(payload, command, status, args, request_id=None):
         _log_end = log_range.get("end")
         if _log_start is not None and _log_end is not None:
             context["log_range_span"] = "{}-{}".format(_log_start, _log_end)
-    next_steps = help_surface.build_next_steps(command, status, context, warning=payload.get("warning"))
+    # `compile_blocked` is a CLI-composed envelope object (never a script-authored
+    # result field), so its presence is a CLI-owned guidance selector: it adds the
+    # play-mode exit guidance to whatever the warning/status already selected.
+    compile_blocked = isinstance(payload.get("compile_blocked"), dict)
+    next_steps = help_surface.build_next_steps(
+        command, status, context, warning=payload.get("warning"), compile_blocked=compile_blocked
+    )
     if next_steps:
         payload["next_steps"] = next_steps
     detail = payload.get("version_mismatch")
     guard = detail.get("guard") if isinstance(detail, dict) else None
     situation = help_surface.build_situation(
-        command, status, guard=guard, warning=payload.get("warning")
+        command, status, guard=guard, warning=payload.get("warning"), compile_blocked=compile_blocked
     )
     if situation:
         payload["situation"] = situation
@@ -1245,6 +1251,10 @@ def _apply_play_mode_compile_block(stdout_text, stderr_text, base_url, args):
     body, source = _response_body_and_stream(stdout_text, stderr_text)
     if body is None:
         return stdout_text, stderr_text
+    if body.get("status") == "running":
+        # A non-terminal response has no terminal script result to annotate; the
+        # block is disclosed only once the request reaches a terminal state.
+        return stdout_text, stderr_text
     refresh = body.get("refresh")
     if not isinstance(refresh, dict) or refresh.get("skipped_reason") != PLAY_MODE_REASON:
         return stdout_text, stderr_text
@@ -1666,6 +1676,10 @@ def _run_wait_for_exec_impl(args, recovery):
     )
     _wfe_final_log_path = _resolve_log_path(args, session)
     stdout_text = _inject_log_range_into_stdout(stdout_text, _wfe_final_log_path, _wfe_log_start, _capture_log_offset(_wfe_final_log_path), offsets_invalidated=_wfe_offsets_invalidated)
+    # The replayed exec response carries the same refresh block, so the terminal
+    # response discloses a play-mode compile block exactly as `exec` does. Only the
+    # terminal path is rewritten; the non-terminal returns above are left alone.
+    stdout_text, stderr_text = _apply_play_mode_compile_block(stdout_text, stderr_text, base_url, args)
     stdout_text, stderr_text = _inject_guidance_into_response(stdout_text, stderr_text, "wait-for-exec", args, request_id=args.request_id)
     return exit_code, stdout_text, stderr_text
 

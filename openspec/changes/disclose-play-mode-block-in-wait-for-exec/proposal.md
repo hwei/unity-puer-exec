@@ -36,6 +36,9 @@ mode — both have to be satisfied, and one `situation` string has to carry both
 - Do not add a multi-warning response shape. The single `warning` code stays the primary
   contract; the object plus the merged guidance carry the extra condition.
 - Reuse the one runtime helper rather than duplicating the composition.
+- Retain the exec-time refresh block on the terminal job when play mode suppressed the
+  refresh, and replay it on the `wait-for-exec` terminal response, so the recovery surface
+  carries the same disclosure as the direct exec.
 
 ## Capabilities
 
@@ -59,9 +62,15 @@ mode — both have to be satisfied, and one `situation` string has to carry both
   `compile_blocked` presence into guidance composition.
 - `cli/python/help_surface.py`: guidance composition merges the play-mode exit steps and
   situation with the warning's own, rather than picking one.
+- `packages/com.txcombo.unity-puer-exec/Editor/UnityPuerExecJobState.cs` and
+  `packages/com.txcombo.unity-puer-exec/Editor/UnityPuerExecServer.cs`: the server retains
+  the exec-time refresh block on the job when play mode suppressed the refresh, and replays
+  it on a `wait-for-exec` terminal response so the continuation carries the same evidence as
+  the direct exec.
 - `tests/test_unity_session_cli.py`: unit coverage for the recovered/continued case and for
   the async-warning collision.
-- `tests/test_real_host_integration.py`: the play-mode real-host case may assert the
-  `wait-for-exec` recovery path.
-- No new protocol field; the server already returns `refresh.skipped_reason` and
-  `refresh.paths_changed` on the underlying exec.
+- `tests/test_real_host_integration.py`: the play-mode real-host case asserts the
+  `wait-for-exec` recovery path discloses the same block.
+- No new protocol field; the retained `refresh` block is the one the server already returns
+  on the exec response. The `/health` refresh block does not carry `paths_changed`, which is
+  why the disclosure must come from the retained exec response rather than a health probe.

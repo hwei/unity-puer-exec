@@ -459,6 +459,7 @@ COMMAND_HELP = {
             "success": [
                 "`completed`: the request finished and any immediate entry return value is in `result`.",
                 "`running`: the request is still active and can be waited on again with the same `request_id`.",
+                "When the Editor is in play mode with a compile-triggering change pending, the terminal response is `status: warning` with `warning: compile_blocked_by_play_mode`, a `compile_blocked` object naming `play_mode`, and `warning_detail`. The script ran, but against code that does not include the pending change; exit play mode before waiting for the deferred compile. A failure status or an existing async warning keeps its own status and code and still carries the `compile_blocked` object.",
                 "When `phase` is present, treat it as diagnostic detail for the current stage, not as a different follow-up command family.",
             ],
             "failure": [
@@ -1596,16 +1597,27 @@ GUIDANCE_MATRIX = {
 # code as the most specific key and falls back to (command, status).
 # The play-mode exit sequence itself is defined above GUIDANCE_MATRIX
 # (_PLAY_MODE_EXIT_STEPS) so both matrices can reference it at import time.
+# The play-mode warning code is CLI-composed and shared by `exec` and `wait-for-exec`,
+# so its wording lives here and is reused by both matrix entries and by the guidance
+# merge below.
+PLAY_MODE_BLOCK_WARNING_CODE = "compile_blocked_by_play_mode"
+_PLAY_MODE_BLOCK_SITUATION = (
+    "The script ran, but a compile-triggering change is still pending and the "
+    "Editor is in play mode. Unity defers compilation until play mode exits, so "
+    "the code that just ran does not include that change. The pending change is "
+    "preserved. Exiting play mode may take tens of seconds while the Editor "
+    "compiles and reloads the domain, and the control endpoint can be "
+    "unreachable during that window: that is progress, not a failed stop."
+)
+
 WARNING_GUIDANCE_MATRIX = {
-    ("exec", "compile_blocked_by_play_mode"): {
-        "situation": (
-            "The script ran, but a compile-triggering change is still pending and the "
-            "Editor is in play mode. Unity defers compilation until play mode exits, so "
-            "the code that just ran does not include that change. The pending change is "
-            "preserved. Exiting play mode may take tens of seconds while the Editor "
-            "compiles and reloads the domain, and the control endpoint can be "
-            "unreachable during that window: that is progress, not a failed stop."
-        ),
+    ("exec", PLAY_MODE_BLOCK_WARNING_CODE): {
+        "situation": _PLAY_MODE_BLOCK_SITUATION,
+        "next_steps": _PLAY_MODE_EXIT_STEPS,
+    },
+    # A continued request discloses the same block, so it reuses the exec wording.
+    ("wait-for-exec", PLAY_MODE_BLOCK_WARNING_CODE): {
+        "situation": _PLAY_MODE_BLOCK_SITUATION,
         "next_steps": _PLAY_MODE_EXIT_STEPS,
     },
 }
@@ -1838,17 +1850,9 @@ def _build_argv(template, target_command, context):
     return argv
 
 
-def build_next_steps(command, status, context, warning=None):
-    entry = WARNING_GUIDANCE_MATRIX.get((command, warning)) if warning else None
-    if entry is None:
-        entry = GUIDANCE_MATRIX.get((command, status))
-    if entry is None:
-        return None
-    templates = entry.get("next_steps")
-    if not templates:
-        return None
+def _render_next_steps(templates, context):
     result = []
-    for template in templates:
+    for template in templates or ():
         step = {"command": template["command"], "when": template["when"]}
         static_argv = template.get("argv")
         if static_argv is not None:
@@ -1859,18 +1863,50 @@ def build_next_steps(command, status, context, warning=None):
             if argv is not None:
                 step["argv"] = argv
         result.append(step)
-    return result if result else None
+    return result
 
 
-def build_situation(command, status, guard=None, warning=None):
-    if guard is not None and guard in VERSION_MISMATCH_SITUATIONS:
-        return VERSION_MISMATCH_SITUATIONS[guard]
+def _play_mode_block_adds_guidance(warning, compile_blocked):
+    """Whether the CLI-composed play-mode block adds guidance to this response."""
+    if not compile_blocked:
+        return False
+    # The play-mode warning already selects the play-mode guidance; merging it with
+    # itself would duplicate the steps.
+    return warning != PLAY_MODE_BLOCK_WARNING_CODE
+
+
+def _guidance_entry(command, status, warning):
     entry = WARNING_GUIDANCE_MATRIX.get((command, warning)) if warning else None
     if entry is None:
         entry = GUIDANCE_MATRIX.get((command, status))
-    if entry is None:
+    return entry
+
+
+def build_next_steps(command, status, context, warning=None, compile_blocked=False):
+    entry = _guidance_entry(command, status, warning)
+    own_templates = entry.get("next_steps") if entry else None
+    if _play_mode_block_adds_guidance(warning, compile_blocked):
+        # Additive, never substitutive: the play-mode exit steps lead, the
+        # warning's own follow-up (for async, wait-for-result-marker) is preserved.
+        combined = _render_next_steps(_PLAY_MODE_EXIT_STEPS, context) + _render_next_steps(
+            own_templates, context
+        )
+        return combined if combined else None
+    if not own_templates:
         return None
-    return entry.get("situation")
+    result = _render_next_steps(own_templates, context)
+    return result if result else None
+
+
+def build_situation(command, status, guard=None, warning=None, compile_blocked=False):
+    if guard is not None and guard in VERSION_MISMATCH_SITUATIONS:
+        return VERSION_MISMATCH_SITUATIONS[guard]
+    entry = _guidance_entry(command, status, warning)
+    situation = entry.get("situation") if entry else None
+    if _play_mode_block_adds_guidance(warning, compile_blocked):
+        # One situation string has to cover both conditions.
+        return "{} {}".format(situation, _PLAY_MODE_BLOCK_SITUATION) if situation else _PLAY_MODE_BLOCK_SITUATION
+    return situation
 
 
 def render_top_level_help():

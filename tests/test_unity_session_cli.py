@@ -3810,6 +3810,15 @@ class ExecPlayModeCompileBlockTests(unittest.TestCase):
         self.assertEqual(body["status"], "warning")
         self.assertEqual(body["warning"], "async_result_not_supported")
         self.assertEqual(body["compile_blocked"]["reason"], "play_mode")
+        # The single warning code is unchanged; no multi-warning shape is introduced.
+        self.assertNotIn("warnings", body)
+        # Guidance merges both conditions: the play-mode way out leads, and the
+        # async follow-up is preserved rather than replaced.
+        self.assertIn("play mode", body["situation"])
+        self.assertIn("Promise", body["situation"])
+        self.assertEqual(body["next_steps"][0]["command"], "exec")
+        self.assertTrue(any(step["command"] == "wait-for-compile" for step in body["next_steps"]))
+        self.assertTrue(any(step["command"] == "wait-for-result-marker" for step in body["next_steps"]))
 
     def test_completed_without_play_mode_skip_is_untouched(self):
         completed = {
@@ -3855,6 +3864,149 @@ class ExecPlayModeCompileBlockTests(unittest.TestCase):
 
     def test_no_compile_observed_guidance_warns_about_play_mode(self):
         entry = help_surface.GUIDANCE_MATRIX[("wait-for-compile", "no_compile_observed")]
+        self.assertIn("play mode", entry["situation"])
+        self.assertNotIn("RequestScriptCompilation", json.dumps(entry["next_steps"]))
+
+
+class WaitForExecPlayModeCompileBlockTests(unittest.TestCase):
+    """wait-for-exec discloses the same play-mode block as exec."""
+
+    def _play_mode_refresh(self, paths):
+        return {
+            "triggered": False,
+            "reason": "",
+            "paths_changed": paths,
+            "skipped_reason": "play_mode",
+            "settle_outcome": "not_attempted",
+            "elapsed_ms": 0,
+        }
+
+    def _run_replay(self, replayed, health_preference=None):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_path = Path(temp_dir) / "Project"
+            project_path.mkdir()
+            unity_session.write_pending_exec_artifact(
+                str(project_path),
+                "R-play",
+                {
+                    "request_id": "R-play",
+                    "code": "export default function run(ctx) { return { value: 1 }; }",
+                    "script_args": {},
+                    "script_args_json": "{}",
+                },
+            )
+            health = _play_mode_health()
+            if health_preference is not None:
+                health["refresh"]["script_changes_while_playing"] = health_preference
+            with mock.patch.object(
+                unity_session,
+                "ensure_session_ready",
+                return_value=_make_session(project_path=str(project_path)),
+            ), mock.patch.object(
+                unity_puer_exec.direct_exec_client, "invoke_command", return_value=replayed
+            ), mock.patch.object(
+                unity_puer_exec_runtime, "time", _FakeClock()
+            ), mock.patch.object(
+                unity_puer_exec_runtime, "_probe_compile_health", _probe_payloads([health])
+            ):
+                return unity_puer_exec.run_cli(
+                    ["wait-for-exec", "--project-path", str(project_path), "--request-id", "R-play"]
+                )
+
+    def _completed_replay(self, paths):
+        return (
+            0,
+            json.dumps(
+                {
+                    "ok": True,
+                    "status": "completed",
+                    "operation": "exec",
+                    "request_id": "R-play",
+                    "result": {"value": 1},
+                    "refresh": self._play_mode_refresh(paths),
+                }
+            ),
+            "",
+        )
+
+    def test_replay_discloses_play_mode_block_like_exec(self):
+        exit_code, stdout, stderr = self._run_replay(
+            self._completed_replay(["C:/Project/Assets/A.cs"]),
+            health_preference="stop_playing_and_recompile",
+        )
+
+        self.assertEqual(exit_code, 0, stderr)
+        self.assertEqual(stderr, "")
+        body = json.loads(stdout)
+        self.assertEqual(body["status"], "warning")
+        self.assertEqual(body["warning"], "compile_blocked_by_play_mode")
+        self.assertIn("warning_detail", body)
+        # The script still ran and its return value survives.
+        self.assertEqual(body["result"], {"value": 1})
+        self.assertEqual(body["compile_blocked"]["reason"], "play_mode")
+        self.assertEqual(body["compile_blocked"]["pending_paths"], ["C:/Project/Assets/A.cs"])
+        self.assertEqual(
+            body["compile_blocked"]["script_changes_while_playing"], "stop_playing_and_recompile"
+        )
+        # No protocol change: the replay carries the server's refresh fields unchanged.
+        self.assertEqual(body["refresh"]["skipped_reason"], "play_mode")
+        self.assertEqual(body["refresh"]["paths_changed"], ["C:/Project/Assets/A.cs"])
+        # Guidance leads out of play mode.
+        self.assertIn("play mode", body["situation"])
+        self.assertTrue(any(step["command"] == "wait-for-compile" for step in body["next_steps"]))
+
+    def test_replay_failure_keeps_status_and_carries_object(self):
+        failure = {
+            "ok": False,
+            "status": "failed",
+            "operation": "exec",
+            "request_id": "R-play",
+            "error": "TypeError: boom",
+            "refresh": self._play_mode_refresh(["C:/Project/Assets/B.cs"]),
+        }
+        exit_code, stdout, stderr = self._run_replay((1, "", json.dumps(failure)))
+
+        self.assertEqual(exit_code, 1)
+        body = json.loads(stderr)
+        self.assertEqual(body["status"], "failed")
+        self.assertEqual(body["compile_blocked"]["reason"], "play_mode")
+        self.assertEqual(body["compile_blocked"]["pending_paths"], ["C:/Project/Assets/B.cs"])
+
+    def test_replay_with_nothing_pending_is_not_rewritten(self):
+        exit_code, stdout, stderr = self._run_replay(self._completed_replay([]))
+
+        body = json.loads(stdout)
+        self.assertEqual(body["status"], "completed")
+        self.assertNotIn("compile_blocked", body)
+        self.assertNotIn("warning", body)
+
+    def test_non_terminal_replay_is_not_annotated(self):
+        running = {
+            "ok": True,
+            "status": "running",
+            "operation": "exec",
+            "request_id": "R-play",
+            "refresh": self._play_mode_refresh(["C:/Project/Assets/A.cs"]),
+        }
+        exit_code, stdout, stderr = self._run_replay(
+            (unity_puer_exec.EXIT_RUNNING, json.dumps(running), "")
+        )
+
+        self.assertEqual(exit_code, unity_puer_exec.EXIT_RUNNING)
+        body = json.loads(stdout)
+        self.assertEqual(body["status"], "running")
+        self.assertNotIn("compile_blocked", body)
+        self.assertNotEqual(body.get("warning"), "compile_blocked_by_play_mode")
+        self.assertNotIn("compile_blocked_by_play_mode", json.dumps(body.get("next_steps", [])))
+
+    def test_wait_for_exec_help_status_lists_play_mode_warning(self):
+        exit_code, stdout, stderr = unity_puer_exec.run_cli(["wait-for-exec", "--help-status"])
+        self.assertEqual(exit_code, 0)
+        self.assertIn("compile_blocked_by_play_mode", stdout)
+
+        entry = help_surface.WARNING_GUIDANCE_MATRIX[
+            ("wait-for-exec", "compile_blocked_by_play_mode")
+        ]
         self.assertIn("play mode", entry["situation"])
         self.assertNotIn("RequestScriptCompilation", json.dumps(entry["next_steps"]))
 

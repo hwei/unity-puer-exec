@@ -21,6 +21,7 @@ namespace UnityPuerExec
         private string stack = "";
         private string warningCode = "";
         private string warningDetail = "";
+        private string refreshBlockJson = "";
 
         public UnityPuerExecJob(
             string requestId,
@@ -51,6 +52,20 @@ namespace UnityPuerExec
         public DateTime UpdatedAtUtc { get; private set; }
         public Task Completion => completionSource.Task;
 
+        /// <summary>
+        /// Retain the exec-time refresh block so a later `wait-for-exec` replay of this
+        /// terminal request can carry the same refresh evidence the direct exec response
+        /// did. Only set when the refresh was suppressed by play mode; other refresh
+        /// outcomes are deliberately not replayed.
+        /// </summary>
+        public void RetainRefreshBlock(string blockJson)
+        {
+            lock (syncRoot)
+            {
+                refreshBlockJson = blockJson ?? "";
+            }
+        }
+
         public UnityPuerExecJobSnapshot Snapshot()
         {
             lock (syncRoot)
@@ -66,7 +81,8 @@ namespace UnityPuerExec
                     RecoveryPerformed,
                     RecoveryReason,
                     RecoveryPolicy,
-                    AffectedModules
+                    AffectedModules,
+                    refreshBlockJson
                 );
             }
         }
@@ -123,7 +139,8 @@ namespace UnityPuerExec
             bool recoveryPerformed = false,
             string recoveryReason = "",
             string recoveryPolicy = "auto-reset",
-            System.Collections.Generic.IEnumerable<string> affectedModules = null
+            System.Collections.Generic.IEnumerable<string> affectedModules = null,
+            string refreshBlockJson = ""
         )
         {
             RequestId = requestId;
@@ -137,6 +154,7 @@ namespace UnityPuerExec
             RecoveryReason = recoveryReason ?? "";
             RecoveryPolicy = recoveryPolicy ?? "auto-reset";
             AffectedModules = new System.Collections.Generic.List<string>(affectedModules ?? new System.Collections.Generic.List<string>());
+            RefreshBlockJson = refreshBlockJson ?? "";
         }
 
         public string RequestId { get; }
@@ -150,5 +168,6 @@ namespace UnityPuerExec
         public string RecoveryReason { get; }
         public string RecoveryPolicy { get; }
         public System.Collections.Generic.List<string> AffectedModules { get; }
+        public string RefreshBlockJson { get; }
     }
 }

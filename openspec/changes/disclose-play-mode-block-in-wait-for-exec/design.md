@@ -21,10 +21,20 @@ A non-terminal `wait-for-exec` (`running` / `refreshing`) has no terminal script
 annotate, so the helper is applied only where the command is about to return a terminal
 response, not on the non-terminal return paths.
 
-### D3. No protocol change
+### D3. The server retains the play-mode skip block for replay
 
-The `wait-for-exec` replay invokes the server's exec path, so the refresh block is already
-present on the response. The CLI needs no new field or endpoint.
+A `wait-for-exec` that replays an already-completed request returns the server's retained
+terminal snapshot. That snapshot did not carry the exec-time refresh block, so the CLI could
+not compose the disclosure from it. The server now retains the refresh block on the job when
+play mode suppressed the refresh, and includes it on a `wait-for-exec` replay. No new field
+is introduced: the same `refresh` block the exec response already emits is replayed. Refresh
+outcomes other than a play-mode skip (including `triggered: true`) are still not replayed, so
+the `wait-for-exec` terminal contract is otherwise unchanged. The CLI still needs no new
+field or endpoint.
+
+This split matters: the non-terminal (pending-replay) path re-invokes the server's exec
+endpoint, whose response already carries the refresh block, while the completed-replay path
+reads the retained snapshot. Retaining the block is what makes both paths disclose alike.
 
 ### D4. `compile_blocked` is a CLI-owned guidance selector, and guidance merges
 
