@@ -3078,13 +3078,23 @@ class RefreshOnChangeRealHostTests(_SharedRealHostDevice, unittest.TestCase):
         self.fail("validation host did not return to a ready state within {}s".format(timeout_seconds))
 
     def _hidden_probe_dir(self):
-        """A probe directory Unity's asset pipeline ignores.
+        """A probe directory Unity's asset pipeline ignores, but the tracker walks.
 
         The import-change signal is the unit under test here, not Unity's importer.
-        Unity ignores any folder whose name starts with a dot, so files placed here
-        are still enumerated by the tracker's scan (which walks the raw filesystem)
-        but never imported or compiled. That isolates the extension filter and the
+        Unity ignores any folder whose name ends with '~', so files placed here are
+        still enumerated by the tracker's scan (which walks the raw filesystem) but
+        never imported or compiled. That isolates the extension filter and the
         decision logic from compiler side effects.
+        """
+        return self.project_path / "Assets" / "__codex_validation_temp" / "not_imported~"
+
+    def _dot_probe_dir(self):
+        """A probe directory the tracker must exclude on its own.
+
+        Unity ignores a folder whose name starts with '.' too, and unlike the '~'
+        folder the tracker must skip it for the same reason: a script there can never
+        compile, so counting it as a change would leave the signal pending on a
+        compilation that cannot start.
         """
         return self.project_path / "Assets" / "__codex_validation_temp" / ".not_imported"
 
@@ -3319,6 +3329,27 @@ class RefreshOnChangeRealHostTests(_SharedRealHostDevice, unittest.TestCase):
 
         exit_code, payload = self._exec_script(
             base_url, "export default function run(ctx) { return { ok: true }; }"
+        )
+        self.assertEqual(exit_code, 0, payload)
+        self.assertFalse(payload["refresh"]["triggered"], payload["refresh"])
+
+    def test_dot_directory_change_does_not_mark_dirty_or_refresh(self):
+        base_url = self._base_url()
+        self.assertEqual(self._health(base_url)["refresh"]["pending"], "not_pending")
+        probe_dir = self._dot_probe_dir()
+        probe_dir.mkdir(parents=True, exist_ok=True)
+        (probe_dir / "DotDirectoryProbe.cs").write_text(
+            "internal static class DotDirectoryProbe { internal const int D = 1; }\n",
+            encoding="utf-8",
+        )
+
+        # Unity never imports a dot-directory, so a script there can never compile
+        # and clear itself: the tracker must not record it as a change at all.
+        refresh = self._health(base_url)["refresh"]
+        self.assertEqual(refresh["pending"], "not_pending", refresh)
+
+        exit_code, payload = self._exec_script(
+            base_url, "export default function run(ctx) { return { dotDirectoryIgnored: true }; }"
         )
         self.assertEqual(exit_code, 0, payload)
         self.assertFalse(payload["refresh"]["triggered"], payload["refresh"])

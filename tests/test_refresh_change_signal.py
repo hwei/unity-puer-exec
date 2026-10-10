@@ -41,6 +41,7 @@ CALLBACK_METHOD_SIGNATURES = (
 CALLBACK_HELPER_SIGNATURES = (
     "bool IsCompileTriggeringPath(string path)",
     "bool IsExcludedPath(string normalizedPath)",
+    "bool IsExcludedPath(string normalizedPath, bool",
     "string NormalizePath(string path)",
 )
 

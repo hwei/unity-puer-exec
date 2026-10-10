@@ -177,6 +177,11 @@ namespace UnityPuerExec
 
                 foreach (var path in CandidatePaths)
                 {
+                    if (IsExcludedPath(NormalizePath(path)))
+                    {
+                        continue;
+                    }
+
                     if (IsPathNewerThan(path, settledImportUtcTicks))
                     {
                         return PendingState.Pending;
@@ -244,6 +249,11 @@ namespace UnityPuerExec
 
                     foreach (var path in CandidatePaths)
                     {
+                        if (IsExcludedPath(NormalizePath(path)))
+                        {
+                            continue;
+                        }
+
                         if (IsPathNewerThan(path, settledImportUtcTicks))
                         {
                             changed.Add(path);
@@ -475,11 +485,6 @@ namespace UnityPuerExec
 
             foreach (var entry in entries)
             {
-                if (IsExcludedPath(NormalizePath(entry)))
-                {
-                    continue;
-                }
-
                 bool isDir;
                 long mtime;
                 try
@@ -488,6 +493,14 @@ namespace UnityPuerExec
                     mtime = File.GetLastWriteTimeUtc(entry).Ticks;
                 }
                 catch
+                {
+                    continue;
+                }
+
+                // A directory's own name is one of its directory segments, so the
+                // dot-directory rule has to see the last segment here. For a file the
+                // last segment is a name, not a directory, and does not count.
+                if (IsExcludedPath(NormalizePath(entry), isDir))
                 {
                     continue;
                 }
@@ -646,9 +659,35 @@ namespace UnityPuerExec
 
         private static bool IsExcludedPath(string normalizedPath)
         {
+            return IsExcludedPath(normalizedPath, lastSegmentIsDirectory: false);
+        }
+
+        private static bool IsExcludedPath(string normalizedPath, bool lastSegmentIsDirectory)
+        {
+            if (string.IsNullOrEmpty(normalizedPath))
+            {
+                return false;
+            }
+
             foreach (var segment in ExcludedSegments)
             {
                 if (normalizedPath.IndexOf(segment, StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    return true;
+                }
+            }
+
+            // Unity's asset pipeline ignores any directory whose name starts with '.',
+            // so a compile-triggering file inside one never compiles. Treating it as a
+            // change would leave the signal pending on a compilation that cannot start.
+            // Only directory segments count: a file whose own name starts with '.' is
+            // still a watched file. '.' and '..' are path notation, not directory names.
+            var segments = normalizedPath.Split('/');
+            var limit = lastSegmentIsDirectory ? segments.Length : segments.Length - 1;
+            for (var i = 0; i < limit; i++)
+            {
+                var segment = segments[i];
+                if (segment.Length > 1 && segment[0] == '.' && segment != "..")
                 {
                     return true;
                 }
