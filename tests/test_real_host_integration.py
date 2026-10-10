@@ -449,7 +449,17 @@ def _seed_obsolete_api_fixture(project_path):
 
 HOST_READY_RESET_TIMEOUT_SECONDS = 240
 EDIT_MODE_RESET_TIMEOUT_SECONDS = 180
+# A domain reload drops the control endpoint and may bind a later port when the
+# preferred port is occupied. Probes wait this long, then fail naming the window.
+RELOAD_WINDOW_SECONDS = 120
 COMPILE_RECOVERY_PROBE_NAME = "_host_reset_compile_probe.cs"
+# Saved empty scene the per-case reset opens. It is outside the declared temp
+# inventory so cleanup does not delete the scene the Editor has open.
+HOST_RESET_SCENE_RELATIVE = Path("Assets") / "__codex_host_reset" / "Baseline.unity"
+
+
+class ControlEndpointReloadTimeout(Exception):
+    """The control endpoint did not return within the domain-reload window."""
 BOUNDARY_ATTEMPTS = 3
 BOUNDARY_RETRY_SLEEP_SECONDS = 10.0
 
@@ -527,6 +537,11 @@ class _SharedRealHostDevice:
     """
 
     OWN_HOST_BOUNDARY_TESTS = {}
+    # An exec that may trigger an automatic refresh has to give the CLI's internal
+    # settle+resubmit loop enough budget: the refresh drives a full compile cycle
+    # (tens of seconds), and the terminal response carries the script result only
+    # after it settles. WAIT_TIMEOUT_MS (1 s) is a request-wait budget.
+    REFRESH_WAIT_TIMEOUT_MS = 300_000
 
     @classmethod
     def setUpClass(cls):
@@ -647,7 +662,7 @@ class _SharedRealHostDevice:
         if not own.get("stopped") and not own.get("perturbed"):
             return
         try:
-            cleanup_validation_host.cleanup_validation_temp_assets(self.project_path)
+            self._cleanup_temp_assets()
         except Exception:
             pass
         # If the case (or its own launch) left a healthy Editor, adopt it rather
@@ -675,14 +690,441 @@ class _SharedRealHostDevice:
         own["reestablished"] = True
         own["base_url"] = report["base_url"]
 
+    # -- endpoint probe -------------------------------------------------------
+    #
+    # Classification of probes that assumed a stable endpoint (task 1.1):
+    # (a) must tolerate a reload window — per-class ``_health``,
+    #     ``_wait_for_refresh_pending``, ``_return_editor_to_edit_mode``'s health
+    #     read, and the post-play-exit pending poll. A transport drop here is the
+    #     domain reload, not the behavior under test.
+    # (b) genuinely requires a live endpoint now — ``_base_url`` after the bounded
+    #     restore, and ``test_health_reports_not_pending_after_settle``'s one-shot
+    #     read of an already settled host. Their assertion says why.
+    # (c) already tolerant — ``_ensure_shared_host_ready``, ``_await_ready_endpoint``,
+    #     ``_wait_for_ready_project``, and the old per-class refresh/play-exit waits.
+    #     ``_scan_ready_control_endpoint`` itself stays one-shot: it is the
+    #     re-resolve primitive. Re-resolution is required on this host: an occupied
+    #     preferred port binds the service on a later port, including across reload.
+
+    def _adopt_resolved_endpoint(self, base_url, payload):
+        type(self)._shared_host_base_url = base_url
+        self._last_host_health = payload
+        host = getattr(type(self), "_shared_host", None)
+        if isinstance(host, dict):
+            host["base_url"] = base_url
+            host["health"] = payload
+
+    def _probe_once_resolving(self, base_url):
+        """One health read. A transport failure re-resolves the project's endpoint."""
+        if base_url:
+            payload, _error = unity_session._probe_health(base_url, 1.5)
+            if isinstance(payload, dict):
+                self._adopt_resolved_endpoint(base_url, payload)
+                return base_url, payload
+        resolved, resolved_payload = _scan_ready_control_endpoint(self.project_path)
+        if resolved is not None and isinstance(resolved_payload, dict):
+            self._adopt_resolved_endpoint(resolved, resolved_payload)
+            return resolved, resolved_payload
+        return None, None
+
+    def _probe_through_reload_window(self, base_url=None, timeout_seconds=None):
+        """Retry transport failures inside the reload window.
+
+        Returns ``(base_url, payload)``. Raises ``ControlEndpointReloadTimeout``
+        when the endpoint does not come back. The scan is ``_scan_ready_control_endpoint``
+        so a rebind to another port is picked up, not only a retry of ``base_url``.
+        """
+        if timeout_seconds is None:
+            timeout_seconds = RELOAD_WINDOW_SECONDS
+        deadline = time.monotonic() + timeout_seconds
+        while True:
+            resolved, payload = self._probe_once_resolving(base_url)
+            if payload is not None:
+                return resolved, payload
+            if time.monotonic() >= deadline:
+                raise ControlEndpointReloadTimeout(
+                    "control endpoint did not return within the reload window ({}s)".format(
+                        timeout_seconds
+                    )
+                )
+            time.sleep(0.25)
+
+    def _health(self, base_url, timeout_seconds=None):
+        """Class (a): wait out a reload, then return the health payload."""
+        try:
+            _resolved, payload = self._probe_through_reload_window(
+                base_url, timeout_seconds=timeout_seconds
+            )
+        except ControlEndpointReloadTimeout as exc:
+            self.fail(str(exc))
+        return payload
+
+    def _wait_for_refresh_state(self, base_url, suppressed, timeout_seconds=60):
+        """Wait until ``refresh.suppressed`` matches, re-resolving across a reload."""
+        deadline = time.monotonic() + timeout_seconds
+        last = None
+        while time.monotonic() < deadline:
+            resolved, health = self._probe_once_resolving(base_url)
+            if health is not None:
+                base_url = resolved
+                refresh = health.get("refresh") if isinstance(health, dict) else None
+                last = refresh
+                if isinstance(refresh, dict) and bool(refresh.get("suppressed")) == suppressed:
+                    return base_url, refresh
+            time.sleep(0.5)
+        self.fail("refresh suppressed state did not become {}: {}".format(suppressed, last))
+
+    def _wait_for_refresh_pending(self, base_url, timeout_seconds=30):
+        deadline = time.monotonic() + timeout_seconds
+        last = None
+        while time.monotonic() < deadline:
+            resolved, health = self._probe_once_resolving(base_url)
+            if health is None:
+                time.sleep(0.25)
+                continue
+            base_url = resolved
+            refresh = health.get("refresh") if isinstance(health, dict) else None
+            last = refresh
+            if isinstance(refresh, dict) and refresh.get("pending") == "pending":
+                return base_url, refresh
+            time.sleep(0.25)
+        if last is None:
+            self.fail(
+                "control endpoint did not return within the reload window ({}s)".format(
+                    timeout_seconds
+                )
+            )
+        self.fail("change signal did not become pending: {}".format(last))
+
+    def _wait_for_play_exit(self, base_url, timeout_seconds=180):
+        """Wait until play mode has ended or the deferred compile is visible.
+
+        A play-mode exit reloads the domain and can rebind the control port, so a
+        dropped endpoint is re-resolved instead of failing the case.
+        """
+        deadline = time.monotonic() + timeout_seconds
+        last = None
+        while time.monotonic() < deadline:
+            resolved, health = self._probe_once_resolving(base_url)
+            if health is not None:
+                base_url = resolved
+                last = health
+                if health.get("status") == "compiling":
+                    return base_url, health
+                refresh = health.get("refresh")
+                if isinstance(refresh, dict) and not refresh.get("suppressed"):
+                    return base_url, health
+            time.sleep(0.25)
+        self.fail("Editor did not leave play mode within {}s: {}".format(timeout_seconds, last))
+
+    def _exec_raw(self, base_url, code, wait_ms=None):
+        """Exec without the waiting shortcut, so a non-terminal refresh phase is visible."""
+        exit_code, payload, _, _ = _run_cli(
+            [
+                "exec",
+                "--base-url", base_url,
+                "--wait-timeout-ms", str(wait_ms or self.REFRESH_WAIT_TIMEOUT_MS),
+                "--code", code,
+            ]
+        )
+        return exit_code, payload
+
+    def _exec_script(self, base_url, body):
+        exit_code, payload, _, _ = _run_cli(
+            [
+                "exec",
+                "--base-url", base_url,
+                "--wait-timeout-ms", str(self.REFRESH_WAIT_TIMEOUT_MS),
+                "--code", body,
+            ]
+        )
+        if payload is not None and unity_puer_exec_runtime._running_or_timed_out_response(
+            exit_code, json.dumps(payload)
+        ):
+            exit_code, payload, _, _ = _run_cli(
+                [
+                    "wait-for-exec",
+                    "--base-url", base_url,
+                    "--request-id", payload["request_id"],
+                    "--wait-timeout-ms", str(READY_TIMEOUT_SECONDS * 1000),
+                ]
+            )
+        return exit_code, payload
+
+    def _write_compile_triggering_probe(self, name):
+        temp_dir = self.project_path / "Assets" / "__codex_validation_temp"
+        temp_dir.mkdir(parents=True, exist_ok=True)
+        path = temp_dir / name
+        path.write_text(
+            "// Auto-generated compile-triggering probe.\n"
+            "internal static class {0} {{ internal const long Stamp = {1}L; }}\n".format(
+                path.stem, time.time_ns()
+            ),
+            encoding="utf-8",
+        )
+        return path
+
+    def _set_play_mode(self, base_url, playing):
+        literal = "true" if playing else "false"
+        exit_code, payload = self._exec_raw(
+            base_url,
+            "export default function run(ctx) {"
+            " const EditorApplication = puer.loadType('UnityEditor.EditorApplication');"
+            " EditorApplication.isPlaying = " + literal + ";"
+            " return { requested: " + literal + " }; }",
+        )
+        self.assertIsInstance(payload, dict, payload)
+        self.assertEqual(exit_code, 0, payload)
+
+    def _cleanup_temp_assets(self, base_url=None, wait_for_editor=False):
+        """Delete declared temp assets through the Editor when one is reachable."""
+        resolved = None
+        if base_url is not None or wait_for_editor:
+            try:
+                resolved, _payload = self._probe_through_reload_window(base_url)
+            except ControlEndpointReloadTimeout:
+                resolved = None
+        else:
+            resolved, payload = _scan_ready_control_endpoint(self.project_path)
+            if resolved is not None:
+                self._adopt_resolved_endpoint(resolved, payload)
+        editor_delete = None
+        if resolved is not None:
+            def editor_delete(relative_paths, _url=resolved):
+                return self._editor_delete_assets(_url, relative_paths)
+        return cleanup_validation_host.cleanup_validation_temp_assets(
+            self.project_path, editor_delete=editor_delete
+        )
+
+    def _editor_delete_assets(self, base_url, relative_paths):
+        if not relative_paths:
+            return {"removed": [], "errors": []}
+        for relative in relative_paths:
+            cleanup_validation_host.assert_declared_validation_temp_path(self.project_path, relative)
+        literals = ", ".join(_js_string_literal(relative) for relative in relative_paths)
+        code = (
+            "export default function run(ctx) {"
+            " const AssetDatabase = puer.loadType('UnityEditor.AssetDatabase');"
+            " const paths = [" + literals + "];"
+            " const removed = [];"
+            " const errors = [];"
+            " for (let i = 0; i < paths.length; i++) {"
+            "   const path = paths[i];"
+            "   try {"
+            "     const ok = AssetDatabase.DeleteAsset(path);"
+            "     if (ok) removed.push(path);"
+            "     else errors.push(path);"
+            "   } catch (e) { errors.push(path + ': ' + e); }"
+            " }"
+            " return { removed: removed, errors: errors }; }"
+        )
+        exit_code, payload = self._exec_settled(
+            base_url, code, wait_ms=self.REFRESH_WAIT_TIMEOUT_MS
+        )
+        if exit_code != 0 or not isinstance(payload, dict):
+            return {
+                "removed": [],
+                "errors": [{"path": "<editor>", "error": str(payload)}],
+            }
+        result = payload.get("result") or {}
+        return {
+            "removed": list(result.get("removed") or []),
+            "errors": [
+                {"path": str(item), "error": "delete_failed"}
+                for item in (result.get("errors") or [])
+            ],
+        }
+
+    def _remove_script_updater_fixture(self, fixture_path):
+        """Remove the ScriptUpdater fixture on the success path and the skip path."""
+        self._cleanup_temp_assets(wait_for_editor=True)
+        fixture_path = Path(fixture_path)
+        meta_path = fixture_path.with_suffix(".cs.meta")
+        if not fixture_path.exists() and not meta_path.exists():
+            return
+        # The Editor delete did not take them. A second pass with no live endpoint
+        # may filesystem-delete; a live endpoint already refused that race.
+        resolved, _payload = _scan_ready_control_endpoint(self.project_path)
+        if resolved is not None:
+            return
+        if fixture_path.exists():
+            fixture_path.unlink()
+        if meta_path.exists():
+            meta_path.unlink()
+
+    def _restore_active_scene(self):
+        """Open a saved empty scene so the next case does not inherit a pathless one."""
+        scene_path = Path(self.project_path) / HOST_RESET_SCENE_RELATIVE
+        scene_path.parent.mkdir(parents=True, exist_ok=True)
+        asset_literal = _js_string_literal(HOST_RESET_SCENE_RELATIVE.as_posix())
+        file_literal = _js_string_literal(scene_path)
+        # BindingFlags.Static | Public | NonPublic. ClearSceneDirtiness is internal.
+        # SceneManager.GetActiveScene is the bound call. EditorSceneManager.GetActiveScene
+        # is not a function on this host's puer.loadType wrapper. The Scene argument has to
+        # be boxed in a real object[]. The two-argument Invoke drops that array; the
+        # five-argument Invoke keeps it.
+        code = (
+            "export default function run(ctx) {"
+            " const SceneManager = puer.loadType('UnityEngine.SceneManagement.SceneManager');"
+            " const EditorSceneManager = puer.loadType('UnityEditor.SceneManagement.EditorSceneManager');"
+            " const NewSceneSetup = puer.loadType('UnityEditor.SceneManagement.NewSceneSetup');"
+            " const NewSceneMode = puer.loadType('UnityEditor.SceneManagement.NewSceneMode');"
+            " const OpenSceneMode = puer.loadType('UnityEditor.SceneManagement.OpenSceneMode');"
+            " const scene = SceneManager.GetActiveScene();"
+            " const flags = 56;"
+            " let method = null;"
+            " const AppDomain = puer.loadType('System.AppDomain');"
+            " const asms = AppDomain.CurrentDomain.GetAssemblies();"
+            " for (let i = 0; i < asms.Length && method == null; i++) {"
+            "   const type = asms.get_Item(i).GetType('UnityEditor.SceneManagement.EditorSceneManager');"
+            "   if (type) method = type.GetMethod('ClearSceneDirtiness', flags);"
+            " }"
+            " let invokeError = null;"
+            " if (method != null) {"
+            "   try {"
+            "     const args = CS.System.Array.CreateInstance(puer.$typeof(CS.System.Object), 1);"
+            "     args.SetValue(scene, 0);"
+            "     method.Invoke(null, 0, null, args, null);"
+            "   } catch (e) { invokeError = String(e); }"
+            " }"
+            " if (method == null || invokeError != null) {"
+            "   return { path: '', dirty: !!scene.isDirty, cleared: false, invoke_error: invokeError || 'ClearSceneDirtiness was not found' };"
+            " }"
+            " const File = puer.loadType('System.IO.File');"
+            " const assetPath = " + asset_literal + ";"
+            " const filePath = " + file_literal + ";"
+            " let opened;"
+            " if (!File.Exists(filePath)) {"
+            "   const fresh = EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);"
+            "   EditorSceneManager.SaveScene(fresh, assetPath);"
+            "   opened = fresh;"
+            " } else {"
+            "   opened = EditorSceneManager.OpenScene(assetPath, OpenSceneMode.Single);"
+            " }"
+            " return { path: opened ? String(opened.path) : '', dirty: !!(opened && opened.isDirty), cleared: method != null && invokeError == null, invoke_error: invokeError }; }"
+        )
+        base_url = self._ensure_shared_host_ready()
+        exit_code, payload = 1, None
+        for _attempt in range(3):
+            exit_code, payload = self._exec_settled(
+                base_url, code, wait_ms=self.REFRESH_WAIT_TIMEOUT_MS
+            )
+            if self._payload_is_declared_temp_compile_error(payload):
+                # The compile gate rejects exec, so DeleteAsset cannot run. The
+                # tracker also will not refresh again until a new .cs appears.
+                self._drop_latched_temp_scripts()
+                self._poke_compile_recovery_probe()
+                continue
+            if isinstance(payload, dict) and payload.get("status") == "missing":
+                try:
+                    base_url, _health = self._probe_through_reload_window(base_url)
+                except ControlEndpointReloadTimeout:
+                    break
+                continue
+            break
+        result = payload.get("result") if isinstance(payload, dict) else None
+        if (
+            exit_code != 0
+            or not isinstance(result, dict)
+            or not result.get("path")
+            or not result.get("cleared")
+            or result.get("dirty")
+        ):
+            self.fail("shared Editor did not restore the active scene: {}".format(payload))
+        return payload
+
+    def _payload_is_declared_temp_compile_error(self, payload):
+        if not isinstance(payload, dict) or payload.get("status") != "unity_compile_error":
+            return False
+        roots = tuple(
+            root.as_posix() for root in cleanup_validation_host.DECLARED_VALIDATION_TEMP_ROOTS
+        )
+        for item in payload.get("compile_messages") or []:
+            message = item.get("message", "") if isinstance(item, dict) else str(item)
+            normalized = str(message).replace("\\", "/")
+            if any(root in normalized for root in roots):
+                return True
+        return False
+
+    def _drop_latched_temp_scripts(self):
+        """Unlink compile-triggering files under the declared temp roots.
+
+        Leaves directories and non-script assets for the Editor delete. Removing a
+        ``.meta`` the Editor still has open is the ``Opening file failed`` modal.
+        """
+        extensions = (".cs", ".asmdef", ".asmref", ".rsp")
+        project = Path(self.project_path)
+        for root in cleanup_validation_host.DECLARED_VALIDATION_TEMP_ROOTS:
+            directory = project / root
+            if not directory.exists():
+                continue
+            for path in directory.rglob("*"):
+                if path.is_file() and path.suffix.lower() in extensions:
+                    path.unlink(missing_ok=True)
+
+    def _poke_compile_recovery_probe(self):
+        directory = Path(self.project_path) / "Assets" / "__codex_validation_temp"
+        directory.mkdir(parents=True, exist_ok=True)
+        probe = directory / COMPILE_RECOVERY_PROBE_NAME
+        probe.write_text(
+            "internal static class HostResetCompileProbe { internal const int Stamp = 1; }\n",
+            encoding="utf-8",
+        )
+        return probe
+
+    def _code_saved_scene_modified_prompt(self):
+        """Stage a scene that has a path, then raise the modified-scenes prompt."""
+        scene_path = self.project_path / "Assets" / "__codex_validation_temp" / "StagedModifiedScene.unity"
+        scene_path.parent.mkdir(parents=True, exist_ok=True)
+        path_literal = _js_string_literal(scene_path)
+        return "\n".join(
+            [
+                "export default function run(ctx) {",
+                "  const EditorSceneManager = puer.loadType('UnityEditor.SceneManagement.EditorSceneManager');",
+                "  const NewSceneSetup = puer.loadType('UnityEditor.SceneManagement.NewSceneSetup');",
+                "  const NewSceneMode = puer.loadType('UnityEditor.SceneManagement.NewSceneMode');",
+                "  const scene = EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);",
+                "  EditorSceneManager.SaveScene(scene, " + path_literal + ");",
+                "  EditorSceneManager.MarkSceneDirty(scene);",
+                "  EditorSceneManager.SaveCurrentModifiedScenesIfUserWantsTo();",
+                "  return { request_id: ctx.request_id, staged: 'saved_then_dirtied' };",
+                "}",
+            ]
+        )
+
+    def _code_untitled_scene_save_dialog(self):
+        """Stage a pathless scene and open the Save Scene dialog from that scene."""
+        return "\n".join(
+            [
+                "export default function run(ctx) {",
+                "  const EditorSceneManager = puer.loadType('UnityEditor.SceneManagement.EditorSceneManager');",
+                "  const NewSceneSetup = puer.loadType('UnityEditor.SceneManagement.NewSceneSetup');",
+                "  const NewSceneMode = puer.loadType('UnityEditor.SceneManagement.NewSceneMode');",
+                "  const scene = EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);",
+                "  EditorSceneManager.MarkSceneDirty(scene);",
+                "  EditorSceneManager.SaveOpenScenes();",
+                "  return { request_id: ctx.request_id, staged: 'untitled' };",
+                "}",
+            ]
+        )
+
     # -- per-case reset (the isolation the per-case relaunch used to provide) --
 
     def _reset_shared_host_state(self):
-        cleanup_validation_host.cleanup_validation_temp_assets(self.project_path)
-        self._ensure_shared_host_ready()
+        # Before the host launches or the first health scan. A dot-folder
+        # probe left on disk is pending to the tracker and invisible to Unity.
+        self._drop_unimported_compile_probes()
+        base_url = self._ensure_shared_host_ready()
         self._clear_residual_modal_blocker()
-        self._return_editor_to_edit_mode()
+        # A previous case can leave the change signal pending, including a
+        # compile-triggering file Unity will never import. Clear that signal
+        # before any later exec, so scene restore is not the request that
+        # starts the refresh.
         self._reset_change_signal_state()
+        self._restore_active_scene()
+        self._clear_residual_modal_blocker()
+        self._cleanup_temp_assets(base_url=base_url, wait_for_editor=True)
+        self._return_editor_to_edit_mode()
 
     def _ensure_shared_host_ready(self):
         """Return a ready shared host, re-establishing it only if it is gone.
@@ -706,7 +1148,10 @@ class _SharedRealHostDevice:
 
     def _base_url(self):
         base_url = self._ensure_shared_host_ready()
-        self.assertIsNotNone(base_url, "no ready control endpoint for the validation host")
+        self.assertIsNotNone(
+            base_url,
+            "case requires a live control endpoint now; the bounded reload wait already elapsed",
+        )
         return base_url
 
     def _exec_settled(self, base_url, code, wait_ms=None):
@@ -722,6 +1167,9 @@ class _SharedRealHostDevice:
         if payload is not None and unity_puer_exec_runtime._running_or_timed_out_response(
             exit_code, json.dumps(payload)
         ):
+            resolved, _health = self._probe_once_resolving(base_url)
+            if resolved is not None:
+                base_url = resolved
             exit_code, payload, _, _ = _run_cli(
                 [
                     "wait-for-exec",
@@ -733,39 +1181,46 @@ class _SharedRealHostDevice:
         return exit_code, payload
 
     def _clear_residual_modal_blocker(self):
-        """Resolve a modal dialog a previous case left up.
+        """Clear a modal a previous case left up, including one outside the catalog.
 
-        A relaunched Editor dropped any dialog with the process; a reused one keeps
-        it, and a modal dialog blocks the main thread the next case's exec needs.
+        A relaunched Editor drops dialogs with the process. A reused one keeps them,
+        and a modal blocks the main thread the next case's exec needs. Catalog and
+        unknown dialogs are both clicked; a dialog with no cancel-like label still
+        gets its last button, which is how an unrecognized prompt is dismissed.
         """
-        try:
-            exit_code, payload, _, _ = _run_cli(
-                ["get-blocker-state", "--project-path", str(self.project_path)]
-            )
-        except Exception:
-            return
-        result = payload.get("result") if isinstance(payload, dict) else None
-        if exit_code != 0 or not isinstance(result, dict):
-            return
-        if result.get("status") != "modal_blocked":
-            return
-        blocker = result.get("blocker") or {}
-        hwnd = blocker.get("hwnd")
-        label = _pick_cancel_button_label(blocker)
-        if hwnd is None or label is None:
-            return
-        try:
-            _run_cli(
-                [
-                    "resolve-blocker",
-                    "--project-path", str(self.project_path),
-                    "--action", "click",
-                    "--hwnd", str(hwnd),
-                    "--button", label,
-                ]
-            )
-        except Exception:
-            pass
+        last_blocker = None
+        for _attempt in range(5):
+            try:
+                exit_code, payload, _, _ = _run_cli(
+                    ["get-blocker-state", "--project-path", str(self.project_path)]
+                )
+            except Exception:
+                return
+            result = payload.get("result") if isinstance(payload, dict) else None
+            if exit_code != 0 or not isinstance(result, dict):
+                return
+            if result.get("status") != "modal_blocked":
+                return
+            blocker = result.get("blocker") or {}
+            last_blocker = blocker
+            hwnd = blocker.get("hwnd")
+            label = _pick_cancel_button_label(blocker)
+            if hwnd is None or label is None:
+                break
+            try:
+                _run_cli(
+                    [
+                        "resolve-blocker",
+                        "--project-path", str(self.project_path),
+                        "--action", "click",
+                        "--hwnd", str(hwnd),
+                        "--button", label,
+                    ]
+                )
+            except Exception:
+                break
+            time.sleep(0.2)
+        self.fail("residual modal survived the per-case reset: {}".format(last_blocker))
 
     def _return_editor_to_edit_mode(self):
         """Leave the shared Editor out of play mode, failing loudly if it will not.
@@ -794,8 +1249,12 @@ class _SharedRealHostDevice:
             exit_code, payload = self._exec_settled(base_url, code)
             last_error = payload
             if exit_code == 0:
-                health, _ = unity_session._probe_health(base_url, 1.5)
-                refresh = health.get("refresh") if isinstance(health, dict) else None
+                resolved, health = self._probe_once_resolving(base_url)
+                if not isinstance(health, dict):
+                    time.sleep(1.0)
+                    continue
+                base_url = resolved
+                refresh = health.get("refresh")
                 if not (isinstance(refresh, dict) and refresh.get("suppressed")):
                     return
             elif isinstance(payload, dict) and payload.get("status") == "unity_compile_error":
@@ -822,6 +1281,32 @@ class _SharedRealHostDevice:
         except OSError:
             pass
 
+    def _drop_unimported_compile_probes(self):
+        """Remove compile-triggering files Unity's asset pipeline never sees.
+
+        The change tracker walks the raw filesystem. A folder whose name starts
+        with '.' is invisible to Unity, so a ``.cs`` left there stays pending and
+        the next exec waits for a compilation that cannot start. The file was
+        never imported, so deleting it does not open an ``Opening file failed``
+        dialog. Imported scripts under the same declared root are left for the
+        Editor-side delete.
+        """
+        triggering = {".cs", ".asmdef", ".asmref", ".rsp"}
+        for relative_root in cleanup_validation_host.DECLARED_VALIDATION_TEMP_ROOTS:
+            root = self.project_path / relative_root
+            if not root.is_dir():
+                continue
+            for path in root.rglob("*"):
+                if not path.is_file() or path.suffix.lower() not in triggering:
+                    continue
+                relative_parts = path.relative_to(root).parts
+                if not any(part.startswith(".") for part in relative_parts):
+                    continue
+                try:
+                    path.unlink()
+                except OSError:
+                    pass
+
     def _reset_change_signal_state(self):
         """Clear test-owned change-signal state so the next case starts not_pending.
 
@@ -839,6 +1324,10 @@ class _SharedRealHostDevice:
         deadline = time.time() + EDIT_MODE_RESET_TIMEOUT_SECONDS
         last_payload = None
         while time.time() < deadline:
+            # Drop never-imported probes before the health read. Once they are
+            # gone, the tracker's scan can report not_pending without waiting
+            # for a compilation.
+            self._drop_unimported_compile_probes()
             base_url = self._ensure_shared_host_ready()
             health = getattr(self, "_last_host_health", None)
             refresh = health.get("refresh") if isinstance(health, dict) else None
@@ -850,6 +1339,16 @@ class _SharedRealHostDevice:
                 # Already installed and settled: no candidates or synthetic
                 # pending change to clear, so skip the re-install walk.
                 return
+            if (
+                isinstance(refresh, dict)
+                and refresh.get("pending") == "pending"
+                and not refresh.get("suppressed")
+            ):
+                # The scan still sees a candidate after the unimported probes
+                # are gone. Give the refresh this exec is about to start a
+                # script Unity can actually compile, so the cycle can finish
+                # and clear the candidate set.
+                self._touch_compile_probe()
             exit_code, payload = self._exec_settled(base_url, code)
             last_payload = payload
             if (
@@ -880,13 +1379,6 @@ _OWN_BOUNDARY_INTEGRATION_TESTS = {
 
 class RealHostIntegrationTests(_SharedRealHostDevice, unittest.TestCase):
     OWN_HOST_BOUNDARY_TESTS = _OWN_BOUNDARY_INTEGRATION_TESTS
-
-    # An exec that may trigger an automatic refresh has to give the CLI's internal
-    # settle+resubmit loop enough budget: the refresh drives a full compile cycle
-    # (tens of seconds), and the terminal response carries the script result plus
-    # the refresh decision only after it settles. WAIT_TIMEOUT_MS (1 s) is a
-    # request-wait budget and expires long before the cycle does.
-    REFRESH_WAIT_TIMEOUT_MS = 300_000
 
     def test_component_detection_example_executes_against_real_host(self):
         import help_surface
@@ -1161,18 +1653,7 @@ class RealHostIntegrationTests(_SharedRealHostDevice, unittest.TestCase):
                 "--wait-timeout-ms",
                 str(WAIT_TIMEOUT_MS),
                 "--code",
-                "\n".join(
-                    [
-                        "export default function run(ctx) {",
-                        "  const SceneManager = puer.loadType('UnityEngine.SceneManagement.SceneManager');",
-                        "  const EditorSceneManager = puer.loadType('UnityEditor.SceneManagement.EditorSceneManager');",
-                        "  const scene = SceneManager.GetActiveScene();",
-                        "  EditorSceneManager.MarkSceneDirty(scene);",
-                        "  EditorSceneManager.SaveCurrentModifiedScenesIfUserWantsTo();",
-                        "  return { request_id: ctx.request_id };",
-                        "}",
-                    ]
-                ),
+                self._code_saved_scene_modified_prompt(),
             ]
         )
 
@@ -1288,19 +1769,7 @@ class RealHostIntegrationTests(_SharedRealHostDevice, unittest.TestCase):
                 "--wait-timeout-ms",
                 str(WAIT_TIMEOUT_MS),
                 "--code",
-                "\n".join(
-                    [
-                        "export default function run(ctx) {",
-                        "  const EditorSceneManager = puer.loadType('UnityEditor.SceneManagement.EditorSceneManager');",
-                        "  const NewSceneSetup = puer.loadType('UnityEditor.SceneManagement.NewSceneSetup');",
-                        "  const NewSceneMode = puer.loadType('UnityEditor.SceneManagement.NewSceneMode');",
-                        "  const scene = EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);",
-                        "  EditorSceneManager.MarkSceneDirty(scene);",
-                        "  EditorSceneManager.SaveOpenScenes();",
-                        "  return { request_id: ctx.request_id };",
-                        "}",
-                    ]
-                ),
+                self._code_untitled_scene_save_dialog(),
             ]
         )
 
@@ -1334,18 +1803,7 @@ class RealHostIntegrationTests(_SharedRealHostDevice, unittest.TestCase):
                 "--wait-timeout-ms",
                 str(WAIT_TIMEOUT_MS),
                 "--code",
-                "\n".join(
-                    [
-                        "export default function run(ctx) {",
-                        "  const SceneManager = puer.loadType('UnityEngine.SceneManagement.SceneManager');",
-                        "  const EditorSceneManager = puer.loadType('UnityEditor.SceneManagement.EditorSceneManager');",
-                        "  const scene = SceneManager.GetActiveScene();",
-                        "  EditorSceneManager.MarkSceneDirty(scene);",
-                        "  EditorSceneManager.SaveCurrentModifiedScenesIfUserWantsTo();",
-                        "  return { request_id: ctx.request_id };",
-                        "}",
-                    ]
-                ),
+                self._code_saved_scene_modified_prompt(),
             ]
         )
 
@@ -1418,19 +1876,7 @@ class RealHostIntegrationTests(_SharedRealHostDevice, unittest.TestCase):
                 "--wait-timeout-ms",
                 str(WAIT_TIMEOUT_MS),
                 "--code",
-                "\n".join(
-                    [
-                        "export default function run(ctx) {",
-                        "  const EditorSceneManager = puer.loadType('UnityEditor.SceneManagement.EditorSceneManager');",
-                        "  const NewSceneSetup = puer.loadType('UnityEditor.SceneManagement.NewSceneSetup');",
-                        "  const NewSceneMode = puer.loadType('UnityEditor.SceneManagement.NewSceneMode');",
-                        "  const scene = EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);",
-                        "  EditorSceneManager.MarkSceneDirty(scene);",
-                        "  EditorSceneManager.SaveOpenScenes();",
-                        "  return { request_id: ctx.request_id };",
-                        "}",
-                    ]
-                ),
+                self._code_untitled_scene_save_dialog(),
             ]
         )
 
@@ -1499,22 +1945,11 @@ class RealHostIntegrationTests(_SharedRealHostDevice, unittest.TestCase):
                 "--unity-exe-path",
                 str(self.unity_exe_path),
                 "--request-id",
-                "cancel-rejected-{}".format(os.getpid()),
+                "cancel-rejected-{}".format(time.time_ns()),
                 "--wait-timeout-ms",
                 str(WAIT_TIMEOUT_MS),
                 "--code",
-                "\n".join(
-                    [
-                        "export default function run(ctx) {",
-                        "  const SceneManager = puer.loadType('UnityEngine.SceneManagement.SceneManager');",
-                        "  const EditorSceneManager = puer.loadType('UnityEditor.SceneManagement.EditorSceneManager');",
-                        "  const scene = SceneManager.GetActiveScene();",
-                        "  EditorSceneManager.MarkSceneDirty(scene);",
-                        "  EditorSceneManager.SaveCurrentModifiedScenesIfUserWantsTo();",
-                        "  return { request_id: ctx.request_id };",
-                        "}",
-                    ]
-                ),
+                self._code_saved_scene_modified_prompt(),
             ]
         )
 
@@ -2447,14 +2882,10 @@ class RealHostIntegrationTests(_SharedRealHostDevice, unittest.TestCase):
                 "source file was rewritten despite decline recovery",
             )
         finally:
-            # Clean up fixture so host is left clean
+            # Same removal on the skip path and the success path. skipTest raises
+            # out of the try, and this finally still runs.
             try:
-                if fixture_path.exists():
-                    fixture_path.unlink()
-                meta_path = fixture_path.with_suffix(".cs.meta")
-                if meta_path.exists():
-                    meta_path.unlink()
-                cleanup_validation_host.cleanup_validation_temp_assets(self.project_path)
+                self._remove_script_updater_fixture(fixture_path)
             except Exception:
                 pass
 
@@ -2613,66 +3044,6 @@ class RefreshOnChangeRealHostTests(_SharedRealHostDevice, unittest.TestCase):
     run in any order against one host.
     """
 
-    def _write_compile_triggering_probe(self, name):
-        temp_dir = self.project_path / "Assets" / "__codex_validation_temp"
-        temp_dir.mkdir(parents=True, exist_ok=True)
-        path = temp_dir / name
-        path.write_text(
-            "// Auto-generated automatic-refresh probe.\n"
-            "internal static class {0} {{ internal const long Stamp = {1}L; }}\n".format(
-                path.stem, time.time_ns()
-            ),
-            encoding="utf-8",
-        )
-        return path
-
-    # An exec that may trigger an automatic refresh has to give the CLI's internal
-    # settle+resubmit loop enough budget: the refresh drives a full compile cycle
-    # (tens of seconds), and the terminal response carries the script result only
-    # after it settles.
-    REFRESH_WAIT_TIMEOUT_MS = 300_000
-
-    def _exec_script(self, base_url, body):
-        exit_code, payload, _, _ = _run_cli(
-            [
-                "exec",
-                "--base-url", base_url,
-                "--wait-timeout-ms", str(self.REFRESH_WAIT_TIMEOUT_MS),
-                "--code", body,
-            ]
-        )
-        if payload is not None and unity_puer_exec_runtime._running_or_timed_out_response(
-            exit_code, json.dumps(payload)
-        ):
-            exit_code, payload, _, _ = _run_cli(
-                [
-                    "wait-for-exec",
-                    "--base-url", base_url,
-                    "--request-id", payload["request_id"],
-                    "--wait-timeout-ms", str(READY_TIMEOUT_SECONDS * 1000),
-                ]
-            )
-        return exit_code, payload
-
-    # --- shared probes for the import-change signal ---------------------------
-
-    def _health(self, base_url):
-        payload, error = unity_session._probe_health(base_url, 1.5)
-        self.assertIsNotNone(payload, error)
-        return payload
-
-    def _exec_raw(self, base_url, code, wait_ms=None):
-        """Exec without the waiting shortcut, so a non-terminal refresh phase is visible."""
-        exit_code, payload, _, _ = _run_cli(
-            [
-                "exec",
-                "--base-url", base_url,
-                "--wait-timeout-ms", str(wait_ms or self.REFRESH_WAIT_TIMEOUT_MS),
-                "--code", code,
-            ]
-        )
-        return exit_code, payload
-
     def _tracker_script(self, body):
         return _TRACKER_REFLECTION_JS + body
 
@@ -2706,28 +3077,6 @@ class RefreshOnChangeRealHostTests(_SharedRealHostDevice, unittest.TestCase):
             time.sleep(1.0)
         self.fail("validation host did not return to a ready state within {}s".format(timeout_seconds))
 
-    def _wait_for_refresh_state(self, base_url, suppressed, timeout_seconds=60):
-        """Wait for the health refresh suppression flag to reach ``suppressed``.
-
-        Tolerates the transient transport failures a domain reload produces (play
-        mode exit and a deferred compile both end in one) by re-resolving the
-        project's published endpoint instead of failing on the first drop.
-        """
-        deadline = time.time() + timeout_seconds
-        last = None
-        while time.time() < deadline:
-            health, _error = unity_session._probe_health(base_url, 1.5)
-            if health is None:
-                resolved, resolved_health = _scan_ready_control_endpoint(self.project_path)
-                if resolved is not None:
-                    base_url, health = resolved, resolved_health
-            refresh = health.get("refresh") if isinstance(health, dict) else None
-            last = refresh
-            if isinstance(refresh, dict) and bool(refresh.get("suppressed")) == suppressed:
-                return refresh
-            time.sleep(0.5)
-        self.fail("refresh suppressed state did not become {}: {}".format(suppressed, last))
-
     def _hidden_probe_dir(self):
         """A probe directory Unity's asset pipeline ignores.
 
@@ -2738,17 +3087,6 @@ class RefreshOnChangeRealHostTests(_SharedRealHostDevice, unittest.TestCase):
         decision logic from compiler side effects.
         """
         return self.project_path / "Assets" / "__codex_validation_temp" / ".not_imported"
-
-    def _set_play_mode(self, base_url, playing):
-        literal = "true" if playing else "false"
-        exit_code, payload = self._exec_raw(
-            base_url,
-            "export default function run(ctx) {"
-            " const EditorApplication = puer.loadType('UnityEditor.EditorApplication');"
-            " EditorApplication.isPlaying = " + literal + ";"
-            " return { requested: " + literal + " }; }",
-        )
-        self.assertEqual(exit_code, 0, payload)
 
     def _script_compilation_during_play(self, base_url):
         return self._health(base_url)["refresh"].get("script_changes_while_playing")
@@ -2784,48 +3122,13 @@ class RefreshOnChangeRealHostTests(_SharedRealHostDevice, unittest.TestCase):
         )
         self.assertEqual(exit_code, 0, payload)
 
-    def _wait_for_play_exit(self, base_url, timeout_seconds=180):
-        """Wait until the Editor has left play mode, or until the compile starts.
-
-        Stops as soon as the deferred compile edge is visible so a following
-        `wait-for-compile` can settle it rather than waiting the edge out. Tolerates
-        the domain reload that a deferred compile ends with by re-resolving the
-        endpoint from the project's published control port.
-        """
-        deadline = time.time() + timeout_seconds
-        last = None
-        while time.time() < deadline:
-            health, _error = unity_session._probe_health(base_url, 1.5)
-            if health is None:
-                resolved, resolved_health = _scan_ready_control_endpoint(self.project_path)
-                if resolved is not None:
-                    base_url, health = resolved, resolved_health
-            if health is not None:
-                last = health
-                if health.get("status") == "compiling":
-                    return base_url, health
-                refresh = health.get("refresh")
-                if isinstance(refresh, dict) and not refresh.get("suppressed"):
-                    return base_url, health
-            time.sleep(0.25)
-        self.fail("Editor did not leave play mode within {}s: {}".format(timeout_seconds, last))
-        return base_url, last
-
-    def _wait_for_refresh_pending(self, base_url, timeout_seconds=30):
-        deadline = time.time() + timeout_seconds
-        last = None
-        while time.time() < deadline:
-            refresh = self._health(base_url).get("refresh")
-            last = refresh
-            if isinstance(refresh, dict) and refresh.get("pending") == "pending":
-                return refresh
-            time.sleep(0.25)
-        self.fail("change signal did not become pending: {}".format(last))
-
     def test_health_reports_not_pending_after_settle(self):
         base_url = self._base_url()
         payload, error = unity_session._probe_health(base_url, 1.5)
-        self.assertIsNotNone(payload, error)
+        self.assertIsNotNone(
+            payload,
+            "settled-health case requires a live endpoint now: {}".format(error),
+        )
         self.assertEqual(payload["status"], "ready")
         refresh = payload.get("refresh")
         self.assertIsInstance(refresh, dict, payload)
@@ -3087,7 +3390,7 @@ class RefreshOnChangeRealHostTests(_SharedRealHostDevice, unittest.TestCase):
         self.assertEqual(self._health(base_url)["refresh"]["pending"], "not_pending")
 
         self._set_play_mode(base_url, True)
-        self._wait_for_refresh_state(base_url, suppressed=True)
+        base_url, _refresh = self._wait_for_refresh_state(base_url, suppressed=True)
 
         # A compile-triggering change made while playing: Unity defers importing it.
         probe_dir = self._hidden_probe_dir()
@@ -3122,7 +3425,7 @@ class RefreshOnChangeRealHostTests(_SharedRealHostDevice, unittest.TestCase):
 
         # Leaving play mode and execing again refreshes for the still-pending change.
         self._set_play_mode(base_url, False)
-        self._wait_for_refresh_state(base_url, suppressed=False)
+        base_url, _refresh = self._wait_for_refresh_state(base_url, suppressed=False)
         self.assertEqual(self._health(base_url)["refresh"]["pending"], "pending")
         exit_code, payload = self._exec_raw(
             base_url, "export default function run(ctx) { return { afterPlayExit: true }; }"
@@ -3141,7 +3444,6 @@ class PlayModeCompileBlockRealHostTests(_SharedRealHostDevice, unittest.TestCase
     and restores the saved value before any later class reuses a host.
     """
 
-    REFRESH_WAIT_TIMEOUT_MS = 300_000
     _LABEL_TO_VALUE = {
         "recompile_and_continue_playing": 0,
         "recompile_after_finished_playing": 1,
@@ -3156,71 +3458,6 @@ class PlayModeCompileBlockRealHostTests(_SharedRealHostDevice, unittest.TestCase
         self._exit_play_mode_best_effort()
         self._restore_preference_best_effort()
         super().tearDown()
-
-    # -- transport helpers ---------------------------------------------------
-
-    def _health(self, base_url):
-        payload, error = unity_session._probe_health(base_url, 1.5)
-        self.assertIsNotNone(payload, error)
-        return payload
-
-    def _exec_raw(self, base_url, code, wait_ms=None):
-        exit_code, payload, _, _ = _run_cli(
-            [
-                "exec",
-                "--base-url", base_url,
-                "--wait-timeout-ms", str(wait_ms or self.REFRESH_WAIT_TIMEOUT_MS),
-                "--code", code,
-            ]
-        )
-        return exit_code, payload
-
-    def _exec_script(self, base_url, body):
-        exit_code, payload, _, _ = _run_cli(
-            [
-                "exec",
-                "--base-url", base_url,
-                "--wait-timeout-ms", str(self.REFRESH_WAIT_TIMEOUT_MS),
-                "--code", body,
-            ]
-        )
-        if payload is not None and unity_puer_exec_runtime._running_or_timed_out_response(
-            exit_code, json.dumps(payload)
-        ):
-            exit_code, payload, _, _ = _run_cli(
-                [
-                    "wait-for-exec",
-                    "--base-url", base_url,
-                    "--request-id", payload["request_id"],
-                    "--wait-timeout-ms", str(READY_TIMEOUT_SECONDS * 1000),
-                ]
-            )
-        return exit_code, payload
-
-    def _write_compile_triggering_probe(self, name):
-        temp_dir = self.project_path / "Assets" / "__codex_validation_temp"
-        temp_dir.mkdir(parents=True, exist_ok=True)
-        path = temp_dir / name
-        path.write_text(
-            "// Auto-generated play-mode probe.\n"
-            "internal static class {0} {{ internal const long Stamp = {1}L; }}\n".format(
-                path.stem, time.time_ns()
-            ),
-            encoding="utf-8",
-        )
-        return path
-
-    def _set_play_mode(self, base_url, playing):
-        literal = "true" if playing else "false"
-        exit_code, payload = self._exec_raw(
-            base_url,
-            "export default function run(ctx) {"
-            " const EditorApplication = puer.loadType('UnityEditor.EditorApplication');"
-            " EditorApplication.isPlaying = " + literal + ";"
-            " return { requested: " + literal + " }; }",
-        )
-        self.assertIsInstance(payload, dict, payload)
-        self.assertEqual(exit_code, 0, payload)
 
     # -- Script Changes While Playing preference -----------------------------
 
@@ -3276,55 +3513,6 @@ class PlayModeCompileBlockRealHostTests(_SharedRealHostDevice, unittest.TestCase
         except Exception:  # noqa: BLE001 - cleanup only.
             pass
 
-    # -- waits ---------------------------------------------------------------
-
-    def _wait_for_refresh_state(self, base_url, suppressed, timeout_seconds=60):
-        deadline = time.time() + timeout_seconds
-        last = None
-        while time.time() < deadline:
-            health, _error = unity_session._probe_health(base_url, 1.5)
-            if health is None:
-                resolved, resolved_health = _scan_ready_control_endpoint(self.project_path)
-                if resolved is not None:
-                    base_url, health = resolved, resolved_health
-            refresh = health.get("refresh") if isinstance(health, dict) else None
-            last = refresh
-            if isinstance(refresh, dict) and bool(refresh.get("suppressed")) == suppressed:
-                return base_url, refresh
-            time.sleep(0.5)
-        self.fail("refresh suppressed state did not become {}: {}".format(suppressed, last))
-
-    def _wait_for_refresh_pending(self, base_url, timeout_seconds=30):
-        deadline = time.time() + timeout_seconds
-        last = None
-        while time.time() < deadline:
-            refresh = self._health(base_url).get("refresh")
-            last = refresh
-            if isinstance(refresh, dict) and refresh.get("pending") == "pending":
-                return refresh
-            time.sleep(0.25)
-        self.fail("change signal did not become pending: {}".format(last))
-
-    def _wait_for_play_exit(self, base_url, timeout_seconds=180):
-        """Wait until the Editor has left play mode, or until the compile starts."""
-        deadline = time.time() + timeout_seconds
-        last = None
-        while time.time() < deadline:
-            health, _error = unity_session._probe_health(base_url, 1.5)
-            if health is None:
-                resolved, resolved_health = _scan_ready_control_endpoint(self.project_path)
-                if resolved is not None:
-                    base_url, health = resolved, resolved_health
-            if health is not None:
-                last = health
-                if health.get("status") == "compiling":
-                    return base_url, health
-                refresh = health.get("refresh")
-                if isinstance(refresh, dict) and not refresh.get("suppressed"):
-                    return base_url, health
-            time.sleep(0.25)
-        self.fail("Editor did not leave play mode within {}s: {}".format(timeout_seconds, last))
-
     # -- case ----------------------------------------------------------------
 
     def test_play_mode_compile_block_then_settles_after_play_exit(self):
@@ -3348,7 +3536,7 @@ class PlayModeCompileBlockRealHostTests(_SharedRealHostDevice, unittest.TestCase
 
         # A real (imported) code change while playing: Unity defers it.
         self._write_compile_triggering_probe("PlayBlockProbe.cs")
-        self._wait_for_refresh_pending(base_url)
+        base_url, _refresh = self._wait_for_refresh_pending(base_url)
 
         exit_code, payload = self._exec_script(
             base_url, "export default function run(ctx) { return { executedInPlay: true }; }"
@@ -3382,11 +3570,9 @@ class PlayModeCompileBlockRealHostTests(_SharedRealHostDevice, unittest.TestCase
         deadline = time.time() + 180
         pending_state = None
         while time.time() < deadline:
-            health, _err = unity_session._probe_health(base_url, 1.5)
-            if health is None:
-                resolved, resolved_health = _scan_ready_control_endpoint(self.project_path)
-                if resolved is not None:
-                    base_url, health = resolved, resolved_health
+            resolved, health = self._probe_once_resolving(base_url)
+            if resolved is not None:
+                base_url = resolved
             if health is not None:
                 refresh = health.get("refresh")
                 if isinstance(refresh, dict):
