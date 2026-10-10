@@ -70,24 +70,40 @@ When a compile-triggering change is pending, `play` SHALL refresh and settle the
 
 ### Requirement: Stop settles the compile cycle deferred by play mode
 
-When a compile-triggering change is pending as `stop` leaves play mode, `stop` SHALL wait, on a compile-scale budget, for the compile cycle that follows the exit, and SHALL report its outcome. A compile failure SHALL NOT make the play-mode transition itself fail. It SHALL be reported in the result, with a follow-up to read the errors.
+`stop` SHALL record the Editor's compile generation before it requests the exit. When a compile-triggering change is pending as `stop` leaves play mode, or the compile generation advances past that baseline, `stop` SHALL wait, on a compile-scale budget, for the compile cycle that follows the exit.
 
 #### Scenario: Stop with a pending change
 
 - **WHEN** an agent runs `stop` while a compile-triggering change is pending
 - **THEN** the command returns after the Editor is in `edit` and the compile cycle has settled
-- **AND** the result reports the compile outcome
+- **AND** the result reports `compile.outcome: "compile_settled"` and the edge it was observed by
+
+#### Scenario: Compile hidden behind the play-exit domain reload
+
+- **WHEN** the deferred compile runs while the control endpoint is down for the whole compile and domain reload, so `compiling` is never observable
+- **THEN** the result reports `compile.outcome: "compile_settled"` with `edge: "generation_advance"`
+- **AND** it does not report `no_compile_observed`
+
+#### Scenario: Compile without a positive pending signal
+
+- **WHEN** the pending state reads `not_pending` but a change excluded from pending detection (for example a script deletion) compiles as the Editor leaves play mode
+- **THEN** the compile generation advance is reported as `compile.outcome: "compile_settled"`
+
+#### Scenario: Stop with nothing pending
+
+- **WHEN** an agent runs `stop` while no compile-triggering change is pending and the compile generation does not advance during the exit
+- **THEN** the command returns once the Editor is in `edit`, without waiting for a compile
+- **AND** the result reports `compile.outcome: "no_compile_observed"`
+
+### Requirement: Stop reports the deferred compile outcome
+
+`stop` SHALL report the deferred compile in the `wait-for-compile` vocabulary (`compile_settled` or `no_compile_observed`), together with the edge the compile was observed by. A compile failure SHALL NOT make the play-mode transition itself fail. It SHALL be reported as a non-zero `compile_errors_total`, with a follow-up to read the errors.
 
 #### Scenario: Deferred compile fails after stop
 
 - **WHEN** the compile cycle after `stop` reports errors
-- **THEN** the command reports `play_state: "edit"` and a failed compile outcome
+- **THEN** the command reports `play_state: "edit"`, `compile.outcome: "compile_settled"`, and a `compile_errors_total` greater than zero
 - **AND** its `next_steps` include `get-compile-errors`
-
-#### Scenario: Stop with nothing pending
-
-- **WHEN** an agent runs `stop` while no compile-triggering change is pending
-- **THEN** the command returns once the Editor is in `edit`, without waiting for a compile
 
 ### Requirement: Play forces run-in-background by default
 

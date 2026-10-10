@@ -8,8 +8,28 @@ still hold:
   Changes While Playing" preference.
 - Its interim way out of play mode is an `exec` that sets `isPlaying = false`, followed
   by confirm and wait. That is the multi-step sequence these commands replace.
-- Its D6 investigation decides whether `stop` needs extra handling (pause interaction,
-  project `playModeStateChanged` handlers). Read its recorded outcome before task 3.
+- Its D6 investigation found that only hypothesis 2 holds: with
+  `recompile_after_finished_playing`, the exit request returns at once, then the Editor
+  runs the deferred compile and reloads the domain. The endpoint is unreachable for a long
+  window and the exit itself can take about a minute. No extra pause or project-handler
+  handling was found to be needed; D2 and D4 cover the reload window.
+
+Later prerequisites, all archived, settled the rest:
+
+- `observe-compile-across-domain-reload` showed that the deferred play-exit compile is a
+  forced synchronous recompile. The listener is down for the whole compile and reload
+  (about 15–49 s on the validation host), so `compiling` is never served. It also showed that
+  `refresh.pending` is not a reliable gate: it clears at `compilationFinished` before the
+  endpoint drops, and an excluded change such as a script deletion compiles while it reads
+  `not_pending`.
+- `add-compile-generation-signal` added a monotonic `compile_generation` to the ready
+  `/health` response, persisted across the reload, and a `--compile-generation-baseline`
+  selector on `wait-for-compile`. `wait_for_compile_cycle` settles as `generation_advance`
+  when the generation passes a baseline.
+- `disclose-play-mode-block-in-wait-for-exec` made `_PLAY_MODE_EXIT_STEPS`
+  (`help_surface.py`) shared guidance: it is merged into `exec` and `wait-for-exec` warning
+  responses that carry `compile_blocked`, and it is the `wait-for-compile` `compile_blocked`
+  guidance.
 
 The server already samples `isPlaying` in `OnEditorUpdate`, and the CLI already owns a
 refresh → settle → resubmit loop on a compile-scale budget (`73811f4`). Both are reused
@@ -63,6 +83,11 @@ during `entering` / `exiting` as expected and re-resolves the endpoint with the 
 range-aware discovery, up to the budget. That is the same recovery `exec` uses after an
 automatic refresh.
 
+An exit that runs a deferred compile was measured at about a minute, with the endpoint
+unreachable for most of it. When a compile may follow the exit, `stop` waits for `edit` on
+the compile-scale budget, not a short transition budget, so a long unreachable window is not
+returned as `running` or as a failure.
+
 ### D3. `play` pre-settle reuses the exec refresh path
 
 `play` first asks the server for a refresh decision through the same path `exec` uses.
@@ -73,21 +98,27 @@ needs an exec request. The extraction is part of task 3.1.
 
 ### D4. `stop` settles the deferred compile
 
-`stop` reads `refresh.pending` from health before posting. After `edit` is reached, if
-a change was pending, it runs the compile-wait loop with the compile-scale settle budget
-and reports `compile: {outcome: "completed"|"compile_errors"|"no_compile_observed"}`.
-Errors stay `status: "completed"`, because the play-state request succeeded, and carry a
-`get-compile-errors` next step (spec: "Stop settles the compile cycle deferred by play
-mode").
+Because `stop` drives the play exit itself, it holds the compile-generation baseline
+in-process:
 
-The deferred compile runs behind a domain reload that drops the control endpoint, so a
-plain compile-wait after `edit` can miss the whole cycle and report `no_compile_observed`
-for a compile that did happen. That false negative is the subject of
-`observe-compile-across-domain-reload` (a `blocked_by` prerequisite). `stop` uses the
-completion signal that spike settles on; because `stop` drives the play exit itself, it can
-also take its pending baseline before posting, which is the CLI-baseline candidate the spike
-evaluates. `no_compile_observed` is reported only when no pending change existed or the
-spike's signal confirms none ran.
+1. Before posting, read `compile_generation` and `refresh.pending` from health.
+2. Post `stop` and wait for `edit` (D2).
+3. Run `wait_for_compile_cycle(compile_generation_baseline=<baseline>)` on the
+   compile-scale settle budget. If the generation advanced, the cycle settles at once as
+   `compile_settled` with `edge: "generation_advance"`. If it has not advanced but a change
+   was pending, the normal appear/settle path continues. If neither holds, the outcome is
+   `no_compile_observed`.
+
+`refresh.pending` is only a hint for whether to keep waiting. It never gates the baseline
+check, because it clears before the endpoint drops and misses excluded changes (Context).
+
+The result reports `compile: {outcome: "compile_settled"|"no_compile_observed", edge,
+compile_errors_total}`, the same vocabulary `wait-for-compile` uses. The
+`generation_advance` path carries no error information, since `compilationFinished` fires on
+failure too. After a settle, `stop` therefore reads compile errors through the existing
+compile-error path and fills `compile_errors_total`. Errors stay `status: "completed"`,
+because the play-state request succeeded, and carry a `get-compile-errors` next step (spec:
+"Stop settles the compile cycle deferred by play mode").
 
 ### D5. `runInBackground` via SessionState plus `EnteredPlayMode`
 
@@ -139,6 +170,8 @@ exit code) and suggests `play`. `play` while paused clears `isPaused` and report
 1. Land the rename and alias first (task group 1) without behavior changes. All
    existing tests should pass with only name updates.
 2. Add the server endpoint and health field. An older CLI ignores them.
-3. Add the commands. Switch the `surface-play-mode-compile-block` guidance to `stop`.
+3. Add the commands. Switch `_PLAY_MODE_EXIT_STEPS` to `stop`. That covers the merged
+   `exec` / `wait-for-exec` warning guidance and the `wait-for-compile` `compile_blocked`
+   guidance.
 
 Rollback: revert the commands. The alias and rename can stay on their own.

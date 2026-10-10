@@ -21,7 +21,10 @@ deprecated alias.
 Inherited from `surface-play-mode-compile-block` (prerequisite): `compile_blocked`
 reporting, the play-mode warning on `exec`, the "Script Changes While Playing" preference
 in health, and the root cause of the "cannot stop play mode" report. That change's
-interim `exec`-based continuation is replaced here by `stop`.
+interim `exec`-based continuation is replaced here by `stop`. The deferred compile that
+`stop` waits for is detected with the `compile_generation` signal shipped by
+`add-compile-generation-signal` (prerequisite), because that compile is hidden behind a
+domain reload.
 
 ## What Changes
 
@@ -38,9 +41,10 @@ interim `exec`-based continuation is replaced here by `stop`.
 - **`play` forces `Application.runInBackground = true` by default** for the play
   session, without touching Player Settings. The response says so and names
   `--no-run-in-background` as the way to keep the project's setting.
-- **`stop` leaves play mode and settles the deferred compile.** When a change was pending,
-  it waits for the compile cycle that Unity starts on exit and reports the outcome, with
-  a follow-up to `get-compile-errors` on failure.
+- **`stop` leaves play mode and settles the deferred compile.** When a compile follows
+  the exit (a pending change, or a compile-generation advance past a baseline taken before
+  the exit), it waits for that compile cycle and reports the outcome in the
+  `wait-for-compile` vocabulary, with a follow-up to `get-compile-errors` on failure.
 - **Health reports the play state** (`edit`, `entering`, `playing`, `paused`, `exiting`),
   so the CLI and callers can observe transitions directly.
 - **BREAKING (soft): `ensure-stopped` is renamed `ensure-closed`.** The behavior, result
@@ -82,4 +86,6 @@ interim `exec`-based continuation is replaced here by `stop`.
   working through the deprecated alias. No host-project document change is required:
   host docs deliberately delegate command discovery to `--help`, so they do not list
   command names and cannot drift when the CLI is upgraded.
-- `surface-play-mode-compile-block` guidance: its `next_steps` switch to `stop`.
+- Play-mode exit guidance (`_PLAY_MODE_EXIT_STEPS` in `help_surface.py`): switches to
+  `stop` everywhere it is used, which covers the merged `exec` / `wait-for-exec` warning
+  guidance and the `wait-for-compile` `compile_blocked` guidance.
