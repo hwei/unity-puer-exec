@@ -301,6 +301,77 @@ class PackageLayoutTests(unittest.TestCase):
         self.assertEqual(candidates[0], service_preferred)
         self.assertEqual(candidates[-1], service_preferred + service_attempts - 1)
 
+    def _method_body(self, content, signature):
+        match = re.search(
+            re.escape(signature) + r"\s*\n        \{.*?\n        \}",
+            content,
+            re.DOTALL,
+        )
+        self.assertIsNotNone(match, "{} should exist".format(signature))
+        return match.group(0)
+
+    def test_compile_generation_advances_only_when_a_compilation_completes(self):
+        # The compile generation is the signal the observe-compile-across-domain-reload
+        # spike chose over the reload epochs (session_marker, SettledImportUtcTicks):
+        # only a completed compilation may advance it. If the increment migrated to
+        # afterAssemblyReload it would become a reload epoch and settle a reload that
+        # compiled nothing.
+        server_content = (PACKAGE_ROOT / "Editor" / "UnityPuerExecServer.cs").read_text(encoding="utf-8")
+
+        compilation_finished = self._method_body(
+            server_content, "private static void OnCompilationFinished(object obj)"
+        )
+        self.assertIn("AdvanceCompileGeneration();", compilation_finished)
+
+        after_reload = self._method_body(
+            server_content, "private static void OnAfterAssemblyReload()"
+        )
+        self.assertNotIn("AdvanceCompileGeneration", after_reload)
+
+    def test_compile_generation_is_loaded_from_session_state_each_domain(self):
+        # A plain static would reset to zero across the forced synchronous recompile's
+        # domain reload and defeat the signal, so the value must round-trip
+        # SessionState: persisted on advance and reloaded in the static constructor,
+        # which runs once per domain.
+        server_content = (PACKAGE_ROOT / "Editor" / "UnityPuerExecServer.cs").read_text(encoding="utf-8")
+
+        self.assertIn(
+            'private const string CompileGenerationSessionStateKey = "UnityPuerExec.CompileGeneration";',
+            server_content,
+        )
+        load_body = self._method_body(
+            server_content, "private static int LoadCompileGeneration()"
+        )
+        self.assertIn("SessionState.GetString(CompileGenerationSessionStateKey", load_body)
+
+        advance_body = self._method_body(
+            server_content, "private static void AdvanceCompileGeneration()"
+        )
+        self.assertIn("SessionState.SetString(CompileGenerationSessionStateKey", advance_body)
+
+        static_ctor = re.search(
+            r"static UnityPuerExecServer\(\)\s*\n        \{.*?\n        \}",
+            server_content,
+            re.DOTALL,
+        )
+        self.assertIsNotNone(static_ctor, "the UnityPuerExecServer static constructor should exist")
+        self.assertIn("compileGeneration = LoadCompileGeneration();", static_ctor.group(0))
+
+    def test_ready_health_response_reports_compile_generation(self):
+        protocol_content = (PACKAGE_ROOT / "Editor" / "UnityPuerExecProtocol.cs").read_text(encoding="utf-8")
+        server_content = (PACKAGE_ROOT / "Editor" / "UnityPuerExecServer.cs").read_text(encoding="utf-8")
+
+        self.assertIn("int compileGeneration = 0", protocol_content)
+        self.assertIn('compileGenerationJson', protocol_content)
+        self.assertIn('\\"compile_generation\\":', protocol_content)
+        # The generation is on the ready response only: a compiling service cannot
+        # answer it, and reporting a value there would read as a false negative.
+        ready_start = protocol_content.index("IsNullOrEmpty(envInitError)")
+        not_available = protocol_content.index('\\"status\\":\\"not_available\\"')
+        ready_branch = protocol_content[ready_start:not_available]
+        self.assertIn("compileGenerationJson", ready_branch)
+        self.assertIn("compileGeneration: compileGeneration", server_content)
+
 
 if __name__ == "__main__":
     unittest.main()

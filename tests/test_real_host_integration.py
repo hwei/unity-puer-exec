@@ -3495,6 +3495,37 @@ class PlayModeCompileBlockRealHostTests(_SharedRealHostDevice, unittest.TestCase
     def _read_preference(self, base_url):
         return self._health(base_url)["refresh"].get("script_changes_while_playing")
 
+    def _read_compile_generation(self, base_url):
+        generation = self._health(base_url).get("compile_generation")
+        self.assertIsInstance(
+            generation,
+            int,
+            "a ready /health response should report the compile generation",
+        )
+        return generation
+
+    def _wait_for_compile_generation_above(self, base_url, baseline, timeout_seconds=180):
+        """Wait for the generation to pass a pre-reload baseline after reconnection.
+
+        The deferred play-exit compile never serves `compiling`, so the advanced
+        generation is the only way to see it. A reload can rebind the control port,
+        so each probe re-resolves the endpoint.
+        """
+        deadline = time.monotonic() + timeout_seconds
+        last = None
+        while time.monotonic() < deadline:
+            resolved, health = self._probe_once_resolving(base_url)
+            if health is not None:
+                last = health.get("compile_generation")
+                if isinstance(last, int) and last > baseline:
+                    return resolved
+            time.sleep(0.5)
+        self.fail(
+            "compile generation did not advance past {} within {}s: {}".format(
+                baseline, timeout_seconds, last
+            )
+        )
+
     def _set_preference(self, base_url, value):
         exit_code, payload = self._exec_raw(
             base_url,
@@ -3627,6 +3658,72 @@ class PlayModeCompileBlockRealHostTests(_SharedRealHostDevice, unittest.TestCase
             ("compile_settled", "no_compile_observed"),
             payload,
         )
+
+    def test_deferred_play_exit_compile_settles_from_a_generation_baseline(self):
+        """The spike's cross-reload case: a baseline settles an inferred compile.
+
+        Forces "Recompile After Finished Playing" so the change made during play is
+        deferred and then compiled on play exit. That forced synchronous recompile runs
+        after beforeAssemblyReload stops the listener, so /health never serves
+        `compiling`; only a compile-generation baseline captured before the exit can
+        settle it. tearDown restores the saved preference.
+        """
+        base_url = self._base_url()
+        self.assertEqual(self._health(base_url)["refresh"]["pending"], "not_pending")
+        self._saved_preference = self._read_preference(base_url)
+
+        self._set_preference(base_url, 1)
+        self._set_play_mode(base_url, True)
+        base_url, _ = self._wait_for_refresh_state(base_url, suppressed=True)
+
+        self._write_compile_triggering_probe("GenerationBaselineProbe.cs")
+        base_url, _refresh = self._wait_for_refresh_pending(base_url)
+
+        # The baseline is the only pre-reload state a later caller can hold.
+        baseline = self._read_compile_generation(base_url)
+
+        # While play mode still defers the change, an unchanged baseline must not
+        # settle an inferred compile: the play-mode block still wins.
+        exit_code, payload, _, _ = _run_cli(
+            [
+                "wait-for-compile",
+                "--base-url", base_url,
+                "--appear-timeout-seconds", "2",
+                "--compile-generation-baseline", str(baseline),
+            ]
+        )
+        self.assertEqual(exit_code, 0, payload)
+        self.assertEqual(payload["result"]["status"], "compile_blocked", payload)
+        self.assertFalse(payload["result"]["compile_observed"])
+
+        # Exiting play mode runs the deferred compile and reloads the domain. Wait for
+        # the generation itself to pass the baseline after the endpoint reconnects.
+        self._set_play_mode(base_url, False)
+        base_url, _ = self._wait_for_play_exit(base_url)
+        base_url = self._wait_for_compile_generation_above(base_url, baseline)
+
+        exit_code, payload, _, _ = _run_cli(
+            [
+                "wait-for-compile",
+                "--base-url", base_url,
+                "--appear-timeout-seconds", "2",
+                "--compile-generation-baseline", str(baseline),
+            ]
+        )
+        self.assertEqual(exit_code, 0, payload)
+        self.assertEqual(payload["result"]["status"], "compile_settled", payload)
+        self.assertTrue(payload["result"]["compile_observed"])
+        self.assertEqual(payload["result"]["edge"], "generation_advance")
+        self.assertGreater(payload["result"]["compile_generation"], baseline)
+
+        # A caller that starts after the reload without a baseline keeps the existing
+        # outcome: the late call is not retroactively satisfied.
+        exit_code, payload, _, _ = _run_cli(
+            ["wait-for-compile", "--base-url", base_url, "--appear-timeout-seconds", "2"]
+        )
+        self.assertEqual(exit_code, 0, payload)
+        self.assertEqual(payload["result"]["status"], "no_compile_observed", payload)
+        self.assertFalse(payload["result"]["compile_observed"])
 
 
 if __name__ == "__main__":

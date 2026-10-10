@@ -162,6 +162,16 @@ def build_parser():
         type=float,
         default=unity_session.DEFAULT_HEALTH_TIMEOUT_SECONDS,
     )
+    wait_compile_parser.add_argument(
+        "--compile-generation-baseline",
+        type=int,
+        default=None,
+        help=(
+            "Compile generation recorded before a transition that crosses a domain "
+            "reload; when /health now reports a greater value, the compile is settled "
+            "as inferred from the generation-advance edge."
+        ),
+    )
     _add_diagnostics_arg(wait_compile_parser)
     _add_response_file_arg(wait_compile_parser)
 

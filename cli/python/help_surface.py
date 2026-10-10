@@ -135,6 +135,7 @@ COMMAND_HELP = {
                 "`--appear-timeout-seconds <seconds>`: bounded window to wait for `compiling` to appear after a refresh before concluding no compile was triggered; distinct from the settle timeout.",
                 "`--settle-timeout-seconds <seconds>`: total budget for an observed compile to return to `ready`.",
                 "`--health-timeout-seconds <seconds>`: timeout for each `/health` probe.",
+                "`--compile-generation-baseline <int>`: a compile generation recorded before a transition that crosses a domain reload (for example a deferred play-exit compile). When `/health` reports a greater generation, the compile is settled from that baseline even though `compiling` was never observable; without it the existing outcomes are unchanged.",
                 "`--include-diagnostics`: include top-level debug diagnostics (including the observed `/health` status sequence) in the machine-readable response.",
             ],
             "Selector Rules": [
@@ -150,6 +151,8 @@ COMMAND_HELP = {
         "status": {
             "success": [
                 "`completed` with `result.status` `compile_settled` (`compile_observed` true): a compile cycle was observed and the editor is `ready` again.",
+                "`completed` with `result.status` `compile_settled` and `edge` `generation_advance`: an inferred cross-reload compile. A supplied `--compile-generation-baseline` advanced, even though the control listener had stopped and `compiling` was never observable; only a caller holding a pre-reload baseline can receive this outcome.",
+                "`completed` with `result.status` `no_compile_observed` (`compile_observed` false) is also the outcome for a caller that starts after a domain reload without a baseline: a later call is not retroactively satisfied.",
                 "`completed` with `result.status` `no_compile_observed` (`compile_observed` false): no compilation appeared within the appear window and none was in progress; retry, or trigger compilation with `RequestScriptCompilation()` if you expected a rebuild. Forcing a compile cannot help while the Editor is in play mode.",
                 "`completed` with `result.status` `compile_blocked` (`compile_observed` false): a compile-triggering change is pending but the Editor is in play mode, so Unity defers compilation. The result names `play_mode` as the reason and the command returns immediately without waiting out the appear window; exit play mode, then re-run `wait-for-compile`.",
                 "When a ScriptUpdater consent dialog was declined while waiting, `compile_settled` also carries `warning = \"api_updater_declined\"` plus `warning_detail`; the exit code is unchanged.",

@@ -3246,6 +3246,73 @@ class WaitForCompileCycleTests(unittest.TestCase):
 
         self.assertEqual(result["outcome"], unity_puer_exec_runtime.COMPILE_OUTCOME_READY)
 
+    def test_generation_baseline_advance_settles_an_inferred_compile(self):
+        # The deferred play-exit compile crosses a domain reload that stops the
+        # listener, so /health never serves `compiling`. The advanced baseline is the
+        # only edge, and it must settle even though the first poll was already ready.
+        result = unity_puer_exec_runtime.wait_for_compile_cycle(
+            "http://127.0.0.1:55231",
+            10.0,
+            10.0,
+            unity_session.DEFAULT_HEALTH_TIMEOUT_SECONDS,
+            probe_health_fn=_probe_payloads(
+                [{"ok": True, "status": "ready", "compile_generation": 5}]
+            ),
+            time_ref=_FakeClock(),
+            compile_generation_baseline=4,
+        )
+
+        self.assertEqual(result["outcome"], unity_puer_exec_runtime.COMPILE_OUTCOME_GENERATION)
+        self.assertEqual(result["edge"], unity_puer_exec_runtime.COMPILE_EDGE_GENERATION_ADVANCE)
+        self.assertEqual(result["compile_generation"], 5)
+        self.assertEqual(result["observed_health"], ["ready"])
+
+    def test_generation_baseline_equal_to_current_reports_no_compile(self):
+        result = unity_puer_exec_runtime.wait_for_compile_cycle(
+            "http://127.0.0.1:55231",
+            2.0,
+            2.0,
+            unity_session.DEFAULT_HEALTH_TIMEOUT_SECONDS,
+            probe_health_fn=_probe_payloads(
+                [{"ok": True, "status": "ready", "compile_generation": 5}]
+            ),
+            time_ref=_FakeClock(),
+            compile_generation_baseline=5,
+        )
+
+        self.assertEqual(result["outcome"], unity_puer_exec_runtime.COMPILE_OUTCOME_NONE)
+
+    def test_no_generation_baseline_after_reload_keeps_no_compile_observed(self):
+        # A caller that starts after the reload without a baseline cannot be
+        # retroactively satisfied, even when the reported generation is high.
+        result = unity_puer_exec_runtime.wait_for_compile_cycle(
+            "http://127.0.0.1:55231",
+            2.0,
+            2.0,
+            unity_session.DEFAULT_HEALTH_TIMEOUT_SECONDS,
+            probe_health_fn=_probe_payloads(
+                [{"ok": True, "status": "ready", "compile_generation": 5}]
+            ),
+            time_ref=_FakeClock(),
+        )
+
+        self.assertEqual(result["outcome"], unity_puer_exec_runtime.COMPILE_OUTCOME_NONE)
+
+    def test_baseline_with_absent_generation_field_keeps_existing_behavior(self):
+        # An older Editor that predates the signal omits the field; a missing signal
+        # must never fabricate an inferred compile.
+        result = unity_puer_exec_runtime.wait_for_compile_cycle(
+            "http://127.0.0.1:55231",
+            2.0,
+            2.0,
+            unity_session.DEFAULT_HEALTH_TIMEOUT_SECONDS,
+            probe_health_fn=_probe_payloads([{"ok": True, "status": "ready"}]),
+            time_ref=_FakeClock(),
+            compile_generation_baseline=4,
+        )
+
+        self.assertEqual(result["outcome"], unity_puer_exec_runtime.COMPILE_OUTCOME_NONE)
+
 
 class WaitForCompileCommandTests(unittest.TestCase):
     def test_base_url_no_compile_observed_returns_distinct_outcome(self):
@@ -3331,6 +3398,78 @@ class WaitForCompileCommandTests(unittest.TestCase):
         body = json.loads(stdout)
         self.assertEqual(body["result"]["status"], "compile_settled")
         self.assertTrue(body["result"]["compile_observed"])
+
+    def test_base_url_generation_baseline_settles_inferred_compile_and_names_the_edge(self):
+        with mock.patch.object(
+            unity_puer_exec_runtime, "time", _FakeClock()
+        ), mock.patch.object(
+            unity_puer_exec_runtime,
+            "_probe_compile_health",
+            _probe_payloads([{"ok": True, "status": "ready", "compile_generation": 7}]),
+        ):
+            exit_code, stdout, stderr = unity_puer_exec.run_cli(
+                [
+                    "wait-for-compile",
+                    "--base-url", "http://127.0.0.1:55231",
+                    "--compile-generation-baseline", "6",
+                ]
+            )
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(stderr, "")
+        body = json.loads(stdout)
+        self.assertEqual(body["status"], "completed")
+        self.assertEqual(body["result"]["status"], "compile_settled")
+        self.assertTrue(body["result"]["compile_observed"])
+        self.assertEqual(body["result"]["edge"], "generation_advance")
+        self.assertEqual(body["result"]["compile_generation"], 7)
+        self.assertEqual(body["result"]["compile_generation_baseline"], 6)
+
+    def test_base_url_generation_baseline_current_keeps_no_compile_observed(self):
+        with mock.patch.object(
+            unity_puer_exec_runtime, "time", _FakeClock()
+        ), mock.patch.object(
+            unity_puer_exec_runtime,
+            "_probe_compile_health",
+            _probe_payloads([{"ok": True, "status": "ready", "compile_generation": 7}]),
+        ):
+            exit_code, stdout, stderr = unity_puer_exec.run_cli(
+                [
+                    "wait-for-compile",
+                    "--base-url", "http://127.0.0.1:55231",
+                    "--appear-timeout-seconds", "2",
+                    "--compile-generation-baseline", "7",
+                ]
+            )
+
+        self.assertEqual(exit_code, 0)
+        body = json.loads(stdout)
+        self.assertEqual(body["result"]["status"], "no_compile_observed")
+        self.assertFalse(body["result"]["compile_observed"])
+        self.assertNotIn("edge", body["result"])
+
+    def test_base_url_without_generation_baseline_after_reload_keeps_no_compile_observed(self):
+        with mock.patch.object(
+            unity_puer_exec_runtime, "time", _FakeClock()
+        ), mock.patch.object(
+            unity_puer_exec_runtime,
+            "_probe_compile_health",
+            _probe_payloads([{"ok": True, "status": "ready", "compile_generation": 7}]),
+        ):
+            exit_code, stdout, stderr = unity_puer_exec.run_cli(
+                ["wait-for-compile", "--base-url", "http://127.0.0.1:55231", "--appear-timeout-seconds", "2"]
+            )
+
+        self.assertEqual(exit_code, 0)
+        body = json.loads(stdout)
+        self.assertEqual(body["result"]["status"], "no_compile_observed")
+        self.assertFalse(body["result"]["compile_observed"])
+
+    def test_compile_generation_baseline_option_is_documented_in_help(self):
+        exit_code, stdout, stderr = unity_puer_exec.run_cli(["wait-for-compile", "--help-args"])
+
+        self.assertEqual(exit_code, 0)
+        self.assertIn("--compile-generation-baseline", stdout)
 
     def test_base_url_settle_timeout_returns_non_terminal_running(self):
         with mock.patch.object(

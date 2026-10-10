@@ -356,7 +356,8 @@ namespace UnityPuerExec
             string refreshPending = "unknown",
             bool refreshSuppressed = false,
             string refreshSuppressedReason = "",
-            string scriptChangesWhilePlaying = "unknown"
+            string scriptChangesWhilePlaying = "unknown",
+            int compileGeneration = 0
         )
         {
             // The package identity is still observable while the Editor is
@@ -401,6 +402,11 @@ namespace UnityPuerExec
                     "\"suppressed\":" + (refreshSuppressed ? "true" : "false") + "," +
                     "\"suppressed_reason\":\"" + JsonEscape(refreshSuppressedReason) + "\"," +
                     "\"script_changes_while_playing\":\"" + JsonEscape(scriptChangesWhilePlaying) + "\"}";
+                // Monotonic compile generation, persisted across a domain reload. It
+                // advances only when a compilation completes, so a caller holding a
+                // value from before a reload can tell an inferred compile apart from a
+                // reload that compiled nothing.
+                var compileGenerationJson = ",\"compile_generation\":" + compileGeneration;
                 return "{\"ok\":true,\"status\":\"ready\",\"port\":" + port +
                        ",\"session_marker\":\"" + JsonEscape(sessionMarker) + "\"" +
                        baseUrlJson +
@@ -408,6 +414,7 @@ namespace UnityPuerExec
                        projectPathJson +
                        bridgeVersionJson +
                        consoleLogPathJson +
+                       compileGenerationJson +
                        refreshJson +
                        "}";
             }

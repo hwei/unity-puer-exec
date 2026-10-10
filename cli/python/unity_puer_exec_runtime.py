@@ -52,6 +52,12 @@ COMPILE_OUTCOME_READY = "ready"
 COMPILE_OUTCOME_NONE = "no_compile_observed"
 COMPILE_OUTCOME_BLOCKED = "compile_blocked"
 COMPILE_OUTCOME_TIMEOUT = "settle_timeout"
+# A compile inferred from an advanced caller-supplied compile generation. It is a
+# distinct outcome from `ready` because no `compiling` status was ever observed; the
+# generation advance is the edge (see openspec compile-wait spec).
+COMPILE_OUTCOME_GENERATION = "generation_advance"
+# Name of the edge reported when an advanced baseline settles an inferred compile.
+COMPILE_EDGE_GENERATION_ADVANCE = "generation_advance"
 
 # Play-mode compile block (see surface-play-mode-compile-block). Unity defers
 # compilation until play mode exits, so a pending change cannot compile while the
@@ -978,6 +984,21 @@ def _is_play_mode_compile_block(payload):
     )
 
 
+def _compile_generation_from_health(payload):
+    """Read the Editor's monotonic compile generation from a health payload.
+
+    Returns an int, or None when the field is absent or not an integer -- an older
+    Editor that predates the signal, or a non-ready payload. Never coerces a
+    non-integer: a missing signal must not fabricate an inferred compile.
+    """
+    if not isinstance(payload, dict):
+        return None
+    value = payload.get("compile_generation")
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value
+    return None
+
+
 def _record_observed_status(observed, status):
     if status is not None and (not observed or observed[-1] != status):
         observed.append(status)
@@ -994,6 +1015,7 @@ def wait_for_compile_cycle(
     time_ref=None,
     unity_pid=None,
     dismiss_fn=None,
+    compile_generation_baseline=None,
 ):
     """Edge-aware wait for a single Unity compilation cycle over `/health`.
 
@@ -1002,6 +1024,12 @@ def wait_for_compile_cycle(
     ``ready`` is never treated as terminal, defeating the async-refresh race. If a
     previously-ready endpoint drops (transport error after a healthy probe), that is
     treated as a domain-reload edge.
+
+    When ``compile_generation_baseline`` is supplied and the health payload reports a
+    strictly greater ``compile_generation``, the compile is settled immediately as
+    ``generation_advance`` even if the endpoint was already ``ready``. This covers a
+    deferred play-exit compile, whose forced synchronous recompile runs after the
+    listener has stopped, so ``compiling`` is never observable.
 
     Phase 2 (settle): wait up to ``settle_timeout_seconds`` for the editor to return
     to ``ready``. Transient transport errors during this phase are tolerated as
@@ -1012,8 +1040,8 @@ def wait_for_compile_cycle(
     the caller's session or a ``unity_pid`` on a compiling health payload.
 
     Returns a dict with ``outcome`` in {``ready``, ``no_compile_observed``,
-    ``settle_timeout``}, the ``observed_health`` status sequence, and
-    ``api_updater_declines``.
+    ``compile_blocked``, ``generation_advance``, ``settle_timeout``}, the
+    ``observed_health`` status sequence, and ``api_updater_declines``.
     """
     time_ref = time if time_ref is None else time_ref
     probe_health_fn = probe_health_fn or _probe_compile_health
@@ -1038,6 +1066,24 @@ def wait_for_compile_cycle(
         payload, _error = probe_health_fn(base_url, health_timeout_seconds)
         status = payload.get("status") if isinstance(payload, dict) else None
         _record_observed_status(observed, status)
+        # A caller-supplied baseline that has advanced is a direct observation that a
+        # compilation completed, so it settles even when the endpoint was already
+        # ready. Its outcome is distinct from `ready`: no `compiling` was seen, and the
+        # edge was inferred from the baseline rather than observed as a status.
+        generation = _compile_generation_from_health(payload)
+        if (
+            compile_generation_baseline is not None
+            and generation is not None
+            and generation > compile_generation_baseline
+        ):
+            return {
+                "outcome": COMPILE_OUTCOME_GENERATION,
+                "observed_health": observed,
+                "api_updater_declines": declines,
+                "edge": COMPILE_EDGE_GENERATION_ADVANCE,
+                "compile_generation": generation,
+                "compile_generation_baseline": compile_generation_baseline,
+            }
         # A pending change that cannot compile because the Editor is in play mode is
         # named immediately, before the appear window settles. An already-running
         # compile (status compiling) has no refresh block and still settles normally.
@@ -1661,6 +1707,7 @@ def _run_wait_for_compile_impl(args, recovery):
         args.settle_timeout_seconds,
         args.health_timeout_seconds,
         unity_pid=session.unity_pid if session is not None else None,
+        compile_generation_baseline=getattr(args, "compile_generation_baseline", None),
     )
     recovery.record(cycle.get("api_updater_declines", 0))
     outcome = cycle["outcome"]
@@ -1685,6 +1732,26 @@ def _run_wait_for_compile_impl(args, recovery):
             diagnostics=diagnostics,
         )
         _attach_guidance(payload, "wait-for-compile", "compile_blocked", args)
+        return 0, emit_payload(payload), ""
+
+    if outcome == COMPILE_OUTCOME_GENERATION:
+        # An inferred cross-reload compile: the caller's baseline advanced, even though
+        # no `compiling` status was observable. Name the edge so the caller can see why
+        # the command settled without ever seeing a compile window.
+        payload = success_payload(
+            "wait-for-compile",
+            session=session,
+            result={
+                "status": "compile_settled",
+                "compile_observed": True,
+                "edge": COMPILE_EDGE_GENERATION_ADVANCE,
+                "compile_generation": cycle.get("compile_generation"),
+                "compile_generation_baseline": cycle.get("compile_generation_baseline"),
+            },
+            include_diagnostics=args.include_diagnostics,
+            diagnostics=diagnostics,
+        )
+        _attach_guidance(payload, "wait-for-compile", "completed", args)
         return 0, emit_payload(payload), ""
 
     if outcome == COMPILE_OUTCOME_READY:

@@ -152,6 +152,14 @@ namespace UnityPuerExec
         private const string ReadyLogPrefix = "[UnityPuerExec] Ready on port";
         private const string HarnessModulePrefix = "puer-exec://harness/";
 
+        // Persisted compile generation. Unity's forced synchronous recompile on a
+        // deferred play exit runs after beforeAssemblyReload has already stopped the
+        // listener, so /health never serves `compiling` for it. A caller that holds a
+        // value from before the transition still needs a compile-specific signal that
+        // is not merely a reload epoch, so this counter advances only when a
+        // compilation completes and is reloaded from SessionState in each domain.
+        private const string CompileGenerationSessionStateKey = "UnityPuerExec.CompileGeneration";
+
         private static readonly ConcurrentDictionary<string, UnityPuerExecJob> Requests =
             new ConcurrentDictionary<string, UnityPuerExecJob>();
         private static readonly object RequestGate = new object();
@@ -172,6 +180,9 @@ namespace UnityPuerExec
         // the assembly is not package-installed.
         private static readonly string bridgeVersion = ResolveBridgeVersion();
         private static string cachedConsoleLogPath = "";
+        // Read from SessionState in the static constructor, which runs once per
+        // domain -- so a domain reload resumes the prior value instead of resetting.
+        private static int compileGeneration;
         private static string activeRequestId = "";
         private static int mainThreadId;
         private static int selectedPort;
@@ -219,6 +230,7 @@ namespace UnityPuerExec
         static UnityPuerExecServer()
         {
             mainThreadId = Thread.CurrentThread.ManagedThreadId;
+            compileGeneration = LoadCompileGeneration();
             SampleStackTraceLogTypes();
             EditorApplication.update += OnEditorUpdate;
             AssemblyReloadEvents.beforeAssemblyReload += Stop;
@@ -448,17 +460,55 @@ namespace UnityPuerExec
             }
         }
 
+        // The compile generation advances here and only here. Incrementing on
+        // afterAssemblyReload would make it a reload epoch -- the exact conflation the
+        // observe-compile-across-domain-reload spike rejected -- because a reload that
+        // compiled nothing would still advance it.
+        private static void AdvanceCompileGeneration()
+        {
+            compileGeneration = compileGeneration + 1;
+            try
+            {
+                SessionState.SetString(CompileGenerationSessionStateKey, compileGeneration.ToString());
+            }
+            catch
+            {
+            }
+        }
+
+        private static int LoadCompileGeneration()
+        {
+            try
+            {
+                var raw = SessionState.GetString(CompileGenerationSessionStateKey, "");
+                if (int.TryParse(raw, out var value) && value > 0)
+                {
+                    return value;
+                }
+            }
+            catch
+            {
+            }
+
+            // No persisted value means a cold Editor start.
+            return 0;
+        }
+
         // Unity's own completion signals are the only thing that advances the
         // settled-import timestamp. Importing a file does not change its mtime, so
         // advancing on the exec path would refresh forever; advancing here is what
         // makes a second exec after a settled import a no-op.
         private static void OnCompilationFinished(object obj)
         {
+            AdvanceCompileGeneration();
             UnityPuerExecImportChangeTracker.OnCompilationCompleted();
         }
 
         private static void OnAfterAssemblyReload()
         {
+            // Deliberately does not advance the compile generation: a reload is not a
+            // compilation. The settled-import timestamp is a reload epoch and may
+            // advance here; the compile generation may not.
             UnityPuerExecImportChangeTracker.OnCompilationCompleted();
         }
 
@@ -579,7 +629,8 @@ namespace UnityPuerExec
                             refreshPending: DescribeRefreshPending(UnityPuerExecImportChangeTracker.GetPendingState()),
                             refreshSuppressed: isPlaying,
                             refreshSuppressedReason: isPlaying ? "play_mode" : "",
-                            scriptChangesWhilePlaying: scriptChangesWhilePlaying
+                            scriptChangesWhilePlaying: scriptChangesWhilePlaying,
+                            compileGeneration: compileGeneration
                         )
                     );
                     return;
