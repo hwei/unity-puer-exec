@@ -1,7 +1,7 @@
 change_type: feature
 priority: P1
 blocked_by:
-  - observe-compile-across-domain-reload
+  - add-compile-generation-signal
 assumption_state: valid
 evidence: host-validation
 updated_at: 2026-10-09
