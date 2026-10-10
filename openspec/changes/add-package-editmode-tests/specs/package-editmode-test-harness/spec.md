@@ -56,7 +56,8 @@ other refresh outcomes are not replayed, and retained state does not leak betwee
 The repository SHALL document a repository-local command that runs the EditMode tests in Unity
 batch mode without launching the CLI real-host suite. This harness SHALL remain outside the
 default Python unit-test workflow, and the real-host play-mode case SHALL remain as the
-end-to-end backstop.
+end-to-end backstop. The runner SHALL treat a launch that discovers no test of the package
+assembly as a failure rather than as a pass.
 
 #### Scenario: A maintainer can run the EditMode tests headlessly
 
@@ -68,3 +69,9 @@ end-to-end backstop.
 
 - **WHEN** the play-mode compile-block behavior is validated
 - **THEN** the real-host `wait-for-exec` continuation case still exists and still asserts the disclosure
+
+#### Scenario: An undiscovered package assembly does not read as a pass
+
+- **WHEN** the documented command runs against a host that does not declare the package testable
+- **THEN** the runner reports that no test of the package assembly was discovered
+- **AND** it does not report the harness as passing

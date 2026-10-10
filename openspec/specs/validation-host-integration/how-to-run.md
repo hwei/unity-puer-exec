@@ -2,7 +2,7 @@
 
 ## Test Layers
 
-This repository has two distinct test layers:
+This repository has three distinct test layers:
 
 **Mocked and helper-tool unit tests** (default):
 ```
@@ -14,8 +14,71 @@ Cover parsing, payload contracts, status codes, packaging checks, OpenSpec tooli
 
 This is the same default suite executed by the repository's GitHub Actions unit-test workflow for pull requests and pushes to `main`.
 
+**Package EditMode tests** (`python tools/run_editmode_tests.py`):
+Run the package's own EditMode assembly (`packages/com.txcombo.unity-puer-exec/Tests/EditMode/`)
+in Unity batch mode against the prepared validation host. They cover the pure server-side
+response path — refresh-block retention and terminal-response replay — which the real-host
+play-mode case otherwise reaches only through a live Editor. Require a Unity Editor and a
+prepared host; see [Running Package EditMode Tests](#running-package-editmode-tests).
+
 **Real-host integration tests** (`tests/test_real_host_integration.py`):
 Require a live Unity Editor and a prepared validation host project. Not executed unless explicitly enabled — they skip silently when prerequisites are not met.
+
+## Running Package EditMode Tests
+
+The package's EditMode assembly is the fast, Unity-side signal for behavior the real-host
+play-mode case only reaches end to end:
+
+```
+python tools/run_editmode_tests.py
+```
+
+The helper resolves the host and the Editor through the same paths the real-host suite uses
+(`prepare_validation_host` / `unity_session`) and appends the `.env` launch-argument input, then
+runs:
+
+```
+Unity -batchMode -nographics -projectPath <host> -logFile <private log> \
+  -runTests -testPlatform EditMode -testResults <results file> \
+  -assemblyNames UnityPuerExec.EditMode.Tests
+```
+
+`-runTests` makes the Editor exit when the run finishes, so `-quit` is deliberately not passed.
+
+- The run is scoped to the package's own assembly, so an unrelated EditMode test in the host
+  project cannot fail this harness, and an assembly Unity did not compile is reported as
+  `no_tests_discovered` rather than as a pass.
+- The command prints a JSON summary (`status`, `exit_code`, `log_path`, `results_path`, `total`,
+  `passed`, `failed`, `failed_tests`). Results default to
+  `<project>/Temp/UnityPuerExec/editmode_test_results.xml`, the batch log to
+  `<project>/Temp/UnityPuerExec/editmode_tests.log`.
+- It is skipped — never turned into a failure — when the host project, its manifest, or the
+  Editor executable is unavailable, the same skip conditions the real-host suite uses.
+- The host project must be free: an interactive Editor holding the project lockfile makes Unity
+  refuse the batch launch.
+
+### The package must be declared testable
+
+Unity compiles and discovers a package's own test assemblies only when the package is named in
+the project manifest's `testables` list. Without the entry a batch `-runTests` launch exits `0`
+having run nothing, which reads as a pass while covering nothing.
+
+`tools/prepare_validation_host.py` sets it: the same pass that rewrites `dependencies` also
+declares `com.txcombo.unity-puer-exec` in `testables`, so a host prepared by the repository-owned
+step is already testable. The declaration is additive and idempotent and preserves unrelated
+entries. `python tools/prepare_validation_host.py --dry-run` prints the target dependency and the
+`testables` list without writing. A hand-edited manifest that omits the declaration is reported
+by the runner as `no_tests_discovered`, not as a pass.
+
+This harness stays **outside the default Python unit-test workflow** and outside the GitHub
+Actions unit-test job, because it needs a Unity Editor and a prepared validation host project.
+The default suite carries only a structural guard (`tests/test_package_layout.py`) that the
+EditMode assembly exists, is Editor-only, references the package Editor assembly and the test
+framework, and carries the include constraint.
+
+The package's `Tests/` tree is not published: the release workflow assembles the UPM package from
+an explicit allowlist (`Editor` plus the root files), so the harness remains a source-repository
+development surface, not a package-consumer surface.
 
 ## Running Real-Host Regression
 

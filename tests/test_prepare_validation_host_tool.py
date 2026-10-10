@@ -95,7 +95,8 @@ class PrepareValidationHostTests(unittest.TestCase):
             "dependencies": {
                 "com.txcombo.unity-puer-exec": expected_dependency,
                 "com.cysharp.unitask": "file:com.cysharp.unitask",
-            }
+            },
+            "testables": ["com.txcombo.unity-puer-exec"],
         }
 
         rewritten, changed, dependency = prepare_validation_host.rewrite_manifest(
@@ -106,7 +107,66 @@ class PrepareValidationHostTests(unittest.TestCase):
 
         self.assertFalse(changed)
         self.assertEqual(rewritten["dependencies"]["com.txcombo.unity-puer-exec"], expected_dependency)
+        self.assertEqual(rewritten["testables"], ["com.txcombo.unity-puer-exec"])
         self.assertEqual(dependency, expected_dependency)
+
+    def test_rewrite_manifest_declares_the_package_testable(self):
+        # Unity compiles and discovers the package's own test assemblies only for a
+        # package listed in testables, so the local wiring has to declare it. Without
+        # the entry a batch test launch exits successfully having run nothing.
+        package_root = prepare_validation_host.FORMAL_PACKAGE_ROOT
+        manifest_path = _same_anchor_manifest_path(package_root)
+        manifest = {
+            "dependencies": {
+                "com.txcombo.unity-puer-exec": prepare_validation_host.compute_file_dependency(
+                    manifest_path, package_root=package_root
+                )
+            }
+        }
+
+        rewritten, changed, _ = prepare_validation_host.rewrite_manifest(
+            manifest,
+            manifest_path,
+            package_root=package_root,
+        )
+
+        self.assertTrue(changed)
+        self.assertEqual(rewritten["testables"], ["com.txcombo.unity-puer-exec"])
+
+    def test_rewrite_manifest_preserves_existing_testables_entries(self):
+        package_root = prepare_validation_host.FORMAL_PACKAGE_ROOT
+        manifest_path = _same_anchor_manifest_path(package_root)
+        manifest = {
+            "dependencies": {
+                "com.txcombo.unity-puer-exec": prepare_validation_host.compute_file_dependency(
+                    manifest_path, package_root=package_root
+                )
+            },
+            "testables": ["com.example.other"],
+        }
+
+        rewritten, changed, _ = prepare_validation_host.rewrite_manifest(
+            manifest,
+            manifest_path,
+            package_root=package_root,
+        )
+
+        self.assertTrue(changed)
+        self.assertEqual(rewritten["testables"], ["com.example.other", "com.txcombo.unity-puer-exec"])
+
+    def test_ensure_testable_package_is_idempotent(self):
+        manifest = {"testables": ["com.txcombo.unity-puer-exec"]}
+
+        rewritten, changed = prepare_validation_host.ensure_testable_package(manifest)
+
+        self.assertFalse(changed)
+        self.assertIs(rewritten, manifest)
+
+    def test_ensure_testable_package_rejects_a_non_list_testables(self):
+        with self.assertRaises(ValueError):
+            prepare_validation_host.ensure_testable_package(
+                {"testables": "com.txcombo.unity-puer-exec"}
+            )
 
     def test_detect_embedded_package_shadowing_reports_distinct_embedded_package(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -235,6 +295,8 @@ class PrepareValidationHostTests(unittest.TestCase):
 
             self.assertEqual(exit_code, 0)
             payload = json.loads(stdout.getvalue())
+            self.assertTrue(payload["package_testable"])
+            self.assertEqual(payload["testables"], ["com.txcombo.unity-puer-exec"])
             self.assertTrue(payload["embedded_package_shadowing"])
             self.assertTrue(payload["embedded_package_path"].endswith("Project\\Packages\\com.txcombo.unity-puer-exec"))
             self.assertEqual(payload["embedded_package_paths"], [payload["embedded_package_path"]])
@@ -265,6 +327,8 @@ class PrepareValidationHostTests(unittest.TestCase):
             self.assertEqual(exit_code, 0)
             manifest_after = json.loads(manifest_path.read_text(encoding="utf-8"))
             self.assertIn("com.c3.unity-puer-exec.validation", manifest_after["dependencies"])
+            # A dry run reports the target wiring without writing it.
+            self.assertNotIn("testables", manifest_after)
 
     def test_resolve_project_path_applies_dotenv_launch_args_with_explicit_project_path(self):
         with tempfile.TemporaryDirectory() as temp_dir:

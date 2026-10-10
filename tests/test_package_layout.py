@@ -9,6 +9,8 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 PACKAGE_ROOT = REPO_ROOT / "packages" / "com.txcombo.unity-puer-exec"
 RELEASE_WORKFLOW_PATH = REPO_ROOT / ".github" / "workflows" / "release.yml"
 UNITY_IMPORTED_PUBLISHABLE_ASSETS = ("Editor", "package.json", "LICENSE", "README.md")
+EDITMODE_TEST_ASMDEF_RELATIVE_PATH = "Tests/EditMode/UnityPuerExec.EditMode.Tests.asmdef"
+EDITMODE_TEST_SOURCE_RELATIVE_PATH = "Tests/EditMode/UnityPuerExecRefreshBlockRetentionTests.cs"
 
 CLI_DIR = REPO_ROOT / "cli" / "python"
 if str(CLI_DIR) not in sys.path:
@@ -103,6 +105,51 @@ class PackageLayoutTests(unittest.TestCase):
         self.assertLess(stamp_index, build_index)
         self.assertLess(build_index, verify_index)
         self.assertLess(verify_index, assemble_index)
+
+    def test_package_editmode_test_assembly_is_editor_only_and_gated(self):
+        # The fast Unity-side harness must never leak into a player build or the
+        # published package. The Editor-only platform and the UNITY_INCLUDE_TESTS
+        # define constraint are what compile the assembly only for a test run; the
+        # test-framework references make it a test assembly rather than product code.
+        # This guard needs no Unity, so a mis-scoped asmdef fails the default suite.
+        asmdef_path = PACKAGE_ROOT / EDITMODE_TEST_ASMDEF_RELATIVE_PATH
+        self.assertTrue(
+            asmdef_path.exists(),
+            "{} should exist".format(EDITMODE_TEST_ASMDEF_RELATIVE_PATH),
+        )
+
+        asmdef = json.loads(asmdef_path.read_text(encoding="utf-8"))
+        self.assertEqual(asmdef["includePlatforms"], ["Editor"])
+        self.assertEqual(asmdef["excludePlatforms"], [])
+        self.assertIn("UNITY_INCLUDE_TESTS", asmdef["defineConstraints"])
+        self.assertIn("UnityPuerExec.Editor", asmdef["references"])
+        self.assertIn("UnityEngine.TestRunner", asmdef["references"])
+        self.assertIn("UnityEditor.TestRunner", asmdef["references"])
+        self.assertTrue(asmdef["overrideReferences"])
+        self.assertIn("nunit.framework.dll", asmdef["precompiledReferences"])
+        self.assertFalse(asmdef["autoReferenced"])
+
+        # The release workflow assembles the package from an explicit allowlist, so the
+        # Tests tree stays a source-repository development surface.
+        release_workflow = RELEASE_WORKFLOW_PATH.read_text(encoding="utf-8")
+        self.assertNotIn("packages/com.txcombo.unity-puer-exec/Tests", release_workflow)
+
+    def test_package_editmode_test_tree_keeps_committed_meta_files(self):
+        # Unity needs the folder, asmdef, and source .meta files to import the tree
+        # with a stable identity; the repository commits them like every other asset.
+        for relative_path in (
+            "Tests",
+            "Tests/EditMode",
+            EDITMODE_TEST_ASMDEF_RELATIVE_PATH,
+            EDITMODE_TEST_SOURCE_RELATIVE_PATH,
+        ):
+            asset_path = PACKAGE_ROOT / relative_path
+            meta_path = asset_path.parent / "{}.meta".format(asset_path.name)
+            self.assertTrue(asset_path.exists(), "{} should exist".format(relative_path))
+            self.assertTrue(
+                meta_path.exists(),
+                "{} should exist".format(meta_path.relative_to(PACKAGE_ROOT)),
+            )
 
     def test_editor_assembly_uses_formal_identity(self):
         asmdef_path = PACKAGE_ROOT / "Editor" / "UnityPuerExec.Editor.asmdef"

@@ -114,6 +114,31 @@ def compute_file_dependency(manifest_path, package_root=None):
     return _absolute_file_dependency(package_root)
 
 
+def ensure_testable_package(manifest_data, package_name=FORMAL_PACKAGE_NAME):
+    """Declare the formal package in the manifest's ``testables`` list.
+
+    Unity compiles and discovers a package's own test assemblies only when the
+    package name is listed in ``testables``. The package's EditMode harness lives
+    inside the package, so a host wired to that harness has to declare it: without
+    the entry a ``-runTests`` launch exits successfully having run nothing, which
+    reads as a pass. Existing unrelated entries are preserved.
+
+    Returns the (possibly rewritten) manifest and whether it changed.
+    """
+    testables = manifest_data.get("testables")
+    if testables is None:
+        testables = []
+    elif not isinstance(testables, list):
+        raise ValueError("manifest.json testables must be a list when present.")
+
+    if package_name in testables:
+        return manifest_data, False
+
+    rewritten_manifest = dict(manifest_data)
+    rewritten_manifest["testables"] = list(testables) + [package_name]
+    return rewritten_manifest, True
+
+
 def rewrite_manifest(manifest_data, manifest_path, package_root=None):
     dependencies = manifest_data.get("dependencies")
     if not isinstance(dependencies, dict):
@@ -124,31 +149,36 @@ def rewrite_manifest(manifest_data, manifest_path, package_root=None):
     legacy_value = dependencies.get(LEGACY_PACKAGE_NAME)
 
     if current_value == expected_value and LEGACY_PACKAGE_NAME not in dependencies:
-        return manifest_data, False, expected_value
+        rewritten_manifest = manifest_data
+        changed = False
+    else:
+        rewritten_dependencies = {}
+        replaced_legacy = False
+        inserted_formal = False
 
-    rewritten_dependencies = {}
-    replaced_legacy = False
-    inserted_formal = False
+        for key, value in dependencies.items():
+            if key == LEGACY_PACKAGE_NAME:
+                rewritten_dependencies[FORMAL_PACKAGE_NAME] = expected_value
+                replaced_legacy = True
+                inserted_formal = True
+                continue
+            if key == FORMAL_PACKAGE_NAME:
+                rewritten_dependencies[key] = expected_value
+                inserted_formal = True
+                continue
+            rewritten_dependencies[key] = value
 
-    for key, value in dependencies.items():
-        if key == LEGACY_PACKAGE_NAME:
+        if not inserted_formal:
             rewritten_dependencies[FORMAL_PACKAGE_NAME] = expected_value
-            replaced_legacy = True
-            inserted_formal = True
-            continue
-        if key == FORMAL_PACKAGE_NAME:
-            rewritten_dependencies[key] = expected_value
-            inserted_formal = True
-            continue
-        rewritten_dependencies[key] = value
 
-    if not inserted_formal:
-        rewritten_dependencies[FORMAL_PACKAGE_NAME] = expected_value
+        rewritten_manifest = dict(manifest_data)
+        rewritten_manifest["dependencies"] = rewritten_dependencies
+        changed = replaced_legacy or legacy_value is not None or current_value != expected_value
 
-    rewritten_manifest = dict(manifest_data)
-    rewritten_manifest["dependencies"] = rewritten_dependencies
-    changed = replaced_legacy or legacy_value is not None or current_value != expected_value
-    return rewritten_manifest, changed, expected_value
+    # The dependency alone wires the runtime package; the testables declaration is
+    # what makes the package's EditMode harness reachable from the same host.
+    rewritten_manifest, testables_changed = ensure_testable_package(rewritten_manifest)
+    return rewritten_manifest, changed or testables_changed, expected_value
 
 
 def write_manifest(manifest_path, manifest_data):
@@ -160,7 +190,10 @@ def write_manifest(manifest_path, manifest_data):
 
 def build_parser():
     parser = argparse.ArgumentParser(
-        description="Rewrite a validation host manifest to consume the formal local Unity package."
+        description=(
+            "Rewrite a validation host manifest to consume the formal local Unity package, "
+            "including the testables declaration its EditMode harness needs."
+        )
     )
     parser.add_argument(
         "--project-path",
@@ -198,6 +231,7 @@ def main(argv=None):
         write_manifest(manifest_path, rewritten_manifest)
 
     status = "unchanged" if not changed else ("dry-run" if args.dry_run else "updated")
+    testables = rewritten_manifest.get("testables") or []
     print(
         json.dumps(
             {
@@ -205,6 +239,8 @@ def main(argv=None):
                 "manifest_path": str(manifest_path),
                 "package_name": FORMAL_PACKAGE_NAME,
                 "dependency": dependency_value,
+                "testables": list(testables),
+                "package_testable": FORMAL_PACKAGE_NAME in testables,
                 "embedded_package_shadowing": shadowing,
                 "embedded_package_path": embedded_package_path,
                 "embedded_package_paths": embedded_package_paths,

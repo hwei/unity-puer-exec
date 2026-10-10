@@ -23,6 +23,10 @@ and do not need the CLI, the control endpoint, or a running Editor to exercise.
 - Add a repository-local way to run the EditMode tests headlessly (Unity batch mode with
   `-runTests -testPlatform EditMode`), so a maintainer can run them without the real-host CLI
   flow. This stays outside the default Python unit-test workflow.
+- Declare the package in the validation host's `testables` list through the existing
+  `tools/prepare_validation_host.py` wiring step. Unity compiles and discovers a package's own
+  test assemblies only for a testable package; without the declaration a batch test launch
+  exits successfully having run nothing, which reads as a pass.
 - Leave the real-host play-mode case in place as the end-to-end backstop; the EditMode tests
   do not replace it.
 - Keep the `Tests/` tree out of the published UPM package. The release assembly already
@@ -37,15 +41,21 @@ and do not need the CLI, the control endpoint, or a running Editor to exercise.
 
 ### Modified Capabilities
 
-(none)
+- `validation-host-integration`: a requirement is added that the host wiring step also declares
+  the formal package in the manifest's `testables` list, so the package's own test assemblies are
+  compiled and discovered by a batch test launch from the same wired host.
 
 ## Impact
 
 - `packages/com.txcombo.unity-puer-exec/Tests/EditMode/`: new test assembly, test sources,
   asmdef, and committed `.meta` files.
-- A repository-local runner (tool script and/or the validation how-to-run document) that
-  launches Unity batch mode for EditMode tests.
-- `tests/`: a Python guard for the harness's presence and shape may be added to the default
-  suite; the `.meta`/layout guard may need to account for the new tree.
+- `packages/com.txcombo.unity-puer-exec/Editor/AssemblyInfo.cs`: an `InternalsVisibleTo` grant
+  so the Editor-only test assembly can reach the internal job state and response builders
+  without widening the package's public API.
+- A repository-local runner (`tools/run_editmode_tests.py`) that launches Unity batch mode for
+  EditMode tests.
+- `tools/prepare_validation_host.py`: the manifest rewrite also declares the package testable.
+- `tests/`: guards for the harness's presence and shape, plus coverage for the testables
+  declaration.
 - No product API, wire protocol, or CLI behavior change. No new field, command, or flag.
 - Follow-up origin: `disclose-play-mode-block-in-wait-for-exec` (validation-gap).

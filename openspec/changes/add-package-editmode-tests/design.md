@@ -57,6 +57,29 @@ the default Python unit-test workflow, which runs on a machine with no Unity Edi
 workflow neither invokes nor depends on the harness. A small Python guard can assert the
 assembly exists and is well-formed without needing Unity.
 
+### D6. The host wiring step declares the package testable
+
+Unity compiles and discovers a package's own test assemblies only when the package is listed in
+the consuming project's `manifest.json` `testables` list. That was discovered by running the new
+harness against the wired host: without the entry,
+`Unity -batchMode -runTests -testPlatform EditMode` exits `0` having run nothing, so the harness
+reads as a pass while covering nothing. The declaration therefore belongs to the same
+repository-owned step that already injects the local package dependency
+(`tools/prepare_validation_host.py`), which is what `how-to-run.md` calls a prepared host. The
+rewrite is additive and idempotent and preserves unrelated `testables` entries, so a host wired
+for the runtime package stays wired for the package's tests.
+
+The runner still guards the failure mode: a launch that discovers no test of the package
+assembly is reported as `no_tests_discovered`, not as a pass, so a host wired by hand or by an
+older tool version cannot silently pass.
+
+### D7. The Editor assembly grants internals to the test assembly
+
+The covered types (`UnityPuerExecJob`, `UnityPuerExecJobSnapshot`, `UnityPuerExecProtocol`) are
+`internal`. The test assembly reaches them through an `InternalsVisibleTo` grant in
+`Editor/AssemblyInfo.cs` rather than by making them public, because the proposal pins the public
+API as unchanged and the tests exist to protect current behavior, not to expand the surface.
+
 ## Risks
 
 - A test assembly that accidentally compiles into player builds or the published package. The
@@ -64,3 +87,6 @@ assembly exists and is well-formed without needing Unity.
   the layout guard tests the first two.
 - EditMode tests that quietly depend on Editor state and become flaky. The first coverage is
   deliberately pure function and job-state assertions, which do not touch Editor state.
+- A host whose manifest lacks the `testables` declaration compiles no test assembly at all and
+  makes a batch test launch exit `0`. The wiring step declares it, and the runner reports the
+  resulting empty discovery as a failure, so the condition cannot read as a pass.
