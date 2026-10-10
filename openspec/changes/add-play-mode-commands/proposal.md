@@ -79,5 +79,7 @@ interim `exec`-based continuation is replaced here by `stop`.
 - Tests: `tests.test_unity_session_cli`, `tests.test_unity_session_modules`,
   `tests.test_real_host_integration` (rename plus new real-host play cases).
 - Consumers: host-project skills and AGENTS files that call `ensure-stopped` keep
-  working through the alias and should migrate.
+  working through the deprecated alias. No host-project document change is required:
+  host docs deliberately delegate command discovery to `--help`, so they do not list
+  command names and cannot drift when the CLI is upgraded.
 - `surface-play-mode-compile-block` guidance: its `next_steps` switch to `stop`.

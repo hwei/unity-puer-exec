@@ -30,4 +30,3 @@
 
 - `surface-play-mode-compile-block` is archived. Apply only after `observe-compile-across-domain-reload` has settled its compile-completion signal (`blocked_by`), because `stop` depends on it (design D4).
 - After review, commit, run `openspec archive add-play-mode-commands`, and commit again.
-- Tell host-project skill owners (for example tree2/tree5 AGENTS files) to migrate from `ensure-stopped` to `ensure-closed`.
