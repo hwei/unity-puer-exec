@@ -7,7 +7,7 @@ Make project refresh automatic for code changes only, so a caller never has to r
 
 ### Requirement: Refresh triggers only when a compile-triggering change is detected
 
-The Unity control service SHALL observe changes to compile-triggering project files and SHALL perform an `AssetDatabase.Refresh()` before executing a script when, and only when, it detects a change that requires recompilation. Compile-triggering files SHALL comprise C# script sources, assembly definition and reference files, and compiler response files. Changes to scenes, prefabs, metadata files, textures, audio, and all other non-code assets SHALL NOT trigger a refresh. A file whose path contains a directory segment whose name starts with `.` SHALL NOT count as a detected change.
+The Unity control service SHALL observe changes to compile-triggering project files and SHALL perform an `AssetDatabase.Refresh()` before executing a script when, and only when, it detects a change that requires recompilation. Compile-triggering files SHALL comprise C# script sources, assembly definition and reference files, and compiler response files. Changes to scenes, prefabs, metadata files, textures, audio, and all other non-code assets SHALL NOT trigger a refresh. A file whose path contains a directory segment whose name starts with `.`, within the watched `Assets/` or `Packages/` tree, SHALL NOT count as a detected change.
 
 #### Scenario: C# source changes before exec
 
@@ -47,6 +47,15 @@ The Unity control service SHALL observe changes to compile-triggering project fi
 - **THEN** the change signal is not pending
 - **AND** the server does not refresh
 - **AND** the exec proceeds without waiting for a compilation
+
+#### Scenario: A dot segment above the watched root does not suppress detection
+
+- **WHEN** a compile-triggering file is written under the watched `Assets/` or `Packages/` tree
+- **AND** an ancestor of that root on disk has a directory whose name starts with `.`
+- **AND** no directory segment below the watched root starts with `.`
+- **AND** a new exec request arrives
+- **THEN** the change is detected
+- **AND** the server refreshes the project before executing the script
 
 ### Requirement: Settled-import timestamp advances only on Unity completion signals
 
