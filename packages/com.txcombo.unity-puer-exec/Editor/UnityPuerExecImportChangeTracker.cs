@@ -10,24 +10,23 @@ namespace UnityPuerExec
     /// Editor-side change signal for automatic project refresh (see the
     /// import-change-refresh requirement set).
     ///
-    /// Two rules make the signal safe to act on:
+    /// The signal is the incremental filesystem scan alone: every decision walks the
+    /// watched roots and compares compile-triggering files' modification times against
+    /// the settled-import timestamp. It holds no in-memory event state, so a change made
+    /// before the service installed — or across a domain reload — is seen on the next
+    /// walk.
     ///
-    ///  - The settled-import timestamp advances only on Unity's own compilation and
-    ///    assembly-reload completion signals, never on a refresh or an exec. Importing
-    ///    a file does not change its modification time, so a timestamp that moved on the
-    ///    exec path would either refresh forever or never refresh at all.
-    ///  - Watcher callbacks run on a threadpool thread, so they touch only System.IO
-    ///    and thread-safe collections. No Unity API is called from a callback.
-    ///
-    /// The watcher is an accelerator, not the source of truth. An install-time
-    /// baseline walk and an error-signal fallback both mark the project dirty rather
-    /// than silently missing a change.
+    /// One rule makes the signal safe to act on: the settled-import timestamp advances
+    /// only on Unity's own compilation and assembly-reload completion signals, never on
+    /// a refresh or an exec. Importing a file does not change its modification time, so
+    /// a timestamp that moved on the exec path would either refresh forever or never
+    /// refresh at all.
     /// </summary>
     internal static class UnityPuerExecImportChangeTracker
     {
         internal const string SettledImportSessionStateKey = "UnityPuerExec.SettledImportUtcTicks";
 
-        // Only files that can start a compilation are watched. Non-code assets
+        // Only files that can start a compilation are scanned. Non-code assets
         // (.unity, .prefab, .meta, textures, audio, ...) never compile, so refreshing
         // for them would be a false positive, and importing one produces no completion
         // signal that could advance the timestamp.
@@ -39,29 +38,20 @@ namespace UnityPuerExec
         private static readonly string[] ExcludedSegments = { "/library/", "/temp/", "/logs/", "/.git/", "/obj/" };
 
         private static readonly object Gate = new object();
-        private static readonly HashSet<string> CandidatePaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        private static readonly List<FileSystemWatcher> Watchers = new List<FileSystemWatcher>();
 
         private static long settledImportUtcTicks;
-        private static bool installed;
-        private static bool signalValid;
 
         // Normalized watched roots (Assets/, Packages/), published by reference
-        // replacement from the main thread when watchers are installed and read by
-        // the pure exclusion helper on the watcher callback path. Never mutated in
-        // place, so a concurrent reader sees a complete list or the previous one.
+        // replacement from Install and read by the pure exclusion helper so the
+        // dot-directory rule can be scoped to the tree each root imports. Never
+        // mutated in place, so a concurrent reader sees a complete list or the
+        // previous one.
         private static volatile List<string> watchedRoots = new List<string>();
-
-        // Set from a watcher callback (threadpool thread) and drained on the next
-        // request/main-thread access. A callback must not call any Unity API, including
-        // the logger, so the diagnostic is recorded as plain state and emitted elsewhere.
-        private static volatile string deferredSignalError;
 
         internal enum PendingState
         {
             NotPending,
             Pending,
-            Unknown,
         }
 
         internal sealed class RefreshDecision
@@ -74,8 +64,8 @@ namespace UnityPuerExec
 
         /// <summary>
         /// Called on the main thread once per domain load, after the control service
-        /// starts. Restores the persisted timestamp, installs the watcher, and runs the
-        /// one baseline walk this design allows.
+        /// starts. Restores the persisted settled-import timestamp, caches the
+        /// normalized watched roots, and warms the per-directory snapshot cache.
         /// </summary>
         internal static void Install()
         {
@@ -88,37 +78,40 @@ namespace UnityPuerExec
                 }
 
                 threshold = settledImportUtcTicks;
-                StartWatchersLocked();
-                installed = true;
-                signalValid = Watchers.Count > 0;
+
+                // Cache the normalized roots here: the exclusion helper needs them to
+                // scope the dot-directory rule to the tree each root imports, and the
+                // roots only change with the project, not per decision.
+                var roots = GetWatchedRoots();
+                var normalizedRoots = new List<string>(roots.Count);
+                foreach (var root in roots)
+                {
+                    normalizedRoots.Add(NormalizePath(root));
+                }
+
+                watchedRoots = normalizedRoots;
             }
 
-            BaselineWalk(threshold);
+            // Warm the per-directory snapshot cache. This is not a baseline walk: it
+            // produces no change signal and the next decision still scans and decides.
+            // Without it, the first decision after every domain reload enumerates the
+            // whole tree on a request thread. Several post-reload requests (health,
+            // refresh) then scan concurrently, and the resulting filesystem contention
+            // can starve the Editor of log activity long enough for the CLI's stall
+            // watchdog to fire. Warming once on the main thread before requests arrive
+            // keeps the first real decision warm without changing detection.
+            WarmSnapshotCache(threshold);
         }
 
-        /// <summary>Called on the main thread before every domain reload and on quit.</summary>
-        internal static void Shutdown()
+        /// <summary>
+        /// Populate <see cref="DirSnapshots"/> for the watched roots without producing a
+        /// change signal. Called on the main thread once per domain load after ready.
+        /// </summary>
+        private static void WarmSnapshotCache(long thresholdTicks)
         {
-            List<FileSystemWatcher> toDispose;
-            lock (Gate)
+            foreach (var root in GetWatchedRoots())
             {
-                toDispose = new List<FileSystemWatcher>(Watchers);
-                Watchers.Clear();
-                CandidatePaths.Clear();
-                installed = false;
-                signalValid = false;
-            }
-
-            foreach (var watcher in toDispose)
-            {
-                try
-                {
-                    watcher.EnableRaisingEvents = false;
-                    watcher.Dispose();
-                }
-                catch
-                {
-                }
+                Walk(root, thresholdTicks, new List<string>());
             }
         }
 
@@ -131,152 +124,39 @@ namespace UnityPuerExec
             lock (Gate)
             {
                 settledImportUtcTicks = DateTime.UtcNow.Ticks;
-                CandidatePaths.Clear();
-                // A completion means everything importable has just been imported, so a
-                // prior buffer-overflow marker no longer needs to force a refresh.
-                signalValid = Watchers.Count > 0;
             }
 
             PersistTicks();
         }
 
         /// <summary>
-        /// Health-side view of the pending state. Returns Unknown rather than a false
-        /// negative when the signal cannot be trusted.
-        ///
-        /// Windows note: Unity Editor's embedded Mono delivers zero FileSystemWatcher
-        /// events even with a correctly bound watcher (verified by an in-process probe
-        /// against multiple roots; the same watcher outside the editor fires instantly).
-        /// The watcher is therefore only an accelerator on platforms where it works, and
-        /// the scan here is the real signal source: a full incremental walk of the watched
-        /// roots runs on every health/decide probe. The roots are project-local and the
-        /// extension filter prunes non-code files before stat, so the cost stays bounded.
+        /// Health-side view of the pending state. The scan walks the watched roots and
+        /// reports pending when a compile-triggering file is newer than the settled
+        /// import; there is no in-memory event state and nothing that can fail, so the
+        /// answer is always a definite not-pending or pending.
         /// </summary>
         internal static PendingState GetPendingState()
         {
-            DrainDeferredSignalError();
+            var found = ScanWatchedRoots();
 
-            long threshold;
-            lock (Gate)
-            {
-                threshold = settledImportUtcTicks;
-            }
-
-            // Incremental scan outside the lock: Directory enumeration + stat only.
-            var found = new List<string>();
-            foreach (var root in GetWatchedRoots())
-            {
-                Walk(root, threshold, found);
-            }
-
-            lock (Gate)
-            {
-                if (!installed || !signalValid)
-                {
-                    return PendingState.Unknown;
-                }
-
-                foreach (var path in found)
-                {
-                    CandidatePaths.Add(path);
-                }
-
-                foreach (var path in CandidatePaths)
-                {
-                    if (IsExcludedPath(NormalizePath(path)))
-                    {
-                        continue;
-                    }
-
-                    if (IsPathNewerThan(path, settledImportUtcTicks))
-                    {
-                        return PendingState.Pending;
-                    }
-                }
-            }
-
-            return PendingState.NotPending;
+            return found.Count > 0 ? PendingState.Pending : PendingState.NotPending;
         }
 
         /// <summary>
         /// Compute the refresh decision. The scan runs on the calling (request) thread
         /// because the main thread can be blocked for tens of seconds during startup
         /// import, which would turn every exec into a client-side timeout. Only the
-        /// play-mode read needs the main thread; a skipped play-mode decision leaves
-        /// the candidate set intact so the change survives until play mode exits.
+        /// play-mode read needs the main thread; a skipped play-mode decision holds no
+        /// extra state, so the change is still seen by the next scan after play mode
+        /// exits.
         /// </summary>
         internal static RefreshDecision Decide()
         {
-            DrainDeferredSignalError();
-
             var decision = new RefreshDecision();
 
-            bool unavailable = false;
-            var changed = new List<string>();
-            long threshold;
-            lock (Gate)
-            {
-                threshold = settledImportUtcTicks;
-            }
-
-            // Incremental scan outside the lock (see GetPendingState note on why the
-            // scan, not the watcher, is the real signal source).
-            var found = new List<string>();
-            foreach (var root in GetWatchedRoots())
-            {
-                Walk(root, threshold, found);
-            }
-
-            lock (Gate)
-            {
-                if (!installed)
-                {
-                    unavailable = true;
-                }
-                else if (!signalValid)
-                {
-                    // A watcher error (or an equivalent invalidation) means events may
-                    // have been dropped, so this decision must force a refresh rather
-                    // than report no change. But the incremental scan that just ran is
-                    // itself the authoritative signal, so trust is re-established here:
-                    // the forced refresh is a one-shot response to the invalidation, not
-                    // a permanent "always refresh" state. Without this, an error that
-                    // missed nothing would refresh on every exec forever, because no
-                    // compilation would ever fire to clear it.
-                    unavailable = true;
-                    signalValid = true;
-                }
-                else
-                {
-                    foreach (var path in found)
-                    {
-                        CandidatePaths.Add(path);
-                    }
-
-                    foreach (var path in CandidatePaths)
-                    {
-                        if (IsExcludedPath(NormalizePath(path)))
-                        {
-                            continue;
-                        }
-
-                        if (IsPathNewerThan(path, settledImportUtcTicks))
-                        {
-                            changed.Add(path);
-                        }
-                    }
-                }
-            }
-
+            var changed = ScanWatchedRoots();
             changed.Sort(StringComparer.OrdinalIgnoreCase);
             decision.PathsChanged = changed;
-
-            if (unavailable)
-            {
-                decision.Triggered = true;
-                decision.Reason = "watcher_signal_unavailable";
-                return decision;
-            }
 
             if (changed.Count == 0)
             {
@@ -297,8 +177,8 @@ namespace UnityPuerExec
             if (playing)
             {
                 // Unity defers compilation until play mode exits, so a refresh here
-                // would wait on a compilation that cannot start. Skip, but keep the
-                // dirty signal so the change is not lost.
+                // would wait on a compilation that cannot start. Skip, but do not drop
+                // the signal: the scan re-derives it on the next decision.
                 decision.Triggered = false;
                 decision.SuppressedByPlayMode = true;
                 decision.Reason = "play_mode";
@@ -310,51 +190,26 @@ namespace UnityPuerExec
             return decision;
         }
 
-        private static void StartWatchersLocked()
+        /// <summary>
+        /// Walk the watched roots and return every compile-triggering path whose
+        /// modification time is newer than the settled-import timestamp.
+        /// </summary>
+        private static List<string> ScanWatchedRoots()
         {
-            var roots = GetWatchedRoots();
-
-            // Cache the normalized roots before binding watchers: the exclusion helper
-            // needs them to scope the dot-directory rule to the tree each root imports,
-            // and it runs on the watcher callback path where no Unity API may be called.
-            var normalizedRoots = new List<string>(roots.Count);
-            foreach (var root in roots)
+            long threshold;
+            lock (Gate)
             {
-                normalizedRoots.Add(NormalizePath(root));
+                threshold = settledImportUtcTicks;
             }
 
-            watchedRoots = normalizedRoots;
-
-            foreach (var root in roots)
+            // Incremental scan outside the lock: Directory enumeration + stat only.
+            var found = new List<string>();
+            foreach (var root in GetWatchedRoots())
             {
-                try
-                {
-                    var watcher = new FileSystemWatcher(root)
-                    {
-                        IncludeSubdirectories = true,
-                        NotifyFilter =
-                            NotifyFilters.LastWrite
-                            | NotifyFilters.FileName
-                            | NotifyFilters.CreationTime
-                            | NotifyFilters.Size
-                            | NotifyFilters.DirectoryName,
-                    };
-                    watcher.Changed += OnWatcherChanged;
-                    watcher.Created += OnWatcherChanged;
-                    watcher.Deleted += OnWatcherChanged;
-                    watcher.Renamed += OnWatcherRenamed;
-                    watcher.Error += OnWatcherError;
-                    watcher.EnableRaisingEvents = true;
-                    Watchers.Add(watcher);
-                }
-                catch (Exception ex)
-                {
-                    // A watcher that cannot be created is not fatal: the install-time
-                    // baseline walk and the error fallback still keep correctness. It
-                    // does mean the live signal is untrusted.
-                    UnityEngine.Debug.LogWarning($"[UnityPuerExec] Import watcher unavailable for {root}: {ex.Message}");
-                }
+                Walk(root, threshold, found);
             }
+
+            return found;
         }
 
         private static List<string> GetWatchedRoots()
@@ -365,10 +220,8 @@ namespace UnityPuerExec
                 var assets = Application.dataPath;
                 if (!string.IsNullOrEmpty(assets) && Directory.Exists(assets))
                 {
-                    // FileSystemWatcher on Windows silently receives no events when
-                    // given a forward-slash path (Application.dataPath format): no
-                    // exception, EnableRaisingEvents still true. Normalize to a full
-                    // backslash path so ReadDirectoryChangesW actually binds.
+                    // Normalize to a full backslash path so the scan enumerates the
+                    // same form the exclusion helper compares against.
                     roots.Add(Path.GetFullPath(assets));
                 }
 
@@ -387,28 +240,6 @@ namespace UnityPuerExec
             }
 
             return roots;
-        }
-
-        private static void BaselineWalk(long thresholdTicks)
-        {
-            var found = new List<string>();
-            foreach (var root in GetWatchedRoots())
-            {
-                Walk(root, thresholdTicks, found);
-            }
-
-            if (found.Count == 0)
-            {
-                return;
-            }
-
-            lock (Gate)
-            {
-                foreach (var path in found)
-                {
-                    CandidatePaths.Add(path);
-                }
-            }
         }
 
         private static void Walk(string directory, long thresholdTicks, List<string> found)
@@ -438,7 +269,6 @@ namespace UnityPuerExec
         {
             internal long DirMtimeTicks;
             internal List<string> CodeFiles;   // file names (not full paths)
-            internal List<long> CodeMtimes;    // parallel to CodeFiles
             internal List<string> SubDirs;     // full paths
         }
 
@@ -466,13 +296,16 @@ namespace UnityPuerExec
 
             if (!firstVisit && snapshot != null && snapshot.DirMtimeTicks == dirMtime)
             {
-                // Prune: re-stat known code files for in-place edits, recurse into
-                // known subdirs so their own mtime checks still run.
+                // Prune: re-stat known code files so an in-place edit (which does NOT
+                // bump dir mtime on NTFS) is still seen, and recurse into known subdirs
+                // so their own mtime checks still run. Report any file newer than the
+                // settled import: with no candidate set, the threshold comparison is
+                // what keeps a still-unsettled change pending across scans.
                 for (var i = 0; i < snapshot.CodeFiles.Count; i++)
                 {
                     var fullPath = Path.Combine(directory, snapshot.CodeFiles[i]);
                     long mtime = SafeMtimeTicks(fullPath);
-                    if (mtime > thresholdTicks && mtime != snapshot.CodeMtimes[i])
+                    if (mtime > thresholdTicks)
                     {
                         found.Add(NormalizePath(fullPath));
                     }
@@ -486,7 +319,6 @@ namespace UnityPuerExec
 
             // Full listing of this directory.
             var codeFiles = new List<string>();
-            var codeMtimes = new List<long>();
             var subDirs = new List<string>();
             string[] entries;
             try
@@ -532,7 +364,6 @@ namespace UnityPuerExec
                 else if (IsCompileTriggeringPath(entry))
                 {
                     codeFiles.Add(Path.GetFileName(entry));
-                    codeMtimes.Add(mtime);
                     if (mtime > thresholdTicks)
                     {
                         found.Add(NormalizePath(entry));
@@ -546,96 +377,8 @@ namespace UnityPuerExec
                 {
                     DirMtimeTicks = dirMtime,
                     CodeFiles = codeFiles,
-                    CodeMtimes = codeMtimes,
                     SubDirs = subDirs,
                 };
-            }
-        }
-
-        private static void OnWatcherChanged(object sender, FileSystemEventArgs e)
-        {
-            if (!IsCompileTriggeringPath(e.FullPath))
-            {
-                return;
-            }
-
-            AddCandidate(e.FullPath);
-        }
-
-        private static void OnWatcherRenamed(object sender, RenamedEventArgs e)
-        {
-            if (!IsCompileTriggeringPath(e.FullPath))
-            {
-                return;
-            }
-
-            AddCandidate(e.FullPath);
-        }
-
-        private static void OnWatcherError(object sender, ErrorEventArgs e)
-        {
-            // Includes InternalBufferOverflowException on large projects: events were
-            // dropped, so the project must be treated as possibly changed rather than
-            // reported as unchanged.
-            string detail;
-            try
-            {
-                detail = e.GetException()?.Message ?? "unknown watcher error";
-            }
-            catch
-            {
-                detail = "unknown watcher error";
-            }
-
-            lock (Gate)
-            {
-                signalValid = false;
-                deferredSignalError = detail;
-            }
-        }
-
-        /// <summary>
-        /// Emit, once, any diagnostic a watcher callback could not log itself. Called from
-        /// the request/main threads only, so touching the Unity logger here is safe.
-        /// </summary>
-        private static void DrainDeferredSignalError()
-        {
-            string detail;
-            lock (Gate)
-            {
-                detail = deferredSignalError;
-                deferredSignalError = null;
-            }
-
-            if (string.IsNullOrEmpty(detail))
-            {
-                return;
-            }
-
-            UnityEngine.Debug.LogWarning(
-                $"[UnityPuerExec] Import watcher error; treating project as changed: {detail}"
-            );
-        }
-
-        private static void AddCandidate(string path)
-        {
-            var normalized = NormalizePath(path);
-            lock (Gate)
-            {
-                CandidatePaths.Add(normalized);
-            }
-        }
-
-        private static bool IsPathNewerThan(string path, long thresholdTicks)
-        {
-            try
-            {
-                // A deleted candidate still matters: removing a .cs recompiles too.
-                return File.GetLastWriteTimeUtc(path).Ticks > thresholdTicks;
-            }
-            catch
-            {
-                return true;
             }
         }
 

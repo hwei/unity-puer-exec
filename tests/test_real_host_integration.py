@@ -1310,14 +1310,13 @@ class _SharedRealHostDevice:
     def _reset_change_signal_state(self):
         """Clear test-owned change-signal state so the next case starts not_pending.
 
-        The refresh cases deliberately leave candidates and synthetic pending
-        changes behind; a reused Editor must re-install the tracker and re-settle
-        the signal rather than let a prior case gate the next one.
+        The refresh cases deliberately leave a pending change behind; a reused Editor
+        must re-settle the signal rather than let a prior case gate the next one. The
+        scan-only tracker holds no candidate set to clear, so the reset advances the
+        settled-import timestamp via Unity's own completion hook.
         """
         code = _TRACKER_REFLECTION_JS + (
             "export default function run(ctx) {"
-            " invokeTracker('Shutdown');"
-            " invokeTracker('Install');"
             " invokeTracker('OnCompilationCompleted');"
             " return { pending: trackerState() }; }"
         )
@@ -1336,8 +1335,8 @@ class _SharedRealHostDevice:
                 and refresh.get("pending") == "not_pending"
                 and not refresh.get("suppressed")
             ):
-                # Already installed and settled: no candidates or synthetic
-                # pending change to clear, so skip the re-install walk.
+                # Already settled: no pending change to clear, so skip the
+                # re-settle exec.
                 return
             if (
                 isinstance(refresh, dict)
@@ -1347,7 +1346,7 @@ class _SharedRealHostDevice:
                 # The scan still sees a candidate after the unimported probes
                 # are gone. Give the refresh this exec is about to start a
                 # script Unity can actually compile, so the cycle can finish
-                # and clear the candidate set.
+                # and settle the signal.
                 self._touch_compile_probe()
             exit_code, payload = self._exec_settled(base_url, code)
             last_payload = payload
@@ -2226,8 +2225,8 @@ class RealHostIntegrationTests(_SharedRealHostDevice, unittest.TestCase):
         base_url, _ = _scan_ready_control_endpoint(self.project_path)
         self.assertIsNotNone(base_url, "could not resolve a ready control endpoint for the base-url regression")
 
-        # A fresh compile-triggering source file makes the project dirty; the watcher
-        # (or the install-time baseline) must surface it as a pending change.
+        # A fresh compile-triggering source file makes the project dirty; the scan
+        # must surface it as a pending change.
         temp_dir = self.project_path / "Assets" / "__codex_validation_temp"
         temp_dir.mkdir(parents=True, exist_ok=True)
         trigger_cs = temp_dir / "BaseUrlAutomaticRefreshProbe.cs"
@@ -2992,8 +2991,8 @@ def _post_control_json(base_url, path, payload, timeout_seconds=5.0):
 
 # JavaScript prelude for reaching the import-change tracker directly. The tracker is
 # internal to the Editor assembly and has no control-endpoint surface for its raw
-# state, so the real-host cases read and, where a failure mode cannot be produced from
-# outside (a watcher error, a lost install), set that state through reflection. This
+# state, so the real-host cases read and, where a condition cannot be produced from
+# outside (the settled-import timestamp), set that state through reflection. This
 # runs inside the Editor's own JS environment, so it observes the same static state
 # the server uses -- it is a white-box probe, not a stub of the behavior under test.
 _TRACKER_REFLECTION_JS = (
@@ -3021,7 +3020,7 @@ _TRACKER_REFLECTION_JS = (
     "}\n"
     "function trackerState() {\n"
     "  const value = Number(String(invokeTracker('GetPendingState')));\n"
-    "  return value === 0 ? 'NotPending' : (value === 1 ? 'Pending' : 'Unknown');\n"
+    "  return value === 0 ? 'NotPending' : 'Pending';\n"
     "}\n"
 )
 
@@ -3040,8 +3039,8 @@ class RefreshOnChangeRealHostTests(_SharedRealHostDevice, unittest.TestCase):
     machine-readable rejection of the removed protocol field.
 
     Every case here reuses the suite Editor; the per-case reset in the shared
-    fixture clears the candidates and re-settles the change signal, so the cases
-    run in any order against one host.
+    fixture re-settles the change signal, so the cases run in any order against one
+    host.
     """
 
     def _tracker_script(self, body):
@@ -3284,7 +3283,6 @@ class RefreshOnChangeRealHostTests(_SharedRealHostDevice, unittest.TestCase):
             self._tracker_script(
                 "export default function run(ctx) {"
                 " const SessionState = puer.loadType('UnityEditor.SessionState');"
-                " invokeTracker('Shutdown');"
                 " setTrackerField('settledImportUtcTicks', 0);"
                 " SessionState.SetString('UnityPuerExec.SettledImportUtcTicks', '"
                 + str(planted) + "');"
@@ -3354,43 +3352,7 @@ class RefreshOnChangeRealHostTests(_SharedRealHostDevice, unittest.TestCase):
         self.assertEqual(exit_code, 0, payload)
         self.assertFalse(payload["refresh"]["triggered"], payload["refresh"])
 
-    def test_watcher_error_invalidates_signal_then_forces_one_refresh(self):
-        base_url = self._base_url()
-        # A real watcher error cannot be produced from outside on Windows (the
-        # embedded-Mono watcher is silent), so the state an error event sets is
-        # applied directly: the signal becomes untrusted and records why. Health must
-        # surface that as unknown, never as not-pending.
-        exit_code, payload = self._exec_script(
-            base_url,
-            self._tracker_script(
-                "export default function run(ctx) {"
-                " setTrackerField('signalValid', false);"
-                " setTrackerField('deferredSignalError', 'simulated InternalBufferOverflowException');"
-                " return { signalValid: String(trackerField('signalValid')) }; }"
-            ),
-        )
-        self.assertEqual(exit_code, 0, payload)
-        self.assertEqual(payload["result"]["signalValid"], "false")
-        self.assertEqual(self._health(base_url)["refresh"]["pending"], "unknown")
-
-        # The next exec must treat the project as possibly changed and refresh rather
-        # than report no change. The scan re-establishes trust, so this is one-shot.
-        exit_code, payload = self._exec_script(
-            base_url, "export default function run(ctx) { return { afterError: true }; }"
-        )
-        self.assertEqual(exit_code, 0, payload)
-        self.assertEqual(payload["status"], "completed")
-        self.assertTrue(payload["refresh"]["triggered"], payload["refresh"])
-        self.assertEqual(payload["refresh"]["reason"], "watcher_signal_unavailable")
-        self.assertEqual(self._health(base_url)["refresh"]["pending"], "not_pending")
-
-        exit_code, payload = self._exec_script(
-            base_url, "export default function run(ctx) { return { settled: true }; }"
-        )
-        self.assertEqual(exit_code, 0, payload)
-        self.assertFalse(payload["refresh"]["triggered"], payload["refresh"])
-
-    def test_change_made_before_install_is_caught_by_baseline_walk(self):
+    def test_change_made_before_install_is_detected_by_the_scan(self):
         base_url = self._base_url()
         self.assertEqual(self._health(base_url)["refresh"]["pending"], "not_pending")
         probe_dir = self._hidden_probe_dir()
@@ -3401,10 +3363,8 @@ class RefreshOnChangeRealHostTests(_SharedRealHostDevice, unittest.TestCase):
                 "export default function run(ctx) {"
                 " const Directory = puer.loadType('System.IO.Directory');"
                 " const File = puer.loadType('System.IO.File');"
-                # Drop all in-memory signal state, change a file, then install: this is
-                # the "changed before the watcher was attached" gap the baseline walk
-                # exists to close.
-                " invokeTracker('Shutdown');"
+                # Change a file, then install: there is no baseline walk to warm the
+                # signal, so the scan on the next decision is what must see it.
                 " Directory.CreateDirectory(" + _js_string_literal(probe_dir) + ");"
                 " File.WriteAllText(" + _js_string_literal(probe_file)
                 + ", 'internal static class BaselineWalkProbe { internal const int N = 1; }\\n');"

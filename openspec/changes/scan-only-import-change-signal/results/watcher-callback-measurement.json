@@ -1,0 +1,10 @@
+{
+  "project": "F:\\C3\\unity-puer-exec-workspace\\c3-client-tree2\\Project",
+  "probe_file": "F:\\C3\\unity-puer-exec-workspace\\c3-client-tree2\\Project\\Assets\\__codex_validation_temp\\not_imported~\\WatcherMeasureProbe.txt",
+  "watcher_callback_count_before": 0,
+  "watcher_callback_count_after": 0,
+  "observed_callback_count": 0,
+  "waited_seconds": 8,
+  "probe_ext": ".txt",
+  "note": "The shipped watcher-backed tracker was temporarily instrumented with a watcherCallbackCount incremented at the top of OnWatcherChanged/OnWatcherRenamed/OnWatcherError (before the extension filter). A file was written under Assets/__codex_validation_temp/not_imported~ (Unity ignores the trailing '~'), no compile/reload was triggered, and the counter was read back through the reflection bridge after an 8s wait. Both reads are 0: the watcher delivered zero callbacks for a real create on the Windows embedded-Mono target. This is a fresh measurement of the tracker's own callbacks, independent of the earlier standalone fsw-in-probe run."
+}

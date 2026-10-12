@@ -546,7 +546,6 @@ namespace UnityPuerExec
         private static void Stop()
         {
             StopListener();
-            UnityPuerExecImportChangeTracker.Shutdown();
             DisposeJsEnv();
         }
 
@@ -1239,10 +1238,8 @@ namespace UnityPuerExec
             {
                 case UnityPuerExecImportChangeTracker.PendingState.Pending:
                     return "pending";
-                case UnityPuerExecImportChangeTracker.PendingState.NotPending:
-                    return "not_pending";
                 default:
-                    return "unknown";
+                    return "not_pending";
             }
         }
 

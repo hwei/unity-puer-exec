@@ -75,6 +75,17 @@ evidence recorded ~9-11s cold, ~0.3-0.8s warm). If measurement shows this regres
 warmup path, re-warming the cache without a watcher is the follow-up, not a reason to
 keep the watcher.
 
+Apply outcome (2026-10-12): measurement showed the warmup path *did* regress. With no
+install-time warm, several post-reload requests (health, `/refresh`) each enumerated the
+tree on a request thread; the per-directory lock serialized them but the filesystem work
+did not, inflating the first-decision wall cost to 8.5-13.5s and starving the Editor of
+log activity long enough to make `test_play_pause_play_resumes_against_real_host` fail
+deterministically with `unity_stalled` (~41s). The named follow-up was therefore
+implemented: `Install()` warms `DirSnapshots` once on the main thread after ready via
+`WarmSnapshotCache`, which produces no change signal and leaves the next decision to scan
+and decide. A single warm walk measures ~150-300ms, and the play-mode class and the full
+real-host suite pass. See `results/real-host-evidence.md`.
+
 ### Decision 4: The specs describe the mechanism that exists
 
 Removing the watcher means two requirements become false descriptions of the system:

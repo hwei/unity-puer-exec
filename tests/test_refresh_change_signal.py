@@ -1,15 +1,15 @@
-"""Source invariants for the import-change signal (refresh-on-change task 3.3).
+"""Source invariants for the import-change signal.
 
-The watcher callback path cannot be exercised end to end in this repository: on
-Windows the Unity Editor's embedded Mono delivers no FileSystemWatcher events, and a
-real InternalBufferOverflowException cannot be produced on demand. What *can* be
-checked mechanically is the structural contract those callbacks must obey:
+The import-change signal is the incremental filesystem scan alone: every decision walks
+the watched roots and compares compile-triggering files' modification times against the
+settled-import timestamp. There is no filesystem watcher and no off-thread callback path
+to audit. What is checked mechanically here is the structural contract that remains:
 
-  - callbacks run on a threadpool thread, so they may not touch a Unity API (not even
-    the logger) and may only mutate thread-safe state;
   - the settled-import timestamp has exactly one writer, Unity's completion hook, and
-    nothing on the watcher or exec path assigns it;
-  - the extension filter is the compile-triggering set and nothing else.
+    nothing on the scan or exec path assigns it;
+  - the scan's exclusion rules stay scoped to the path below a watched root;
+  - the extension filter is the compile-triggering set and nothing else;
+  - no watcher, watcher callback, candidate set, or watcher-failure state creeps back in.
 
 These assertions are about the tracker's source, so they run in the mocked unit-test
 layer with no Editor.
@@ -28,32 +28,21 @@ TRACKER_PATH = (
     / "UnityPuerExecImportChangeTracker.cs"
 )
 
-# Methods that FileSystemWatcher invokes from a threadpool thread, plus the helper they
-# funnel into. None of these may reference a Unity API.
-CALLBACK_METHOD_SIGNATURES = (
-    "void OnWatcherChanged(object sender",
-    "void OnWatcherRenamed(object sender",
-    "void OnWatcherError(object sender",
-    "void AddCandidate(string path)",
-)
-
-# Helpers the callbacks call. They must stay pure (System.IO / plain data) too.
-CALLBACK_HELPER_SIGNATURES = (
-    "bool IsCompileTriggeringPath(string path)",
-    "bool IsExcludedPath(string normalizedPath)",
-    "bool IsExcludedPath(string normalizedPath, bool",
-    "string NormalizePath(string path)",
-)
-
-UNITY_API_TOKENS = (
-    "UnityEngine",
-    "UnityEditor",
-    "Debug.",
-    "AssetDatabase",
-    "EditorApplication",
-    "SessionState",
-    "CompilationPipeline",
-    "Application.",
+# Tokens that only made sense for the removed watcher-backed design. Their return would
+# reintroduce the fallback subsystem this change deleted.
+REMOVED_MECHANISM_TOKENS = (
+    "FileSystemWatcher",
+    "OnWatcherChanged",
+    "OnWatcherRenamed",
+    "OnWatcherError",
+    "CandidatePaths",
+    "AddCandidate",
+    "StartWatchersLocked",
+    "BaselineWalk",
+    "signalValid",
+    "deferredSignalError",
+    "DrainDeferredSignalError",
+    "watcher_signal_unavailable",
 )
 
 
@@ -82,15 +71,13 @@ class ImportChangeSignalSourceTests(unittest.TestCase):
     def setUpClass(cls):
         cls.source = TRACKER_PATH.read_text(encoding="utf-8")
 
-    def test_watcher_callbacks_touch_no_unity_api(self):
-        for signature in CALLBACK_METHOD_SIGNATURES + CALLBACK_HELPER_SIGNATURES:
-            body = _extract_method_body(self.source, signature)
-            for token in UNITY_API_TOKENS:
-                self.assertNotIn(
-                    token,
-                    body,
-                    "{} must not reference {} from the watcher callback path".format(signature, token),
-                )
+    def test_no_watcher_or_fallback_mechanism_remains(self):
+        for token in REMOVED_MECHANISM_TOKENS:
+            self.assertNotIn(
+                token,
+                self.source,
+                "removed watcher-fallback mechanism token reappeared: {}".format(token),
+            )
 
     def test_compile_triggering_extensions_are_code_only(self):
         match = re.search(r"CompileTriggeringExtensions\s*=\s*\{([^}]*)\}", self.source)
@@ -99,46 +86,12 @@ class ImportChangeSignalSourceTests(unittest.TestCase):
         self.assertEqual(
             sorted(extensions),
             sorted([".cs", ".asmdef", ".asmref", ".rsp"]),
-            "the watched filter must be exactly the compile-triggering set",
+            "the scanned filter must be exactly the compile-triggering set",
         )
-
-    def test_callbacks_coalesce_into_a_thread_safe_candidate_set(self):
-        # The candidate set is the coalescing point: repeated events for one path
-        # collapse to a single entry.
-        self.assertIn("HashSet<string> CandidatePaths", self.source)
-        self.assertIn("StringComparer.OrdinalIgnoreCase", self.source)
-
-        add_candidate = _extract_method_body(self.source, "void AddCandidate(string path)")
-        self.assertIn("lock (Gate)", add_candidate)
-        self.assertIn("CandidatePaths.Add", add_candidate)
-
-        # Both watcher file-event handlers funnel through the coalescing helper rather
-        # than mutating shared state inline.
-        for signature in ("void OnWatcherChanged(object sender", "void OnWatcherRenamed(object sender"):
-            body = _extract_method_body(self.source, signature)
-            self.assertIn("AddCandidate(", body, signature)
-
-    def test_watcher_error_invalidates_the_signal(self):
-        body = _extract_method_body(self.source, "void OnWatcherError(object sender")
-        self.assertIn("signalValid = false", body)
-        # The diagnostic is recorded as plain state; the logger is not called from the
-        # callback thread.
-        self.assertIn("deferredSignalError", body)
-        self.assertNotIn("Debug.", body)
-
-    def test_callbacks_are_wired_to_every_relevant_watcher_event(self):
-        for wiring in (
-            "watcher.Changed += OnWatcherChanged;",
-            "watcher.Created += OnWatcherChanged;",
-            "watcher.Deleted += OnWatcherChanged;",
-            "watcher.Renamed += OnWatcherRenamed;",
-            "watcher.Error += OnWatcherError;",
-        ):
-            self.assertIn(wiring, self.source)
 
     def test_settled_timestamp_has_a_single_writer(self):
         # Only the completion hook (and Install's restore of the persisted value) may
-        # assign the timestamp. The watcher and exec paths must never advance it.
+        # assign the timestamp. The scan and exec paths must never advance it.
         completion = _extract_method_body(self.source, "void OnCompilationCompleted()")
         self.assertIn("settledImportUtcTicks = DateTime.UtcNow.Ticks;", completion)
 
@@ -148,11 +101,7 @@ class ImportChangeSignalSourceTests(unittest.TestCase):
         for signature in (
             "PendingState GetPendingState()",
             "RefreshDecision Decide()",
-            "void OnWatcherChanged(object sender",
-            "void OnWatcherRenamed(object sender",
-            "void OnWatcherError(object sender",
-            "void AddCandidate(string path)",
-            "void BaselineWalk(long thresholdTicks)",
+            "List<string> ScanWatchedRoots()",
         ):
             body = _extract_method_body(self.source, signature)
             self.assertNotIn(
@@ -161,24 +110,20 @@ class ImportChangeSignalSourceTests(unittest.TestCase):
                 "{} must not advance the settled-import timestamp".format(signature),
             )
 
-    def test_install_runs_the_baseline_walk(self):
-        install = _extract_method_body(self.source, "void Install()")
-        self.assertIn("BaselineWalk(threshold)", install)
-
-    def test_completion_hook_clears_candidates_and_revalidates_signal(self):
-        completion = _extract_method_body(self.source, "void OnCompilationCompleted()")
-        self.assertIn("CandidatePaths.Clear()", completion)
-        self.assertIn("signalValid = Watchers.Count > 0", completion)
-
-    def test_watched_roots_are_cached_for_the_exclusion_helper(self):
-        # The normalized watched roots must be captured when the tracker is
-        # installed so the pure exclusion helper can scope the dot-directory rule
-        # without calling a Unity API on the callback path.
+    def test_install_caches_watched_roots_for_the_exclusion_helper(self):
+        # The normalized watched roots must be captured when the tracker is installed
+        # so the exclusion helper can scope the dot-directory rule without recomputing
+        # Unity state on every scan.
         self.assertIn("watchedRoots", self.source)
 
-        start = _extract_method_body(self.source, "void StartWatchersLocked()")
-        self.assertIn("watchedRoots =", start)
-        self.assertIn("NormalizePath(root)", start)
+        install = _extract_method_body(self.source, "void Install()")
+        self.assertIn("watchedRoots =", install)
+        self.assertIn("NormalizePath(root)", install)
+
+    def test_decide_has_only_the_three_live_reasons(self):
+        decide = _extract_method_body(self.source, "RefreshDecision Decide()")
+        for reason in ("compile_triggering_change", "no_pending_change", "play_mode"):
+            self.assertIn(reason, decide, reason)
 
     def test_dot_rule_is_scoped_to_the_path_below_the_watched_root(self):
         # A dot segment above the watched root (the project's own absolute prefix)

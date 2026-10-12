@@ -377,7 +377,7 @@ namespace UnityPuerExec
             string projectPath = "",
             string bridgeVersion = "",
             string consoleLogPath = "",
-            string refreshPending = "unknown",
+            string refreshPending = "not_pending",
             bool refreshSuppressed = false,
             string refreshSuppressedReason = "",
             string scriptChangesWhilePlaying = "unknown",
