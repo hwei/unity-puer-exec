@@ -82,7 +82,12 @@ class HttpTransport:
             return json.loads(response.read().decode("utf-8"))
 
 
-def _status_to_exit_code(payload):
+def status_to_exit_code(payload):
+    """Map a control-endpoint payload to its formal process exit code.
+
+    This is the single source of truth for the status→exit-code contract shared
+    by the transport boundary and the command envelopes that re-wrap a body.
+    """
     if payload.get("ok"):
         if payload.get("status") == "running":
             return EXIT_RUNNING
@@ -91,7 +96,7 @@ def _status_to_exit_code(payload):
     status = payload.get("status")
     if status == "compiling":
         return EXIT_COMPILING
-    if status == "not_available":
+    if status in ("not_available", STATUS_EMPTY_RESPONSE):
         return EXIT_NOT_AVAILABLE
     if status == "missing":
         return EXIT_MISSING
@@ -110,6 +115,11 @@ def _status_to_exit_code(payload):
     if status in ("session_missing", "session_stale"):
         return EXIT_SESSION_STATE
     return 1
+
+
+def _status_to_exit_code(payload):
+    """Backward-compatible private alias for :func:`status_to_exit_code`."""
+    return status_to_exit_code(payload)
 
 
 def _request_timeout_seconds(wait_timeout_ms):
@@ -199,7 +209,7 @@ def invoke_command(command, base_url, payload, wait_timeout_ms, transport=None):
             error_payload["request_id"] = request_id
         return EXIT_NOT_AVAILABLE, json.dumps(error_payload, ensure_ascii=True), ""
 
-    exit_code = _status_to_exit_code(response)
+    exit_code = status_to_exit_code(response)
     if exit_code in (
         0,
         EXIT_RUNNING,

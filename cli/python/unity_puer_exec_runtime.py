@@ -2254,21 +2254,48 @@ def _play_probe_endpoint(selector, args, base_url, health_timeout_seconds):
     return _health_play_state(payload), payload, base_url
 
 
+def _is_play_mode_transport_drop(body):
+    """True when a play-mode body names a reload edge rather than a command result.
+
+    ``empty_response`` and ``not_available`` are transport conditions (the endpoint
+    dropped mid-reload); an absent route (``http_status == 404``) is also
+    ``not_available`` but must stay terminal so the caller can report a version
+    mismatch. A missing body is treated as a drop defensively.
+    """
+    if body is None:
+        return True
+    if body.get("http_status") == 404:
+        return False
+    return body.get("status") in (direct_exec_client.STATUS_EMPTY_RESPONSE, "not_available")
+
+
 def _post_play_mode(selector, args, session, base_url, action, force_run_in_background):
-    """Post the play-mode action, re-resolving a dropped endpoint within a bound."""
+    """Post the play-mode action, re-resolving a dropped endpoint within a bound.
+
+    A transport drop (an empty/unreachable body) is a domain-reload edge: re-resolve
+    the endpoint and retry until the command's ``timeout_seconds`` budget elapses.
+    Every server-answered body is returned immediately. When the budget elapses the
+    last observed structured state is returned so the envelope can report its formal
+    exit code instead of collapsing it into a generic failure.
+    """
     payload = {"action": action, "force_run_in_background": bool(force_run_in_background)}
     wait_ms = getattr(args, "wait_timeout_ms", direct_exec_client.DEFAULT_WAIT_TIMEOUT_MS)
     health_timeout = getattr(args, "health_timeout_seconds", unity_session.DEFAULT_HEALTH_TIMEOUT_SECONDS)
     deadline = time.monotonic() + max(float(getattr(args, "timeout_seconds", 0.0)), 0.001)
+    last_exit_code = EXIT_NOT_AVAILABLE
+    last_body = None
     while True:
         exit_code, stdout_text, stderr_text = direct_exec_client.invoke_command(
             "play-mode", base_url, payload, wait_ms
         )
         body = _parse_response_body(stdout_text, stderr_text)
+        last_exit_code = exit_code
         if body is not None:
+            last_body = body
+        if body is not None and not _is_play_mode_transport_drop(body):
             return exit_code, body, base_url
         if time.monotonic() >= deadline:
-            return exit_code, None, base_url
+            return last_exit_code, last_body, base_url
         # The endpoint dropped between the health probe and the post: a reload edge.
         # Re-resolve before retrying instead of reporting a transport failure.
         _state, _probe_payload, new_base = _play_probe_endpoint(selector, args, base_url, health_timeout)
@@ -2565,6 +2592,20 @@ def _stop_success_result(operation, selector, args, session, base_url, transitio
     return 0, emit_payload(payload), ""
 
 
+def _play_mode_exit_code(body):
+    """Formal exit code for a machine-readable non-success play-mode body.
+
+    A body that carries an explicit ``exit_code`` (for example the boundary's
+    ``empty_response`` payload) is authoritative; otherwise the shared
+    status→exit-code mapping decides. This keeps distinct non-success states
+    distinguishable by exit code alone.
+    """
+    explicit = body.get("exit_code")
+    if isinstance(explicit, int) and not isinstance(explicit, bool):
+        return explicit
+    return direct_exec_client.status_to_exit_code(body)
+
+
 def _run_play_mode_command(operation, args, recovery):
     action = operation
     selector = resolve_selector(args)
@@ -2629,15 +2670,19 @@ def _run_play_mode_command(operation, args, recovery):
     if body.get("status") == "invalid_play_state":
         return _invalid_play_state_result(operation, session, args, body)
     if not body.get("ok"):
+        status = body.get("status", "failed")
         payload = expected_failure_payload(
             operation,
-            body.get("status", "failed"),
+            status,
             body.get("error", "play-mode request failed"),
             session=session,
             include_diagnostics=args.include_diagnostics,
         )
-        _attach_guidance(payload, operation, body.get("status", "failed"), args)
-        return 1, emit_payload(payload), ""
+        for key in ("blocker", "exit_code_meaning", "response_detail"):
+            if key in body:
+                payload[key] = body[key]
+        _attach_guidance(payload, operation, status, args)
+        return _play_mode_exit_code(body), emit_payload(payload), ""
 
     target = PLAY_ACTION_TARGET[action]
     exit_wait_seconds = float(args.timeout_seconds)

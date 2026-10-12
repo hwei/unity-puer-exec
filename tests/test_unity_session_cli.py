@@ -4427,6 +4427,30 @@ class PlayModeCommandTests(unittest.TestCase):
             for patch in reversed(patches):
                 patch.stop()
 
+    def _sequence_play_mode(self, calls, specs):
+        """A play-mode handler returning ``specs`` in order (the last repeats)."""
+        seq = list(specs)
+
+        def handler(payload):
+            calls["play-mode"].append(payload)
+            return seq.pop(0) if len(seq) > 1 else seq[0]
+
+        return handler
+
+    def _transport_drop_body(self, operation="play-mode"):
+        """The boundary payload for an empty/unparseable response body."""
+        return {
+            "ok": False,
+            "status": "empty_response",
+            "operation": operation,
+            "error": (
+                "The control endpoint returned an empty or unparseable response body; "
+                "the response could not be decoded as JSON."
+            ),
+            "exit_code": 12,
+            "exit_code_meaning": "the control endpoint answered without a usable response body",
+        }
+
     # --- play ---
 
     def test_play_settles_cleanly_then_reaches_playing(self):
@@ -4517,6 +4541,65 @@ class PlayModeCommandTests(unittest.TestCase):
         self.assertEqual(code, 0)
         body = json.loads(stdout)
         self.assertEqual(body["result"]["play_state"], "playing")
+
+    def test_play_retries_a_dropped_endpoint_and_recovers(self):
+        invoke_map, calls, _holder = self._default_invoke_map()
+        invoke_map["play-mode"] = self._sequence_play_mode(
+            calls,
+            [(12, self._transport_drop_body()), (0, self._play_mode_body(play_state="entering"))],
+        )
+        code, stdout, stderr = self._run(
+            unity_puer_exec_runtime.run_play,
+            self._args("play", "--timeout-seconds", "5"),
+            [self._health("edit"), self._health("edit"), self._health("entering"), self._health("playing")],
+            invoke_map,
+        )
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(len(calls["play-mode"]), 2)
+        self.assertEqual(json.loads(stdout)["result"]["play_state"], "playing")
+
+    def test_play_dropped_endpoint_without_recovery_reports_the_formal_exit_code(self):
+        invoke_map, calls, _holder = self._default_invoke_map()
+        invoke_map["play-mode"] = self._sequence_play_mode(calls, [(12, self._transport_drop_body())])
+        code, stdout, _stderr = self._run(
+            unity_puer_exec_runtime.run_play,
+            self._args("play", "--timeout-seconds", "1"),
+            [self._health("edit"), self._health("edit")],
+            invoke_map,
+        )
+        self.assertEqual(code, 12)
+        body = json.loads(stdout)
+        self.assertEqual(body["status"], "empty_response")
+        self.assertGreaterEqual(len(calls["play-mode"]), 2)
+
+    def test_pause_non_transport_failure_is_not_retried_and_preserves_exit_code(self):
+        blocker = {"type": "safe_mode_dialog", "scope": "play-mode"}
+        invoke_map, calls, _holder = self._default_invoke_map()
+        invoke_map["play-mode"] = self._sequence_play_mode(
+            calls,
+            [
+                (
+                    19,
+                    {
+                        "ok": False,
+                        "status": "modal_blocked",
+                        "error": "a modal dialog is blocking play mode",
+                        "blocker": blocker,
+                    },
+                )
+            ],
+        )
+        code, stdout, _stderr = self._run(
+            unity_puer_exec_runtime.run_pause,
+            self._args("pause", "--timeout-seconds", "5"),
+            [self._health("playing")],
+            invoke_map,
+        )
+        self.assertEqual(code, unity_puer_exec.EXIT_MODAL_BLOCKED)
+        body = json.loads(stdout)
+        self.assertEqual(body["status"], "modal_blocked")
+        self.assertEqual(body["blocker"], blocker)
+        self.assertEqual(len(calls["play-mode"]), 1)
 
     def test_play_timeout_returns_running_with_current_state(self):
         invoke_map, _calls, _holder = self._default_invoke_map()
