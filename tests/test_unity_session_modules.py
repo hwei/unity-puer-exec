@@ -64,10 +64,10 @@ class UnitySessionModuleTests(unittest.TestCase):
 
         self.assertEqual(resolved, Path("X:/explicit/Editor.log"))
 
-    def test_process_ensure_stopped_uses_injected_dependencies(self):
+    def test_process_ensure_closed_uses_injected_dependencies(self):
         time_ref = SimpleNamespace(time=lambda: 0.0, sleep=lambda _seconds: None)
 
-        stopped, session = unity_session_process.ensure_stopped(
+        stopped, session = unity_session_process.ensure_closed(
             project_path="X:/project",
             mode="inspect",
             resolve_project_path_fn=lambda value: Path(value),
@@ -87,7 +87,7 @@ class UnitySessionModuleTests(unittest.TestCase):
         self.assertTrue(session.diagnostics["project_lockfile_held"])
         self.assertEqual(session.unity_pid, 1234)
 
-    def test_process_ensure_stopped_waits_briefly_after_taskkill(self):
+    def test_process_ensure_closed_waits_briefly_after_taskkill(self):
         time_values = iter([0.0, 0.0, 0.2, 0.2])
         sleep_calls = []
         # Stopped-ness is now read from the project lockfile, not from the pid: the
@@ -107,7 +107,7 @@ class UnitySessionModuleTests(unittest.TestCase):
                 stderr="",
             ),
         ):
-            stopped, session = unity_session_process.ensure_stopped(
+            stopped, session = unity_session_process.ensure_closed(
                 project_path="X:/project",
                 mode="immediate_kill",
                 resolve_project_path_fn=lambda value: Path(value),
@@ -127,7 +127,7 @@ class UnitySessionModuleTests(unittest.TestCase):
         self.assertEqual(session.diagnostics["taskkill_target_pid"], 1234)
         self.assertEqual(sleep_calls, [unity_session_common.POLL_INTERVAL_SECONDS])
 
-    def test_process_ensure_stopped_never_targets_an_unpublished_process(self):
+    def test_process_ensure_closed_never_targets_an_unpublished_process(self):
         """A held lockfile with nothing published is reported, never killed blindly.
 
         The removed rule would take a pid from machine-wide tasklist order and
@@ -137,7 +137,7 @@ class UnitySessionModuleTests(unittest.TestCase):
         time_ref = SimpleNamespace(time=lambda: 0.0, sleep=lambda _seconds: None)
 
         with mock.patch.object(unity_session_process.subprocess, "run") as run:
-            stopped, session = unity_session_process.ensure_stopped(
+            stopped, session = unity_session_process.ensure_closed(
                 project_path="X:/project",
                 mode="immediate_kill",
                 resolve_project_path_fn=lambda value: Path(value),
@@ -153,11 +153,11 @@ class UnitySessionModuleTests(unittest.TestCase):
         run.assert_not_called()
         self.assertEqual(session.diagnostics["kill_skipped_reason"], "no_published_process_to_target")
 
-    def test_process_ensure_stopped_reports_stopped_with_unrelated_editors_running(self):
+    def test_process_ensure_closed_reports_stopped_with_unrelated_editors_running(self):
         """A free lockfile means stopped, however many unrelated Editors exist."""
         time_ref = SimpleNamespace(time=lambda: 0.0, sleep=lambda _seconds: None)
 
-        stopped, session = unity_session_process.ensure_stopped(
+        stopped, session = unity_session_process.ensure_closed(
             project_path="X:/project",
             mode="inspect",
             resolve_project_path_fn=lambda value: Path(value),

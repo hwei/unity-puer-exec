@@ -30,6 +30,13 @@ class TimeoutTransport:
         raise socket.timeout()
 
 
+class MalformedBodyTransport:
+    """Mimics the real transport parsing an empty or truncated HTTP body."""
+
+    def post_json(self, url, payload, timeout_seconds):
+        raise json.JSONDecodeError("Expecting value", "", 0)
+
+
 class DirectExecClientTests(unittest.TestCase):
     def test_http_transport_disables_proxy_for_localhost(self):
         response = mock.Mock()
@@ -219,6 +226,22 @@ class DirectExecClientTests(unittest.TestCase):
         self.assertEqual(body["status"], "not_available")
         self.assertEqual(body["error"], "timed out")
         self.assertEqual(body["request_id"], "req-4")
+
+    def test_malformed_response_body_is_a_transport_failure_not_a_value_error(self):
+        exit_code, stdout, stderr = direct_exec_client.invoke_command(
+            "refresh",
+            "http://127.0.0.1:55231",
+            {"request_id": "req-empty"},
+            1000,
+            transport=MalformedBodyTransport(),
+        )
+
+        self.assertEqual(exit_code, direct_exec_client.EXIT_NOT_AVAILABLE)
+        self.assertEqual(stderr, "")
+        body = json.loads(stdout)
+        self.assertEqual(body["status"], "not_available")
+        self.assertIn("invalid response", body["error"])
+        self.assertEqual(body["request_id"], "req-empty")
 
     def test_busy_payload_is_non_zero_on_stdout(self):
         transport = FakeTransport([

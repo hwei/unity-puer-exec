@@ -21,6 +21,7 @@ GUARD_CLI_VERSION_UNKNOWN = "cli_version_unknown"
 GUARD_PACKAGE_LAYOUT = "package_layout"
 GUARD_BRIDGE = "bridge"
 GUARD_BRIDGE_VERSION_UNKNOWN = "bridge_version_unknown"
+GUARD_BRIDGE_FEATURE_MISSING = "bridge_feature_missing"
 
 
 def is_frozen():
@@ -191,7 +192,23 @@ _MISMATCH_MESSAGES = {
         "The Unity bridge at {observed_location} reported no version, so it cannot be "
         "verified against CLI version {cli_version}."
     ),
+    GUARD_BRIDGE_FEATURE_MISSING: (
+        "The Unity bridge at {observed_location} is an older package that does not "
+        "provide {observed_version}, so it is not compatible with CLI version "
+        "{cli_version}. Reconcile the installation so both halves come from the same "
+        "release."
+    ),
 }
+
+
+def feature_missing_detail(base_url, feature="/play-mode"):
+    """Version-mismatch detail for an endpoint an older package does not serve."""
+    return {
+        "guard": GUARD_BRIDGE_FEATURE_MISSING,
+        "cli_version": version_text(resolve_cli_version()),
+        "observed_version": feature,
+        "observed_location": base_url,
+    }
 
 
 def mismatch_message(detail):

@@ -119,11 +119,36 @@ def invoke_command(command, base_url, payload, wait_timeout_ms, transport=None):
             payload,
             _request_timeout_seconds(wait_timeout_ms),
         )
+    except urllib.error.HTTPError as exc:
+        # An HTTP status is a transport-level response, not an unreachable target.
+        # Command callers distinguish an endpoint that answered 404 (an older package
+        # missing the route) from one that never answered.
+        error_payload = {
+            "ok": False,
+            "status": "not_available",
+            "error": str(exc),
+            "http_status": exc.code,
+        }
+        if request_id:
+            error_payload["request_id"] = request_id
+        return EXIT_NOT_AVAILABLE, json.dumps(error_payload, ensure_ascii=True), ""
     except urllib.error.URLError as exc:
         error_payload = {
             "ok": False,
             "status": "not_available",
             "error": str(exc.reason),
+        }
+        if request_id:
+            error_payload["request_id"] = request_id
+        return EXIT_NOT_AVAILABLE, json.dumps(error_payload, ensure_ascii=True), ""
+    except ValueError as exc:
+        # A truncated or empty body is a transport failure, not a command failure:
+        # an endpoint that dropped mid-reload must not surface a JSON traceback as a
+        # usage error.
+        error_payload = {
+            "ok": False,
+            "status": "not_available",
+            "error": "invalid response: {}".format(exc),
         }
         if request_id:
             error_payload["request_id"] = request_id

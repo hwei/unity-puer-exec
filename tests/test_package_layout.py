@@ -420,5 +420,59 @@ class PackageLayoutTests(unittest.TestCase):
         self.assertIn("compileGeneration: compileGeneration", server_content)
 
 
+    def test_ready_health_response_reports_play_state(self):
+        protocol_content = (PACKAGE_ROOT / "Editor" / "UnityPuerExecProtocol.cs").read_text(encoding="utf-8")
+        server_content = (PACKAGE_ROOT / "Editor" / "UnityPuerExecServer.cs").read_text(encoding="utf-8")
+
+        self.assertIn('string playState = "edit"', protocol_content)
+        self.assertIn("playStateJson", protocol_content)
+        self.assertIn('\\"play_state\\":', protocol_content)
+        # The value is sampled on the main thread in OnEditorUpdate and passed to the
+        # health builder; the listening thread must not read Editor APIs directly.
+        self.assertIn("playState = DerivePlayState();", server_content)
+        self.assertIn("playState: playState", server_content)
+
+        derive_body = self._method_body(server_content, "private static string DerivePlayState()")
+        for state in ("edit", "entering", "exiting", "paused", "playing"):
+            self.assertIn('"{}"'.format(state), derive_body)
+
+    def test_play_mode_endpoint_runs_on_the_main_thread(self):
+        server_content = (PACKAGE_ROOT / "Editor" / "UnityPuerExecServer.cs").read_text(encoding="utf-8")
+        protocol_content = (PACKAGE_ROOT / "Editor" / "UnityPuerExecProtocol.cs").read_text(encoding="utf-8")
+
+        self.assertIn('path.Equals("/play-mode", StringComparison.OrdinalIgnoreCase)', server_content)
+        self.assertIn("BuildPlayModeResponseJson", protocol_content)
+
+        handler_body = self._method_body(
+            server_content, "private static async Task HandlePlayModeAsync(HttpListenerContext context)"
+        )
+        # Every play-state mutation is dispatched through the main-thread action queue.
+        self.assertIn("MainThreadActions.Enqueue", handler_body)
+        self.assertIn("EditorApplication.isPlaying = true;", handler_body)
+        self.assertIn("EditorApplication.isPlaying = false;", handler_body)
+        self.assertIn("EditorApplication.isPaused = true;", handler_body)
+        # Pause is rejected in edit mode with a machine-readable status.
+        self.assertIn('rejectedStatus = "invalid_play_state";', handler_body)
+
+    def test_run_in_background_uses_session_state_hook_not_player_settings(self):
+        hook_path = PACKAGE_ROOT / "Editor" / "UnityPuerExecPlayMode.cs"
+        self.assertTrue(hook_path.exists())
+        hook_content = hook_path.read_text(encoding="utf-8")
+        server_content = (PACKAGE_ROOT / "Editor" / "UnityPuerExecServer.cs").read_text(encoding="utf-8")
+
+        self.assertIn("[InitializeOnLoad]", hook_content)
+        self.assertIn("EditorApplication.playModeStateChanged += OnPlayModeStateChanged;", hook_content)
+        self.assertIn("PlayModeStateChange.EnteredPlayMode", hook_content)
+        self.assertIn("SessionState.GetBool(ForceRunInBackgroundKey", hook_content)
+        self.assertIn("SessionState.EraseBool(ForceRunInBackgroundKey);", hook_content)
+        self.assertIn("Application.runInBackground = true;", hook_content)
+        # The override must never be persisted to Player Settings. The server reads
+        # the project's setting for disclosure only; the hook never touches it.
+        self.assertNotIn("PlayerSettings", hook_content)
+        self.assertIn("projectRunInBackground = PlayerSettings.runInBackground;", server_content)
+        self.assertNotIn("PlayerSettings.runInBackground =", server_content)
+        self.assertIn("UnityPuerExecPlayMode.RequestRunInBackground();", server_content)
+
+
 if __name__ == "__main__":
     unittest.main()

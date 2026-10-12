@@ -4,6 +4,8 @@ import direct_exec_client
 
 COMMAND_GROUPS = command_registry.COMMAND_GROUPS
 COMMANDS = command_registry.COMMANDS
+INVOCABLE_COMMANDS = command_registry.INVOCABLE_COMMANDS
+COMMAND_ALIASES = command_registry.COMMAND_ALIASES
 
 EXIT_NO_OBSERVATION_TARGET = 15
 EXIT_NOT_STOPPED = 16
@@ -40,7 +42,10 @@ TOP_LEVEL_COMMANDS = {
     "get-blocker-state": "report whether a supported Unity modal blocker is currently detected for the target project. See `get-blocker-state --help`.",
     "resolve-blocker": "dismiss a supported Unity modal blocker for the target project with an explicit action. See `resolve-blocker --help`.",
     "exec": "run JavaScript against a project or direct service; primary entry for script execution. See `exec --help`.",
-    "ensure-stopped": "check or force a stopped state; not the recommended graceful-exit path. See `ensure-stopped --help`.",
+    "play": "enter play mode and wait until the Editor reports `playing`; settles pending code first and forces `Application.runInBackground`. See `play --help`.",
+    "pause": "pause a playing Editor and wait until it reports `paused`. See `pause --help`.",
+    "stop": "leave play mode (or pause) and wait until the Editor reports `edit`; settles the compile the exit defers. Does not close the Editor. See `stop --help`.",
+    "ensure-closed": "close the Editor process (force a stopped state); not the recommended graceful-exit path, and distinct from play-mode `stop`. See `ensure-closed --help`.",
     "get-compile-errors": "retrieve structured C# compile errors from the control service; use after wait-for-compile when freshness matters. See `get-compile-errors --help`.",
     "get-compile-warnings": "retrieve structured C# compile warnings from the control service; use after wait-for-compile when freshness matters. See `get-compile-warnings --help`.",
 }
@@ -53,7 +58,8 @@ RECOMMENDED_PATH = (
     "If you need log-based verification, continue with `wait-for-log-pattern`.",
     "Use `get-blocker-state` when an exec-side timeout or stall might be caused by a supported Unity modal dialog.",
     "Use `resolve-blocker` only when you intentionally want the CLI to dismiss a supported modal blocker; then continue with the original `request_id` if needed.",
-    "`get-log-source` and `ensure-stopped` are secondary commands, not the normal first step.",
+    "`get-log-source` and `ensure-closed` are secondary commands, not the normal first step.",
+    "Use `play` / `pause` / `stop` to change the Editor play state; they return after the transition completes.",
 )
 
 TOP_LEVEL_WORKFLOWS = {
@@ -62,7 +68,7 @@ TOP_LEVEL_WORKFLOWS = {
     "recover-exec-by-request-id": "recover an accepted exec request by reusing or waiting on the same `request_id` after `running` or ambiguity.",
     "load-and-call-csharp-type": "learn the normal PuerTS-style bridge path for loading and calling Unity or C# types from JavaScript.",
     "derive-project-path-from-unity-api": "derive project-local paths through Unity APIs instead of assuming undocumented `ctx` fields.",
-    "request-editor-exit-via-exec": "request a normal Unity Editor exit through `exec` instead of using `ensure-stopped`.",
+    "request-editor-exit-via-exec": "request a normal Unity Editor exit through `exec` instead of using `ensure-closed`.",
     "component-detection": "use the standard PuerTS pattern for scene-inspection: puer.$typeof + puer.$ref + TryGetComponent + get_Item.",
 }
 
@@ -520,11 +526,133 @@ COMMAND_HELP = {
             ],
         },
     },
-    "ensure-stopped": {
+    "play": {
         "quick_start": [
-            "Secondary cleanup or enforcement command for stopped-state control.",
-            "`unity-puer-exec ensure-stopped --project-path X:/project --inspect-only`",
+            "Primary play-mode command: enters play mode and returns only once the Editor reports `playing`.",
+            "`unity-puer-exec play --project-path X:/project`",
+            "Pending code is settled first: if a compile-triggering change is pending, the command refreshes, waits for the compile cycle, and aborts with `unity_compile_error` instead of entering play on stale code.",
+            "By default the play session forces `Application.runInBackground = true` without touching Player Settings. Pass `--no-run-in-background` to keep the project's setting. The result discloses the override.",
+            "Idempotent: already `playing` reports `transition: already_in_state`; `paused` resumes and reports `transition: resumed`.",
+        ],
+        "related_workflows": (),
+        "args": {
+            "Arguments": [
+                "`--project-path <path>`: resolve the project's control endpoint and, when needed, launch or recover the Editor first.",
+                "`--base-url <url>`: post to a direct service target without project-identity validation or launch ownership.",
+                "`--unity-exe-path <path>`: explicit Unity executable for a cold launch this CLI owns.",
+                "`--unity-log-path <path>`: project-private Unity log path for a cold launch this CLI owns.",
+                "`--unity-launch-arg <token>`: extra Unity argv token for a cold launch; repeatable.",
+                "`--no-run-in-background`: keep the project's own `Application.runInBackground` setting for this play session.",
+                "`--timeout-seconds <seconds>`: budget for reaching `playing`; on timeout the command returns `running` with the current play state.",
+                "`--health-timeout-seconds <seconds>`: timeout for each health probe while waiting.",
+                "`--wait-timeout-ms <ms>`: per-request wait budget for the refresh and play-mode HTTP calls.",
+                "`--include-diagnostics`: include top-level debug diagnostics in the machine-readable response.",
+            ],
+            "Selector Rules": [
+                "Use exactly one selector: `--project-path` or `--base-url`.",
+                "`--project-path` is the normal choice; `--base-url` is for a direct service that is already known.",
+            ],
+            "Timeout Rules": [
+                "All timeout values must be positive numbers.",
+                "A long unreachable window while the Editor reloads its domain is progress, not a failure; the command keeps waiting within the budget.",
+            ],
+        },
+        "status": {
+            "success": [
+                "`completed`: the Editor reached `playing`; `result.play_state` is `playing` and `result.transition` is `performed`, `already_in_state`, or `resumed`.",
+                "`result.run_in_background` reports whether the override was forced, the project's own setting, and the `--no-run-in-background` option.",
+                "`running`: the transition did not finish within the budget; `result.play_state` names the current state and `next_steps` re-run `play`.",
+            ],
+            "failure": [
+                ("address_conflict", 2, "both selectors were provided; choose exactly one."),
+                ("unity_compile_error", direct_exec_client.EXIT_UNITY_COMPILE_ERROR, "pending code failed to compile; the Editor stayed in edit mode."),
+                ("modal_blocked", direct_exec_client.EXIT_MODAL_BLOCKED, "a modal dialog is blocking the play-mode transition; resolve it and retry."),
+                ("not_available", direct_exec_client.EXIT_NOT_AVAILABLE, "the control endpoint could not be reached."),
+                ("failed", 1, "an unexpected failure occurred while entering play mode."),
+            ],
+        },
+    },
+    "pause": {
+        "quick_start": [
+            "Primary play-mode command: pauses a playing Editor and returns only once the Editor reports `paused`.",
+            "`unity-puer-exec pause --project-path X:/project`",
+            "Idempotent: already `paused` reports `transition: already_in_state`. In edit mode it is rejected with `invalid_play_state` and suggests `play`.",
+        ],
+        "related_workflows": (),
+        "args": {
+            "Arguments": [
+                "`--project-path <path>` / `--base-url <url>`: select the target Editor.",
+                "`--unity-exe-path`, `--unity-log-path`, `--unity-launch-arg`: cold-launch controls for a project this CLI starts.",
+                "`--timeout-seconds <seconds>`: budget for reaching `paused`; on timeout the command returns `running` with the current play state.",
+                "`--health-timeout-seconds <seconds>`: timeout for each health probe while waiting.",
+                "`--wait-timeout-ms <ms>`: per-request wait budget for the play-mode HTTP call.",
+                "`--include-diagnostics`: include top-level debug diagnostics in the machine-readable response.",
+            ],
+            "Selector Rules": [
+                "Use exactly one selector: `--project-path` or `--base-url`.",
+            ],
+            "Timeout Rules": [
+                "All timeout values must be positive numbers.",
+            ],
+        },
+        "status": {
+            "success": [
+                "`completed`: the Editor reached `paused`; `result.play_state` is `paused`.",
+                "`running`: the transition did not finish within the budget; `result.play_state` names the current state.",
+            ],
+            "failure": [
+                ("address_conflict", 2, "both selectors were provided; choose exactly one."),
+                ("invalid_play_state", 1, "the Editor is in edit mode; run `play` first."),
+                ("modal_blocked", direct_exec_client.EXIT_MODAL_BLOCKED, "a modal dialog is blocking the play-mode transition; resolve it and retry."),
+                ("not_available", direct_exec_client.EXIT_NOT_AVAILABLE, "the control endpoint could not be reached."),
+                ("failed", 1, "an unexpected failure occurred while pausing."),
+            ],
+        },
+    },
+    "stop": {
+        "quick_start": [
+            "Primary play-mode command: leaves play mode and returns only once the Editor reports `edit`. It does not close the Editor process; use `ensure-closed` for that.",
+            "`unity-puer-exec stop --project-path X:/project`",
+            "Settles the compile the exit defers: after the Editor reaches `edit`, the command waits for the deferred compile on a compile-scale budget and reports `result.compile` in the `wait-for-compile` vocabulary.",
+            "A failing deferred compile does not fail the command; it reports `compile_errors_total > 0` and suggests `get-compile-errors`.",
+        ],
+        "related_workflows": (),
+        "args": {
+            "Arguments": [
+                "`--project-path <path>` / `--base-url <url>`: select the target Editor.",
+                "`--unity-exe-path`, `--unity-log-path`, `--unity-launch-arg`: cold-launch controls for a project this CLI starts.",
+                "`--timeout-seconds <seconds>`: floor for the play-mode exit budget; the compile-scale budget is used when a deferred compile may follow.",
+                "`--health-timeout-seconds <seconds>`: timeout for each health probe while waiting.",
+                "`--wait-timeout-ms <ms>`: per-request wait budget for the play-mode HTTP call.",
+                "`--include-diagnostics`: include top-level debug diagnostics in the machine-readable response.",
+            ],
+            "Selector Rules": [
+                "Use exactly one selector: `--project-path` or `--base-url`.",
+            ],
+            "Timeout Rules": [
+                "All timeout values must be positive numbers.",
+            ],
+        },
+        "status": {
+            "success": [
+                "`completed`: the Editor reached `edit`; `result.play_state` is `edit` and `result.compile` is `compile_settled` or `no_compile_observed` with `compile_errors_total`.",
+                "A generation-advance settle reports `result.compile.edge: generation_advance`, because the exit's forced recompile is hidden behind a domain reload.",
+                "`running`: the exit or its deferred compile did not settle within the budget.",
+            ],
+            "failure": [
+                ("address_conflict", 2, "both selectors were provided; choose exactly one."),
+                ("modal_blocked", direct_exec_client.EXIT_MODAL_BLOCKED, "a modal dialog is blocking the play-mode transition; resolve it and retry."),
+                ("not_available", direct_exec_client.EXIT_NOT_AVAILABLE, "the control endpoint could not be reached."),
+                ("failed", 1, "an unexpected failure occurred while leaving play mode."),
+            ],
+        },
+    },
+    "ensure-closed": {
+        "quick_start": [
+            "Secondary cleanup or enforcement command that closes the Editor process.",
+            "`unity-puer-exec ensure-closed --project-path X:/project --inspect-only`",
             "This is not part of the normal execution or verification workflow; graceful exits should prefer a script request such as `unity-puer-exec exec --project-path X:/project --file X:/exit.js`.",
+            "This is distinct from the play-mode `stop` command, which leaves the Editor running in edit mode.",
         ],
         "related_workflows": (),
         "args": {
@@ -739,7 +867,7 @@ WORKFLOW_EXAMPLES = {
         "notice": [
             "This example assumes Unity is already available for the selected project.",
             "A script such as `EditorApplication.Exit` is a normal exit request, not a guarantee of immediate stopped-state enforcement.",
-            "`ensure-stopped` is for stopped-state inspection or enforcement, not the recommended graceful-exit path.",
+            "`ensure-closed` is for stopped-state inspection or enforcement, not the recommended graceful-exit path.",
         ],
     },
     "load-and-call-csharp-type": {
@@ -858,30 +986,10 @@ _OPTIONAL_FORWARDED_ARGS = {
 
 _PLAY_MODE_EXIT_STEPS = [
     {
-        "command": "exec",
-        "when": "exit play mode so Unity can compile the pending change; a successful response only means the transition was requested, and the Editor may take tens of seconds to finish exiting while it reloads the domain",
+        "command": "stop",
+        "when": "leave play mode so Unity can compile the pending change; this waits for the Editor to reach `edit` and settles the compile the exit defers. A domain reload during the exit can make the control endpoint unreachable for a while: that is progress, not a failed stop",
         "argv_template": [
-            "unity-puer-exec", "exec",
-            "--project-path", "{project_path}",
-            "--code",
-            "export default function run(ctx) { const EditorApplication = puer.loadType('UnityEditor.EditorApplication'); EditorApplication.isPlaying = false; return { requested: false }; }",
-        ],
-    },
-    {
-        "command": "exec",
-        "when": "confirm the Editor actually left play mode before waiting for the compile; an unreachable control endpoint during this window is the domain reload in progress, not a failed stop",
-        "argv_template": [
-            "unity-puer-exec", "exec",
-            "--project-path", "{project_path}",
-            "--code",
-            "export default function run(ctx) { const EditorApplication = puer.loadType('UnityEditor.EditorApplication'); return { isPlaying: EditorApplication.isPlaying }; }",
-        ],
-    },
-    {
-        "command": "wait-for-compile",
-        "when": "the Editor is back in edit mode; wait for the deferred compile to settle",
-        "argv_template": [
-            "unity-puer-exec", "wait-for-compile",
+            "unity-puer-exec", "stop",
             "--project-path", "{project_path}",
         ],
     },
@@ -1340,19 +1448,137 @@ GUIDANCE_MATRIX = {
     ("wait-for-result-marker", "failed"): {
         "situation": "The result marker observation failed unexpectedly. Check the error field for details.",
     },
-    # --- ensure-stopped ---
-    ("ensure-stopped", "completed"): {},
-    ("ensure-stopped", "not_stopped"): {
+    # --- ensure-closed ---
+    ("ensure-closed", "completed"): {},
+    ("ensure-closed", "not_stopped"): {
         "situation": "The target is still not stopped under the selected stop mode.",
         "next_steps": [
             {
-                "command": "ensure-stopped",
+                "command": "ensure-closed",
                 "when": "you want to force-stop with --immediate-kill",
             },
         ],
     },
-    ("ensure-stopped", "failed"): {
+    ("ensure-closed", "failed"): {
         "situation": "An unexpected failure occurred while checking or enforcing the stopped state.",
+    },
+    # --- play / pause / stop ---
+    ("play", "completed"): {},
+    ("play", "running"): {
+        "situation": "The Editor has not reported `playing` yet. A domain reload can make the control endpoint unreachable for tens of seconds; that is progress, not a failure.",
+        "next_steps": [
+            {
+                "command": "play",
+                "when": "continue waiting for the Editor to reach `playing`",
+                "argv_template": ["unity-puer-exec", "play", "--project-path", "{project_path}"],
+            },
+        ],
+    },
+    ("play", "unity_compile_error"): {
+        "situation": "Pending code failed to compile, so play mode was not entered and the session would otherwise have run stale code.",
+        "next_steps": [
+            {
+                "command": "get-compile-errors",
+                "when": "read the compile errors that blocked play mode",
+                "argv_template": ["unity-puer-exec", "get-compile-errors", "--project-path", "{project_path}"],
+            },
+            {
+                "command": "play",
+                "when": "retry after the compile errors are fixed",
+                "argv_template": ["unity-puer-exec", "play", "--project-path", "{project_path}"],
+            },
+        ],
+    },
+    ("play", "modal_blocked"): {
+        "situation": "A modal dialog is preventing the Editor from entering play mode.",
+        "next_steps": [
+            {
+                "command": "get-blocker-state",
+                "when": "inspect the blocking dialog",
+                "argv_template": ["unity-puer-exec", "get-blocker-state", "--project-path", "{project_path}"],
+            },
+            {
+                "command": "resolve-blocker",
+                "when": "dismiss the blocking dialog",
+                "argv_template": ["unity-puer-exec", "resolve-blocker", "--project-path", "{project_path}", "--action", "cancel"],
+            },
+        ],
+    },
+    ("play", "not_available"): {
+        "situation": "The control endpoint could not be reached to request play mode.",
+    },
+    ("pause", "completed"): {},
+    ("pause", "running"): {
+        "situation": "The Editor has not reported `paused` yet.",
+        "next_steps": [
+            {
+                "command": "pause",
+                "when": "continue waiting for the Editor to reach `paused`",
+                "argv_template": ["unity-puer-exec", "pause", "--project-path", "{project_path}"],
+            },
+        ],
+    },
+    ("pause", "invalid_play_state"): {
+        "situation": "The Editor is in edit mode, so there is nothing to pause.",
+        "next_steps": [
+            {
+                "command": "play",
+                "when": "enter play mode before pausing",
+                "argv_template": ["unity-puer-exec", "play", "--project-path", "{project_path}"],
+            },
+        ],
+    },
+    ("pause", "modal_blocked"): {
+        "situation": "A modal dialog is preventing the Editor from pausing.",
+        "next_steps": [
+            {
+                "command": "get-blocker-state",
+                "when": "inspect the blocking dialog",
+                "argv_template": ["unity-puer-exec", "get-blocker-state", "--project-path", "{project_path}"],
+            },
+            {
+                "command": "resolve-blocker",
+                "when": "dismiss the blocking dialog",
+                "argv_template": ["unity-puer-exec", "resolve-blocker", "--project-path", "{project_path}", "--action", "cancel"],
+            },
+        ],
+    },
+    ("pause", "not_available"): {
+        "situation": "The control endpoint could not be reached to request pause.",
+    },
+    ("stop", "completed"): {},
+    ("stop", "running"): {
+        "situation": "The Editor exit or its deferred compile has not settled yet.",
+        "next_steps": [
+            {
+                "command": "stop",
+                "when": "continue waiting for the Editor to reach `edit`",
+                "argv_template": ["unity-puer-exec", "stop", "--project-path", "{project_path}"],
+            },
+            {
+                "command": "wait-for-compile",
+                "when": "the play state is already `edit` and only the deferred compile remains",
+                "argv_template": ["unity-puer-exec", "wait-for-compile", "--project-path", "{project_path}"],
+            },
+        ],
+    },
+    ("stop", "modal_blocked"): {
+        "situation": "A modal dialog is preventing the Editor from leaving play mode.",
+        "next_steps": [
+            {
+                "command": "get-blocker-state",
+                "when": "inspect the blocking dialog",
+                "argv_template": ["unity-puer-exec", "get-blocker-state", "--project-path", "{project_path}"],
+            },
+            {
+                "command": "resolve-blocker",
+                "when": "dismiss the blocking dialog",
+                "argv_template": ["unity-puer-exec", "resolve-blocker", "--project-path", "{project_path}", "--action", "cancel"],
+            },
+        ],
+    },
+    ("stop", "not_available"): {
+        "situation": "The control endpoint could not be reached to request leaving play mode.",
     },
     # --- get-blocker-state ---
     ("get-blocker-state", "completed"): {
@@ -1703,6 +1929,9 @@ INVALID_ARGUMENTS_STATUS_LINE = (
 # had no authored matrix entries. Guidance points at argument help, never at a retry.
 _ADDRESS_CONFLICT_COMMANDS = (
     "exec",
+    "play",
+    "pause",
+    "stop",
     "wait-for-exec",
     "wait-for-log-pattern",
     "wait-for-result-marker",
@@ -1710,7 +1939,7 @@ _ADDRESS_CONFLICT_COMMANDS = (
     "get-log-source",
     "get-compile-errors",
     "get-compile-warnings",
-    "ensure-stopped",
+    "ensure-closed",
 )
 for _address_conflict_command in _ADDRESS_CONFLICT_COMMANDS:
     GUIDANCE_MATRIX[(_address_conflict_command, "address_conflict")] = {
@@ -1725,6 +1954,45 @@ for _address_conflict_command in _ADDRESS_CONFLICT_COMMANDS:
             },
         ],
     }
+
+
+def _derive_alias_surface():
+    """Derive deprecated-alias help and guidance from the canonical command.
+
+    The alias table is the single source of truth. Deriving here keeps the
+    invocable surface (parser), the per-command help tiers, the top-level
+    summary, and runtime guidance from drifting from the command an alias names.
+    Every derived entry is marked deprecated.
+    """
+    for alias, canonical in COMMAND_ALIASES:
+        top_level = TOP_LEVEL_COMMANDS.get(canonical)
+        if top_level is not None:
+            TOP_LEVEL_COMMANDS[alias] = "{} (deprecated alias of `{}`).".format(top_level, canonical)
+
+        help_info = COMMAND_HELP.get(canonical)
+        if help_info is not None:
+            COMMAND_HELP[alias] = {
+                "quick_start": [
+                    "Deprecated alias of `{}`; use `{}` instead.".format(canonical, canonical),
+                ]
+                + list(help_info["quick_start"]),
+                "related_workflows": tuple(help_info["related_workflows"]),
+                "args": {title: list(lines) for title, lines in help_info["args"].items()},
+                "status": {
+                    "success": list(help_info["status"]["success"]),
+                    "failure": list(help_info["status"]["failure"]),
+                },
+            }
+
+        for key, entry in list(GUIDANCE_MATRIX.items()):
+            if key[0] == canonical:
+                GUIDANCE_MATRIX[(alias, key[1])] = entry
+        for key, entry in list(WARNING_GUIDANCE_MATRIX.items()):
+            if key[0] == canonical:
+                WARNING_GUIDANCE_MATRIX[(alias, key[1])] = entry
+
+
+_derive_alias_surface()
 
 GUIDANCE_MATRIX[("get-log-briefs", "full_text_requires_include")] = {
     "situation": (

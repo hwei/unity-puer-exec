@@ -265,7 +265,7 @@ def _is_disable_assembly_updater_token(token):
     return str(token).strip().split("=", 1)[0].lower() == DISABLE_ASSEMBLY_UPDATER_SWITCH.lower()
 
 
-def ensure_stopped(
+def ensure_closed(
     project_path=None,
     mode="inspect",
     timeout_seconds=DEFAULT_STOP_TIMEOUT_SECONDS,

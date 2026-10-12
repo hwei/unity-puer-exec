@@ -1888,14 +1888,45 @@ class UnityPuerExecCliTests(unittest.TestCase):
         payload = json.loads(stdout)
         self.assertEqual(payload["status"], "no_observation_target")
 
-    def test_ensure_stopped_not_stopped_maps_to_exit_code_16(self):
-        with mock.patch.object(unity_session, "ensure_stopped", return_value=(False, _make_session())):
-            exit_code, stdout, stderr = unity_puer_exec.run_cli(["ensure-stopped", "--inspect-only"])
+    def test_ensure_closed_not_stopped_maps_to_exit_code_16(self):
+        with mock.patch.object(unity_session, "ensure_closed", return_value=(False, _make_session())):
+            exit_code, stdout, stderr = unity_puer_exec.run_cli(["ensure-closed", "--inspect-only"])
 
         self.assertEqual(exit_code, unity_puer_exec.EXIT_NOT_STOPPED)
         self.assertEqual(stderr, "")
         payload = json.loads(stdout)
         self.assertEqual(payload["status"], "not_stopped")
+        self.assertNotIn("deprecated", payload)
+
+    def test_ensure_stopped_alias_matches_ensure_closed_apart_from_deprecation(self):
+        """The deprecated alias answers the same result with a `deprecated` field."""
+        session = _make_session()
+        with mock.patch.object(unity_session, "ensure_closed", return_value=(True, session)):
+            canonical_code, canonical_out, _ = unity_puer_exec.run_cli(["ensure-closed", "--inspect-only"])
+        with mock.patch.object(unity_session, "ensure_closed", return_value=(True, session)):
+            alias_code, alias_out, _ = unity_puer_exec.run_cli(["ensure-stopped", "--inspect-only"])
+
+        self.assertEqual(canonical_code, alias_code)
+        alias_payload = json.loads(alias_out)
+        canonical_payload = json.loads(canonical_out)
+        deprecation = alias_payload.pop("deprecated")
+        self.assertEqual(deprecation, {"alias": "ensure-stopped", "use": "ensure-closed"})
+        self.assertEqual(alias_payload, canonical_payload)
+
+    def test_ensure_closed_description_distinct_from_play_mode_stop(self):
+        import help_surface
+
+        top_level = help_surface.render_top_level_help()
+        self.assertIn("ensure-closed", top_level)
+        self.assertIn("close the Editor process", top_level)
+        self.assertNotIn("ensure-stopped: ", top_level)
+        alias_help = help_surface.render_command_help("ensure-stopped")
+        self.assertIn("Deprecated alias of `ensure-closed`", alias_help)
+        for flag in ("--help", "--help-args", "--help-status"):
+            for command in ("ensure-closed", "ensure-stopped"):
+                exit_code, stdout, stderr = unity_puer_exec.run_cli([command, flag])
+                self.assertEqual(exit_code, 0, (command, flag))
+                self.assertTrue(stdout.strip(), (command, flag))
 
     def test_address_conflict_is_usage_error(self):
         exit_code, stdout, stderr = unity_puer_exec.run_cli(
@@ -2568,16 +2599,26 @@ class UnityPuerExecCliTests(unittest.TestCase):
                 argparse_commands = set(action.choices or ())
                 break
 
-        registry = set(command_registry.COMMANDS)
+        registry = set(command_registry.INVOCABLE_COMMANDS)
         help_commands = set(help_surface.COMMANDS)
         command_help = set(help_surface.COMMAND_HELP)
         top_level = set(help_surface.TOP_LEVEL_COMMANDS)
         guidance = {command for command, _status in help_surface.GUIDANCE_MATRIX}
 
+        # The invocable surface is the canonical tree plus derived aliases; the
+        # help/guidance tables must cover exactly that surface.
+        self.assertEqual(
+            set(help_surface.INVOCABLE_COMMANDS),
+            registry,
+            "help_surface.INVOCABLE_COMMANDS must equal command_registry.INVOCABLE_COMMANDS",
+        )
+        for alias, canonical in command_registry.COMMAND_ALIASES:
+            self.assertIn(canonical, command_registry.COMMANDS, alias)
+            self.assertNotIn(alias, command_registry.COMMANDS, alias)
+
         tables = {
-            "command_registry.COMMANDS": registry,
+            "command_registry.INVOCABLE_COMMANDS": registry,
             "argparse subcommands": argparse_commands,
-            "help_surface.COMMANDS": help_commands,
             "help_surface.COMMAND_HELP": command_help,
             "help_surface.TOP_LEVEL_COMMANDS": top_level,
             "help_surface.GUIDANCE_MATRIX": guidance,
@@ -3046,6 +3087,9 @@ class _FakeClock:
     def time(self):
         return self.now
 
+    def monotonic(self):
+        return self.now
+
     def sleep(self, seconds):
         self.now += seconds
 
@@ -3362,8 +3406,7 @@ class WaitForCompileCommandTests(unittest.TestCase):
         self.assertIn("play mode", body["situation"])
         self.assertIn("reload", body["situation"].lower())
         steps = body["next_steps"]
-        self.assertTrue(any(step["command"] == "wait-for-compile" for step in steps))
-        self.assertTrue(any(step["command"] == "exec" for step in steps))
+        self.assertTrue(any(step["command"] == "stop" for step in steps))
         self.assertNotIn("RequestScriptCompilation", json.dumps(steps))
 
     def test_base_url_play_mode_block_uses_unknown_preference_fallback(self):
@@ -3760,8 +3803,7 @@ class ExecPlayModeCompileBlockTests(unittest.TestCase):
         # Guidance leads out of play mode and never picks the wrong remedy.
         self.assertIn("play mode", body["situation"])
         self.assertIn("reload", body["situation"].lower())
-        self.assertTrue(any(step["command"] == "wait-for-compile" for step in body["next_steps"]))
-        self.assertTrue(any(step["command"] == "exec" for step in body["next_steps"]))
+        self.assertTrue(any(step["command"] == "stop" for step in body["next_steps"]))
         self.assertNotIn("RequestScriptCompilation", json.dumps(body["next_steps"]))
         # The reload window is named so an unreachable endpoint is not read as a failure.
         self.assertIn("unreachable", json.dumps(body["next_steps"]))
@@ -3816,8 +3858,7 @@ class ExecPlayModeCompileBlockTests(unittest.TestCase):
         # async follow-up is preserved rather than replaced.
         self.assertIn("play mode", body["situation"])
         self.assertIn("Promise", body["situation"])
-        self.assertEqual(body["next_steps"][0]["command"], "exec")
-        self.assertTrue(any(step["command"] == "wait-for-compile" for step in body["next_steps"]))
+        self.assertEqual(body["next_steps"][0]["command"], "stop")
         self.assertTrue(any(step["command"] == "wait-for-result-marker" for step in body["next_steps"]))
 
     def test_completed_without_play_mode_skip_is_untouched(self):
@@ -3953,7 +3994,7 @@ class WaitForExecPlayModeCompileBlockTests(unittest.TestCase):
         self.assertEqual(body["refresh"]["paths_changed"], ["C:/Project/Assets/A.cs"])
         # Guidance leads out of play mode.
         self.assertIn("play mode", body["situation"])
-        self.assertTrue(any(step["command"] == "wait-for-compile" for step in body["next_steps"]))
+        self.assertTrue(any(step["command"] == "stop" for step in body["next_steps"]))
 
     def test_replay_failure_keeps_status_and_carries_object(self):
         failure = {
@@ -4220,6 +4261,524 @@ class AutomaticRefreshBaseUrlTests(unittest.TestCase):
         self.assertEqual(body["status"], "running")
         self.assertEqual(body["request_id"], "req-base")
         self.assertEqual(body["phase"], "refreshing")
+
+
+class PlayModeCommandTests(unittest.TestCase):
+    """Unit coverage for play / pause / stop (see the play-mode-control change)."""
+
+    BASE_URL = "http://127.0.0.1:55231"
+    COMPILE_APPEAR = unity_session.DEFAULT_COMPILE_APPEAR_TIMEOUT_SECONDS
+
+    def _args(self, command, *extra):
+        parser = unity_puer_exec.surface.build_parser()
+        return parser.parse_args([command, "--base-url", self.BASE_URL, *extra])
+
+    def _health(self, play_state, generation=0, pending="not_pending"):
+        return {
+            "ok": True,
+            "status": "ready",
+            "play_state": play_state,
+            "compile_generation": generation,
+            "refresh": {
+                "pending": pending,
+                "suppressed": False,
+                "suppressed_reason": "",
+                "script_changes_while_playing": "unknown",
+            },
+        }
+
+    def _refresh_body(self, triggered=False):
+        return {
+            "ok": True,
+            "status": "completed",
+            "refresh": {
+                "triggered": triggered,
+                "reason": "",
+                "paths_changed": [],
+                "skipped_reason": "",
+                "settle_outcome": "not_attempted",
+                "elapsed_ms": 0,
+            },
+        }
+
+    def _play_mode_body(self, play_state="entering", ok=True, status="completed", project_setting=False):
+        return {
+            "ok": ok,
+            "status": status,
+            "play_state": play_state,
+            "project_run_in_background": project_setting,
+            "forced_run_in_background": ok,
+        }
+
+    def _default_invoke_map(self, **overrides):
+        calls = {"play-mode": [], "refresh": []}
+        play_state_holder = {"value": "entering"}
+
+        def refresh_handler(_payload):
+            return (0, self._refresh_body(triggered=False))
+
+        def play_mode_handler(payload):
+            calls["play-mode"].append(payload)
+            return (0, self._play_mode_body(play_state=play_state_holder["value"]))
+
+        invoke_map = {
+            "refresh": refresh_handler,
+            "play-mode": play_mode_handler,
+            "get-compile-errors": lambda _payload: (0, {"ok": True, "status": "completed", "total": 0}),
+        }
+        invoke_map.update(overrides)
+        return invoke_map, calls, play_state_holder
+
+    def _run(self, handler, args, health_sequence, invoke_map, extra_patches=()):
+        clock = _FakeClock()
+        seq = list(health_sequence)
+
+        def probe(_base_url, _timeout):
+            item = seq.pop(0) if len(seq) > 1 else seq[0]
+            if item is None:
+                return None, "connection refused"
+            return item, None
+
+        def invoke(command, _base_url, payload, _wait_timeout_ms, transport=None):
+            spec = invoke_map.get(command)
+            if spec is None:
+                return 12, json.dumps({"ok": False, "status": "not_available", "error": command}), ""
+            if callable(spec):
+                spec = spec(payload)
+            if isinstance(spec, tuple) and len(spec) == 3:
+                return spec
+            exit_code, body = spec
+            return exit_code, json.dumps(body), ""
+
+        patches = [
+            mock.patch.object(unity_puer_exec_runtime, "time", clock),
+            mock.patch.object(unity_session, "probe_health_payload", side_effect=probe),
+            mock.patch.object(unity_puer_exec_runtime.direct_exec_client, "invoke_command", side_effect=invoke),
+        ]
+        patches.extend(extra_patches)
+        for patch in patches:
+            patch.start()
+        try:
+            return handler(args)
+        finally:
+            for patch in reversed(patches):
+                patch.stop()
+
+    # --- play ---
+
+    def test_play_settles_cleanly_then_reaches_playing(self):
+        invoke_map, calls, holder = self._default_invoke_map()
+        code, stdout, stderr = self._run(
+            unity_puer_exec_runtime.run_play,
+            self._args("play"),
+            [self._health("edit"), self._health("entering"), self._health("playing")],
+            invoke_map,
+        )
+        self.assertEqual(code, 0, stderr)
+        body = json.loads(stdout)
+        self.assertEqual(body["status"], "completed")
+        self.assertEqual(body["result"]["play_state"], "playing")
+        self.assertEqual(body["result"]["transition"], "performed")
+        self.assertEqual(body["result"]["run_in_background"]["forced"], True)
+        self.assertIn("--no-run-in-background", body["result"]["run_in_background"]["option"])
+        self.assertEqual(len(calls["play-mode"]), 1)
+        self.assertTrue(calls["play-mode"][0]["force_run_in_background"])
+
+    def test_play_no_run_in_background_keeps_the_project_setting(self):
+        invoke_map, calls, _holder = self._default_invoke_map()
+        code, stdout, _stderr = self._run(
+            unity_puer_exec_runtime.run_play,
+            self._args("play", "--no-run-in-background"),
+            [self._health("edit"), self._health("playing")],
+            invoke_map,
+        )
+        self.assertEqual(code, 0)
+        body = json.loads(stdout)
+        self.assertEqual(body["result"]["run_in_background"]["forced"], False)
+        self.assertFalse(calls["play-mode"][0]["force_run_in_background"])
+
+    def test_play_aborts_on_compile_error_without_entering_play_mode(self):
+        calls = {"play-mode": []}
+        invoke_map = {
+            "refresh": lambda _p: (
+                unity_puer_exec.EXIT_UNITY_COMPILE_ERROR,
+                {"ok": False, "status": "unity_compile_error", "compile_errors_total": 1, "compile_messages": []},
+            ),
+            "play-mode": lambda payload: calls["play-mode"].append(payload),
+        }
+        code, stdout, _stderr = self._run(
+            unity_puer_exec_runtime.run_play,
+            self._args("play"),
+            [self._health("edit")],
+            invoke_map,
+        )
+        self.assertEqual(code, unity_puer_exec.EXIT_UNITY_COMPILE_ERROR)
+        body = json.loads(stdout)
+        self.assertEqual(body["status"], "unity_compile_error")
+        self.assertEqual(calls["play-mode"], [])
+
+    def test_play_already_playing_is_already_in_state(self):
+        invoke_map, _calls, holder = self._default_invoke_map()
+        holder["value"] = "playing"
+        code, stdout, _stderr = self._run(
+            unity_puer_exec_runtime.run_play,
+            self._args("play"),
+            [self._health("playing")],
+            invoke_map,
+        )
+        self.assertEqual(code, 0)
+        body = json.loads(stdout)
+        self.assertEqual(body["result"]["transition"], "already_in_state")
+
+    def test_play_resumes_a_paused_editor(self):
+        invoke_map, _calls, _holder = self._default_invoke_map()
+        code, stdout, _stderr = self._run(
+            unity_puer_exec_runtime.run_play,
+            self._args("play"),
+            [self._health("paused"), self._health("playing")],
+            invoke_map,
+        )
+        self.assertEqual(code, 0)
+        body = json.loads(stdout)
+        self.assertEqual(body["result"]["transition"], "resumed")
+        self.assertEqual(body["result"]["play_state"], "playing")
+
+    def test_play_waits_across_a_domain_reload_during_entering(self):
+        invoke_map, _calls, _holder = self._default_invoke_map()
+        code, stdout, _stderr = self._run(
+            unity_puer_exec_runtime.run_play,
+            self._args("play"),
+            [self._health("edit"), None, None, self._health("playing")],
+            invoke_map,
+        )
+        self.assertEqual(code, 0)
+        body = json.loads(stdout)
+        self.assertEqual(body["result"]["play_state"], "playing")
+
+    def test_play_timeout_returns_running_with_current_state(self):
+        invoke_map, _calls, _holder = self._default_invoke_map()
+        code, stdout, _stderr = self._run(
+            unity_puer_exec_runtime.run_play,
+            self._args("play", "--timeout-seconds", "2"),
+            [self._health("edit"), self._health("entering")],
+            invoke_map,
+        )
+        self.assertEqual(code, unity_puer_exec.EXIT_RUNNING)
+        body = json.loads(stdout)
+        self.assertEqual(body["status"], "running")
+        self.assertEqual(body["result"]["play_state"], "entering")
+        self.assertTrue(any(step["command"] == "play" for step in body["next_steps"]))
+
+    # --- pause ---
+
+    def test_pause_from_edit_mode_is_rejected(self):
+        invoke_map, _calls, _holder = self._default_invoke_map(
+            **{"play-mode": lambda _p: (1, {"ok": False, "status": "invalid_play_state", "play_state": "edit"})}
+        )
+        code, stdout, _stderr = self._run(
+            unity_puer_exec_runtime.run_pause,
+            self._args("pause"),
+            [self._health("edit")],
+            invoke_map,
+        )
+        self.assertEqual(code, 1)
+        body = json.loads(stdout)
+        self.assertEqual(body["status"], "invalid_play_state")
+        self.assertEqual(body["result"]["play_state"], "edit")
+        self.assertTrue(any(step["command"] == "play" for step in body["next_steps"]))
+
+    def test_pause_reaches_paused(self):
+        invoke_map, _calls, holder = self._default_invoke_map()
+        holder["value"] = "paused"
+        code, stdout, _stderr = self._run(
+            unity_puer_exec_runtime.run_pause,
+            self._args("pause"),
+            [self._health("playing"), self._health("paused")],
+            invoke_map,
+        )
+        self.assertEqual(code, 0)
+        body = json.loads(stdout)
+        self.assertEqual(body["result"]["play_state"], "paused")
+        self.assertEqual(body["result"]["transition"], "performed")
+
+    # --- stop ---
+
+    def test_stop_from_paused_reports_no_compile_observed(self):
+        invoke_map, _calls, holder = self._default_invoke_map()
+        holder["value"] = "edit"
+        code, stdout, _stderr = self._run(
+            unity_puer_exec_runtime.run_stop,
+            self._args("stop"),
+            [self._health("paused"), self._health("edit")],
+            invoke_map,
+        )
+        self.assertEqual(code, 0)
+        body = json.loads(stdout)
+        self.assertEqual(body["result"]["play_state"], "edit")
+        self.assertEqual(body["result"]["transition"], "performed")
+        self.assertEqual(body["result"]["compile"]["outcome"], "no_compile_observed")
+        self.assertEqual(body["result"]["compile"]["compile_errors_total"], 0)
+
+    def test_stop_with_pending_change_settles_the_compile(self):
+        invoke_map, _calls, holder = self._default_invoke_map()
+        holder["value"] = "edit"
+        cycle = mock.patch.object(
+            unity_puer_exec_runtime,
+            "wait_for_compile_cycle",
+            return_value={"outcome": unity_puer_exec_runtime.COMPILE_OUTCOME_READY, "observed_health": [], "api_updater_declines": 0},
+        )
+        code, stdout, _stderr = self._run(
+            unity_puer_exec_runtime.run_stop,
+            self._args("stop"),
+            [self._health("playing", generation=5, pending="pending"), self._health("edit", generation=5, pending="pending")],
+            invoke_map,
+            extra_patches=[cycle],
+        )
+        self.assertEqual(code, 0)
+        body = json.loads(stdout)
+        self.assertEqual(body["result"]["compile"]["outcome"], "compile_settled")
+        self.assertNotIn("edge", body["result"]["compile"])
+
+    def test_stop_generation_advance_hidden_behind_the_exit_reload(self):
+        invoke_map, _calls, holder = self._default_invoke_map()
+        holder["value"] = "edit"
+        code, stdout, _stderr = self._run(
+            unity_puer_exec_runtime.run_stop,
+            self._args("stop", "--timeout-seconds", "5"),
+            [self._health("playing", generation=5), None, None, self._health("edit", generation=6)],
+            invoke_map,
+        )
+        self.assertEqual(code, 0)
+        body = json.loads(stdout)
+        self.assertEqual(body["result"]["compile"]["outcome"], "compile_settled")
+        self.assertEqual(body["result"]["compile"]["edge"], "generation_advance")
+
+    def test_stop_not_pending_with_a_generation_advance_still_settles(self):
+        invoke_map, _calls, holder = self._default_invoke_map()
+        holder["value"] = "edit"
+        code, stdout, _stderr = self._run(
+            unity_puer_exec_runtime.run_stop,
+            self._args("stop"),
+            [self._health("playing", generation=5, pending="not_pending"), self._health("edit", generation=6)],
+            invoke_map,
+        )
+        self.assertEqual(code, 0)
+        body = json.loads(stdout)
+        self.assertEqual(body["result"]["compile"]["outcome"], "compile_settled")
+        self.assertEqual(body["result"]["compile"]["edge"], "generation_advance")
+
+    def test_stop_tolerates_a_long_unreachable_exit_window(self):
+        invoke_map, _calls, holder = self._default_invoke_map()
+        holder["value"] = "edit"
+        sequence = [self._health("playing")] + [None] * 150 + [self._health("edit")]
+        code, stdout, _stderr = self._run(
+            unity_puer_exec_runtime.run_stop,
+            self._args("stop", "--timeout-seconds", "5"),
+            sequence,
+            invoke_map,
+        )
+        self.assertEqual(code, 0)
+        body = json.loads(stdout)
+        self.assertEqual(body["status"], "completed")
+        self.assertEqual(body["result"]["play_state"], "edit")
+
+    def test_stop_with_compile_errors_stays_completed_with_follow_up(self):
+        invoke_map, _calls, holder = self._default_invoke_map(
+            **{"get-compile-errors": lambda _p: (0, {"ok": True, "status": "completed", "total": 3})}
+        )
+        holder["value"] = "edit"
+        cycle = mock.patch.object(
+            unity_puer_exec_runtime,
+            "wait_for_compile_cycle",
+            return_value={"outcome": unity_puer_exec_runtime.COMPILE_OUTCOME_READY, "observed_health": [], "api_updater_declines": 0},
+        )
+        code, stdout, _stderr = self._run(
+            unity_puer_exec_runtime.run_stop,
+            self._args("stop"),
+            [self._health("playing", generation=5, pending="pending"), self._health("edit", generation=5, pending="pending")],
+            invoke_map,
+            extra_patches=[cycle],
+        )
+        self.assertEqual(code, 0)
+        body = json.loads(stdout)
+        self.assertEqual(body["result"]["compile"]["compile_errors_total"], 3)
+        self.assertEqual(body["next_steps"][0]["command"], "get-compile-errors")
+
+    def test_stop_reports_a_modal_blocker(self):
+        invoke_map, _calls, holder = self._default_invoke_map()
+        holder["value"] = "playing"
+        blocker = mock.patch.object(
+            unity_puer_exec_runtime, "_detect_exec_modal_blocker", return_value={"type": "safe_mode_dialog"}
+        )
+        code, stdout, _stderr = self._run(
+            unity_puer_exec_runtime.run_stop,
+            self._args("stop", "--timeout-seconds", "1"),
+            [self._health("playing")],
+            invoke_map,
+            extra_patches=[blocker],
+        )
+        self.assertEqual(code, unity_puer_exec.EXIT_MODAL_BLOCKED)
+        body = json.loads(stdout)
+        self.assertEqual(body["status"], "modal_blocked")
+        commands = [step["command"] for step in body["next_steps"]]
+        self.assertIn("get-blocker-state", commands)
+        self.assertIn("resolve-blocker", commands)
+
+    def test_absent_play_mode_endpoint_maps_to_version_mismatch(self):
+        invoke_map, _calls, _holder = self._default_invoke_map(
+            **{
+                "play-mode": lambda _p: (
+                    12,
+                    {"ok": False, "status": "not_available", "error": "HTTP Error 404", "http_status": 404},
+                )
+            }
+        )
+        code, stdout, _stderr = self._run(
+            unity_puer_exec_runtime.run_pause,
+            self._args("pause"),
+            [self._health("playing")],
+            invoke_map,
+        )
+        self.assertEqual(code, unity_puer_exec.direct_exec_client.EXIT_VERSION_MISMATCH)
+        body = json.loads(stdout)
+        self.assertEqual(body["status"], "version_mismatch")
+
+    def test_play_discloses_a_pre_settle_refresh(self):
+        refresh_calls = {"count": 0}
+        play_state_holder = {"value": "entering"}
+
+        def refresh_handler(_payload):
+            refresh_calls["count"] += 1
+            if refresh_calls["count"] == 1:
+                return (
+                    0,
+                    {
+                        "ok": True,
+                        "status": "running",
+                        "phase": "refreshing",
+                        "refresh": {
+                            "triggered": True,
+                            "reason": "code_change",
+                            "paths_changed": ["X:/project/Assets/A.cs"],
+                            "skipped_reason": "",
+                            "settle_outcome": "dispatched",
+                            "elapsed_ms": 1,
+                        },
+                    },
+                )
+            return (0, self._refresh_body(triggered=False))
+
+        invoke_map = {
+            "refresh": refresh_handler,
+            "play-mode": lambda payload: (
+                0,
+                self._play_mode_body(play_state=play_state_holder["value"]),
+            ),
+        }
+        cycle = mock.patch.object(
+            unity_puer_exec_runtime,
+            "wait_for_compile_cycle",
+            return_value={
+                "outcome": unity_puer_exec_runtime.COMPILE_OUTCOME_READY,
+                "observed_health": [],
+                "api_updater_declines": 0,
+            },
+        )
+        code, stdout, _stderr = self._run(
+            unity_puer_exec_runtime.run_play,
+            self._args("play"),
+            [self._health("edit"), self._health("playing")],
+            invoke_map,
+            extra_patches=[cycle],
+        )
+        self.assertEqual(code, 0)
+        body = json.loads(stdout)
+        self.assertEqual(body["refresh"]["triggered"], True)
+        self.assertEqual(body["result"]["play_state"], "playing")
+
+    def test_play_aborts_when_the_compile_gate_reports_errors_after_a_refresh(self):
+        """A triggered refresh that settles into a failing build still aborts play."""
+        refresh_calls = {"count": 0}
+
+        def refresh_handler(_payload):
+            refresh_calls["count"] += 1
+            if refresh_calls["count"] == 1:
+                return (
+                    0,
+                    {
+                        "ok": True,
+                        "status": "running",
+                        "phase": "refreshing",
+                        "refresh": {
+                            "triggered": True,
+                            "reason": "compile_triggering_change",
+                            "paths_changed": ["X:/project/Assets/A.cs"],
+                            "skipped_reason": "",
+                            "settle_outcome": "dispatched",
+                            "elapsed_ms": 1,
+                        },
+                    },
+                )
+            return (
+                unity_puer_exec.EXIT_UNITY_COMPILE_ERROR,
+                {"ok": False, "status": "unity_compile_error", "compile_errors_total": 2, "compile_messages": []},
+            )
+
+        cycle = mock.patch.object(
+            unity_puer_exec_runtime,
+            "wait_for_compile_cycle",
+            return_value={
+                "outcome": unity_puer_exec_runtime.COMPILE_OUTCOME_READY,
+                "observed_health": [],
+                "api_updater_declines": 0,
+            },
+        )
+        code, stdout, _stderr = self._run(
+            unity_puer_exec_runtime.run_play,
+            self._args("play"),
+            [self._health("edit")],
+            {"refresh": refresh_handler},
+            extra_patches=[cycle],
+        )
+        self.assertEqual(code, unity_puer_exec.EXIT_UNITY_COMPILE_ERROR)
+        self.assertEqual(json.loads(stdout)["status"], "unity_compile_error")
+        self.assertEqual(refresh_calls["count"], 2)
+
+    # --- help / guidance ---
+
+    def test_play_pause_stop_answer_every_help_tier(self):
+        for command in ("play", "pause", "stop"):
+            for flag in ("--help", "--help-args", "--help-status"):
+                exit_code, stdout, stderr = unity_puer_exec.run_cli([command, flag])
+                self.assertEqual(exit_code, 0, (command, flag, stderr))
+                self.assertTrue(stdout.strip(), (command, flag))
+
+    def test_top_level_help_lists_play_mode_commands(self):
+        exit_code, stdout, _stderr = unity_puer_exec.run_cli(["--help"])
+        self.assertEqual(exit_code, 0)
+        self.assertIn("play: enter play mode", stdout)
+        self.assertIn("pause: pause a playing Editor", stdout)
+        self.assertIn("stop: leave play mode", stdout)
+        # `stop` must be distinguishable from closing the Editor.
+        self.assertIn("Does not close the Editor", stdout)
+
+    def test_play_help_discloses_run_in_background_override_and_option(self):
+        _code, stdout, _stderr = unity_puer_exec.run_cli(["play", "--help"])
+        self.assertIn("runInBackground", stdout)
+        self.assertIn("Player Settings", stdout)
+        _code, args_stdout, _stderr = unity_puer_exec.run_cli(["play", "--help-args"])
+        self.assertIn("--no-run-in-background", args_stdout)
+
+    def test_play_mode_exit_guidance_uses_stop_not_exec(self):
+        commands = [step["command"] for step in help_surface._PLAY_MODE_EXIT_STEPS]
+        self.assertEqual(commands, ["stop"])
+        for key in (("exec", "compile_blocked_by_play_mode"), ("wait-for-exec", "compile_blocked_by_play_mode")):
+            entry_steps = [step["command"] for step in help_surface.WARNING_GUIDANCE_MATRIX[key]["next_steps"]]
+            self.assertEqual(entry_steps, ["stop"], key)
+        compile_blocked_steps = [
+            step["command"] for step in help_surface.GUIDANCE_MATRIX[("wait-for-compile", "compile_blocked")]["next_steps"]
+        ]
+        self.assertEqual(compile_blocked_steps, ["stop"])
 
 
 if __name__ == "__main__":

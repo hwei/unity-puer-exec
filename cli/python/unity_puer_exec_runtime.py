@@ -11,6 +11,7 @@ import time
 import uuid
 
 import cli_version
+import command_registry
 import direct_exec_client
 import help_surface
 import unity_log_brief
@@ -45,6 +46,7 @@ RESULT_MARKER_PATTERN = r"(?m)^\[UnityPuerExecResult\] (.+)$"
 PHASE_REFRESHING = "refreshing"
 PHASE_COMPILING = "compiling"
 PHASE_EXECUTING = "executing"
+PHASE_PLAY_MODE = "play_mode"
 HEALTH_STATUS_READY = "ready"
 HEALTH_STATUS_COMPILING = "compiling"
 # Edge-aware wait-for-compile outcomes (see openspec compile-wait spec).
@@ -524,7 +526,15 @@ def run_command(args):
             return run_get_compile_errors(args)
         if args.command == "get-compile-warnings":
             return run_get_compile_warnings(args)
-        return run_ensure_stopped(args)
+        if command_registry.canonical_command(args.command) == "ensure-closed":
+            return run_ensure_closed(args)
+        if args.command == "play":
+            return run_play(args)
+        if args.command == "pause":
+            return run_pause(args)
+        if args.command == "stop":
+            return run_stop(args)
+        return run_ensure_closed(args)
     except unity_session.UnityVersionMismatchError as exc:
         return _version_mismatch_result(args, exc.detail)
     except ValueError as exc:
@@ -2191,7 +2201,492 @@ def run_get_compile_warnings(args):
     return _run_get_compile_messages(args, "get-compile-warnings")
 
 
-def run_ensure_stopped(args):
+# --- Play-mode commands (play / pause / stop) -------------------------------
+
+PLAY_STATE_EDIT = "edit"
+PLAY_STATE_ENTERING = "entering"
+PLAY_STATE_PLAYING = "playing"
+PLAY_STATE_PAUSED = "paused"
+PLAY_STATE_EXITING = "exiting"
+
+PLAY_ACTION_TARGET = {
+    "play": PLAY_STATE_PLAYING,
+    "pause": PLAY_STATE_PAUSED,
+    "stop": PLAY_STATE_EDIT,
+}
+
+
+def _health_play_state(payload):
+    value = payload.get("play_state") if isinstance(payload, dict) else None
+    return value if isinstance(value, str) and value else None
+
+
+def _parse_response_body(stdout_text, stderr_text):
+    for text in (stdout_text, stderr_text):
+        if not text:
+            continue
+        try:
+            body = json.loads(text)
+        except (TypeError, ValueError):
+            continue
+        if isinstance(body, dict):
+            return body
+    return None
+
+
+def _play_probe_endpoint(selector, args, base_url, health_timeout_seconds):
+    """Probe the target and return ``(play_state, payload, base_url)``.
+
+    ``play_state`` is ``None`` when no ready target answered. In project mode the
+    endpoint is re-resolved on every probe, because a play-mode domain reload can
+    drop the listener and rebind it on a different port.
+    """
+    if selector == "project_path":
+        candidate, payload, _error, _other = unity_session.discover_project_endpoint(
+            args.project_path, health_timeout_seconds=health_timeout_seconds
+        )
+        if candidate is None:
+            return None, None, base_url
+        return _health_play_state(payload), payload, candidate
+    payload, _error = unity_session.probe_health_payload(base_url, health_timeout_seconds)
+    if not isinstance(payload, dict) or not (payload.get("ok") and payload.get("status") == HEALTH_STATUS_READY):
+        return None, payload, base_url
+    return _health_play_state(payload), payload, base_url
+
+
+def _post_play_mode(selector, args, session, base_url, action, force_run_in_background):
+    """Post the play-mode action, re-resolving a dropped endpoint within a bound."""
+    payload = {"action": action, "force_run_in_background": bool(force_run_in_background)}
+    wait_ms = getattr(args, "wait_timeout_ms", direct_exec_client.DEFAULT_WAIT_TIMEOUT_MS)
+    health_timeout = getattr(args, "health_timeout_seconds", unity_session.DEFAULT_HEALTH_TIMEOUT_SECONDS)
+    deadline = time.monotonic() + max(float(getattr(args, "timeout_seconds", 0.0)), 0.001)
+    while True:
+        exit_code, stdout_text, stderr_text = direct_exec_client.invoke_command(
+            "play-mode", base_url, payload, wait_ms
+        )
+        body = _parse_response_body(stdout_text, stderr_text)
+        if body is not None:
+            return exit_code, body, base_url
+        if time.monotonic() >= deadline:
+            return exit_code, None, base_url
+        # The endpoint dropped between the health probe and the post: a reload edge.
+        # Re-resolve before retrying instead of reporting a transport failure.
+        _state, _probe_payload, new_base = _play_probe_endpoint(selector, args, base_url, health_timeout)
+        if new_base:
+            base_url = new_base
+        time.sleep(min(unity_session.POLL_INTERVAL_SECONDS, max(deadline - time.monotonic(), 0.0)))
+
+
+def _play_mode_absent(body):
+    return isinstance(body, dict) and body.get("http_status") == 404
+
+
+def _wait_for_play_state(operation, selector, args, session, base_url, target, timeout_seconds):
+    """Poll health until the target state is reached.
+
+    Returns ``(state, payload, base_url, blocker)``. ``state`` is the last observed
+    play state (possibly ``None``); ``blocker`` is a modal blocker that stalled the
+    transition, or ``None``. A transport failure is expected while a domain reload
+    is in progress and is never reported as failure on its own.
+    """
+    health_timeout = getattr(args, "health_timeout_seconds", unity_session.DEFAULT_HEALTH_TIMEOUT_SECONDS)
+    deadline = time.monotonic() + timeout_seconds
+    state = None
+    payload = None
+    blocker = None
+    next_blocker_check = time.monotonic() + 5.0
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return state, payload, base_url, blocker
+        probed, probed_payload, new_base = _play_probe_endpoint(selector, args, base_url, health_timeout)
+        if new_base:
+            base_url = new_base
+        if probed is not None:
+            state = probed
+            payload = probed_payload
+            if probed == target:
+                return probed, payload, base_url, None
+        now = time.monotonic()
+        if now >= next_blocker_check:
+            next_blocker_check = now + 5.0
+            detected = _detect_exec_modal_blocker(session)
+            if detected is not None:
+                return state, payload, base_url, detected
+        time.sleep(min(unity_session.POLL_INTERVAL_SECONDS, max(remaining, 0.0)))
+
+
+def _play_transition(operation, pre_state):
+    if operation == "play":
+        if pre_state == PLAY_STATE_PAUSED:
+            return "resumed"
+        if pre_state == PLAY_STATE_PLAYING:
+            return "already_in_state"
+        return "performed"
+    if operation == "pause":
+        return "already_in_state" if pre_state == PLAY_STATE_PAUSED else "performed"
+    return "already_in_state" if pre_state == PLAY_STATE_EDIT else "performed"
+
+
+def _play_pre_settle(args, selector, session, base_url, recovery):
+    """Settle pending code before entering play mode, without an exec request.
+
+    Mirrors the exec refresh loop: ask the server for the refresh decision, settle
+    the compile it starts, then re-ask so the compile gate can report a failing
+    build instead of entering play mode on stale code. A settle that does not finish
+    cleanly does not immediately give up: the endpoint can be down for the reload
+    that ends the compile, so the loop keeps polling until the compile gate answers
+    or the budget elapses. Returns ``(session, base_url, error_result, refresh_block)``
+    where ``error_result`` is ``None`` when the Editor is safe to play and
+    ``refresh_block`` discloses a refresh that actually ran.
+    """
+    refresh_block = None
+    settle_attempted = False
+    wait_ms = getattr(args, "wait_timeout_ms", direct_exec_client.DEFAULT_WAIT_TIMEOUT_MS)
+    settle_budget = _post_refresh_ready_timeout_seconds(args)
+    deadline = time.monotonic() + settle_budget + settle_budget
+    while True:
+        exit_code, stdout_text, stderr_text = direct_exec_client.invoke_command(
+            "refresh", base_url, {}, wait_ms
+        )
+        body = _parse_response_body(stdout_text, stderr_text)
+        if _play_mode_absent(body):
+            return session, base_url, _version_mismatch_result(
+                args, cli_version.feature_missing_detail(base_url, feature="/refresh")
+            ), refresh_block
+        if _is_refresh_pending_response(exit_code, stdout_text):
+            refresh_block = _extract_refresh_block(stdout_text) or refresh_block
+            if not settle_attempted:
+                settle_attempted = True
+                settled = _settle_after_automatic_refresh(args, selector, session, base_url, recovery)
+                if settled is not None:
+                    session, base_url = settled
+                    continue
+            if time.monotonic() >= deadline:
+                return session, base_url, (
+                    EXIT_RUNNING,
+                    emit_payload(_play_refreshing_payload(args, session, refresh_block)),
+                    "",
+                ), refresh_block
+            time.sleep(unity_session.POLL_INTERVAL_SECONDS)
+            continue
+        if exit_code == EXIT_NOT_AVAILABLE:
+            # The endpoint is down for the reload that ends the compile. Keep polling
+            # so the compile gate (a failing build) can answer once it is back.
+            if time.monotonic() >= deadline:
+                return session, base_url, (
+                    EXIT_RUNNING,
+                    emit_payload(_play_refreshing_payload(args, session, refresh_block)),
+                    "",
+                ), refresh_block
+            time.sleep(unity_session.POLL_INTERVAL_SECONDS)
+            continue
+        if exit_code == EXIT_UNITY_COMPILE_ERROR:
+            stdout_text, stderr_text = _inject_guidance_into_response(
+                stdout_text, stderr_text, "play", args
+            )
+            return session, base_url, (exit_code, stdout_text, stderr_text), refresh_block
+        if exit_code != 0:
+            stdout_text, stderr_text = _inject_guidance_into_response(
+                stdout_text, stderr_text, "play", args
+            )
+            return session, base_url, (exit_code, stdout_text, stderr_text), refresh_block
+        return session, base_url, None, refresh_block
+
+
+def _play_refreshing_payload(args, session, refresh_block):
+    payload = {
+        "ok": True,
+        "status": "running",
+        "operation": "play",
+        "phase": PHASE_REFRESHING,
+    }
+    if refresh_block is not None:
+        payload["refresh"] = refresh_block
+    if session is not None:
+        payload["session"] = session.to_payload()
+    _attach_guidance(payload, "play", "running", args)
+    return attach_diagnostics(payload, include_diagnostics=args.include_diagnostics, session=session)
+
+
+def _play_running_result(operation, session, args, state):
+    payload = {
+        "ok": True,
+        "status": "running",
+        "operation": operation,
+        "phase": PHASE_PLAY_MODE,
+        "play_state": state,
+        "result": {"play_state": state},
+    }
+    if session is not None:
+        payload["session"] = session.to_payload()
+    _attach_guidance(payload, operation, "running", args)
+    return EXIT_RUNNING, emit_payload(payload), ""
+
+
+def _play_blocker_result(operation, session, args, blocker):
+    payload = expected_failure_payload(
+        operation,
+        "modal_blocked",
+        "a modal dialog is blocking the play-mode transition",
+        session=session,
+        include_diagnostics=args.include_diagnostics,
+    )
+    payload["blocker"] = blocker
+    _attach_guidance(payload, operation, "modal_blocked", args)
+    return EXIT_MODAL_BLOCKED, emit_payload(payload), ""
+
+
+def _invalid_play_state_result(operation, session, args, body):
+    state = _health_play_state(body)
+    payload = expected_failure_payload(
+        operation,
+        "invalid_play_state",
+        "pause requires the Editor to be in play mode",
+        session=session,
+        include_diagnostics=args.include_diagnostics,
+    )
+    payload["play_state"] = state
+    payload["result"] = {"play_state": state}
+    _attach_guidance(payload, operation, "invalid_play_state", args)
+    return 1, emit_payload(payload), ""
+
+
+def _play_success_result(operation, args, session, transition, play_state, force_run_in_background, project_setting, refresh_block=None):
+    result = {"play_state": play_state, "transition": transition}
+    if operation == "play":
+        result["run_in_background"] = {
+            "forced": bool(force_run_in_background),
+            "project_setting": project_setting,
+            "option": "--no-run-in-background",
+        }
+    payload = success_payload(operation, session=session, result=result, include_diagnostics=args.include_diagnostics)
+    if refresh_block is not None:
+        payload["refresh"] = refresh_block
+    _attach_guidance(payload, operation, "completed", args)
+    return 0, emit_payload(payload), ""
+
+
+def _read_compile_error_total(base_url, args):
+    exit_code, stdout_text, stderr_text = direct_exec_client.invoke_command(
+        "get-compile-errors", base_url, {"start": 0, "count": 1}, 5000
+    )
+    body = _parse_response_body(stdout_text, stderr_text)
+    if isinstance(body, dict):
+        total = body.get("total")
+        if isinstance(total, int):
+            return total
+    return 0
+
+
+def _stop_wait_for_compile(selector, args, session, base_url, baseline, recovery):
+    """Wait for the compile cycle deferred by a play-mode exit.
+
+    Returns ``(compile_info, base_url)`` or ``(None, base_url)`` when the cycle did
+    not settle in time. The generation baseline is checked first so a compile hidden
+    behind the exit's domain reload is inferred even though ``compiling`` was never
+    observable.
+    """
+    settle_timeout = _post_refresh_ready_timeout_seconds(args)
+    holder = {"base_url": base_url}
+
+    def probe(_ignored_base_url, health_timeout):
+        _state, payload, new_base = _play_probe_endpoint(selector, args, holder["base_url"], health_timeout)
+        if new_base:
+            holder["base_url"] = new_base
+        return payload, None
+
+    cycle = wait_for_compile_cycle(
+        holder["base_url"],
+        getattr(args, "appear_timeout_seconds", unity_session.DEFAULT_COMPILE_APPEAR_TIMEOUT_SECONDS),
+        settle_timeout,
+        getattr(args, "health_timeout_seconds", unity_session.DEFAULT_HEALTH_TIMEOUT_SECONDS),
+        probe_health_fn=probe,
+        unity_pid=session.unity_pid if session is not None else None,
+        compile_generation_baseline=baseline,
+    )
+    recovery.record(cycle.get("api_updater_declines", 0))
+    outcome = cycle["outcome"]
+    if outcome == COMPILE_OUTCOME_GENERATION:
+        info = {"outcome": "compile_settled", "edge": COMPILE_EDGE_GENERATION_ADVANCE}
+    elif outcome == COMPILE_OUTCOME_READY:
+        info = {"outcome": "compile_settled"}
+    elif outcome == COMPILE_OUTCOME_TIMEOUT:
+        return None, holder["base_url"]
+    else:
+        info = {"outcome": "no_compile_observed"}
+    return info, holder["base_url"]
+
+
+def _stop_success_result(operation, selector, args, session, base_url, transition, baseline, pending, recovery):
+    _state, payload, base_url = _play_probe_endpoint(
+        selector, args, base_url, getattr(args, "health_timeout_seconds", unity_session.DEFAULT_HEALTH_TIMEOUT_SECONDS)
+    )
+    generation = _compile_generation_from_health(payload)
+    compile_info = None
+    if baseline is not None and generation is not None and generation > baseline:
+        compile_info = {"outcome": "compile_settled", "edge": COMPILE_EDGE_GENERATION_ADVANCE}
+    elif pending == "pending":
+        compile_info, base_url = _stop_wait_for_compile(selector, args, session, base_url, baseline, recovery)
+    else:
+        compile_info = {"outcome": "no_compile_observed"}
+
+    if compile_info is None:
+        # The deferred compile did not settle in time. The play-state transition
+        # succeeded, but the command cannot claim the exit is fully done.
+        running = {
+            "ok": True,
+            "status": "running",
+            "operation": operation,
+            "phase": PHASE_COMPILING,
+            "play_state": PLAY_STATE_EDIT,
+            "result": {"play_state": PLAY_STATE_EDIT},
+        }
+        if session is not None:
+            running["session"] = session.to_payload()
+        _attach_guidance(running, operation, "running", args)
+        return EXIT_RUNNING, emit_payload(running), ""
+
+    if compile_info["outcome"] == "no_compile_observed":
+        compile_info["compile_errors_total"] = 0
+    else:
+        compile_info["compile_errors_total"] = _read_compile_error_total(base_url, args)
+
+    result = {"play_state": PLAY_STATE_EDIT, "transition": transition, "compile": compile_info}
+    payload = success_payload(operation, session=session, result=result, include_diagnostics=args.include_diagnostics)
+    _attach_guidance(payload, operation, "completed", args)
+    if compile_info["compile_errors_total"] > 0:
+        step = {
+            "command": "get-compile-errors",
+            "when": "read the compile errors the deferred compile just produced",
+            "argv_template": ["unity-puer-exec", "get-compile-errors", "--project-path", "{project_path}"],
+        }
+        payload["next_steps"] = [step] + list(payload.get("next_steps") or [])
+    return 0, emit_payload(payload), ""
+
+
+def _run_play_mode_command(operation, args, recovery):
+    action = operation
+    selector = resolve_selector(args)
+    validate_positive(args.timeout_seconds, "timeout-seconds")
+    validate_project_mode_only(selector, "unity-exe-path", getattr(args, "unity_exe_path", None))
+    validate_project_mode_only(selector, "unity-log-path", getattr(args, "unity_log_path", None))
+    validate_project_mode_only(selector, "unity-launch-arg", getattr(args, "unity_launch_args", None))
+
+    if selector == "project_path":
+        _sweep_pending_exec(args)
+        session = unity_session.ensure_session_ready(
+            project_path=args.project_path,
+            unity_exe_path=getattr(args, "unity_exe_path", None),
+            unity_log_path=getattr(args, "unity_log_path", None),
+            unity_launch_args=getattr(args, "unity_launch_args", None),
+            argv0=getattr(args, "argv0", None),
+        )
+        recovery.record(getattr(session, "api_updater_declines", 0))
+        session.api_updater_declines = 0
+        base_url = session.base_url
+    else:
+        session = None
+        base_url = args.base_url
+
+    force_run_in_background = False
+    refresh_block = None
+    if operation == "play":
+        force_run_in_background = not bool(getattr(args, "no_run_in_background", False))
+        session, base_url, error_result, refresh_block = _play_pre_settle(
+            args, selector, session, base_url, recovery
+        )
+        if error_result is not None:
+            return error_result
+
+    health_timeout = getattr(args, "health_timeout_seconds", unity_session.DEFAULT_HEALTH_TIMEOUT_SECONDS)
+    pre_state, pre_payload, base_url = _play_probe_endpoint(selector, args, base_url, health_timeout)
+
+    baseline = None
+    pending = None
+    if operation == "stop":
+        baseline = _compile_generation_from_health(pre_payload)
+        if isinstance(pre_payload, dict):
+            refresh = pre_payload.get("refresh")
+            if isinstance(refresh, dict):
+                pending = refresh.get("pending")
+
+    exit_code, body, base_url = _post_play_mode(
+        selector, args, session, base_url, action, force_run_in_background
+    )
+    if _play_mode_absent(body):
+        return _version_mismatch_result(args, cli_version.feature_missing_detail(base_url))
+    if body is None:
+        payload = expected_failure_payload(
+            operation,
+            "not_available",
+            "the control endpoint did not answer the play-mode request",
+            session=session,
+            include_diagnostics=args.include_diagnostics,
+        )
+        _attach_guidance(payload, operation, "not_available", args)
+        return EXIT_NOT_AVAILABLE, emit_payload(payload), ""
+    if body.get("status") == "invalid_play_state":
+        return _invalid_play_state_result(operation, session, args, body)
+    if not body.get("ok"):
+        payload = expected_failure_payload(
+            operation,
+            body.get("status", "failed"),
+            body.get("error", "play-mode request failed"),
+            session=session,
+            include_diagnostics=args.include_diagnostics,
+        )
+        _attach_guidance(payload, operation, body.get("status", "failed"), args)
+        return 1, emit_payload(payload), ""
+
+    target = PLAY_ACTION_TARGET[action]
+    exit_wait_seconds = float(args.timeout_seconds)
+    if operation == "stop":
+        exit_wait_seconds = max(exit_wait_seconds, _post_refresh_ready_timeout_seconds(args))
+    state, _state_payload, base_url, blocker = _wait_for_play_state(
+        operation, selector, args, session, base_url, target, exit_wait_seconds
+    )
+    if state != target:
+        if blocker is not None:
+            return _play_blocker_result(operation, session, args, blocker)
+        return _play_running_result(operation, session, args, state)
+
+    transition = _play_transition(operation, pre_state)
+    if operation == "stop":
+        return _stop_success_result(
+            operation, selector, args, session, base_url, transition, baseline, pending, recovery
+        )
+    return _play_success_result(
+        operation,
+        args,
+        session,
+        transition,
+        target,
+        force_run_in_background,
+        body.get("project_run_in_background"),
+        refresh_block=refresh_block,
+    )
+
+
+def run_play(args):
+    recovery = _ApiUpdaterRecovery()
+    result = _run_play_mode_command("play", args, recovery)
+    return _apply_api_updater_warning(result, recovery)
+
+
+def run_pause(args):
+    recovery = _ApiUpdaterRecovery()
+    result = _run_play_mode_command("pause", args, recovery)
+    return _apply_api_updater_warning(result, recovery)
+
+
+def run_stop(args):
+    recovery = _ApiUpdaterRecovery()
+    result = _run_play_mode_command("stop", args, recovery)
+    return _apply_api_updater_warning(result, recovery)
+
+
+def run_ensure_closed(args):
     selector = resolve_selector(args)
     validate_positive(args.timeout_seconds, "timeout-seconds")
 
@@ -2205,28 +2700,38 @@ def run_ensure_stopped(args):
         raise ValueError("immediate-kill is only valid with --project-path")
 
     if selector == "project_path":
-        stopped, session = unity_session.ensure_stopped(project_path=args.project_path, mode=mode, timeout_seconds=args.timeout_seconds, argv0=getattr(args, "argv0", None))
+        stopped, session = unity_session.ensure_closed(project_path=args.project_path, mode=mode, timeout_seconds=args.timeout_seconds, argv0=getattr(args, "argv0", None))
     else:
-        stopped, session = unity_session.ensure_stopped(base_url=args.base_url, mode="inspect", timeout_seconds=args.timeout_seconds)
+        stopped, session = unity_session.ensure_closed(base_url=args.base_url, mode="inspect", timeout_seconds=args.timeout_seconds)
 
     if not stopped:
         payload = expected_failure_payload(
-            "ensure-stopped",
+            "ensure-closed",
             "not_stopped",
             "target is not stopped",
             session=session,
             include_diagnostics=args.include_diagnostics,
         )
-        _attach_guidance(payload, "ensure-stopped", "not_stopped", args)
+        _attach_guidance(payload, args.command, "not_stopped", args)
+        _mark_deprecated(payload, args.command)
         return EXIT_NOT_STOPPED, emit_payload(payload), ""
 
     payload = success_payload(
-        "ensure-stopped",
+        "ensure-closed",
         session=session,
         result={"status": "stopped"},
         include_diagnostics=args.include_diagnostics,
     )
+    _mark_deprecated(payload, args.command)
     return 0, emit_payload(payload), ""
+
+
+def _mark_deprecated(payload, command):
+    """Add the alias-deprecation field when ``command`` is a deprecated alias."""
+    deprecation = command_registry.deprecation_for(command)
+    if deprecation is not None and isinstance(payload, dict):
+        payload["deprecated"] = deprecation
+    return payload
 
 
 def attach_diagnostics(payload, include_diagnostics=False, session=None, diagnostics=None):

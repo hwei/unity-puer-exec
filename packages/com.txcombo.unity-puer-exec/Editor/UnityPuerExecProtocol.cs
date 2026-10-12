@@ -29,6 +29,13 @@ namespace UnityPuerExec
         public bool include_diagnostics = false;
     }
 
+    [System.Serializable]
+    internal class PlayModeRequest
+    {
+        public string action = "";
+        public bool force_run_in_background = false;
+    }
+
     internal static class UnityPuerExecProtocol
     {
         private static readonly Regex DefaultExportFunctionPattern = new Regex(
@@ -333,6 +340,23 @@ namespace UnityPuerExec
                    "}";
         }
 
+        internal static string BuildPlayModeResponseJson(
+            bool ok,
+            string status,
+            string playState,
+            bool projectRunInBackground = false,
+            bool forcedRunInBackground = false
+        )
+        {
+            return "{" +
+                   "\"ok\":" + (ok ? "true" : "false") + "," +
+                   "\"status\":\"" + JsonEscape(status) + "\"," +
+                   "\"play_state\":\"" + JsonEscape(playState) + "\"," +
+                   "\"project_run_in_background\":" + (projectRunInBackground ? "true" : "false") + "," +
+                   "\"forced_run_in_background\":" + (forcedRunInBackground ? "true" : "false") +
+                   "}";
+        }
+
         private static string BuildErrorDetailJson(string error)
         {
             if (string.Equals(error, "missing_default_export", System.StringComparison.Ordinal))
@@ -357,7 +381,8 @@ namespace UnityPuerExec
             bool refreshSuppressed = false,
             string refreshSuppressedReason = "",
             string scriptChangesWhilePlaying = "unknown",
-            int compileGeneration = 0
+            int compileGeneration = 0,
+            string playState = "edit"
         )
         {
             // The package identity is still observable while the Editor is
@@ -407,6 +432,12 @@ namespace UnityPuerExec
                 // value from before a reload can tell an inferred compile apart from a
                 // reload that compiled nothing.
                 var compileGenerationJson = ",\"compile_generation\":" + compileGeneration;
+                // Sampled on the main thread each tick. `edit` when nothing is
+                // playing and no transition is requested; `entering` / `exiting`
+                // while a transition is requested or completing; `paused` when
+                // playing and paused. Lets a caller observe a play-mode transition
+                // without running a script.
+                var playStateJson = ",\"play_state\":\"" + JsonEscape(playState) + "\"";
                 return "{\"ok\":true,\"status\":\"ready\",\"port\":" + port +
                        ",\"session_marker\":\"" + JsonEscape(sessionMarker) + "\"" +
                        baseUrlJson +
@@ -415,6 +446,7 @@ namespace UnityPuerExec
                        bridgeVersionJson +
                        consoleLogPathJson +
                        compileGenerationJson +
+                       playStateJson +
                        refreshJson +
                        "}";
             }

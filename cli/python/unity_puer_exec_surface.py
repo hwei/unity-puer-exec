@@ -186,12 +186,12 @@ def build_parser():
     _add_diagnostics_arg(get_log_briefs_parser)
     _add_response_file_arg(get_log_briefs_parser)
 
-    ensure_stopped_parser = parsers["ensure-stopped"]
-    _add_selector_args(ensure_stopped_parser)
-    ensure_stopped_parser.add_argument("--timeout-seconds", type=float, default=unity_session.DEFAULT_STOP_TIMEOUT_SECONDS)
-    _add_diagnostics_arg(ensure_stopped_parser)
-    _add_response_file_arg(ensure_stopped_parser)
-    stop_mode = ensure_stopped_parser.add_mutually_exclusive_group()
+    ensure_closed_parser = parsers["ensure-closed"]
+    _add_selector_args(ensure_closed_parser)
+    ensure_closed_parser.add_argument("--timeout-seconds", type=float, default=unity_session.DEFAULT_STOP_TIMEOUT_SECONDS)
+    _add_diagnostics_arg(ensure_closed_parser)
+    _add_response_file_arg(ensure_closed_parser)
+    stop_mode = ensure_closed_parser.add_mutually_exclusive_group()
     stop_mode.add_argument("--inspect-only", action="store_true")
     stop_mode.add_argument("--immediate-kill", action="store_true")
 
@@ -227,13 +227,38 @@ def build_parser():
     _add_diagnostics_arg(get_compile_warnings_parser)
     _add_response_file_arg(get_compile_warnings_parser)
 
+    play_parser = parsers["play"]
+    _add_play_mode_args(play_parser)
+    play_parser.add_argument("--no-run-in-background", action="store_true")
+
+    _add_play_mode_args(parsers["pause"])
+    _add_play_mode_args(parsers["stop"])
+
+    # Deprecated aliases derive their parser entry from the canonical command so an
+    # alias can never accept a different argument shape than the command it names.
+    for alias, canonical in command_registry.COMMAND_ALIASES:
+        alias_parser = subparsers.add_parser(alias, add_help=False)
+        _clone_subparser(parsers[canonical], alias_parser)
+        parsers[alias] = alias_parser
 
     return parser
 
 
+def _clone_subparser(source, target):
+    """Give ``target`` the same argument surface as ``source``.
+
+    The alias shares the canonical command's argparse actions; only one parser is
+    ever used for a single invocation, and the custom help surface renders from
+    ``help_surface`` rather than argparse's usage formatter.
+    """
+    target._actions = list(source._actions)
+    target._option_string_actions = dict(source._option_string_actions)
+    target._mutually_exclusive_groups = list(source._mutually_exclusive_groups)
+
+
 def resolve_command_from_argv(argv):
     """Return the first recognized command token in argv, or None."""
-    known = set(command_registry.COMMANDS)
+    known = set(command_registry.INVOCABLE_COMMANDS)
     for token in argv:
         if token in known:
             return token
@@ -296,7 +321,7 @@ def handle_top_level_help(argv):
 
 
 def handle_command_help(argv):
-    if not argv or argv[0] not in help_surface.COMMANDS:
+    if not argv or argv[0] not in help_surface.INVOCABLE_COMMANDS:
         return None
     command = argv[0]
     if len(argv) == 2 and argv[1] == "--help":
@@ -327,6 +352,34 @@ def _add_diagnostics_arg(parser):
 
 def _add_response_file_arg(parser):
     parser.add_argument("--response-file", default=None, dest="response_file")
+
+
+def _add_play_mode_args(parser):
+    """Shared selector/launch/budget args for `play`, `pause`, and `stop`."""
+    _add_selector_args(parser)
+    parser.add_argument("--unity-exe-path", default=None)
+    parser.add_argument("--unity-log-path", default=None)
+    parser.add_argument(
+        "--unity-launch-arg",
+        action="append",
+        default=None,
+        dest="unity_launch_args",
+        help="Extra Unity argv token for a cold launch this CLI owns; repeatable.",
+    )
+    parser.add_argument(
+        "--timeout-seconds",
+        type=float,
+        default=unity_session.DEFAULT_READY_TIMEOUT_SECONDS,
+        help="Budget for the play-mode transition; a non-terminal `running` result names the current state on timeout.",
+    )
+    parser.add_argument(
+        "--health-timeout-seconds",
+        type=float,
+        default=unity_session.DEFAULT_HEALTH_TIMEOUT_SECONDS,
+    )
+    parser.add_argument("--wait-timeout-ms", type=int, default=direct_exec_client.DEFAULT_WAIT_TIMEOUT_MS)
+    _add_diagnostics_arg(parser)
+    _add_response_file_arg(parser)
 
 
 def _format_available_examples():

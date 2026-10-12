@@ -203,6 +203,11 @@ namespace UnityPuerExec
         // report refresh suppression without reading a main-thread Editor API.
         private static volatile bool isPlaying;
 
+        // The Editor play state, derived each tick in OnEditorUpdate from main-thread
+        // only flags (isPlaying, isPlayingOrWillChangePlaymode, isPaused). The listener
+        // thread reads this snapshot to answer /health without touching Editor APIs.
+        private static volatile string playState = "edit";
+
         // The Editor's "Script Changes While Playing" preference, sampled on the main
         // thread for the same reason as isPlaying. EditorPrefs is main-thread-only, so
         // the health handler (listener thread) reads this snapshot instead. The key is
@@ -630,9 +635,22 @@ namespace UnityPuerExec
                             refreshSuppressed: isPlaying,
                             refreshSuppressedReason: isPlaying ? "play_mode" : "",
                             scriptChangesWhilePlaying: scriptChangesWhilePlaying,
-                            compileGeneration: compileGeneration
+                            compileGeneration: compileGeneration,
+                            playState: playState
                         )
                     );
+                    return;
+                }
+
+                if (path.Equals("/play-mode", StringComparison.OrdinalIgnoreCase))
+                {
+                    await HandlePlayModeAsync(context);
+                    return;
+                }
+
+                if (path.Equals("/refresh", StringComparison.OrdinalIgnoreCase))
+                {
+                    await HandleRefreshAsync(context);
                     return;
                 }
 
@@ -874,6 +892,168 @@ namespace UnityPuerExec
             await WriteJsonAsync(context, "{\"ok\":true,\"status\":\"completed\"}");
         }
 
+
+        private static async Task HandlePlayModeAsync(HttpListenerContext context)
+        {
+            var requestJson = await ReadRequestBodyAsync(context.Request);
+            var request = JsonUtility.FromJson<PlayModeRequest>(requestJson) ?? new PlayModeRequest();
+            var action = (request.action ?? "").Trim().ToLowerInvariant();
+
+            var observedState = "edit";
+            var rejectedStatus = "";
+            var projectRunInBackground = false;
+            var completion = new TaskCompletionSource<bool>();
+            MainThreadActions.Enqueue(() =>
+            {
+                try
+                {
+                    // The project's own setting is read for disclosure only; the
+                    // override is never written back to Player Settings.
+                    projectRunInBackground = PlayerSettings.runInBackground;
+
+                    // The override is stored in SessionState so it survives the
+                    // domain reload on entering play mode; the [InitializeOnLoad]
+                    // hook applies it on EnteredPlayMode and clears the key. The
+                    // project's Player Settings are never written.
+                    if (request.force_run_in_background)
+                    {
+                        UnityPuerExecPlayMode.RequestRunInBackground();
+                    }
+                    else
+                    {
+                        UnityPuerExecPlayMode.CancelRunInBackground();
+                    }
+
+                    switch (action)
+                    {
+                        case "play":
+                            if (EditorApplication.isPlaying && EditorApplication.isPaused)
+                            {
+                                EditorApplication.isPaused = false;
+                            }
+                            else if (!EditorApplication.isPlaying)
+                            {
+                                if (request.force_run_in_background)
+                                {
+                                    Application.runInBackground = true;
+                                }
+
+                                EditorApplication.isPlaying = true;
+                            }
+                            break;
+                        case "pause":
+                            if (!EditorApplication.isPlaying)
+                            {
+                                rejectedStatus = "invalid_play_state";
+                            }
+                            else
+                            {
+                                EditorApplication.isPaused = true;
+                            }
+                            break;
+                        case "stop":
+                            if (EditorApplication.isPlaying)
+                            {
+                                EditorApplication.isPlaying = false;
+                            }
+                            break;
+                        default:
+                            rejectedStatus = "invalid_play_action";
+                            break;
+                    }
+
+                    observedState = DerivePlayState();
+                    completion.TrySetResult(true);
+                }
+                catch (Exception ex)
+                {
+                    Debug.LogError($"[UnityPuerExec] Play-mode action failed: {ex}");
+                    completion.TrySetResult(false);
+                }
+            });
+
+            await completion.Task;
+
+            if (!string.IsNullOrEmpty(rejectedStatus))
+            {
+                await WriteJsonAsync(
+                    context,
+                    UnityPuerExecProtocol.BuildPlayModeResponseJson(
+                        false,
+                        rejectedStatus,
+                        observedState,
+                        projectRunInBackground,
+                        request.force_run_in_background
+                    )
+                );
+                return;
+            }
+
+            await WriteJsonAsync(
+                context,
+                UnityPuerExecProtocol.BuildPlayModeResponseJson(
+                    true,
+                    "completed",
+                    observedState,
+                    projectRunInBackground,
+                    request.force_run_in_background
+                )
+            );
+        }
+
+        /// <summary>
+        /// The exec refresh/compile gate without a script request.
+        ///
+        /// `play` must settle pending code before entering play mode, but it has no
+        /// script to run. This endpoint makes the same decision exec does: a
+        /// compile-triggering change returns the non-terminal refreshing phase; a
+        /// settled but failing compilation returns `unity_compile_error`; otherwise it
+        /// reports `completed`. It never runs a script and never touches the JsEnv.
+        /// </summary>
+        private static async Task HandleRefreshAsync(HttpListenerContext context)
+        {
+            var refresh = await EvaluateRefreshAsync();
+            if (refresh.Triggered)
+            {
+                await WriteJsonAsync(
+                    context,
+                    UnityPuerExecProtocol.BuildRefreshRunningResponseJson("", sessionMarker, refresh.BlockJson)
+                );
+                return;
+            }
+
+            if (TrySnapshotCompileErrors(
+                out var errorsSnapshot,
+                out var warningsSnapshot,
+                out var errorCountSnapshot,
+                out var warningCountSnapshot
+            ))
+            {
+                await WriteJsonAsync(
+                    context,
+                    UnityPuerExecProtocol.BuildCompileErrorResponseJson(
+                        "",
+                        hasErrors: true,
+                        errorCount: errorCountSnapshot,
+                        warningCount: warningCountSnapshot,
+                        errors: errorsSnapshot,
+                        warnings: warningsSnapshot,
+                        sessionMarker: sessionMarker,
+                        refreshBlockJson: refresh.BlockJson
+                    )
+                );
+                return;
+            }
+
+            await WriteJsonAsync(
+                context,
+                "{\"ok\":true,\"status\":\"completed\",\"session_marker\":\""
+                    + UnityPuerExecProtocol.JsonEscape(sessionMarker)
+                    + "\","
+                    + refresh.BlockJson
+                    + "}"
+            );
+        }
 
         private static async Task HandleGetCompileErrorsAsync(HttpListenerContext context)
         {
@@ -1460,6 +1640,7 @@ namespace UnityPuerExec
             isCompiling = EditorApplication.isCompiling;
             isUpdating = EditorApplication.isUpdating;
             isPlaying = EditorApplication.isPlaying;
+            playState = DerivePlayState();
             SampleScriptChangesWhilePlaying();
             SampleStackTraceLogTypes();
             RefreshConsoleLogPathCache();
@@ -1482,6 +1663,37 @@ namespace UnityPuerExec
             {
                 Debug.LogError($"[UnityPuerExec] JsEnv tick failed: {ex}");
             }
+        }
+
+        /// <summary>
+        /// Derive the play state from main-thread Editor flags. Order matters: a
+        /// requested transition is reported before the settled state it is moving to.
+        /// </summary>
+        private static string DerivePlayState()
+        {
+            var playing = EditorApplication.isPlaying;
+            var willChange = EditorApplication.isPlayingOrWillChangePlaymode;
+            if (!playing && !willChange)
+            {
+                return "edit";
+            }
+
+            if (!playing && willChange)
+            {
+                return "entering";
+            }
+
+            if (playing && !willChange)
+            {
+                return "exiting";
+            }
+
+            if (EditorApplication.isPaused)
+            {
+                return "paused";
+            }
+
+            return "playing";
         }
 
         internal static void RecordLocalModuleRead(string filePath)

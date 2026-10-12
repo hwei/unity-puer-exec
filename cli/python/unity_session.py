@@ -345,7 +345,7 @@ def _session_pid_from_sources(payload, publication):
     Previously this fell back to ``list_unity_pids()[0]`` -- the first Unity.exe in
     the machine-wide tasklist -- which on a machine with several projects open
     recorded an unrelated project's pid and then drove recovery signalling,
-    launch-conflict detection, and `ensure-stopped --immediate-kill`. There is no
+    launch-conflict detection, and `ensure-closed --immediate-kill`. There is no
     fallback now: an unknown pid is reported as unknown.
     """
     if isinstance(payload, dict):
@@ -1336,7 +1336,7 @@ def _make_recovery_endpoint_resolver(project_path, health_timeout_seconds):
     return resolve
 
 
-def ensure_stopped(project_path=None, base_url=None, mode="inspect", timeout_seconds=DEFAULT_STOP_TIMEOUT_SECONDS, argv0=None):
+def ensure_closed(project_path=None, base_url=None, mode="inspect", timeout_seconds=DEFAULT_STOP_TIMEOUT_SECONDS, argv0=None):
     if base_url:
         is_ready, payload, error = inspect_direct_service(base_url)
         session = create_direct_session(base_url)
@@ -1346,7 +1346,7 @@ def ensure_stopped(project_path=None, base_url=None, mode="inspect", timeout_sec
             session.diagnostics["last_health_error"] = error
         return (not is_ready), session
 
-    return unity_session_process.ensure_stopped(
+    return unity_session_process.ensure_closed(
         project_path=project_path,
         mode=mode,
         timeout_seconds=timeout_seconds,

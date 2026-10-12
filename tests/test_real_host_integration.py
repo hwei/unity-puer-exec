@@ -153,7 +153,7 @@ def _ensure_clean_test_boundary(project_path):
         attempts += 1
         exit_code, payload, _, _ = _run_cli(
             [
-                "ensure-stopped",
+                "ensure-closed",
                 "--project-path",
                 str(project_path),
                 "--timeout-seconds",
@@ -166,7 +166,7 @@ def _ensure_clean_test_boundary(project_path):
         if attempts == 2:
             _run_cli(
                 [
-                    "ensure-stopped",
+                    "ensure-closed",
                     "--project-path",
                     str(project_path),
                     "--timeout-seconds",
@@ -3589,9 +3589,7 @@ class PlayModeCompileBlockRealHostTests(_SharedRealHostDevice, unittest.TestCase
         self._saved_preference = self._read_preference(base_url)
 
         self._set_preference(base_url, 1)
-        self.assertEqual(
-            self._read_preference(base_url), "recompile_after_finished_playing"
-        )
+        base_url, _ = self._wait_for_preference(base_url, "recompile_after_finished_playing")
 
         self._set_play_mode(base_url, True)
         base_url, _ = self._wait_for_refresh_state(base_url, suppressed=True)
@@ -3744,6 +3742,154 @@ class PlayModeCompileBlockRealHostTests(_SharedRealHostDevice, unittest.TestCase
         self.assertEqual(exit_code, 0, payload)
         self.assertEqual(payload["result"]["status"], "no_compile_observed", payload)
         self.assertFalse(payload["result"]["compile_observed"])
+
+
+    # -- play / pause / stop commands ----------------------------------------
+
+    def _project_cli_args(self):
+        return ["--project-path", str(self.project_path), "--unity-exe-path", str(self.unity_exe_path)]
+
+    def test_play_settles_a_pending_change_then_reaches_playing(self):
+        """`play` pre-settles a pending code change before entering play mode."""
+        base_url = self._base_url()
+        self.assertEqual(self._health(base_url)["refresh"]["pending"], "not_pending")
+
+        self._write_compile_triggering_probe("PlayPreSettleProbe.cs")
+        base_url, _refresh = self._wait_for_refresh_pending(base_url)
+
+        exit_code, payload, _, _ = _run_cli(
+            ["play"] + self._project_cli_args() + ["--timeout-seconds", "180"]
+        )
+        self.assertEqual(exit_code, 0, payload)
+        self.assertEqual(payload["status"], "completed", payload)
+        self.assertEqual(payload["result"]["play_state"], "playing", payload)
+        self.assertEqual(payload["result"]["transition"], "performed", payload)
+        # The refresh that settled the pending change is disclosed.
+        self.assertIn("refresh", payload, payload)
+        self.assertTrue(payload["refresh"]["triggered"], payload)
+        # The run-in-background override is disclosed with the way to opt out.
+        self.assertTrue(payload["result"]["run_in_background"]["forced"])
+        self.assertEqual(
+            payload["result"]["run_in_background"]["option"], "--no-run-in-background"
+        )
+
+    def test_play_pause_play_resumes_against_real_host(self):
+        """`play` enters, `pause` pauses, and `play` again resumes."""
+        exit_code, played, _, _ = _run_cli(
+            ["play"] + self._project_cli_args() + ["--timeout-seconds", "180"]
+        )
+        self.assertEqual(exit_code, 0, played)
+        self.assertEqual(played["result"]["play_state"], "playing", played)
+
+        exit_code, paused, _, _ = _run_cli(
+            ["pause"] + self._project_cli_args() + ["--timeout-seconds", "120"]
+        )
+        self.assertEqual(exit_code, 0, paused)
+        self.assertEqual(paused["result"]["play_state"], "paused", paused)
+
+        exit_code, resumed, _, _ = _run_cli(
+            ["play"] + self._project_cli_args() + ["--timeout-seconds", "180"]
+        )
+        self.assertEqual(exit_code, 0, resumed)
+        self.assertEqual(resumed["result"]["play_state"], "playing", resumed)
+        self.assertEqual(resumed["result"]["transition"], "resumed", resumed)
+
+    def test_stop_settles_the_deferred_compile_against_real_host(self):
+        """`stop` leaves play mode and settles the compile the exit defers.
+
+        Forces "Recompile After Finished Playing" so the change made during play is
+        deferred and then compiled on exit; the advanced compile generation is the
+        only observable edge. tearDown restores the saved preference.
+        """
+        base_url = self._base_url()
+        self.assertEqual(self._health(base_url)["refresh"]["pending"], "not_pending")
+        self._saved_preference = self._read_preference(base_url)
+        self._set_preference(base_url, 1)
+
+        exit_code, played, _, _ = _run_cli(
+            ["play"] + self._project_cli_args() + ["--timeout-seconds", "180"]
+        )
+        self.assertEqual(exit_code, 0, played)
+        self.assertEqual(played["result"]["play_state"], "playing", played)
+
+        self._write_compile_triggering_probe("StopDeferredProbe.cs")
+        base_url, _refresh = self._wait_for_refresh_pending(base_url)
+
+        exit_code, stopped, _, _ = _run_cli(
+            ["stop"] + self._project_cli_args() + ["--timeout-seconds", "180"]
+        )
+        self.assertEqual(exit_code, 0, stopped)
+        self.assertEqual(stopped["result"]["play_state"], "edit", stopped)
+        compile_result = stopped["result"]["compile"]
+        self.assertEqual(compile_result["outcome"], "compile_settled", stopped)
+        self.assertEqual(compile_result["edge"], "generation_advance", stopped)
+
+    def test_play_aborts_on_a_compile_error_without_entering_play_mode(self):
+        """A failing pre-settle build keeps the Editor in edit mode."""
+        base_url = self._base_url()
+        temp_dir = self.project_path / "Assets" / "__codex_validation_temp"
+        temp_dir.mkdir(parents=True, exist_ok=True)
+        broken_cs = temp_dir / "PlayModeBrokenProbe.cs"
+        broken_cs.write_text(
+            "// Deliberate compile error for the play-mode pre-settle case.\n"
+            "public class PlayModeBrokenProbe {\n"
+            "    public void Broken() { ThisTypeDoesNotExist x = null; }\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        try:
+            exit_code, payload, _, _ = _run_cli(
+                ["play"] + self._project_cli_args() + ["--timeout-seconds", "180"]
+            )
+            self.assertEqual(exit_code, unity_puer_exec.EXIT_UNITY_COMPILE_ERROR, payload)
+            self.assertEqual(payload["status"], "unity_compile_error", payload)
+            self.assertGreater(payload["compile_errors_total"], 0, payload)
+
+            # The play-mode request must never have been posted: the Editor stayed in edit.
+            resolved = self._ensure_shared_host_ready()
+            self.assertIsNotNone(resolved, "control endpoint did not come back after the abort")
+            self.assertEqual(self._health(resolved).get("play_state"), "edit")
+        finally:
+            broken_cs.unlink(missing_ok=True)
+            # The deletion is not a compile-triggering change for the tracker, so touch
+            # a clean probe and drive the refresh/compile so the next case starts from a
+            # settled, compilable build.
+            self._write_compile_triggering_probe("PlayModeRestoreProbe.cs")
+            cleanup_exit, cleanup_payload, _, _ = _run_cli(
+                ["exec"] + self._project_cli_args()
+                + [
+                    "--wait-timeout-ms", str(WAIT_TIMEOUT_MS),
+                    "--code", "export default function run(ctx) { return { restored: true }; }",
+                ]
+            )
+            if unity_puer_exec_runtime._running_or_timed_out_response(
+                cleanup_exit, json.dumps(cleanup_payload) if cleanup_payload else ""
+            ):
+                _run_cli(
+                    ["wait-for-exec"] + self._project_cli_args()
+                    + [
+                        "--request-id", cleanup_payload["request_id"],
+                        "--wait-timeout-ms", str(READY_TIMEOUT_SECONDS * 1000),
+                    ]
+                )
+
+    def _wait_for_preference(self, base_url, value, timeout_seconds=30):
+        """Wait until health reports the Script Changes While Playing preference label.
+
+        The preference is sampled on the Editor's update tick, so an immediate read
+        after setting it can return the previous value.
+        """
+        deadline = time.monotonic() + timeout_seconds
+        last = None
+        while time.monotonic() < deadline:
+            resolved, health = self._probe_once_resolving(base_url)
+            if health is not None:
+                base_url = resolved
+                last = health.get("refresh", {}).get("script_changes_while_playing")
+                if last == value:
+                    return base_url, last
+            time.sleep(0.5)
+        self.fail("preference did not become {}: {}".format(value, last))
 
 
 if __name__ == "__main__":
