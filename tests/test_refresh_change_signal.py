@@ -170,6 +170,30 @@ class ImportChangeSignalSourceTests(unittest.TestCase):
         self.assertIn("CandidatePaths.Clear()", completion)
         self.assertIn("signalValid = Watchers.Count > 0", completion)
 
+    def test_watched_roots_are_cached_for_the_exclusion_helper(self):
+        # The normalized watched roots must be captured when the tracker is
+        # installed so the pure exclusion helper can scope the dot-directory rule
+        # without calling a Unity API on the callback path.
+        self.assertIn("watchedRoots", self.source)
+
+        start = _extract_method_body(self.source, "void StartWatchersLocked()")
+        self.assertIn("watchedRoots =", start)
+        self.assertIn("NormalizePath(root)", start)
+
+    def test_dot_rule_is_scoped_to_the_path_below_the_watched_root(self):
+        # A dot segment above the watched root (the project's own absolute prefix)
+        # must not suppress detection, so the helper strips a matching cached root
+        # prefix before it splits segments and applies the dot test.
+        body = _extract_method_body(self.source, "bool IsExcludedPath(string normalizedPath, bool")
+        self.assertIn("watchedRoots", body)
+        self.assertIn("StartsWith", body)
+        self.assertIn("Substring", body)
+
+        # The stripped path is what the segment loop splits, with the full path
+        # retained as the fallback when no root matches.
+        self.assertIn("dotTestPath = normalizedPath;", body)
+        self.assertIn("dotTestPath.Split('/')", body)
+
 
 if __name__ == "__main__":
     unittest.main()

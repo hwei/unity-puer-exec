@@ -46,6 +46,12 @@ namespace UnityPuerExec
         private static bool installed;
         private static bool signalValid;
 
+        // Normalized watched roots (Assets/, Packages/), published by reference
+        // replacement from the main thread when watchers are installed and read by
+        // the pure exclusion helper on the watcher callback path. Never mutated in
+        // place, so a concurrent reader sees a complete list or the previous one.
+        private static volatile List<string> watchedRoots = new List<string>();
+
         // Set from a watcher callback (threadpool thread) and drained on the next
         // request/main-thread access. A callback must not call any Unity API, including
         // the logger, so the diagnostic is recorded as plain state and emitted elsewhere.
@@ -306,7 +312,20 @@ namespace UnityPuerExec
 
         private static void StartWatchersLocked()
         {
-            foreach (var root in GetWatchedRoots())
+            var roots = GetWatchedRoots();
+
+            // Cache the normalized roots before binding watchers: the exclusion helper
+            // needs them to scope the dot-directory rule to the tree each root imports,
+            // and it runs on the watcher callback path where no Unity API may be called.
+            var normalizedRoots = new List<string>(roots.Count);
+            foreach (var root in roots)
+            {
+                normalizedRoots.Add(NormalizePath(root));
+            }
+
+            watchedRoots = normalizedRoots;
+
+            foreach (var root in roots)
             {
                 try
                 {
@@ -682,7 +701,41 @@ namespace UnityPuerExec
             // change would leave the signal pending on a compilation that cannot start.
             // Only directory segments count: a file whose own name starts with '.' is
             // still a watched file. '.' and '..' are path notation, not directory names.
-            var segments = normalizedPath.Split('/');
+            //
+            // Unity only ignores dot-directories inside the Assets/ and Packages/ trees
+            // it scans, not directories above the project root. The project's own
+            // absolute prefix can therefore legitimately contain a dot segment (e.g.
+            // F:/.work/proj/Assets/Foo.cs); testing the full path would exclude every
+            // watched file. Strip a matching cached root prefix and test only the path
+            // below it, falling back to the full path when no root matches.
+            var dotTestPath = normalizedPath;
+            var roots = watchedRoots;
+            if (roots != null)
+            {
+                foreach (var root in roots)
+                {
+                    if (string.IsNullOrEmpty(root))
+                    {
+                        continue;
+                    }
+
+                    if (normalizedPath.Equals(root, StringComparison.OrdinalIgnoreCase))
+                    {
+                        dotTestPath = string.Empty;
+                        break;
+                    }
+
+                    if (normalizedPath.Length > root.Length
+                        && normalizedPath[root.Length] == '/'
+                        && normalizedPath.StartsWith(root, StringComparison.OrdinalIgnoreCase))
+                    {
+                        dotTestPath = normalizedPath.Substring(root.Length);
+                        break;
+                    }
+                }
+            }
+
+            var segments = dotTestPath.Split('/');
             var limit = lastSegmentIsDirectory ? segments.Length : segments.Length - 1;
             for (var i = 0; i < limit; i++)
             {
