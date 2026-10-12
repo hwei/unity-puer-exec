@@ -348,7 +348,6 @@ In project mode, `ensure-closed` SHALL decide whether the project is stopped fro
 - **WHEN** an agent runs `stop`
 - **THEN** the Editor process keeps running in edit mode
 
-
 ### Requirement: Log source resolution supports custom project-scoped paths
 
 CLI log-related commands SHALL support an effective Unity log source that is not limited to the platform default Editor log path. The CLI SHALL resolve the effective log source in this order: an explicit `--unity-log-path` supplied by the caller, then the console log path published by the project's Editor, then the platform default path as a last resort. The CLI SHALL NOT resolve the effective log path from a session record it wrote itself. `get-log-source` SHALL report which of these tiers produced the effective path, so a caller can distinguish an observed log the Editor named from one the CLI assumed.
@@ -403,6 +402,13 @@ All formal command results SHALL be machine-readable JSON. Successes and expecte
 - **WHEN** a formal command returns an expected non-success machine state such as `running`, `compiling`, `not_available`, `no_observation_target`, or `not_stopped`
 - **THEN** stdout carries the authoritative JSON payload
 - **AND** the payload includes stable top-level fields for that command family
+
+#### Scenario: Command response body is empty or not JSON
+
+- **WHEN** a formal command's response body is empty or cannot be parsed as JSON (for example a bridge response that arrived with no payload)
+- **THEN** the CLI emits a structured non-success JSON payload on stdout that names the condition explicitly (for example `status: "empty_response"`), the operation, and the exit-code meaning
+- **AND** it does not surface a raw decode-exception message such as `Expecting value: line 1 column 1 (char 0)` as the caller-facing `error`
+- **AND** the payload carries a `next_steps` continuation so an agent can retry or branch without parsing prose
 
 ### Requirement: Exit codes remain part of the formal machine contract
 
