@@ -7,6 +7,7 @@ assumption_state: valid
 evidence: host-validation
 # Validation transcript: validation-transcript.md (real-host play-mode command cases
 # plus the unfocused run-in-background confirmation).
-# Follow-up candidate (validation-gap): Interaction Mode throttling still advances
-# ~14 frames/s with the override off; recorded in validation-transcript.md.
+# Reviewed disposition: Unity's native Interaction Mode throttling is intentionally
+# preserved; --no-run-in-background keeps the project setting and its throttling.
+# No follow-up candidate remains for this change.
 updated_at: 2026-10-10

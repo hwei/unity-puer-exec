@@ -61,16 +61,16 @@ Conclusion:
   (≈1075 frames/s).
 - Without the override, the unfocused Editor is heavily throttled (≈14 frames/s).
 - `ProjectSettings.asset` is unchanged.
-- **Interaction Mode throttling still matters.** With the override off, the loop did not
-  fully stall; it advanced ~83 frames in 6 s. That is the Editor's unfocused Interaction
-  Mode throttle, a separate setting from `runInBackground`. It is a follow-up candidate,
-  not a regression in this change: the override is effective, but a caller that opts out
-  still sees a slow (not stopped) loop.
+- **Interaction Mode throttling is preserved, by design.** With the override off, the
+  loop did not fully stall; it advanced ~83 frames in 6 s. That is the Editor's
+  unfocused Interaction Mode throttle, a separate setting from `runInBackground`.
 
-## Follow-up candidate
+## Disposition (human-reviewed)
 
-- `validation-gap`: with `--no-run-in-background` (or the project setting off), an
-  unfocused Editor still advances a small number of frames under Interaction Mode
-  throttling. Task 5.2 asked to record whether throttling still matters; it does. If a
-  future change needs the loop to fully stop when unfocused, it must address the
-  Interaction Mode preference, which this change deliberately leaves alone.
+- The Interaction Mode throttle is Unity's own native behavior and is intentionally
+  left in place. `--no-run-in-background` keeps the project's setting and therefore
+  keeps Unity's original throttling; the default `play` only forces
+  `Application.runInBackground` for the session it starts.
+- Decision: do not add a follow-up to make an unfocused Editor fully stop. There is no
+  validation gap to close here.
+
