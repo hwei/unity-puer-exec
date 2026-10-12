@@ -1992,6 +1992,58 @@ def _derive_alias_surface():
                 WARNING_GUIDANCE_MATRIX[(alias, key[1])] = entry
 
 
+# A command whose control-endpoint response body was empty or not JSON. Shared by
+# every command family that posts to the service and therefore can hit the same
+# decode boundary; see direct_exec_client._empty_response_payload. The situation
+# and continuation are defined once so the runtime guidance and the --help-status
+# tables cannot drift apart.
+_EMPTY_RESPONSE_SITUATION = (
+    "The control endpoint answered the request but returned no usable response body "
+    "(empty or not JSON), so the command could not read a result. This differs from an "
+    "unreachable endpoint: the service was reached and then dropped, most often because "
+    "a domain reload followed an automatic refresh or a play-mode transition."
+)
+_EMPTY_RESPONSE_HELP_LINE = (
+    "the control endpoint answered without a usable response body; retry once the "
+    "Editor has recovered from a domain reload."
+)
+for _empty_response_command in (
+    "exec",
+    "wait-for-exec",
+    "play",
+    "pause",
+    "stop",
+    "get-compile-errors",
+    "get-compile-warnings",
+):
+    GUIDANCE_MATRIX[(_empty_response_command, direct_exec_client.STATUS_EMPTY_RESPONSE)] = {
+        "situation": _EMPTY_RESPONSE_SITUATION,
+        "next_steps": [
+            {
+                "command": _empty_response_command,
+                "when": (
+                    "the endpoint dropped mid-reload; retry once the Editor reports ready again"
+                ),
+                "argv_template": [
+                    "unity-puer-exec", _empty_response_command,
+                    "--project-path", "{project_path}",
+                ],
+            },
+        ],
+    }
+    _empty_response_help_info = COMMAND_HELP.get(_empty_response_command)
+    if _empty_response_help_info is not None:
+        _empty_response_failure = _empty_response_help_info["status"]["failure"]
+        if not any(item[0] == direct_exec_client.STATUS_EMPTY_RESPONSE for item in _empty_response_failure):
+            _empty_response_failure.append(
+                (
+                    direct_exec_client.STATUS_EMPTY_RESPONSE,
+                    direct_exec_client.EXIT_NOT_AVAILABLE,
+                    _EMPTY_RESPONSE_HELP_LINE,
+                )
+            )
+
+
 _derive_alias_surface()
 
 GUIDANCE_MATRIX[("get-log-briefs", "full_text_requires_include")] = {

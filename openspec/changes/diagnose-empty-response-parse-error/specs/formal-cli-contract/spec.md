@@ -13,6 +13,6 @@ All formal command results SHALL be machine-readable JSON. Successes and expecte
 #### Scenario: Command response body is empty or not JSON
 
 - **WHEN** a formal command's response body is empty or cannot be parsed as JSON (for example a bridge response that arrived with no payload)
-- **THEN** the CLI emits a structured non-success JSON payload on stdout that names the condition, the operation, and the exit-code meaning
+- **THEN** the CLI emits a structured non-success JSON payload on stdout that names the condition explicitly (for example `status: "empty_response"`), the operation, and the exit-code meaning
 - **AND** it does not surface a raw decode-exception message such as `Expecting value: line 1 column 1 (char 0)` as the caller-facing `error`
 - **AND** the payload carries a `next_steps` continuation so an agent can retry or branch without parsing prose

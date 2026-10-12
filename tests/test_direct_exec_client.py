@@ -37,6 +37,20 @@ class MalformedBodyTransport:
         raise json.JSONDecodeError("Expecting value", "", 0)
 
 
+class NonJsonBodyTransport:
+    """The endpoint answered with a present-but-not-JSON body."""
+
+    def post_json(self, url, payload, timeout_seconds):
+        raise json.JSONDecodeError("Expecting value", "<html>not json</html>", 0)
+
+
+class InvalidUtf8BodyTransport:
+    """The endpoint answered with bytes that are not valid UTF-8."""
+
+    def post_json(self, url, payload, timeout_seconds):
+        raise UnicodeDecodeError("utf-8", b"\xff\xfe", 0, 1, "invalid start byte")
+
+
 class DirectExecClientTests(unittest.TestCase):
     def test_http_transport_disables_proxy_for_localhost(self):
         response = mock.Mock()
@@ -227,7 +241,7 @@ class DirectExecClientTests(unittest.TestCase):
         self.assertEqual(body["error"], "timed out")
         self.assertEqual(body["request_id"], "req-4")
 
-    def test_malformed_response_body_is_a_transport_failure_not_a_value_error(self):
+    def test_malformed_response_body_is_a_named_empty_response_state(self):
         exit_code, stdout, stderr = direct_exec_client.invoke_command(
             "refresh",
             "http://127.0.0.1:55231",
@@ -239,9 +253,66 @@ class DirectExecClientTests(unittest.TestCase):
         self.assertEqual(exit_code, direct_exec_client.EXIT_NOT_AVAILABLE)
         self.assertEqual(stderr, "")
         body = json.loads(stdout)
-        self.assertEqual(body["status"], "not_available")
-        self.assertIn("invalid response", body["error"])
+        self.assertEqual(body["status"], direct_exec_client.STATUS_EMPTY_RESPONSE)
+        self.assertEqual(body["operation"], "refresh")
         self.assertEqual(body["request_id"], "req-empty")
+        # The interpreter text is quarantined, never the caller-facing error.
+        self.assertNotIn("Expecting value", body["error"])
+        self.assertIn("Expecting value", body["response_detail"]["decode_error"])
+        self.assertEqual(body["exit_code"], direct_exec_client.EXIT_NOT_AVAILABLE)
+        self.assertIn("endpoint", body["exit_code_meaning"])
+        self.assertTrue(body["next_steps"], "empty_response must carry a continuation")
+
+    def test_empty_or_unparseable_body_is_named_for_every_command_family(self):
+        # The decode boundary is shared, so no command family may surface the
+        # interpreter text or a bare not_available for the same condition.
+        families = (
+            "exec",
+            "wait-for-exec",
+            "refresh",
+            "reset-jsenv",
+            "play-mode",
+            "get-compile-errors",
+            "get-compile-warnings",
+            "get-log-source",
+            "get-log-briefs",
+            "get-blocker-state",
+            "resolve-blocker",
+        )
+        for command in families:
+            for transport in (MalformedBodyTransport(), NonJsonBodyTransport(), InvalidUtf8BodyTransport()):
+                with self.subTest(command=command, transport=type(transport).__name__):
+                    exit_code, stdout, stderr = direct_exec_client.invoke_command(
+                        command,
+                        "http://127.0.0.1:55231",
+                        {"request_id": "req-empty"},
+                        1000,
+                        transport=transport,
+                    )
+                    self.assertEqual(stderr, "")
+                    body = json.loads(stdout)
+                    self.assertEqual(exit_code, direct_exec_client.EXIT_NOT_AVAILABLE)
+                    self.assertEqual(body["status"], direct_exec_client.STATUS_EMPTY_RESPONSE)
+                    self.assertEqual(body["operation"], command)
+                    self.assertNotIn("Expecting value", body["error"])
+                    self.assertTrue(body["next_steps"])
+
+    def test_unexpected_transport_error_is_not_collapsed_into_empty_response(self):
+        class UnexpectedFailureTransport:
+            def post_json(self, url, payload, timeout_seconds):
+                raise RuntimeError("unexpected boom")
+
+        # A non-ValueError transport failure is not swallowed into empty_response;
+        # only an undecodable body is. This keeps the new state narrow so the
+        # runtime's generic handler can still report a distinct failed/exit-1.
+        with self.assertRaises(RuntimeError):
+            direct_exec_client.invoke_command(
+                "exec",
+                "http://127.0.0.1:55231",
+                {"request_id": "req-boom"},
+                1000,
+                transport=UnexpectedFailureTransport(),
+            )
 
     def test_busy_payload_is_non_zero_on_stdout(self):
         transport = FakeTransport([

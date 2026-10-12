@@ -1011,6 +1011,69 @@ class UnityPuerExecCliTests(unittest.TestCase):
         self.assertEqual(body["request_id"], "req-timeout")
         self.assertEqual(body["status"], "not_available")
 
+    def test_exec_empty_response_body_is_a_named_branchable_state(self):
+        class MalformedBodyTransport:
+            def post_json(self, url, payload, timeout_seconds):
+                raise json.JSONDecodeError("Expecting value", "", 0)
+
+        with mock.patch.object(
+            unity_puer_exec.direct_exec_client,
+            "HttpTransport",
+            MalformedBodyTransport,
+        ):
+            exit_code, stdout, stderr = unity_puer_exec.run_cli(
+                [
+                    "exec",
+                    "--base-url",
+                    "http://127.0.0.1:55231",
+                    "--code",
+                    "export default function run(ctx) { return 1; }",
+                    "--request-id",
+                    "req-empty",
+                ]
+            )
+
+        self.assertEqual(exit_code, unity_puer_exec.EXIT_NOT_AVAILABLE)
+        self.assertEqual(stderr, "")
+        body = json.loads(stdout)
+        self.assertEqual(body["status"], "empty_response")
+        self.assertEqual(body["operation"], "exec")
+        self.assertEqual(body["request_id"], "req-empty")
+        self.assertNotIn("Expecting value", body["error"])
+        self.assertIn("Expecting value", body["response_detail"]["decode_error"])
+        self.assertEqual(
+            body["exit_code_meaning"],
+            unity_puer_exec.direct_exec_client.EMPTY_RESPONSE_EXIT_MEANING,
+        )
+        self.assertTrue(body["next_steps"])
+        failure_statuses = [item[0] for item in help_surface.COMMAND_HELP["exec"]["status"]["failure"]]
+        self.assertIn("empty_response", failure_statuses)
+
+    def test_exec_genuine_process_failure_still_exits_failed_and_stays_distinct(self):
+        with mock.patch.object(
+            unity_puer_exec.direct_exec_client,
+            "invoke_command",
+            side_effect=RuntimeError("unexpected boom"),
+        ):
+            exit_code, stdout, stderr = unity_puer_exec.run_cli(
+                [
+                    "exec",
+                    "--base-url",
+                    "http://127.0.0.1:55231",
+                    "--code",
+                    "export default function run(ctx) { return 1; }",
+                    "--request-id",
+                    "req-boom",
+                ]
+            )
+
+        # The named empty-response state must not absorb a genuinely unexpected
+        # process-level failure: that still exits 1 with status failed.
+        self.assertEqual(exit_code, 1)
+        body = json.loads(stdout or stderr)
+        self.assertEqual(body["status"], "failed")
+        self.assertNotEqual(body["status"], unity_puer_exec.direct_exec_client.STATUS_EMPTY_RESPONSE)
+
     def test_exec_startup_not_ready_returns_running_with_next_step_and_persists_pending_request(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             project_path = Path(temp_dir) / "Project"

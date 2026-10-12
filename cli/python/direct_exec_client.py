@@ -17,6 +17,19 @@ EXIT_MODULE_CACHE_STALE = 22
 EXIT_UNITY_COMPILE_ERROR = 23
 EXIT_VERSION_MISMATCH = 24
 
+# Named non-success state for a control-endpoint response whose body is empty or
+# cannot be parsed as JSON. `json.loads("")` is the common case (the endpoint
+# dropped mid-domain-reload after accepting the request); invalid UTF-8 is the
+# other. It is deliberately distinct from `not_available`: an unreachable target
+# and an answered-but-empty body are different conditions, even though they share
+# exit code 12 so the baseline exit-code model is unchanged.
+STATUS_EMPTY_RESPONSE = "empty_response"
+EMPTY_RESPONSE_ERROR = (
+    "The control endpoint returned an empty or unparseable response body; "
+    "the response could not be decoded as JSON."
+)
+EMPTY_RESPONSE_EXIT_MEANING = "the control endpoint answered without a usable response body"
+
 # Control-port range contract. The Unity control service binds the preferred port
 # first and rolls over to later ports in [CONTROL_PORT_PREFERRED, CONTROL_PORT_END)
 # when the preferred port is occupied, so multiple Editors can run concurrently.
@@ -109,6 +122,35 @@ def _payload_request_id(payload):
     return payload.get("request_id") or payload.get("id")
 
 
+def _empty_response_payload(command, exc, request_id=None):
+    """Structured, branchable payload for an empty/unparseable response body.
+
+    The raw interpreter text is quarantined under `response_detail.decode_error`
+    instead of `error`, so the caller-facing `error` describes the condition.
+    """
+    payload = {
+        "ok": False,
+        "status": STATUS_EMPTY_RESPONSE,
+        "operation": command,
+        "error": EMPTY_RESPONSE_ERROR,
+        "response_detail": {"reason": STATUS_EMPTY_RESPONSE, "decode_error": str(exc)},
+        "exit_code": EXIT_NOT_AVAILABLE,
+        "exit_code_meaning": EMPTY_RESPONSE_EXIT_MEANING,
+        "next_steps": [
+            {
+                "command": command,
+                "when": (
+                    "the endpoint may have dropped during a domain reload; retry once "
+                    "the Editor reports ready again"
+                ),
+            }
+        ],
+    }
+    if request_id:
+        payload["request_id"] = request_id
+    return payload
+
+
 def invoke_command(command, base_url, payload, wait_timeout_ms, transport=None):
     transport = transport or HttpTransport()
     request_id = _payload_request_id(payload)
@@ -142,16 +184,10 @@ def invoke_command(command, base_url, payload, wait_timeout_ms, transport=None):
             error_payload["request_id"] = request_id
         return EXIT_NOT_AVAILABLE, json.dumps(error_payload, ensure_ascii=True), ""
     except ValueError as exc:
-        # A truncated or empty body is a transport failure, not a command failure:
-        # an endpoint that dropped mid-reload must not surface a JSON traceback as a
-        # usage error.
-        error_payload = {
-            "ok": False,
-            "status": "not_available",
-            "error": "invalid response: {}".format(exc),
-        }
-        if request_id:
-            error_payload["request_id"] = request_id
+        # A truncated, empty, or non-UTF-8 body is a response condition, not a
+        # command failure: name it so the caller can branch instead of parsing the
+        # interpreter's exception text.
+        error_payload = _empty_response_payload(command, exc, request_id=request_id)
         return EXIT_NOT_AVAILABLE, json.dumps(error_payload, ensure_ascii=True), ""
     except socket.timeout:
         error_payload = {
