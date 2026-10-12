@@ -111,29 +111,6 @@ The Unity-side control service SHALL start only when activation has been explici
 - **THEN** the control service does not start
 - **AND** the subprocess does not bind or occupy any port in the control port range
 
-### Requirement: Health response exposes whether a code change is pending refresh
-
-The Unity-side health endpoint SHALL report whether the control service currently considers a compile-triggering change pending, so that a caller observing an Editor can distinguish "no refresh needed" from "refresh will happen on the next exec" without triggering an exec. The field SHALL be present on ready health responses. When the service cannot determine its pending state — for example because its change signal was invalidated by a watcher error or by a domain reload that reset in-memory state — the response SHALL report the pending state as unknown rather than reporting a false negative.
-
-#### Scenario: Caller probes health with no pending change
-
-- **WHEN** a caller probes `/health` on a ready service
-- **AND** no compile-triggering change is pending
-- **THEN** the health response reports that no refresh is pending
-
-#### Scenario: Caller probes health with a pending change
-
-- **WHEN** a caller probes `/health` on a ready service
-- **AND** a compile-triggering change is pending but not yet refreshed
-- **THEN** the health response reports that a refresh is pending
-
-#### Scenario: Pending state is unknown after a signal failure
-
-- **WHEN** the change signal is invalidated by a watcher error or a domain reload
-- **AND** a caller probes `/health`
-- **THEN** the health response reports the pending state as unknown
-- **AND** it does not report that no refresh is pending
-
 ### Requirement: Health response exposes whether automatic refresh is currently suppressed
 
 The health endpoint SHALL report when automatic refresh is suppressed because the Editor is in play mode, together with the reason. A caller SHALL be able to observe that a pending change will not be refreshed until play mode exits. While suppression is reported, the health response SHALL also report the Editor's "Script Changes While Playing" preference, so a caller can tell whether Unity itself would compile during play.
@@ -195,3 +172,24 @@ The health endpoint SHALL report the Editor's play state as one of `edit`, `ente
 
 - **WHEN** a caller probes `/health` after entering play mode was requested but before it completed
 - **THEN** the response reports `play_state: "entering"`
+
+### Requirement: Health response exposes the pending refresh state
+
+The Unity-side health endpoint SHALL report whether the control service currently
+considers a compile-triggering change pending, so that a caller observing an Editor can
+distinguish "no refresh needed" from "refresh will happen on the next exec" without
+triggering an exec. The field SHALL be present on ready health responses. Because the
+pending state is computed from the filesystem on each probe rather than from in-memory
+event state, a ready service always has a definite answer: `pending` or `not_pending`.
+
+#### Scenario: Caller probes health with no pending change
+
+- **WHEN** a caller probes `/health` on a ready service
+- **AND** no compile-triggering change is pending
+- **THEN** the health response reports that no refresh is pending
+
+#### Scenario: Caller probes health with a pending change
+
+- **WHEN** a caller probes `/health` on a ready service
+- **AND** a compile-triggering change is pending but not yet refreshed
+- **THEN** the health response reports that a refresh is pending

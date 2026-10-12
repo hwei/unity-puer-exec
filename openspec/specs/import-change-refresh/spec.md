@@ -102,69 +102,6 @@ Because importing a file does not alter its modification time, the settled-impor
 - **AND** a new exec request arrives
 - **THEN** the server refreshes again
 
-### Requirement: Refresh decision survives watcher failure modes
-
-The change signal SHALL NOT depend solely on a live filesystem watcher having observed every event. When the watcher reports an error, when its internal buffer overflows, or when the service installs its watcher, the service SHALL treat the project as possibly changed rather than silently reporting no change.
-
-#### Scenario: Watcher reports an error
-
-- **WHEN** the filesystem watcher raises an error event, including internal buffer overflow
-- **AND** a new exec request arrives
-- **THEN** the server treats the project as changed and refreshes
-
-#### Scenario: Changes made before the service installed its watcher
-
-- **WHEN** a compile-triggering file was changed before the control service installed its watcher
-- **AND** a new exec request arrives
-- **THEN** the server detects that pending change at watcher-install time and refreshes
-
-#### Scenario: Domain reload resets watcher state
-
-- **WHEN** a domain reload resets the watcher's in-memory state
-- **AND** a compile-triggering file changed across that reload
-- **AND** a new exec request arrives
-- **THEN** the server detects the change and refreshes
-
-### Requirement: An invalidated signal forces one refresh, then re-establishes trust
-
-When the service cannot trust its change signal — a watcher error event, or any
-state where events may have been dropped — the next refresh decision SHALL treat the
-project as changed and refresh it once rather than reporting no change. Because the
-decision's own scan is the authoritative signal, the service SHALL re-establish trust
-from that same decision: once a decision has consumed the invalidation, the service
-SHALL NOT keep forcing a refresh on subsequent requests that observe no change. Until
-a decision consumes it, the health endpoint SHALL keep reporting the pending state as
-unknown rather than as a false negative.
-
-This bounds the fallback so an invalidation cannot become an unconditional per-exec
-refresh — a liveliness failure the design treats as more severe than a one-shot miss.
-
-#### Scenario: An invalidated signal refreshes exactly once
-
-- **WHEN** the change signal is invalidated
-- **AND** an exec request arrives
-- **THEN** the server refreshes before executing the script
-- **AND** the response names the unavailable signal as the refresh reason
-- **AND** the script still executes
-
-#### Scenario: Trust is re-established after the invalidation is consumed
-
-- **WHEN** a refresh decision has consumed an invalidation
-- **AND** another exec request arrives with no further file change
-- **THEN** the server does not refresh again
-
-#### Scenario: Health reports unknown until a decision consumes the invalidation
-
-- **WHEN** the change signal is invalidated
-- **AND** a caller probes `/health` before any exec request arrives
-- **THEN** the response reports the pending state as unknown
-
-#### Scenario: Health resolves once the invalidation is consumed
-
-- **WHEN** a refresh decision has consumed an invalidation
-- **AND** a caller probes `/health`
-- **THEN** the response reports the pending state normally rather than unknown
-
 ### Requirement: Play mode skips the refresh without discarding the change signal
 
 Unity defers compilation while the Editor is in play mode, so refreshing there would wait for a compilation that cannot start. When the Editor is in play mode, the service SHALL skip the automatic refresh and SHALL report the skip reason. The service SHALL NOT clear the pending change signal as a result of skipping. When the skip leaves a compile-triggering change pending, the exec response SHALL NOT report a plain success: it SHALL report a warning that the script ran against code that does not include the pending change.
@@ -287,3 +224,37 @@ apply: a failure status or an existing async warning keeps its status and code, 
 
 - **WHEN** `wait-for-exec` returns a non-terminal `running` / `refreshing` response
 - **THEN** the response is not annotated with a `compile_blocked` object
+
+### Requirement: Change detection is the incremental filesystem scan alone
+
+The control service SHALL detect compile-triggering changes by walking the watched roots
+on each decision, with no dependency on a live filesystem watcher. A change SHALL be
+detected when a compile-triggering file's modification time is newer than the
+settled-import timestamp, including changes made before the service installed and changes
+made across a domain reload. The decision SHALL NOT depend on in-memory event state that a
+domain reload discards.
+
+#### Scenario: A change made before the service was installed is detected
+
+- **WHEN** a compile-triggering file is changed while no service state exists
+- **AND** the service becomes ready and an exec request arrives
+- **THEN** the scan detects the change and the server refreshes
+
+#### Scenario: A change across a domain reload is detected
+
+- **WHEN** a compile-triggering file is changed across a domain reload
+- **AND** an exec request arrives
+- **THEN** the scan detects the change and the server refreshes
+- **AND** the detection does not depend on any watcher having been attached before or
+  after the reload
+
+#### Scenario: Detection holds with no watcher present
+
+- **WHEN** no filesystem watcher is attached in the Editor process
+- **THEN** a compile-triggering change is still detected on the next decision
+
+#### Scenario: Non-code and no-change decisions are unaffected
+
+- **WHEN** the scan finds only non-code changes, or no change
+- **THEN** the server does not refresh
+- **AND** the extension filter and the settled-import comparison are unchanged
