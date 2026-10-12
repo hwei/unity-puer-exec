@@ -1,9 +1,8 @@
 change_type: refactor
 priority: P2
 blocked_by:
-  - add-play-mode-commands
   - root-relative-dot-directory-exclusion
   - scan-only-import-change-signal
 assumption_state: valid
 evidence: manual-check
-updated_at: 2026-10-10
+updated_at: 2026-10-12

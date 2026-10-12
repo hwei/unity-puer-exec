@@ -8,13 +8,14 @@ that shape the approach:
 - The strict validator measures only the requirement **description** (from
   `### Requirement:` to the first `#### Scenario:`). Every warning is therefore fixable
   by moving text out of the description, without touching a single scenario.
-- `formal-cli-contract` carries 22 of the 65 long requirements, so the work is
+- `formal-cli-contract` carried 22 of the 65 long requirements at proposal time (the
+  authoritative counts come from task 1.2), so the work is
   mechanical and repetitive rather than deep; one capability dominates the count.
 - Five capabilities need both a requirement split and a Purpose
   (`cache-staleness-detection`, `cli-version-compatibility`, `compile-wait`,
   `editor-log-isolation`, `editor-session-discovery`), so the two work streams meet in
   the same files and must be edited together.
-- Three active changes hold `MODIFIED`/`REMOVED` deltas over requirements this change
+- Two active changes hold `MODIFIED`/`REMOVED` deltas over requirements this change
   would rewrite, and their archive merge is authoritative over the main specs.
 - The repository already treats `openspec/specs/` as the durable truth and
   `openspec/config.yaml` as repository-wide context. Nothing here moves text between
@@ -48,7 +49,7 @@ that shape the approach:
 A delta spec cannot express "same behavior, better structure". Using `MODIFIED` would
 require copying 65 requirement blocks full replacement text and would officially record
 65 behavioral changes, producing misleading change history and a large merge surface for
-the three in-flight changes. `RENAMED` only covers name changes. The change therefore
+the in-flight changes. `RENAMED` only covers name changes. The change therefore
 declares `skip_specs: true` and edits `openspec/specs/*/spec.md` in place; the strict
 validator on those files is the acceptance gate, which is a stronger structural check
 than a delta merge.
@@ -84,11 +85,10 @@ requirements do not already state.
 
 ### D4. Sequence with `blocked_by`, then re-baseline
 
-`blocked_by` names `add-play-mode-commands`, `root-relative-dot-directory-exclusion`,
-and `scan-only-import-change-signal`. The first two carry `MODIFIED` deltas over
-`formal-cli-contract` and `import-change-refresh` requirements that this change rewrites;
-the third `REMOVED`/`MODIFIED` the `project-control-endpoint` pending-refresh
-requirement and adds a long replacement requirement in its own delta. Archiving them
+`blocked_by` names `root-relative-dot-directory-exclusion` and
+`scan-only-import-change-signal`. The first carries a `MODIFIED` delta over an
+`import-change-refresh` requirement that this change rewrites; the second
+`REMOVED`/`MODIFIED` the `project-control-endpoint` pending-refresh requirement and adds a long replacement requirement in its own delta. Archiving them
 first means this change rewrites the merged result once, instead of being overwritten.
 After they archive, this change re-runs `openspec validate --all --strict` and folds any
 newly surfaced warning into its tasks before starting.

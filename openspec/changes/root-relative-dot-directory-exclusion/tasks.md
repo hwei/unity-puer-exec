@@ -2,7 +2,7 @@
 
 ## 1. Scope the dot-directory rule to the watched root
 
-- [ ] 1.1 Cache the normalized watched roots when the watcher is installed, and make the exclusion helper strip a matching root prefix before applying the dot-directory segment test; keep the current full-path test as the fallback when no root matches. Verify: the ordinary path still excludes `Assets/.not_imported/Foo.cs`, and `F:/.work/proj/Assets/Foo.cs` is not excluded.
+- [ ] 1.1 Cache the normalized watched roots when the tracker is installed (today inside `StartWatchersLocked`), and make the exclusion helper strip a matching root prefix before applying the dot-directory segment test; keep the current full-path test as the fallback when no root matches. Verify: the ordinary path still excludes `Assets/.not_imported/Foo.cs`, and `F:/.work/proj/Assets/Foo.cs` is not excluded.
 - [ ] 1.2 Extend the source-invariant test so the exclusion helper still touches no Unity API and is proven to consume the cached roots. Verify: `python -m unittest tests.test_refresh_change_signal` is green.
 
 ## 2. Real-host confirmation

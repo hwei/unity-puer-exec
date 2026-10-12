@@ -2,8 +2,10 @@
 
 ## Why
 
-`openspec validate --all --strict` currently reports exactly two warning classes and
-nothing else:
+`openspec validate --all --strict` reported exactly two warning classes and nothing
+else when this change was proposed (counts below predate the archive of
+`add-play-mode-commands` and later changes; task 1.2 re-baselines the authoritative
+list):
 
 - **65 over-length requirement descriptions** across 20 capabilities. The validator
   flags any requirement whose description (the text between `### Requirement:` and its
@@ -40,7 +42,7 @@ No product, CLI, or Editor behavior changes. This is a restructure of durable sp
   sets `skip_specs: true`, and its acceptance gate is the strict validator plus the
   existing structural test, not a spec merge.
 - **Sequence behind the in-flight changes whose deltas touch the same requirements.**
-  Three active changes carry `MODIFIED`/`REMOVED` deltas over requirements this change
+  Two active changes carry `MODIFIED`/`REMOVED` deltas over requirements this change
   would rewrite; their archive merge would overwrite the split. This change declares
   `blocked_by` on them and re-runs the strict validator after they land so anything newly
   surfaced by their merge is folded in.
@@ -71,10 +73,11 @@ No product, CLI, or Editor behavior changes. This is a restructure of durable sp
 - Existing structural guard `tests/test_openspec_spec_hygiene.py` (it mirrors the
   every-requirement-needs-a-scenario-and-SHALL rule) must keep passing. It is a guard, not
   the acceptance gate; the gate is `openspec validate --all --strict`.
-- Sequencing: `blocked_by` = `add-play-mode-commands`,
-  `root-relative-dot-directory-exclusion`, `scan-only-import-change-signal`. Each carries a
-  `MODIFIED`/`REMOVED` delta over a requirement in `formal-cli-contract`,
-  `import-change-refresh`, or `project-control-endpoint` that this change rewrites.
+- Sequencing: `blocked_by` = `root-relative-dot-directory-exclusion`,
+  `scan-only-import-change-signal`. Each carries a `MODIFIED`/`REMOVED` delta over a
+  requirement in `import-change-refresh` or `project-control-endpoint` that this change
+  rewrites. (`add-play-mode-commands`, the former third dependency over
+  `formal-cli-contract`, has been archived; its merged text is picked up by task 1.2.)
   `scan-only-import-change-signal` additionally holds a long `ADDED` requirement in its own
   delta (`project-control-endpoint`: "Health response exposes the pending refresh state")
   which must be split after it merges.

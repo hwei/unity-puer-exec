@@ -71,5 +71,11 @@ elsewhere" is not a reason to keep a subsystem that does not work here.
 - `tests/` — the watcher-error real-host case and the watcher source-invariant cases are
   removed or rewritten; the scan cases (`non-code writes`, `baseline/pre-attach`,
   `settled timestamp`, `play mode`) stay and are the regression surface.
+- Preserved constraints: the scan keeps the dot-directory exclusion added by the archived
+  `ignore-dot-directories-in-import-change-scan` and its root-relative scope from
+  `root-relative-dot-directory-exclusion`. That change caches the watched roots inside
+  `StartWatchersLocked`; removing the watcher must move the root cache into `Install()`,
+  not drop it. This change is therefore sequenced after
+  `root-relative-dot-directory-exclusion` (`blocked_by`).
 - No CLI change and no change to the refresh diagnostics block for the ordinary paths;
   `reason: watcher_signal_unavailable` disappears because nothing can produce it.

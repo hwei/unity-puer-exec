@@ -19,8 +19,8 @@ property.
 **Goals:**
 
 - The dot-directory rule applies only to segments inside the watched root.
-- The fix stays in the pure `System.IO` path helpers so watcher callbacks keep their
-  no-Unity-API guarantee.
+- The fix stays in the pure `System.IO` path helpers so off-thread callers (today the
+  watcher callbacks) keep their no-Unity-API guarantee.
 
 **Non-Goals:**
 
@@ -33,7 +33,7 @@ property.
 ### D1. Scope the dot test to the path below the watched root
 
 `GetWatchedRoots()` already enumerates the roots. Cache the normalized roots in plain
-state when the watcher is installed, and have the exclusion helper strip the matching
+state when the tracker is installed, and have the exclusion helper strip the matching
 root prefix before it splits segments and applies the dot test. A path that matches no
 known root keeps the current behavior (test the full path), so an unknown input is
 never silently trusted more than today.
@@ -55,6 +55,11 @@ concurrent reader sees either the previous complete list or the next one, never 
 torn one; no lock is needed on the callback path. This keeps `IsExcludedPath` free of
 `Application.` / `UnityEditor` tokens, which the source-invariant test asserts.
 
+The cache belongs to tracker install, not to the watcher. When
+`scan-only-import-change-signal` deletes `StartWatchersLocked`, the root cache moves
+with root enumeration into `Install()`; the field and its publication contract stay
+unchanged.
+
 ### D3. Prove it with a source invariant plus the existing real-host class
 
 The tracker has no C# unit host. A source-level test can assert the helper consults the
@@ -65,7 +70,7 @@ stage, so it stays a source-level contract.
 
 ## Risks / Trade-offs
 
-- If the cached root list is empty (watcher install failed before any root was
+- If the cached root list is empty (tracker install failed before any root was
   recorded), the helper falls back to testing the full path — today's behavior, not a
   new failure mode.
 - A root prefix that is not normalized identically to the candidate path would not

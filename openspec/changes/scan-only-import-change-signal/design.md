@@ -119,9 +119,9 @@ asserts a state the contract no longer has.
 
 This change also rewrites the refresh real-host cases — the same surface where
 `diagnose-exec-missing-after-auto-refresh` adds its reload-loss regression (the
-deterministic `test_base_url_automatic_refresh_and_wait_for_compile` failure). The
-recommended apply order lands that change first; if it has landed, the rewrite must
-preserve its regression rather than drop it alongside the watcher-error case.
+deterministic `test_base_url_automatic_refresh_and_wait_for_compile` failure). That
+change has landed (archived 2026-09-21), so the rewrite must preserve its regression
+rather than drop it alongside the watcher-error case.
 
 ## Risks / Trade-offs
 
@@ -134,6 +134,12 @@ unmitigated]** → The candidate set never contained anything the scan did not a
 so it was not an independent mitigation. The scan's correctness rests on the mtime
 comparison and the settled-import timestamp, which are unchanged and covered by real-host
 cases.
+
+**[Removing the watcher drops the scan's exclusion scope]** → The dot-directory test
+(`ignore-dot-directories-in-import-change-scan`) and its root-relative scope
+(`root-relative-dot-directory-exclusion`, which caches roots in `StartWatchersLocked`)
+are scan behavior, not watcher behavior. The root cache moves into `Install()`; task 3.4
+and the root-relative source invariant guard it.
 
 **[Cold scan cost moves to the first decision]** → Measured, accepted (Decision 3), with a
 named follow-up if the warmup path regresses.
@@ -162,8 +168,7 @@ reset runs before every case against a reused Editor.
    source-invariant assertions; keep and retarget the scan cases; keep the settled
    timestamp, extension-filter, play-mode, and diagnostics coverage. Reconcile the
    shared-host per-case reset with the scan-only tracker (Decision 5) in the same pass,
-   and preserve the reload-loss regression if `diagnose-exec-missing-after-auto-refresh`
-   has landed.
+   and preserve the reload-loss regression from `diagnose-exec-missing-after-auto-refresh`.
 5. Update the run/help documentation that mentions a watcher; re-run the mock suite and
    the real-host suite and record the result.
 

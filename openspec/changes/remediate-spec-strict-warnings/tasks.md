@@ -2,7 +2,7 @@
 
 ## 1. Dependency gate and merged work list
 
-- [ ] 1.1 Confirm all three `blocked_by` changes are archived (`add-play-mode-commands`, `root-relative-dot-directory-exclusion`, `scan-only-import-change-signal`) and that this change is no longer reported as blocked. Verify: each name appears under `openspec/changes/archive/` via `git log --oneline -- openspec/changes/archive`, and `python tools/openspec_backlog.py list --backlog` no longer lists this change as ineligible for that reason.
+- [ ] 1.1 Confirm both `blocked_by` changes are archived (`root-relative-dot-directory-exclusion`, `scan-only-import-change-signal`) and that this change is no longer reported as blocked. Verify: each name appears under `openspec/changes/archive/` via `git log --oneline -- openspec/changes/archive`, and `python tools/openspec_backlog.py list --backlog` no longer lists this change as ineligible for that reason.
 - [ ] 1.2 Re-run `openspec validate --all --strict --json` on the merged specs and record the authoritative work list — every capability with a long-requirement warning (requirement header and character count) and every placeholder `## Purpose` — to `.tmp/spec-strict-worklist.json`. Verify: the file exists, its long-requirement count and placeholder count equal the validator's issue counts, and it names any requirement the dependencies' merge newly introduced (for example the `project-control-endpoint` pending-refresh replacement from `scan-only-import-change-signal`).
 
 ## 2. Placeholder purposes
