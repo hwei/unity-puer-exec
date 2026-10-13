@@ -185,6 +185,11 @@ is a deterministic code-path gap, reproducible without a host. The archive is im
 the flake-class bucket may be conflating environmental noise with an unclassified transport
 class, which risks a future real bug being filed as environmental.
 
+**Disposition: dropped by human review (2026-10-13).** Raised during closeout, then declined:
+the archived record already carries the corrected classification, and a standalone change for
+a process observation was judged to carry no code or durable-spec value. Noted here so the
+reasoning is not lost and re-raised in a later session.
+
 ## 6. Verification evidence
 
 - Default suite green: `python -m unittest discover -s tests` → `Ran 730 tests in 39.135s`, `OK (skipped=3)`.
