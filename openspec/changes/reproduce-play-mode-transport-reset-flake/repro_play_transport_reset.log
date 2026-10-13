@@ -1,0 +1,15 @@
+== 1. Which exceptions does invoke_command() convert to a retryable status? ==
+   (a retryable status is what makes _post_play_mode re-resolve and retry)
+
+  urllib URLError        status='not_available'    retryable=True
+  RemoteDisconnected     ESCAPED RemoteDisconnected -> NOT retryable
+  ConnectionResetError   ESCAPED ConnectionResetError -> NOT retryable
+  socket.timeout         status='not_available'    retryable=True
+  ValueError (bad body)  status='empty_response'   retryable=True
+
+== 2. Does the escaped exception reach the observed payload shape? ==
+  exit_code: 1
+  stdout:    {"ok": false, "status": "failed", "operation": "play", "error": "[Errno 10054] remote host forcibly closed an existing connection", "cli_version": "0.9.0"}
+
+  matches the observed real-host envelope shape: True
+  (this change does not fix it; see the recorded finding)
