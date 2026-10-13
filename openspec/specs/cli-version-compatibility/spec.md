@@ -1,7 +1,7 @@
 # cli-version-compatibility Specification
 
 ## Purpose
-TBD - created by archiving change enforce-cli-version-compatibility. Update Purpose after archive.
+Have the CLI resolve its own release version and verify exact equality against the Unity bridge, adjacent installed package, and control service before performing command work, refusing on any mismatch or unavailable counterpart without offering a bypass.
 
 ## Requirements
 
@@ -106,7 +106,7 @@ When the CLI executable resolves to a location inside an installed package tree,
 
 ### Requirement: The CLI verifies its version against the control service
 
-Every command that contacts the Unity control service SHALL compare the CLI version against the `bridge_version` reported by that service before performing the command's work, in both `--project-path` and `--base-url` mode. A reachable health payload whose `status` is not `ready` and that omits `bridge_version` SHALL NOT, by itself, satisfy this comparison as a mismatch; the command SHALL treat that payload as not yet version-observable and continue its normal non-ready handling (wait, compiling continuation, or the command's own not-ready status).
+Every command that contacts the Unity control service SHALL compare the CLI version against the `bridge_version` reported by that service before performing the command's work, in both `--project-path` and `--base-url` mode.
 
 #### Scenario: Bridge version disagrees with CLI version
 
@@ -119,6 +119,10 @@ Every command that contacts the Unity control service SHALL compare the CLI vers
 
 - **WHEN** a command targets a service through `--base-url` and the reported `bridge_version` differs from the CLI version
 - **THEN** the command SHALL return `version_mismatch` on the same terms as project-scoped mode
+
+### Requirement: A compiling health payload without a version is not a mismatch
+
+A reachable health payload whose `status` is not `ready` and that omits `bridge_version` SHALL NOT, by itself, satisfy this comparison as a mismatch; the command SHALL treat that payload as not yet version-observable and continue its normal non-ready handling (wait, compiling continuation, or the command's own not-ready status).
 
 #### Scenario: Compiling health without a version is not a mixed installation
 

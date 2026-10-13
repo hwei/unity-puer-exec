@@ -8,7 +8,7 @@ Define the contract for machine-readable follow-up guidance emitted in CLI runti
 
 ### Requirement: Responses carry multi-candidate next_steps for actionable follow-up
 
-When a CLI command response reaches a status where one or more concrete follow-up commands are appropriate, the response SHALL include a `next_steps` array. Each entry SHALL carry `command` (string) and `when` (string describing when the action is appropriate). Entries MAY carry `argv` (string array) when the CLI has sufficient context to construct a concrete invocation. An entry SHALL NOT name a flag or command that the current CLI surface does not accept; in particular no entry SHALL carry a flag that has been removed and retained only to emit a usage error.
+When a CLI command response reaches a status where one or more concrete follow-up commands are appropriate, the response SHALL include a `next_steps` array. Each entry SHALL carry `command` (string) and `when` (string describing when the action is appropriate), and MAY carry `argv` (string array) when the CLI has sufficient context to construct a concrete invocation.
 
 #### Scenario: exec running response includes multiple follow-up candidates
 
@@ -33,6 +33,10 @@ When a CLI command response reaches a status where one or more concrete follow-u
 
 - **WHEN** a command response reaches a status where no concrete follow-up command is appropriate (e.g., `not_available`, `no_supported_blocker`)
 - **THEN** the response SHALL NOT include `next_steps` or SHALL include an empty `next_steps` array
+
+### Requirement: Guidance references only live CLI surface
+
+An entry SHALL NOT name a flag or command that the current CLI surface does not accept; in particular no entry SHALL carry a flag that has been removed and retained only to emit a usage error.
 
 #### Scenario: Guidance references only live surface
 
@@ -61,14 +65,16 @@ When a CLI command response reaches a status where the agent benefits from under
 
 ### Requirement: Guidance covers all commands and statuses via a static matrix
 
-The CLI SHALL maintain a static guidance matrix keyed by `(command, status)` that determines which `next_steps` and `situation` content to include in each response. The matrix SHALL cover every command in the authoritative flat command tree defined by the formal CLI contract, and all documented response statuses for each. The coverage requirement SHALL be expressed against that command tree rather than against a fixed command count, so adding a command extends the obligation automatically instead of leaving a stale number behind.
-
-Candidate *selection* (which commands appear, in which order, and whether a `situation` is attached) SHALL be determined by the command name and status alone. The CLI SHALL NOT inspect script-authored `result` fields to filter, reorder, or replace candidates. When a selected candidate includes an `argv_template`, the CLI MAY fill placeholder values from CLI-owned response envelope fields (including `log_range`) and from invocation arguments; it SHALL NOT fill placeholders from script-authored `result`.
+The CLI SHALL maintain a static guidance matrix keyed by `(command, status)` that determines which `next_steps` and `situation` content to include in each response. The matrix SHALL cover every command in the authoritative flat command tree defined by the formal CLI contract, and all documented response statuses for each.
 
 #### Scenario: Every documented non-success status has a guidance matrix entry
 
 - **WHEN** a command returns any documented non-success status from the formal CLI contract
 - **THEN** the guidance matrix provides either `next_steps`, `situation`, or both for that command × status combination
+
+### Requirement: Coverage follows the command tree, not a fixed count
+
+The coverage requirement SHALL be expressed against that command tree rather than against a fixed command count, so adding a command extends the obligation automatically instead of leaving a stale number behind.
 
 #### Scenario: Coverage follows the command tree
 
@@ -76,11 +82,19 @@ Candidate *selection* (which commands appear, in which order, and whether a `sit
 - **THEN** the guidance matrix contains entries for that command
 - **AND** a command added to the tree without matrix entries is detected rather than silently returning responses with no guidance
 
+### Requirement: Candidate selection ignores script-authored result fields
+
+Candidate *selection* (which commands appear, in which order, and whether a `situation` is attached) SHALL be determined by the command name and status alone. The CLI SHALL NOT inspect script-authored `result` fields to filter, reorder, or replace candidates.
+
 #### Scenario: Candidate selection ignores script-authored result fields
 
 - **WHEN** the CLI constructs `next_steps` for a response
 - **THEN** the candidates are determined by the command name and status alone
 - **AND** the CLI does not inspect script-authored `result` fields to filter or reorder candidates
+
+### Requirement: Argv placeholders fill only from CLI-owned fields
+
+When a selected candidate includes an `argv_template`, the CLI MAY fill placeholder values from CLI-owned response envelope fields (including `log_range`) and from invocation arguments; it SHALL NOT fill placeholders from script-authored `result`.
 
 #### Scenario: Argv values may use CLI-owned envelope fields
 
@@ -155,7 +169,7 @@ When a CLI command response reaches `status: "warning"` and the warning relates 
 
 ### Requirement: exec unity_compile_error responses carry situation and next_steps
 
-When `exec` returns `status: "unity_compile_error"`, the response SHALL include a `situation` string explaining that C# compilation has errors, the script was not executed, and the agent must fix the C# errors before retrying. The response SHALL include `next_steps` with at least two candidates: one for re-running `exec` after fixing the errors, and one for `get-compile-errors`. The re-run candidate SHALL NOT carry a refresh flag, because fixing a C# error is itself a file write that the automatic refresh observes.
+When `exec` returns `status: "unity_compile_error"`, the response SHALL include a `situation` string explaining that C# compilation has errors, the script was not executed, and the agent must fix the C# errors before retrying. The response SHALL include `next_steps` with at least two candidates: one for re-running `exec` after fixing the errors, and one for `get-compile-errors`.
 
 #### Scenario: exec returns unity_compile_error with guidance
 
@@ -171,6 +185,10 @@ When `exec` returns `status: "unity_compile_error"`, the response SHALL include 
 - **WHEN** `exec` returns `status: "unity_compile_error"`
 - **THEN** the `situation` text points callers to structured compile diagnostics such as `compile_errors_total`, `compile_warnings_total`, `compile_messages`, or `get-compile-errors`
 - **AND** the `situation` advises the agent to fix the C# errors and recompile
+
+### Requirement: Compile-error re-run candidate carries no refresh flag
+
+The re-run candidate SHALL NOT carry a refresh flag, because fixing a C# error is itself a file write that the automatic refresh observes.
 
 #### Scenario: Guidance does not direct callers to a removed flag
 
@@ -199,7 +217,7 @@ The `exec --help-status` and `wait-for-exec --help-status` output SHALL list `un
 
 ### Requirement: Failed exec responses hint at the puer. prefix for bare $typeof/$ref ReferenceErrors
 
-When `exec` or `wait-for-exec` completes with `status = "failed"` and the `error` field is a `ReferenceError` indicating an undefined bare `$typeof` or `$ref` identifier (a script author omitted the `puer.` prefix), the response `situation` text SHALL include a hint suggesting `puer.$typeof` / `puer.$ref`. This inspection SHALL be limited to augmenting `situation` text for this specific error shape; it SHALL NOT alter `next_steps` candidate selection, and SHALL NOT inspect the script-authored `result` field. This is consistent with, and does not reverse, the existing requirement that `next_steps` candidates are determined by command and status alone.
+When `exec` or `wait-for-exec` completes with `status = "failed"` and the `error` field is a `ReferenceError` indicating an undefined bare `$typeof` or `$ref` identifier (a script author omitted the `puer.` prefix), the response `situation` text SHALL include a hint suggesting `puer.$typeof` / `puer.$ref`.
 
 #### Scenario: exec fails on a bare $typeof reference
 
@@ -222,6 +240,10 @@ When `exec` or `wait-for-exec` completes with `status = "failed"` and the `error
 
 - **WHEN** an `exec` script fails with an error that does not match the bare `$typeof`/`$ref` `ReferenceError` shape (for example, a `TypeError` or an application-authored error mentioning `$typeof` in a longer message)
 - **THEN** the `situation` text does not include the `puer.$typeof`/`puer.$ref` hint
+
+### Requirement: The prefix hint does not alter candidate selection
+
+This inspection SHALL be limited to augmenting `situation` text for this specific error shape; it SHALL NOT alter `next_steps` candidate selection, and SHALL NOT inspect the script-authored `result` field. This is consistent with, and does not reverse, the existing requirement that `next_steps` candidates are determined by command and status alone.
 
 #### Scenario: next_steps candidates remain unaffected
 
@@ -294,15 +316,22 @@ Usage-failure statuses SHALL have guidance-matrix coverage. The response SHALL c
 
 ### Requirement: Shell-expansion hint covers the syntax-error form
 
-The existing bare-`puer.`-prefix hint SHALL be extended to the form that shell expansion actually produces. When an `exec` or `wait-for-exec` failure is a syntax error and the invocation supplied inline code through `--code` that carries the signature of a consumed `$` — a member access immediately followed by a call, such as `puer.(` — the response `situation` SHALL include a hint naming shell variable expansion as the likely cause and single quoting or `--file` as the resolution.
-
-The hint SHALL require both conditions together, and SHALL apply only to `--code`, because `--file` and `--stdin` content does not pass through shell interpolation.
+The existing bare-`puer.`-prefix hint SHALL be extended to the form that shell expansion actually produces. When an `exec` or `wait-for-exec` failure is a syntax error and the invocation supplied inline code through `--code` that carries the signature of a consumed `$` -- a member access immediately followed by a call, such as `puer.(` -- the response `situation` SHALL include a hint naming shell variable expansion as the likely cause and single quoting or `--file` as the resolution.
 
 #### Scenario: Expanded variable in inline code
 
 - **WHEN** `exec --code` fails with a syntax error and the submitted code contains a member access immediately followed by a call
 - **THEN** the response `situation` includes a hint that a shell may have expanded a `$` token
 - **AND** the hint names single quoting or `--file` as the resolution
+
+#### Scenario: Existing prefix hint is preserved
+
+- **WHEN** a failure reports a bare `$typeof` or `$ref` reference error
+- **THEN** the existing missing-`puer.`-prefix hint is still attached
+
+### Requirement: Shell-expansion hint is limited to inline code
+
+The hint SHALL require both conditions together, and SHALL apply only to `--code`, because `--file` and `--stdin` content does not pass through shell interpolation.
 
 #### Scenario: Ordinary syntax error is not misattributed
 
@@ -314,14 +343,9 @@ The hint SHALL require both conditions together, and SHALL apply only to `--code
 - **WHEN** an `exec` invocation supplied its script through `--file` or `--stdin` and fails with a syntax error
 - **THEN** no shell-expansion hint is attached, regardless of the code's content
 
-#### Scenario: Existing prefix hint is preserved
-
-- **WHEN** a failure reports a bare `$typeof` or `$ref` reference error
-- **THEN** the existing missing-`puer.`-prefix hint is still attached
-
 ### Requirement: Success-path observation windows carry an error-sweep follow-up
 
-When `exec`, `wait-for-exec`, or `wait-for-log-pattern` returns `status = "completed"` and the response carries a CLI-owned `log_range` with both `start` and `end`, the response SHALL include `next_steps` with a `get-log-briefs` candidate whose `argv` is a complete invocation that re-scans that window for errors and warnings. The candidate SHALL use `--range <start>-<end>` built from `log_range.start` and `log_range.end`, and SHALL include `--levels error,warning`. Candidate presence is determined by command and status alone; missing `log_range` or selector context SHALL cause the entry to omit `argv` while still carrying `command` and `when`, rather than removing the candidate or substituting a different command.
+When `exec`, `wait-for-exec`, or `wait-for-log-pattern` returns `status = "completed"` and the response carries a CLI-owned `log_range` with both `start` and `end`, the response SHALL include `next_steps` with a `get-log-briefs` candidate whose `argv` is a complete invocation that re-scans that window for errors and warnings. The candidate SHALL use `--range <start>-<end>` built from `log_range.start` and `log_range.end`, and SHALL include `--levels error,warning`.
 
 #### Scenario: exec completed offers a copyable error sweep
 
@@ -342,20 +366,24 @@ When `exec`, `wait-for-exec`, or `wait-for-log-pattern` returns `status = "compl
 - **THEN** the response includes a `situation` string stating that a pattern match does not imply the observation window contained no new errors or warnings
 - **AND** the response includes a `next_steps` entry with `command = "get-log-briefs"` whose `argv` re-scans that window with `--levels error,warning`
 
+#### Scenario: Script result does not change the success-path candidates
+
+- **WHEN** `exec` returns `status = "completed"` with two different script-authored `result` values across otherwise identical envelopes
+- **THEN** both responses carry the same `next_steps` candidate set for that command and status
+
+### Requirement: Incomplete log_range drops argv but keeps the candidate
+
+Candidate presence is determined by command and status alone; missing `log_range` or selector context SHALL cause the entry to omit `argv` while still carrying `command` and `when`, rather than removing the candidate or substituting a different command.
+
 #### Scenario: Incomplete log_range drops argv but keeps the candidate
 
 - **WHEN** one of the covered commands returns `status = "completed"` without both `log_range.start` and `log_range.end`
 - **THEN** the `get-log-briefs` candidate is still present with `command` and `when`
 - **AND** that candidate omits `argv`
 
-#### Scenario: Script result does not change the success-path candidates
-
-- **WHEN** `exec` returns `status = "completed"` with two different script-authored `result` values across otherwise identical envelopes
-- **THEN** both responses carry the same `next_steps` candidate set for that command and status
-
 ### Requirement: Blocker guidance suggests the action legal for the reported blocker
 
-The guidance matrix SHALL NOT suggest `resolve-blocker --action cancel` for a blocker type that cancel does not support. For the Safe Mode dialog it SHALL suggest `--action cancel`; for every other reported dialog — including save-scene dialogs and `unknown_modal_dialog` — it SHALL suggest the button-targeted form instead. Because candidate selection is driven by command and status alone, guidance for a blocker-bearing status SHALL carry the `when` condition that lets the caller pick the right form from the reported `blocker.type`, and SHALL NOT emit a concrete `argv` for the click form, since `hwnd` and button label come from the blocker payload rather than from the invocation arguments.
+The guidance matrix SHALL NOT suggest `resolve-blocker --action cancel` for a blocker type that cancel does not support. For the Safe Mode dialog it SHALL suggest `--action cancel`; for every other reported dialog -- including save-scene dialogs and `unknown_modal_dialog` -- it SHALL suggest the button-targeted form instead.
 
 #### Scenario: Guidance for an unknown dialog suggests a click, not a cancel
 
@@ -369,6 +397,10 @@ The guidance matrix SHALL NOT suggest `resolve-blocker --action cancel` for a bl
 - **THEN** the `resolve-blocker` guidance entry suggests `--action cancel`
 - **AND** the entry states that cancel is legal only for Safe Mode
 
+### Requirement: Click guidance carries the blocker-type condition without argv
+
+Because candidate selection is driven by command and status alone, guidance for a blocker-bearing status SHALL carry the `when` condition that lets the caller pick the right form from the reported `blocker.type`, and SHALL NOT emit a concrete `argv` for the click form, since `hwnd` and button label come from the blocker payload rather than from the invocation arguments.
+
 #### Scenario: Click guidance names the payload fields it depends on
 
 - **WHEN** a guidance entry suggests the button-targeted resolution form
@@ -377,7 +409,17 @@ The guidance matrix SHALL NOT suggest `resolve-blocker --action cancel` for a bl
 
 ### Requirement: Guidance covers button-targeted resolution failure statuses
 
-Candidate selection SHALL remain driven by command name and status alone, so the button-targeted path's failure modes share the existing `resolution_failed` status and are distinguished only by `error`. The guidance matrix SHALL therefore provide a `situation` explanation for `(resolve-blocker, resolution_failed)` that covers both failure modes: a stale or foreign window handle, and a button label matching no enumerated button. Each explanation SHALL state what the caller should verify before retrying.
+Candidate selection SHALL remain driven by command name and status alone, so the button-targeted path's failure modes share the existing `resolution_failed` status and are distinguished only by `error`.
+
+#### Scenario: Situation does not depend on the error value
+
+- **WHEN** the CLI builds guidance for a `resolve-blocker` `resolution_failed` response
+- **THEN** the selected candidate is the one keyed by command and status alone
+- **AND** the CLI does not inspect the `error` field to choose, reorder, or replace that candidate
+
+### Requirement: resolution_failed guidance covers both button-targeted failure modes
+
+The guidance matrix SHALL therefore provide a `situation` explanation for `(resolve-blocker, resolution_failed)` that covers both failure modes: a stale or foreign window handle, and a button label matching no enumerated button. Each explanation SHALL state what the caller should verify before retrying.
 
 #### Scenario: Stale handle failure carries an explanation
 
@@ -390,12 +432,6 @@ Candidate selection SHALL remain driven by command name and status alone, so the
 - **WHEN** `resolve-blocker` returns `status = "resolution_failed"` with `error = "button_not_found"`
 - **THEN** the response includes a `situation` string
 - **AND** the `situation` text explains the no-matching-button case and directs the caller to re-read the `buttons` array from the blocker payload
-
-#### Scenario: Situation does not depend on the error value
-
-- **WHEN** the CLI builds guidance for a `resolve-blocker` `resolution_failed` response
-- **THEN** the selected candidate is the one keyed by command and status alone
-- **AND** the CLI does not inspect the `error` field to choose, reorder, or replace that candidate
 
 ### Requirement: Play-mode compile block guidance leads out of play mode
 

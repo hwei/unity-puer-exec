@@ -38,7 +38,7 @@ The Unity execution server SHALL subscribe to `CompilationPipeline.compilationSt
 
 ### Requirement: Exec endpoint returns unity_compile_error when compilation had errors
 
-When the `/exec` endpoint receives a valid execution request, the server SHALL check `_lastCompilationHadErrors` after the `IsCompilingOrReloading()` check and before JavaScript execution. When the flag is true, the server SHALL return `{"ok": false, "status": "unity_compile_error"}` with inline compile diagnostics instead of proceeding to execution. The gate SHALL be evaluated after the automatic refresh decision, so that a code change made to fix a compilation error is recompiled rather than reported as still failing. The gate SHALL NOT be evaluated against a caller-supplied refresh flag, because no such flag exists.
+When the `/exec` endpoint receives a valid execution request, the server SHALL check `_lastCompilationHadErrors` after the `IsCompilingOrReloading()` check and before JavaScript execution. When the flag is true, the server SHALL return `{"ok": false, "status": "unity_compile_error"}` with inline compile diagnostics instead of proceeding to execution.
 
 #### Scenario: Exec with compile errors present
 
@@ -59,6 +59,10 @@ When the `/exec` endpoint receives a valid execution request, the server SHALL c
 - **WHEN** a valid `/exec` request arrives
 - **THEN** the server parses and validates the request before evaluating the compile error gate
 - **AND** the gate is evaluated after the automatic refresh decision and before JavaScript execution
+
+### Requirement: Compile-error gate yields to automatic refresh with no caller flag
+
+The gate SHALL be evaluated after the automatic refresh decision, so that a code change made to fix a compilation error is recompiled rather than reported as still failing. The gate SHALL NOT be evaluated against a caller-supplied refresh flag, because no such flag exists.
 
 #### Scenario: Compile error gate yields to an automatic refresh
 

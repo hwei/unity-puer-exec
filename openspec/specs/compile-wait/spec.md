@@ -1,13 +1,13 @@
 # compile-wait Specification
 
 ## Purpose
-TBD - created by archiving change compile-loop-tooling. Update Purpose after archive.
+Provide a `wait-for-compile` command that brackets a single Unity compilation cycle across a real compile edge, including compilation already in progress and cross-reload settles, without adding a server-side compilation endpoint.
 
 ## Requirements
 
 ### Requirement: CLI exposes an edge-aware wait-for-compile command
 
-The CLI SHALL expose a `wait-for-compile` command accepting the standard `--project-path`/`--base-url` selectors and bounded timeout controls. The command SHALL bracket a single Unity compilation cycle by first waiting, within a bounded appear window, for the Editor to report `compiling` (or detecting that a compilation is already in progress), and then waiting for the Editor to return to `ready`. The command SHALL NOT treat an initial `ready` observation as terminal before a compile edge has been observed, so that a recompile triggered immediately before the call is not missed due to asynchronous compile start.
+The CLI SHALL expose a `wait-for-compile` command accepting the standard `--project-path`/`--base-url` selectors and bounded timeout controls. The command SHALL bracket a single Unity compilation cycle by first waiting, within a bounded appear window, for the Editor to report `compiling` (or detecting that a compilation is already in progress), and then waiting for the Editor to return to `ready`.
 
 #### Scenario: Compile starts asynchronously after a refresh
 
@@ -21,6 +21,10 @@ The CLI SHALL expose a `wait-for-compile` command accepting the standard `--proj
 - **WHEN** `wait-for-compile` is invoked while the Editor already reports `compiling`
 - **THEN** the command proceeds directly to waiting for the return to `ready`
 - **AND** it reports completion once the Editor is `ready` again
+
+### Requirement: A pre-edge ready observation is not terminal
+
+The command SHALL NOT treat an initial `ready` observation as terminal before a compile edge has been observed, so that a recompile triggered immediately before the call is not missed due to asynchronous compile start.
 
 #### Scenario: No compilation occurs within the appear window
 

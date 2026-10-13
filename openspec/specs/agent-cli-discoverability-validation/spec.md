@@ -3,7 +3,9 @@
 ## Purpose
 Define the repository-owned validation protocol and evidence expectations for measuring whether AI agents can discover, recover, and complete representative Unity workflows through the published `unity-puer-exec` CLI surface without repository-only guidance.
 ## Requirements
+
 ### Requirement: Help-only agent validation uses published CLI discovery surfaces
+
 The repository SHALL define a repeatable validation protocol for agent CLI discoverability that restricts the primary discovery surface to the publishable `unity-puer-exec` help interface and normal CLI execution.
 
 #### Scenario: Contributor prepares a help-only agent trial
@@ -12,6 +14,7 @@ The repository SHALL define a repeatable validation protocol for agent CLI disco
 - **AND** the protocol does not rely on repository-only source or repository tests as part of the allowed discovery surface
 
 ### Requirement: First-round validation covers both simple and multi-step Unity Editor tasks
+
 The repository SHALL define an initial task set that exercises both direct Unity Editor action and a longer workflow that includes code change, compile or readiness recovery, and outcome verification.
 
 #### Scenario: Contributor reviews the first-round task set
@@ -21,7 +24,7 @@ The repository SHALL define an initial task set that exercises both direct Unity
 
 ### Requirement: Validation records success, autonomy, and efficiency separately
 
-The repository SHALL record task outcome, allowed-surface compliance, and convergence quality as distinct findings so discoverability problems can be diagnosed without collapsing all failures into one score. Each recorded task result SHALL also retain durable transcript evidence that includes the task prompt, the help surface consulted, the key command sequence, and the key outputs used to judge the result. When a validation task creates repository-owned temporary assets in the external host Unity project, the recorded result SHALL also include cleanup outcome and any remaining residue.
+The repository SHALL record task outcome, allowed-surface compliance, and convergence quality as distinct findings without collapsing them into one score. Each recorded task result SHALL retain durable transcript evidence including the task prompt, the help surface consulted, the key command sequence, and the key outputs. When a validation task creates repository-owned temporary assets in the external host project, the recorded result SHALL also include cleanup outcome and any remaining residue.
 
 #### Scenario: Contributor records a task result
 - **WHEN** a help-only validation task finishes
@@ -32,6 +35,7 @@ The repository SHALL record task outcome, allowed-surface compliance, and conver
 - **AND** the recorded result includes cleanup status for any repository-owned temporary host assets created by the run
 
 ### Requirement: Validation findings isolate discoverability gaps
+
 The repository SHALL capture concrete discoverability findings from each help-only trial in a form that can drive later product, workflow, or harness follow-up work.
 
 #### Scenario: Contributor summarizes a help-only trial
@@ -40,6 +44,7 @@ The repository SHALL capture concrete discoverability findings from each help-on
 - **AND** the summary distinguishes those discoverability findings from unrelated runtime or environment failures
 
 ### Requirement: Validation transcript records preserve key agent behavior
+
 The repository SHALL define a minimum transcript record for each help-only agent validation run so later reviewers can reconstruct how the agent discovered and used the CLI.
 
 #### Scenario: Contributor stores transcript evidence for a validation run
@@ -53,6 +58,7 @@ The repository SHALL define a minimum transcript record for each help-only agent
 - **AND** the stored evidence includes concrete discoverability findings for later follow-up work
 
 ### Requirement: Validation transcript records explicit operator observations
+
 The repository SHALL record operator-observed intervention and Unity-native modal blockers separately from the agent command trace so reviewers can distinguish discoverability issues from external interference.
 
 #### Scenario: Contributor records a run affected by observation or intervention
@@ -62,6 +68,7 @@ The repository SHALL record operator-observed intervention and Unity-native moda
 - **AND** the transcript record identifies how the blocker was detected and how it was resolved when known
 
 ### Requirement: Validation transcript storage separates durable summaries from transient raw logs
+
 The repository SHALL allow long raw transcript logs to live outside OpenSpec while still requiring a durable structured record that remains useful after temporary logs expire.
 
 #### Scenario: Contributor stores transcript artifacts for a validation run
@@ -71,6 +78,7 @@ The repository SHALL allow long raw transcript logs to live outside OpenSpec whi
 - **AND** the durable record points to any retained raw transcript location when such evidence exists
 
 ### Requirement: Help efficiency validation compares convergence quality across revisions
+
 The repository SHALL treat agent-efficiency validation as a comparison problem, using transcript-backed evidence to assess whether help revisions reduce unnecessary exploration for representative tasks.
 
 #### Scenario: Contributor evaluates a help efficiency change
@@ -79,6 +87,7 @@ The repository SHALL treat agent-efficiency validation as a comparison problem, 
 - **AND** the evaluation does not rely only on final task success as the measure of improvement
 
 ### Requirement: Bridge-recognition validation records probing separately
+
 The repository SHALL record bridge-recognition-specific probing separately from other workflow friction when evaluating help-only agent runs that require JavaScript-to-C# interaction.
 
 #### Scenario: Contributor reviews a bridge-sensitive validation run
@@ -87,6 +96,7 @@ The repository SHALL record bridge-recognition-specific probing separately from 
 - **AND** the record distinguishes that probing from compile recovery, startup continuity, and persistence-confirmation behavior
 
 ### Requirement: Bridge-guidance validation measures first-pass bridge recognition
+
 The repository SHALL evaluate bridge-guidance changes partly by whether representative tasks reach correct bridge usage with less exploratory probing than earlier transcript-backed runs.
 
 #### Scenario: Contributor reruns Prompt A or Standard Prompt C after a bridge-guidance change
@@ -96,6 +106,7 @@ The repository SHALL evaluate bridge-guidance changes partly by whether represen
 - **AND** final task success alone is not treated as sufficient evidence of bridge-guidance improvement
 
 ### Requirement: Bridge-guidance validation records bridge-specific help usage
+
 The repository SHALL record which published help surfaces the agent used to discover bridge behavior when that behavior is relevant to the task.
 
 #### Scenario: Contributor stores transcript evidence for a bridge-oriented validation run
@@ -104,6 +115,7 @@ The repository SHALL record which published help surfaces the agent used to disc
 - **AND** the record can show whether the agent relied on a purpose-built bridge help path or inferred bridge usage from unrelated examples
 
 ### Requirement: Baseline validation records whether verification stayed inside the CLI surface
+
 The repository SHALL record whether each baseline help-only agent workflow completed verification through the intended CLI observation surface or relied on host-side fallback confirmation. This distinction SHALL be recorded even when task success, autonomy, and efficiency are otherwise acceptable.
 
 #### Scenario: Contributor records a baseline workflow result
@@ -112,6 +124,7 @@ The repository SHALL record whether each baseline help-only agent workflow compl
 - **AND** any host-file or host-log fallback used for final confirmation is identified explicitly
 
 ### Requirement: Verification-closure evaluation uses explicit convergence classes
+
 The repository SHALL evaluate verification-closure changes with explicit convergence classes so later reruns can distinguish clean CLI-native closure from autonomous-but-recoverable execution and from host-side fallback.
 
 #### Scenario: Contributor classifies a verification-oriented baseline run
@@ -122,6 +135,7 @@ The repository SHALL evaluate verification-closure changes with explicit converg
 - **AND** `fallback` means final confirmation depended on direct host-file or host-log inspection outside the intended CLI surface
 
 ### Requirement: Verification-closure evaluation tracks Prompt A and Standard Prompt C separately
+
 The repository SHALL evaluate verification-closure improvements against Prompt A and a separate named baseline for basic C# compile-and-call validation so shared fixes can still be judged against distinct startup and compile-verification friction patterns.
 
 #### Scenario: Contributor evaluates a verification-closure change
@@ -130,6 +144,7 @@ The repository SHALL evaluate verification-closure improvements against Prompt A
 - **AND** the summary states whether each workflow achieved clean CLI-native verification, recoverable verification, or host-side fallback
 
 ### Requirement: New baseline prompt variants preserve archived prompt stability
+
 The repository SHALL add future baseline workflow variants as new named standard prompts rather than mutating the archived wording of Prompt A or Prompt B.
 
 #### Scenario: Contributor introduces a cleaner baseline task
@@ -138,6 +153,7 @@ The repository SHALL add future baseline workflow variants as new named standard
 - **AND** the archived Prompt A and Prompt B wording remains unchanged for historical comparability
 
 ### Requirement: Basic-workflow revalidation preserves the comparison anchor
+
 The repository SHALL treat basic-workflow CLI revalidation as a comparison exercise that preserves the original baseline inputs. A revalidation round for the baseline workflows SHALL reuse the existing Prompt A and Prompt B goal wording, SHALL keep the validating model fixed when comparability is the goal, and SHALL avoid execution patterns that introduce known shared-project contention into the authoritative evidence.
 
 #### Scenario: Contributor prepares a baseline revalidation round
@@ -147,6 +163,7 @@ The repository SHALL treat basic-workflow CLI revalidation as a comparison exerc
 - **AND** the authoritative evidence does not rely on parallel runs that contend against the same Unity project state
 
 ### Requirement: Basic-workflow revalidation scores environment friction as product-facing outcome
+
 The repository SHALL evaluate baseline help-only workflow results with environment friction included in the product-facing outcome when that friction materially affects autonomous CLI use. Readiness recovery, compile timing, observation timing, launch contention, modal handling, and similar workflow obstacles SHALL contribute to the recorded assessment when they force additional agent recovery work, reduce autonomy, or block completion.
 
 #### Scenario: Contributor reviews a revalidation result with workflow friction
@@ -156,6 +173,7 @@ The repository SHALL evaluate baseline help-only workflow results with environme
 - **AND** operator observation or blocker notes remain recorded separately so reviewers can still distinguish agent behavior from external facts
 
 ### Requirement: Ordinary log-workflow guidance is validated against transcript-backed reruns
+
 The repository SHALL evaluate ordinary log-workflow help changes with a clean help-only rerun of the representative log-oriented baseline so the effect of the published workflow example can be judged against prior transcript-backed evidence.
 
 #### Scenario: Contributor reruns the representative log-oriented baseline
@@ -164,6 +182,7 @@ The repository SHALL evaluate ordinary log-workflow help changes with a clean he
 - **AND** the resulting record compares the rerun against earlier transcript-backed Prompt B style evidence
 
 ### Requirement: Ordinary log-workflow reruns record final verification path explicitly
+
 The repository SHALL record whether a representative log-oriented rerun kept final confirmation inside the CLI observation surface or fell back to direct host-log inspection.
 
 #### Scenario: Contributor records the rerun outcome
@@ -173,6 +192,7 @@ The repository SHALL record whether a representative log-oriented rerun kept fin
 - **AND** those findings are recorded separately from unrelated compile recovery or startup friction
 
 ### Requirement: Ordinary log-workflow reruns record checkpoint usage explicitly
+
 The repository SHALL record whether a representative log-oriented rerun used the intended observation checkpoint pattern when validating ordinary log-workflow guidance.
 
 #### Scenario: Contributor summarizes checkpoint usage
@@ -182,6 +202,7 @@ The repository SHALL record whether a representative log-oriented rerun used the
 - **AND** the durable record distinguishes checkpoint-usage findings from unrelated runtime or environment issues
 
 ### Requirement: Ordinary log-workflow guidance is validated against host-log fallback
+
 The repository SHALL evaluate ordinary log-workflow help changes against transcript-backed baseline evidence that specifically records whether the agent keeps final verification inside the CLI observation surface or falls back to direct host-log inspection.
 
 #### Scenario: Contributor evaluates an ordinary log-workflow help change
@@ -191,6 +212,7 @@ The repository SHALL evaluate ordinary log-workflow help changes against transcr
 - **AND** the comparison is made against earlier transcript-backed baseline evidence rather than against task success alone
 
 ### Requirement: Ordinary log-workflow validation records checkpoint usage explicitly
+
 The repository SHALL record whether a representative log-oriented validation run used the intended observation checkpoint pattern when evaluating changes to ordinary log-workflow guidance.
 
 #### Scenario: Contributor records a rerun after an ordinary log-workflow example change
@@ -200,6 +222,7 @@ The repository SHALL record whether a representative log-oriented validation run
 - **AND** those findings are recorded separately from unrelated compile-recovery or startup-continuity friction
 
 ### Requirement: Log-observation evaluation can isolate guidance failures
+
 The repository SHALL allow targeted agent-validation analysis for tasks that depend on CLI log observation so reviewers can distinguish "the CLI lacked the needed observation surface" from "the agent did not follow the intended observation workflow."
 
 #### Scenario: Contributor reviews a log-oriented validation run
@@ -208,6 +231,7 @@ The repository SHALL allow targeted agent-validation analysis for tasks that dep
 - **AND** the analysis can treat host-side fallback as distinct evidence rather than as invisible success
 
 ### Requirement: Fragile editor-interaction scenarios can remain deferred validation tracks
+
 The repository SHALL allow fragile Unity Editor interaction scenarios to remain as deferred validation tracks when they are valuable for later coverage but currently too entangled with editor timing behavior to serve as the main core-workflow baseline.
 
 #### Scenario: Contributor stages a fragile editor-interaction task for later validation
@@ -216,6 +240,7 @@ The repository SHALL allow fragile Unity Editor interaction scenarios to remain 
 - **AND** the record identifies the earlier changes or investigations it depends on before rerun
 
 ### Requirement: Script-context guidance validation records unsupported-field assumptions
+
 The repository SHALL evaluate exec script-context guidance changes partly by whether representative help-only reruns stop assuming unsupported `ctx` fields when authoring project-local scripts.
 
 #### Scenario: Contributor reruns Prompt B after a script-context guidance change
@@ -225,6 +250,7 @@ The repository SHALL evaluate exec script-context guidance changes partly by whe
 - **AND** final task success alone is not treated as sufficient evidence of improvement
 
 ### Requirement: Exec script context documents guaranteed fields and supported path derivation
+
 The CLI SHALL document the guaranteed `ctx` fields for `exec` scripts and SHALL direct users toward supported Unity APIs when project-local paths are needed. The published guidance SHALL also show how caller-supplied `--script-args` map onto `ctx.args` for reusable script workflows.
 
 #### Scenario: Contributor writes a Prompt B style host-edit script
@@ -240,6 +266,7 @@ The CLI SHALL document the guaranteed `ctx` fields for `exec` scripts and SHALL 
 - **AND** the guidance does not suggest inventing a second entry parameter or rewriting the script body for each invocation
 
 ### Requirement: Top-level help distinguishes workflow examples from executable commands
+
 The CLI SHALL label workflow-style help entries in a way that makes clear they are `--help-example` targets rather than executable subcommands.
 
 #### Scenario: Contributor discovers a workflow example from top-level help
@@ -249,6 +276,7 @@ The CLI SHALL label workflow-style help entries in a way that makes clear they a
 - **AND** Prompt B validation can compare whether agents still make a first-pass subcommand mistake after the help change
 
 ### Requirement: Exec file-entry guidance is explicit at help time and failure time
+
 The CLI SHALL make the required default-export script entry shape explicit in `exec` help and in the `missing_default_export` failure path.
 
 #### Scenario: Contributor authors a file-based exec script
@@ -258,6 +286,7 @@ The CLI SHALL make the required default-export script entry shape explicit in `e
 - **AND** Prompt B validation can compare whether first-pass script authoring still fails with `missing_default_export`
 
 ### Requirement: Prompt B compile recovery can be evaluated as a distinct workflow-improvement target
+
 The repository SHALL allow Prompt B validation to measure whether the post-C#-write compile-recovery path becomes more deterministic and less recovery-heavy over time.
 
 #### Scenario: Contributor validates a Prompt B compile-recovery improvement
@@ -265,4 +294,3 @@ The repository SHALL allow Prompt B validation to measure whether the post-C#-wr
 - **THEN** the durable record states whether the run still needed an explicit recovery step after generating the C# script
 - **AND** the comparison judges whether the new workflow is closer to `clean` or remains merely `recoverable`
 - **AND** the evaluation keeps the archived Prompt B wording unchanged for historical comparability
-

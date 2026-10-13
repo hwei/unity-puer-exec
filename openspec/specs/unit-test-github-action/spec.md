@@ -1,7 +1,7 @@
 # unit-test-github-action Specification
 
 ## Purpose
-TBD - created by archiving change add-unit-test-github-action. Update Purpose after archive.
+Provide a GitHub Actions workflow that runs the repository's default mocked/unit Python test suite for routine development changes without requiring Unity Editor or a validation-host project.
 ## Requirements
 ### Requirement: Repository provides a default automated unit-test workflow
 The repository SHALL provide a GitHub Actions workflow that runs the mocked/unit Python test suite for normal development changes without requiring Unity Editor or a validation-host project.

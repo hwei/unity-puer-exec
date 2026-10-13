@@ -1,17 +1,12 @@
 # editor-session-discovery Specification
 
 ## Purpose
-TBD - created by archiving change let-editor-publish-session-endpoint. Update Purpose after archive.
+Let each Editor publish a description of itself at a project-private path and decide session state from project-local files, so a caller can locate and observe a project's Editor without port scans, process-table correlation, or CLI-written records.
 ## Requirements
+
 ### Requirement: The Editor publishes its own endpoint
 
 When the Unity control service becomes reachable, the Editor SHALL publish a description of itself at a deterministic path private to its project, so that locating a project's session requires no port scan, no process-table correlation, and no record written by a party other than the Editor.
-
-Every published field SHALL be taken from the running Editor process itself. The publication SHALL include the bound port, the Editor process id, the resolved project path, the session marker, and the Editor's own console log path. No party other than the Editor SHALL write this publication.
-
-The publication is Editor-authored by design, not as a convenience of implementation. A CLI-written session record about a process the CLI does not own can record a recycled process id (any image, not just Unity), a log path guessed at write time, or another project's identity taken from machine-wide process-list order. An Editor-authored publication cannot, because every field is taken from the running process itself (`Process.GetCurrentProcess().Id`, `Application.dataPath`, `Application.consoleLogPath`). No later change SHALL restore CLI-side writing of this record as a shortcut for discovery or recovery.
-
-The publication SHALL remain in place across domain reloads and SHALL be removed only when the Editor process ends, so that a script compile never reads as a withdrawn opt-in.
 
 #### Scenario: A reachable service publishes where and what it is
 
@@ -19,17 +14,25 @@ The publication SHALL remain in place across domain reloads and SHALL be removed
 - **THEN** the Editor publishes its port, process id, project path, session marker, and console log path
 - **AND** a caller can reach the service using the published port without probing any other port
 
+#### Scenario: A partially written publication is never observed
+
+- **WHEN** a caller reads the publication while the Editor is writing it
+- **THEN** the caller observes either the previous complete content or the new complete content
+- **AND** it never observes a truncated or partial record
+
+### Requirement: Every published field is Editor-authored
+
+Every published field SHALL be taken from the running Editor process itself, and the publication SHALL include the bound port, the Editor process id, the resolved project path, the session marker, and the Editor's own console log path. No party other than the Editor SHALL write this publication. No later change SHALL restore CLI-side writing of this record as a shortcut for discovery or recovery.
+
 #### Scenario: The publication is not authored by the CLI
 
 - **WHEN** the CLI needs a project's endpoint identity
 - **THEN** it reads the Editor's publication rather than writing or maintaining a record of its own
 - **AND** no CLI-authored session record participates in endpoint resolution
 
-#### Scenario: A partially written publication is never observed
+### Requirement: The publication survives domain reloads and ends with the process
 
-- **WHEN** a caller reads the publication while the Editor is writing it
-- **THEN** the caller observes either the previous complete content or the new complete content
-- **AND** it never observes a truncated or partial record
+The publication SHALL remain in place across domain reloads and SHALL be removed only when the Editor process ends, so that a script compile never reads as a withdrawn opt-in.
 
 #### Scenario: The publication survives a domain reload
 
@@ -40,8 +43,6 @@ The publication SHALL remain in place across domain reloads and SHALL be removed
 ### Requirement: Session state is decided from project-local files
 
 The CLI SHALL decide whether a project has a controllable Editor from project-local state alone: the project's Unity lockfile and the Editor's published endpoint. It SHALL NOT infer a project's session state from a machine-wide process listing, and SHALL NOT treat a recorded process id as evidence that a session is live.
-
-A present publication is a claim to verify, not a conclusion: before treating a session as controlled, the CLI SHALL confirm that the published endpoint answers and reports the identity the publication names. A publication that is unreachable or does not match SHALL be treated as residue.
 
 #### Scenario: No Editor is running
 
@@ -61,6 +62,16 @@ A present publication is a claim to verify, not a conclusion: before treating a 
 - **AND** the published endpoint answers with an identity matching the publication
 - **THEN** the CLI connects to the published endpoint directly
 
+#### Scenario: An unrelated project's Editor is not consulted
+
+- **WHEN** other Unity Editor processes are running on the machine for other projects
+- **THEN** they do not affect the reported session state of the target project
+- **AND** no command targets a process belonging to another project
+
+### Requirement: A published endpoint is verified before a session is treated as controlled
+
+A present publication is a claim to verify, not a conclusion: before treating a session as controlled, the CLI SHALL confirm that the published endpoint answers and reports the identity the publication names. A publication that is unreachable or does not match SHALL be treated as residue.
+
 #### Scenario: A stale publication does not impersonate a controlled session
 
 - **WHEN** the project lockfile is held and a publication is present
@@ -78,12 +89,6 @@ A present publication is a claim to verify, not a conclusion: before treating a 
 - **WHEN** an endpoint is published but the project lockfile is not held
 - **THEN** the CLI reports the session as ended rather than attempting to use the published port
 - **AND** the published console log path remains readable for post-mortem observation
-
-#### Scenario: An unrelated project's Editor is not consulted
-
-- **WHEN** other Unity Editor processes are running on the machine for other projects
-- **THEN** they do not affect the reported session state of the target project
-- **AND** no command targets a process belonging to another project
 
 ### Requirement: Control-service activation is explicit and uniform
 
@@ -150,4 +155,3 @@ When a controllable Editor's console log path is the platform default per-user l
 - **AND** no other Unity Editor process is running on the machine
 - **THEN** the CLI reports the session as usable
 - **AND** it still identifies the log as one the session does not privately own
-

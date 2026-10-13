@@ -1,8 +1,9 @@
 # editor-log-isolation Specification
 
 ## Purpose
-TBD - created by archiving change isolate-validation-host-editor-log. Update Purpose after archive.
+Ensure each running Editor reports its own console log path from its own runtime, and that launch-driven sessions write to a project-private log, so a caller reads the correct log instead of guessing from platform conventions.
 ## Requirements
+
 ### Requirement: The running Editor states its own log path
 
 The Unity bridge SHALL report the log path of the Editor process it runs inside, resolved from that process's own Unity runtime rather than from a platform convention, so a caller never has to infer where the Editor writes.
@@ -54,8 +55,6 @@ When resolving the effective Unity log source, the CLI SHALL prefer a log path s
 
 When the CLI launches Unity for a project-scoped workflow without an explicit log-path override, it SHALL direct that Editor to a log location private to the target project, so a concurrently running unrelated Editor cannot share, rotate, or truncate the log the session is observed through.
 
-An Editor the CLI did not launch cannot be given a private log after the fact, because a Unity process binds its log at startup. For such an Editor the CLI SHALL report the observation hazard rather than imply isolation it cannot provide.
-
 #### Scenario: CLI-launched Editor does not share the per-user log
 
 - **WHEN** the CLI launches Unity for a project and no explicit log path was supplied
@@ -71,6 +70,10 @@ An Editor the CLI did not launch cannot be given a private log after the fact, b
 
 - **WHEN** a project-private log was established at launch
 - **THEN** later log-related commands for that project observe the same log without the caller repeating a log-path flag
+
+### Requirement: An Editor the CLI did not launch is reported as an observation hazard
+
+An Editor the CLI did not launch cannot be given a private log after the fact, because a Unity process binds its log at startup. For such an Editor the CLI SHALL report the observation hazard rather than imply isolation it cannot provide.
 
 #### Scenario: An Editor the CLI did not launch keeps its original log
 
@@ -97,4 +100,3 @@ When a caller supplies a log start offset that lies beyond the current end of th
 
 - **WHEN** an offset is reported as invalidated
 - **THEN** the command still returns whatever the observed log currently contains rather than refusing to read
-

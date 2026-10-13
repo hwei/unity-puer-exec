@@ -81,9 +81,7 @@ Work discovered during execution SHALL be classified before implementation conti
 
 ### Requirement: Follow-up changes preserve prerequisite evidence context
 
-When a change depends on prior validation, retrospective findings, or archived change conclusions to make its scope understandable, the change SHALL identify the upstream change names and summarize the inherited findings in its proposal or design artifacts. Contributors MUST NOT rely on unstated team memory or metadata-only dependency references as the sole way to reconstruct that context.
-
-This requirement focuses on the "why" and "how" of preserving evidence for human narrative continuity. For the complementary rule that metadata alone is insufficient, see [change-backlog-triage spec, Requirement 5](../change-backlog-triage/spec.md).
+When a change depends on prior validation, retrospective findings, or archived change conclusions to make its scope understandable, the change SHALL identify the upstream change names and summarize the inherited findings in its proposal or design artifacts.
 
 #### Scenario: Follow-up optimization change builds on prior validation
 
@@ -91,6 +89,10 @@ This requirement focuses on the "why" and "how" of preserving evidence for human
 - **THEN** the proposal or design names the upstream validation change
 - **AND** the current change summarizes the finding that remains true and the gap that still needs work
 - **AND** a fresh reader can understand why the new change exists without separately guessing the evidence chain from oral background alone
+
+### Requirement: Prerequisite evidence is not delegated to unstated memory
+
+Contributors MUST NOT rely on unstated team memory or metadata-only dependency references as the sole way to reconstruct that context. For the complementary rule that metadata alone is insufficient, see [change-backlog-triage spec, Requirement 5](../change-backlog-triage/spec.md).
 
 #### Scenario: Current change references archived findings
 
@@ -100,6 +102,7 @@ This requirement focuses on the "why" and "how" of preserving evidence for human
 - **AND** the reader does not need to inspect backlog metadata alone to infer the narrative dependency
 
 ### Requirement: Workflow guidance distinguishes artifact readiness from change completion
+
 Repository workflow guidance SHALL distinguish OpenSpec artifact readiness, task completion, and change completion so contributors do not treat a single workflow surface as the complete archive-readiness answer.
 
 #### Scenario: Agent checks whether a change is complete

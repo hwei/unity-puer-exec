@@ -4,6 +4,7 @@
 
 Define the `--response-file` global formal option: how large or fully-detailed command responses are persisted to an explicit file as the complete normalized JSON envelope, how a compact verifiable reference is emitted on the normal output stream in their place, and the atomicity and failure-reporting guarantees that keep this path safe to rely on.
 ## Requirements
+
 ### Requirement: Formal command responses can be persisted to an explicit file
 
 The formal CLI SHALL accept a global `--response-file <path>` option for commands that produce machine-readable JSON. When supplied, the CLI SHALL persist the complete normalized JSON response envelope that would otherwise be emitted by the command, after command-specific response enrichment and before response-file projection.
@@ -27,7 +28,7 @@ The formal CLI SHALL accept a global `--response-file <path>` option for command
 
 ### Requirement: Response-file projection returns a compact verifiable reference
 
-After a response file is written successfully, the CLI SHALL emit a compact JSON reference on the same output stream that would have carried the unprojected response. The reference SHALL preserve each available routing field among `ok`, `status`, `operation`, `request_id`, `phase`, and `session_marker`, and SHALL include `response_file.path`, `response_file.encoding`, `response_file.byte_count`, and `response_file.sha256`. The path SHALL be absolute, the encoding SHALL be `utf-8`, and the size and SHA-256 SHALL describe the exact stored bytes.
+After a response file is written successfully, the CLI SHALL emit a compact JSON reference on the same output stream that would have carried the unprojected response. The reference SHALL preserve each available routing field among `ok`, `status`, `operation`, `request_id`, `phase`, and `session_marker`, and SHALL include `response_file.path`, `response_file.encoding`, `response_file.byte_count`, and `response_file.sha256`.
 
 #### Scenario: Large successful response produces a bounded stdout reference
 
@@ -35,6 +36,10 @@ After a response file is written successfully, the CLI SHALL emit a compact JSON
 - **THEN** stdout contains the compact response-file reference instead of the complete inline result
 - **AND** `response_file.byte_count` and `response_file.sha256` verify the stored response
 - **AND** the command retains the underlying success exit code
+
+### Requirement: Response-file reference describes the exact stored bytes
+
+The path SHALL be absolute, the encoding SHALL be `utf-8`, and the size and SHA-256 SHALL describe the exact stored bytes.
 
 #### Scenario: Structured stderr response preserves stream and exit semantics
 

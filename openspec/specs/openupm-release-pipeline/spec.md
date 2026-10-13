@@ -1,7 +1,7 @@
 # openupm-release-pipeline Specification
 
 ## Purpose
-TBD - created by archiving change publish-to-openupm. Update Purpose after archive.
+Define the GitHub Actions workflow and package metadata that build and publish the UPM package to the `upm` branch on a version tag, keeping `package.json`, git tags, and the published file set (including LICENSE and README) consistent for OpenUPM registration.
 ## Requirements
 ### Requirement: GitHub Actions workflow builds and publishes on version tag
 

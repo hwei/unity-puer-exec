@@ -1,5 +1,5 @@
 ## Purpose
-TBD - created by archiving change improve-readme-for-openupm-release. Update Purpose after archive.
+Define what the repository README and its Chinese translation must contain so a first-time reader and a fresh AI agent can understand the project vision and onboard to the CLI without external guidance.
 ## Requirements
 ### Requirement: README conveys project vision and design philosophy
 The `README.md` SHALL include a Vision section describing the goal of fully AI Agent-driven Unity development, and a Design Philosophy section describing the CLI-native, self-discoverable, minimal-primitives approach.

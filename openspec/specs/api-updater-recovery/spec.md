@@ -7,13 +7,23 @@ Recover from Unity ScriptUpdater's blocking Yes/No consent dialog without rewrit
 
 ### Requirement: API Updater consent dialog is auto-declined
 
-When the CLI observes a Unity-owned Windows dialog whose message body contains the ScriptUpdater consent text (matching either `Some of this project's source files refer to API that has changed`, `Some of this projects source files refer to API that has changed`, or the invariant core substring `source files refer to API that has changed`), it SHALL dismiss that dialog by activating the No button. It SHALL NOT activate the Yes button. After a confirmed dismiss, the CLI SHALL continue the original wait or request instead of treating the dismiss as completion. If the same dialog reappears before the current timeout budget expires, the CLI SHALL decline it again.
+When the CLI observes a Unity-owned Windows dialog whose message body contains the ScriptUpdater consent text (matching either `Some of this project's source files refer to API that has changed`, `Some of this projects source files refer to API that has changed`, or the invariant core substring `source files refer to API that has changed`), it SHALL dismiss that dialog by activating the No button. It SHALL NOT activate the Yes button.
 
 #### Scenario: Consent dialog appears during a compile wait
 
 - **WHEN** a project-scoped or base-url wait is polling Unity and the ScriptUpdater consent dialog is visible for that Editor process
 - **THEN** the CLI clicks No and confirms the window is gone
 - **AND** the wait continues until the Editor is ready or the existing timeout expires
+
+#### Scenario: Yes is never the recovery action
+
+- **WHEN** the CLI dismisses the ScriptUpdater consent dialog
+- **THEN** the activated control is the No button
+- **AND** the CLI does not send Enter as the dismissal method for this dialog
+
+### Requirement: A reappearing consent dialog is declined again
+
+After a confirmed dismiss, the CLI SHALL continue the original wait or request instead of treating the dismiss as completion. If the same dialog reappears before the current timeout budget expires, the CLI SHALL decline it again.
 
 #### Scenario: Consent dialog reappears in the same compile cycle
 
@@ -22,15 +32,9 @@ When the CLI observes a Unity-owned Windows dialog whose message body contains t
 - **THEN** the CLI declines it again
 - **AND** the wait still does not report completion solely because a dialog was dismissed
 
-#### Scenario: Yes is never the recovery action
-
-- **WHEN** the CLI dismisses the ScriptUpdater consent dialog
-- **THEN** the activated control is the No button
-- **AND** the CLI does not send Enter as the dismissal method for this dialog
-
 ### Requirement: In-flight command carries api_updater_declined warning
 
-When a CLI command dismisses the ScriptUpdater consent dialog at least once during that invocation, the command's machine-readable response SHALL include `warning` set to `api_updater_declined` and a human-readable `warning_detail` stating that Unity offered to rewrite sources for changed APIs, that the CLI declined, and that compile errors or `(UnityUpgradable)` messages may remain. The command's primary `status` and exit code SHALL follow the command's existing contract. This warning SHALL NOT use `status: "warning"` unless that was already the command's primary status.
+When a CLI command dismisses the ScriptUpdater consent dialog at least once during that invocation, the command's machine-readable response SHALL include `warning` set to `api_updater_declined` and a human-readable `warning_detail` stating that Unity offered to rewrite sources for changed APIs, that the CLI declined, and that compile errors or `(UnityUpgradable)` messages may remain. The command's primary `status` and exit code SHALL follow the command's existing contract.
 
 #### Scenario: wait-for-compile settles after a decline
 
@@ -52,6 +56,10 @@ When a CLI command dismisses the ScriptUpdater consent dialog at least once duri
 - **AND** C# compilation still has errors
 - **THEN** the command still reports `unity_compile_error` (or the existing compile-error outcome for that command)
 - **AND** the payload also includes `warning = "api_updater_declined"`
+
+### Requirement: The declined warning never replaces the primary status
+
+This warning SHALL NOT use `status: "warning"` unless that was already the command's primary status.
 
 #### Scenario: command that did not dismiss omits the warning
 

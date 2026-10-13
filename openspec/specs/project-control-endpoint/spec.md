@@ -8,13 +8,23 @@ Define the Unity-side project control endpoint contract, including dynamic loopb
 
 ### Requirement: Unity control service selects an available loopback port
 
-The Unity-side project control service SHALL bind to a loopback HTTP endpoint by trying the preferred port first and then trying later ports in a bounded range when the preferred port is unavailable. The bound port SHALL be the authoritative service port for that Editor session. Rollover to a later candidate port SHALL occur whenever a bind attempt fails because the candidate port is already in use, regardless of which concrete exception type the host runtime raises for that condition (including a `SocketException` with `SocketError.AddressAlreadyInUse` under Unity's Mono runtime, as well as an `HttpListenerException`). The scan SHALL abort early only on a genuinely fatal error that is not a port-in-use condition.
+The Unity-side project control service SHALL bind to a loopback HTTP endpoint by trying the preferred port first and then trying later ports in a bounded range when the preferred port is unavailable. The bound port SHALL be the authoritative service port for that Editor session.
 
 #### Scenario: Preferred port is available
 
 - **WHEN** a Unity Editor loads the package and the preferred control port is available
 - **THEN** the control service binds the preferred loopback endpoint
 - **AND** the health endpoint reports that selected port
+
+#### Scenario: Bounded range is exhausted
+
+- **WHEN** every port in the bounded range is already in use
+- **THEN** the control service reports a failure that reflects the full range it attempted
+- **AND** the failure does not occur while later ports in the range were still untried
+
+### Requirement: Port-in-use rollover is exception-type agnostic
+
+Rollover to a later candidate port SHALL occur whenever a bind attempt fails because the candidate port is already in use, regardless of which concrete exception type the host runtime raises for that condition (including a `SocketException` with `SocketError.AddressAlreadyInUse` under Unity's Mono runtime, as well as an `HttpListenerException`). The scan SHALL abort early only on a genuinely fatal error that is not a port-in-use condition.
 
 #### Scenario: Preferred port is occupied
 
@@ -28,23 +38,35 @@ The Unity-side project control service SHALL bind to a loopback HTTP endpoint by
 - **THEN** the control service treats it as a port-in-use condition and continues to the next candidate port
 - **AND** it does not abort the bounded scan after only the first occupied port
 
-#### Scenario: Bounded range is exhausted
-
-- **WHEN** every port in the bounded range is already in use
-- **THEN** the control service reports a failure that reflects the full range it attempted
-- **AND** the failure does not occur while later ports in the range were still untried
-
 ### Requirement: Health response exposes endpoint identity
 
-The Unity-side health endpoint SHALL expose enough identity for a project-scoped caller to verify endpoint ownership and installation consistency, and to observe the Editor without inferring where it writes. A ready health response SHALL include the selected port, base URL, Unity process id when available, resolved Unity project path, session marker, the bridge package version, and the Editor's own console log path. The bridge version SHALL be resolved from the Unity package metadata for the assembly providing the service, and SHALL be omitted or reported as null when that assembly does not belong to an installed package rather than reported as a guessed value. When that version is known, a bound non-ready health response (`compiling`, or `not_available` while the control service is listening) SHALL also include `bridge_version`. A bound `compiling` health response SHALL also include `unity_pid` when the process id is known. The console log path SHALL be resolved from the running Editor's own Unity runtime, and SHALL be omitted or reported as null when it cannot be resolved rather than reported as a platform-default guess.
-
-The same identity SHALL be available to a caller that has not yet connected, through the endpoint publication defined by `editor-session-discovery`, so that reaching the service never requires probing candidate ports to discover which one belongs to the target project.
+The Unity-side health endpoint SHALL expose enough identity for a project-scoped caller to verify endpoint ownership and installation consistency, and to observe the Editor without inferring where it writes. A ready health response SHALL include the selected port, base URL, Unity process id when available, resolved Unity project path, session marker, the bridge package version, and the Editor's own console log path.
 
 #### Scenario: Caller probes a ready service
 
 - **WHEN** a caller probes `/health` on a ready UnityPuerExec service
 - **THEN** the response includes `status = "ready"`
 - **AND** the response includes `port`, `base_url`, `unity_pid`, `project_path`, `session_marker`, `bridge_version`, and `console_log_path`
+
+#### Scenario: Caller compares endpoint ownership
+
+- **WHEN** a caller has a target project path and receives a ready health response from a candidate endpoint
+- **THEN** the caller can compare the health `project_path` with the target project path
+- **AND** a mismatch identifies the candidate endpoint as not owned by the target project
+
+### Requirement: Endpoint identity is reachable without probing candidate ports
+
+The same identity SHALL be available to a caller that has not yet connected, through the endpoint publication defined by `editor-session-discovery`, so that reaching the service never requires probing candidate ports to discover which one belongs to the target project.
+
+#### Scenario: Caller reaches the service without probing candidate ports
+
+- **WHEN** a caller needs to reach the control service of a specific project
+- **THEN** the published endpoint supplies the port to connect to
+- **AND** the caller does not probe other ports in the control port range to establish ownership
+
+### Requirement: Health reports bridge version and process id from package metadata
+
+The bridge version SHALL be resolved from the Unity package metadata for the assembly providing the service, and SHALL be omitted or reported as null when that assembly does not belong to an installed package rather than reported as a guessed value. When that version is known, a bound non-ready health response (`compiling` or `not_available`) SHALL also include `bridge_version`. A bound `compiling` health response SHALL also include `unity_pid` when the process id is known.
 
 #### Scenario: Caller probes a compiling service
 
@@ -54,35 +76,27 @@ The same identity SHALL be available to a caller that has not yet connected, thr
 - **AND** the response includes `bridge_version` set to that package's version
 - **AND** the response includes `unity_pid` when the process id is known
 
-#### Scenario: Caller compares endpoint ownership
-
-- **WHEN** a caller has a target project path and receives a ready health response from a candidate endpoint
-- **THEN** the caller can compare the health `project_path` with the target project path
-- **AND** a mismatch identifies the candidate endpoint as not owned by the target project
-
 #### Scenario: Caller compares installation consistency
 
 - **WHEN** a caller receives a ready health response and knows its own CLI version
 - **THEN** the caller can compare the health `bridge_version` with its own version
 - **AND** a difference identifies the two product halves as a mixed installation
 
-#### Scenario: Caller locates the observable log without guessing
-
-- **WHEN** a caller receives a ready health response
-- **THEN** `console_log_path` names the log file that Editor process is writing to
-- **AND** the caller can observe that path instead of assuming the platform default Editor log
-
-#### Scenario: Caller reaches the service without probing candidate ports
-
-- **WHEN** a caller needs to reach the control service of a specific project
-- **THEN** the published endpoint supplies the port to connect to
-- **AND** the caller does not probe other ports in the control port range to establish ownership
-
 #### Scenario: Service assembly is not package-installed
 
 - **WHEN** the Editor assembly providing the service does not belong to an installed Unity package
 - **THEN** the health response omits `bridge_version` or reports it as null
 - **AND** the response remains otherwise well-formed so callers can still evaluate endpoint ownership
+
+### Requirement: Health reports the Editor's own console log path
+
+The console log path SHALL be resolved from the running Editor's own Unity runtime, and SHALL be omitted or reported as null when it cannot be resolved rather than reported as a platform-default guess.
+
+#### Scenario: Caller locates the observable log without guessing
+
+- **WHEN** a caller receives a ready health response
+- **THEN** `console_log_path` names the log file that Editor process is writing to
+- **AND** the caller can observe that path instead of assuming the platform default Editor log
 
 #### Scenario: Console log path cannot be resolved
 
@@ -175,12 +189,7 @@ The health endpoint SHALL report the Editor's play state as one of `edit`, `ente
 
 ### Requirement: Health response exposes the pending refresh state
 
-The Unity-side health endpoint SHALL report whether the control service currently
-considers a compile-triggering change pending, so that a caller observing an Editor can
-distinguish "no refresh needed" from "refresh will happen on the next exec" without
-triggering an exec. The field SHALL be present on ready health responses. Because the
-pending state is computed from the filesystem on each probe rather than from in-memory
-event state, a ready service always has a definite answer: `pending` or `not_pending`.
+The Unity-side health endpoint SHALL report whether the control service currently considers a compile-triggering change pending, so that a caller observing an Editor can distinguish "no refresh needed" from "refresh will happen on the next exec" without triggering an exec. The field SHALL be present on ready health responses. Because the pending state is computed from the filesystem on each probe, a ready service always has a definite answer: `pending` or `not_pending`.
 
 #### Scenario: Caller probes health with no pending change
 

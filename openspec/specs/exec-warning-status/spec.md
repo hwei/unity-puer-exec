@@ -10,8 +10,6 @@ Define the warning terminal status contract for async exec results, including th
 
 When the default-exported `exec` entry function returns a Promise or thenable, the runtime SHALL complete the job with a `warning` terminal status rather than a `failed` status. The `warning` status SHALL communicate that the function body executed successfully but the return value could not be captured because only immediate JSON-serializable results are supported.
 
-The warning response SHALL use the shape: `ok: true`, `status: "warning"`, with fields `warning` (machine-readable code, e.g., `"async_result_not_supported"`) and `warning_detail` (human-readable explanation). The CLI SHALL map `status: "warning"` to exit code 0 and emit the response on stdout. `wait-for-exec` SHALL return the same warning response when the addressed request has reached a warning terminal state.
-
 #### Scenario: Entry function returns a Promise
 
 - **WHEN** the default-exported exec entry function returns a Promise or thenable
@@ -20,11 +18,9 @@ The warning response SHALL use the shape: `ok: true`, `status: "warning"`, with 
 - **AND** the response includes `warning_detail` explaining that the function body executed but the return value could not be serialized
 - **AND** the contract does not treat Promise return values as an implicit long-running completion channel
 
-#### Scenario: wait-for-exec observes a warning terminal state
+### Requirement: Warning responses are emitted on stdout with exit code 0
 
-- **WHEN** `wait-for-exec` addresses a request that previously reached a warning terminal state
-- **THEN** the command returns immediately with the same warning response shape
-- **AND** no further waiting is performed
+The warning response SHALL use the shape: `ok: true`, `status: "warning"`, with fields `warning` (machine-readable code, e.g., `"async_result_not_supported"`) and `warning_detail` (human-readable explanation). The CLI SHALL map `status: "warning"` to exit code 0 and emit the response on stdout.
 
 #### Scenario: Warning response is distinguishable from genuine failures
 
@@ -32,6 +28,16 @@ The warning response SHALL use the shape: `ok: true`, `status: "warning"`, with 
 - **THEN** `exec` completes with `ok: false`, `status: "failed"`, and `error` / `stack` fields
 - **AND** the CLI returns exit code 1 with the failure response on stderr
 - **AND** this is clearly distinct from a warning response which uses `ok: true`, `status: "warning"`, exit code 0, and stdout
+
+### Requirement: wait-for-exec returns a warning terminal state
+
+`wait-for-exec` SHALL return the same warning response when the addressed request has reached a warning terminal state.
+
+#### Scenario: wait-for-exec observes a warning terminal state
+
+- **WHEN** `wait-for-exec` addresses a request that previously reached a warning terminal state
+- **THEN** the command returns immediately with the same warning response shape
+- **AND** no further waiting is performed
 
 ### Requirement: Warning detail is self-explanatory in the response
 

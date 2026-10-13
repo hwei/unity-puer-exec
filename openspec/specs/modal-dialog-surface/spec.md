@@ -36,7 +36,7 @@ An `unknown_modal_dialog` blocker payload SHALL include the dialog window handle
 
 ### Requirement: True modals are discriminated from non-blocking Editor windows
 
-The CLI SHALL NOT treat visibility plus a non-empty title as sufficient evidence that a window blocks the Editor. A window SHALL be classified as a true modal when its owner window is present and disabled, or — for a dialog with no owner — when it carries dialog styling and occupies a size consistent with a modal prompt. A window that fails both tests SHALL NOT be reported as a blocker. When this discrimination is uncertain for a window, the CLI SHALL classify it as non-blocking rather than as a blocker.
+The CLI SHALL NOT treat visibility plus a non-empty title as sufficient evidence that a window blocks the Editor. A window SHALL be classified as a true modal when its owner window is present and disabled, or -- for a dialog with no owner -- when it carries dialog styling and occupies a size consistent with a modal prompt.
 
 #### Scenario: Settings windows are not reported as blockers
 
@@ -49,6 +49,10 @@ The CLI SHALL NOT treat visibility plus a non-empty title as sufficient evidence
 - **WHEN** the Editor owns a visible titled window with no owner window
 - **AND** the window carries dialog styling and a size consistent with a modal prompt
 - **THEN** the CLI reports it as a modal blocker
+
+### Requirement: Windows failing modal tests downgrade to non-blocking
+
+A window that fails both tests SHALL NOT be reported as a blocker. When this discrimination is uncertain for a window, the CLI SHALL classify it as non-blocking rather than as a blocker.
 
 #### Scenario: Misclassification downgrades rather than promotes
 

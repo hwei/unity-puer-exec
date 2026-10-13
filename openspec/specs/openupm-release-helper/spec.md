@@ -1,7 +1,7 @@
 # openupm-release-helper Specification
 
 ## Purpose
-TBD - created by archiving change semi-automate-openupm-release. Update Purpose after archive.
+Provide a local maintainer helper that validates release preconditions, bumps the package version, and runs the default mocked/unit test suite before an OpenUPM source release, with optional commit/tag creation and a no-side-effect dry run.
 ## Requirements
 ### Requirement: Local helper prepares an OpenUPM source release
 The repository SHALL provide a local maintainer helper that prepares an OpenUPM source release by validating repository state, updating `packages/com.txcombo.unity-puer-exec/package.json` to a requested version, and running the default mocked/unit release test suite before any source release tag is created.

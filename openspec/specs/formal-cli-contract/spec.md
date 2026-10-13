@@ -8,11 +8,7 @@ Define the durable machine-facing contract for the `unity-puer-exec` CLI, includ
 
 ### Requirement: The CLI has one primary entry and flat command tree
 
-The formal CLI SHALL use `unity-puer-exec` as its single primary entry. The authoritative flat command tree SHALL include `wait-for-log-pattern`, `wait-for-exec`, `wait-for-result-marker`, `wait-for-compile`, `get-log-source`, `get-log-briefs`, `exec`, `play`, `pause`, `stop`, `ensure-closed`, `resolve-blocker`, `get-blocker-state`, `get-compile-errors`, and `get-compile-warnings`. The tree SHALL also accept `ensure-stopped` as a deprecated alias of `ensure-closed`.
-
-This tree SHALL be the single declaration of the CLI's command set. The invocable command surface, the per-command help tiers, the top-level command summary, and runtime guidance coverage SHALL all be defined over exactly this set, so a command cannot be invocable while being absent from help or guidance. A deprecated alias SHALL answer the same help tiers as the command it aliases, and SHALL be marked deprecated wherever it appears.
-
-When distributed as a binary, the entry SHALL be `unity-puer-exec.exe` on Windows. The executable name (without extension) SHALL match the package name style. Agents and callers SHALL discover the binary by searching for `unity-puer-exec.exe` within the consuming Unity project's package cache, at the path `<PackageCache>/com.txcombo.unity-puer-exec@<version>/CLI~/unity-puer-exec.exe`.
+The formal CLI SHALL use `unity-puer-exec` as its single primary entry. The authoritative flat command tree SHALL include `wait-for-log-pattern`, `wait-for-exec`, `wait-for-result-marker`, `wait-for-compile`, `get-log-source`, `get-log-briefs`, `exec`, `play`, `pause`, `stop`, `ensure-closed`, `resolve-blocker`, `get-blocker-state`, `get-compile-errors`, and `get-compile-warnings`.
 
 #### Scenario: Agent discovers the CLI surface
 
@@ -21,12 +17,9 @@ When distributed as a binary, the entry SHALL be `unity-puer-exec.exe` on Window
 - **AND** transitional aliases such as `unity-puer-session` are described only as compatibility paths, not as the authoritative surface
 - **AND** transitional aliases remain thin adapters over the formal command behavior rather than separate feature-bearing command trees
 
-#### Scenario: Agent discovers the binary CLI in a Unity project
+### Requirement: The flat command tree is the single declaration of the command set
 
-- **WHEN** an agent needs to invoke the CLI within a Unity project that has the package installed via OpenUPM
-- **THEN** the agent searches for `unity-puer-exec.exe` within the project directory
-- **AND** the binary is located under `Library/PackageCache/com.txcombo.unity-puer-exec@<version>/CLI~/`
-- **AND** the binary provides the same command surface as the Python source entry
+This tree SHALL be the single declaration of the CLI's command set. The invocable command surface, the per-command help tiers, the top-level command summary, and runtime guidance coverage SHALL all be defined over exactly this set, so a command cannot be invocable while being absent from help or guidance.
 
 #### Scenario: Invocable set and documented set agree
 
@@ -34,17 +27,32 @@ When distributed as a binary, the entry SHALL be `unity-puer-exec.exe` on Window
 - **THEN** all four sets are the same set
 - **AND** no command is invocable while absent from any of them
 
+#### Scenario: Top-level help separates play mode from closing the Editor
+
+- **WHEN** an agent reads top-level help
+- **THEN** `play`, `pause`, and `stop` are listed as play-mode commands
+- **AND** `ensure-closed` is described as closing the Editor process, distinct from `stop`
+
+### Requirement: The deprecated ensure-stopped alias mirrors ensure-closed
+
+The tree SHALL also accept `ensure-stopped` as a deprecated alias of `ensure-closed`. A deprecated alias SHALL answer the same help tiers as the command it aliases, and SHALL be marked deprecated wherever it appears.
+
 #### Scenario: Agent invokes the deprecated ensure-stopped alias
 
 - **WHEN** an agent runs `ensure-stopped` with arguments valid for `ensure-closed`
 - **THEN** the command behaves exactly as `ensure-closed`, with the same result statuses and exit codes
 - **AND** the response identifies `ensure-stopped` as deprecated and names `ensure-closed`
 
-#### Scenario: Top-level help separates play mode from closing the Editor
+### Requirement: The CLI binary entry is discoverable in the package cache
 
-- **WHEN** an agent reads top-level help
-- **THEN** `play`, `pause`, and `stop` are listed as play-mode commands
-- **AND** `ensure-closed` is described as closing the Editor process, distinct from `stop`
+When distributed as a binary, the entry SHALL be `unity-puer-exec.exe` on Windows, and the executable name without extension SHALL match the package name style. Agents and callers SHALL discover the binary by searching for `unity-puer-exec.exe` within the consuming Unity project's package cache, at the path `<PackageCache>/com.txcombo.unity-puer-exec@<version>/CLI~/unity-puer-exec.exe`.
+
+#### Scenario: Agent discovers the binary CLI in a Unity project
+
+- **WHEN** an agent needs to invoke the CLI within a Unity project that has the package installed via OpenUPM
+- **THEN** the agent searches for `unity-puer-exec.exe` within the project directory
+- **AND** the binary is located under `Library/PackageCache/com.txcombo.unity-puer-exec@<version>/CLI~/`
+- **AND** the binary provides the same command surface as the Python source entry
 
 ### Requirement: Every command in the flat command tree answers every help tier
 
@@ -69,13 +77,17 @@ Each command in the authoritative flat command tree SHALL answer `--help`, `--he
 
 ### Requirement: Selector-driven commands use mutually exclusive addressing
 
-Selector-driven commands SHALL accept exactly one of `--project-path` or `--base-url`. Supplying both MUST be treated as a usage error. Project-path resolution SHALL follow the repository-wide deterministic resolution order: explicit `--project-path` argument, then `UNITY_PROJECT_PATH` environment variable, then exe origin inference from `sys.argv[0]`, then cwd fallback. When exe origin inference succeeds, selector-driven commands SHALL treat the inferred path as though `--project-path` had been supplied, so callers are not required to provide an explicit project path when the exe is installed inside the target Unity project.
+Selector-driven commands SHALL accept exactly one of `--project-path` or `--base-url`. Supplying both MUST be treated as a usage error.
 
 #### Scenario: Caller supplies both selectors
 
 - **WHEN** a selector-driven command receives both `--project-path` and `--base-url`
 - **THEN** the command reports a usage error
 - **AND** machine-readable output surfaces `address_conflict` when structured output is produced
+
+### Requirement: Project-path resolution follows a deterministic order
+
+Project-path resolution SHALL follow the repository-wide deterministic resolution order: explicit `--project-path` argument, then `UNITY_PROJECT_PATH` environment variable, then exe origin inference from `sys.argv[0]`, then cwd fallback. When exe origin inference succeeds, selector-driven commands SHALL treat the inferred path as though `--project-path` had been supplied, so callers are not required to provide an explicit project path when the exe is installed inside the target Unity project.
 
 #### Scenario: Caller supplies neither selector but exe inference succeeds
 
@@ -86,7 +98,7 @@ Selector-driven commands SHALL accept exactly one of `--project-path` or `--base
 
 ### Requirement: `exec` is the primary work command
 
-`exec` SHALL send JavaScript to the Unity-side execution service. It SHALL accept exactly one selector and exactly one script input source. It MAY also accept caller-supplied script arguments through `--script-args`. In project-path mode it MAY implicitly prepare Unity enough to satisfy the request. In base-url mode it SHALL target an already chosen service without owning Unity launch. When project-path mode needs to prepare Unity, it SHALL itself own duplicate-launch avoidance, project-scoped recovery, and startup continuity instead of relying on a separate public readiness command. If the CLI cannot safely recover or confirm ownership for the target project, it SHALL return a machine-readable non-success result instead of relying on a Unity-native duplicate-open dialog as the primary behavior. If project-scoped execution is blocked by a Unity-native modal dialog, the CLI SHALL surface a machine-usable blocking result or blocker diagnostics instead of failing only as an unexplained timeout.
+`exec` SHALL send JavaScript to the Unity-side execution service. It SHALL accept exactly one selector and exactly one script input source, and it MAY also accept caller-supplied script arguments through `--script-args`. In base-url mode it SHALL target an already chosen service without owning Unity launch.
 
 #### Scenario: Project-scoped execution is requested
 
@@ -94,17 +106,29 @@ Selector-driven commands SHALL accept exactly one of `--project-path` or `--base
 - **THEN** the command may prepare Unity as needed for the execution request
 - **AND** the command returns either `status = "completed"` or `status = "running"`
 
+### Requirement: exec owns project-scoped launch preparation
+
+In project-path mode `exec` MAY implicitly prepare Unity enough to satisfy the request. When it needs to prepare Unity, it SHALL itself own duplicate-launch avoidance, project-scoped recovery, and startup continuity instead of relying on a separate public readiness command.
+
 #### Scenario: Project-scoped exec encounters an already-open target project
 
 - **WHEN** `exec --project-path ...` needs readiness work for a project that already has an open or recovering Unity Editor instance
 - **THEN** the CLI reuses or waits for that project-scoped instance instead of starting a competing second launch
 - **AND** it does not initiate a blind second launch for the same project
 
+### Requirement: exec reports a launch conflict instead of a duplicate-open dialog
+
+If the CLI cannot safely recover or confirm ownership for the target project, it SHALL return a machine-readable non-success result instead of relying on a Unity-native duplicate-open dialog as the primary behavior.
+
 #### Scenario: Project-scoped exec cannot establish launch ownership safely
 
 - **WHEN** the CLI cannot safely determine whether the addressed project is already owned by another Unity launch attempt or open editor instance
 - **THEN** the command returns a machine-readable non-success result describing the launch-conflict condition
 - **AND** the caller can branch on that result without scraping prose dialog text
+
+### Requirement: exec reports a modal blocker instead of an unexplained timeout
+
+If project-scoped execution is blocked by a Unity-native modal dialog, the CLI SHALL surface a machine-usable blocking result or blocker diagnostics instead of failing only as an unexplained timeout.
 
 #### Scenario: Project-scoped exec is blocked by a modal dialog
 
@@ -128,20 +152,16 @@ Selector-driven commands SHALL accept exactly one of `--project-path` or `--base
 
 ### Requirement: ExecRequest protocol carries optional import context fields
 
-The exec HTTP request payload SHALL accept four optional fields alongside the existing `request_id`, `code`, and `wait_timeout_ms`:
-- `source_path` (string): absolute path of the entry file; populated automatically by the CLI when `--file` is used.
-- `import_base_url` (string): import resolution base; populated when `--import-base-url` is provided.
-- `reset_jsenv_before_exec` (bool): when true, the server resets the JsEnv before evaluating; populated when `--reset-jsenv-before-exec` is set.
-- `stale_module_policy` (string): `auto-reset` or `error`; omission SHALL mean `auto-reset`.
-
-The payload SHALL NOT carry a `refresh_before_exec` field. Refresh is a server-side decision under `import-change-refresh`, reported in the exec response, and is not caller-selectable.
-
-Requests that omit the first three fields retain their existing import-context behavior. A request that omits `stale_module_policy` adopts the new default automatic stale recovery behavior.
+The exec HTTP request payload SHALL accept optional import-context fields alongside the existing `request_id`, `code`, and `wait_timeout_ms`: `source_path` (string; absolute entry-file path, set automatically by `--file`), `import_base_url` (string; import resolution base, set by `--import-base-url`), and `reset_jsenv_before_exec` (bool; resets the JsEnv before evaluating, set by `--reset-jsenv-before-exec`). Requests that omit these fields retain their existing import-context behavior.
 
 #### Scenario: --file populates source_path automatically
 
 - **WHEN** `exec --file /scripts/entry.js` is invoked
 - **THEN** the CLI includes `source_path = "/scripts/entry.js"` in the payload without requiring the caller to pass it explicitly
+
+### Requirement: Stale-module policy defaults to automatic recovery
+
+`stale_module_policy` (string) values are `auto-reset` or `error`, and omission SHALL mean `auto-reset`. A request that omits `stale_module_policy` adopts the default automatic stale recovery behavior.
 
 #### Scenario: Payload without policy uses server default
 
@@ -152,6 +172,10 @@ Requests that omit the first three fields retain their existing import-context b
 
 - **WHEN** a direct HTTP client submits a non-empty `stale_module_policy` other than `auto-reset` or `error`
 - **THEN** the server returns a machine-readable validation failure without executing code or resetting the JsEnv
+
+### Requirement: ExecRequest protocol rejects the removed refresh field
+
+The payload SHALL NOT carry a `refresh_before_exec` field. Refresh is a server-side decision under `import-change-refresh`, reported in the exec response, and is not caller-selectable.
 
 #### Scenario: Payload carrying the removed refresh field is rejected
 
@@ -177,13 +201,17 @@ The formal CLI SHALL expose a public `request_id` for each accepted `exec` attem
 
 ### Requirement: Exec request identity is caller-owned and idempotent
 
-The formal CLI SHALL treat `request_id` as a caller-owned idempotency key for top-level `exec`. Reusing the same `request_id` with an equivalent execution request SHALL recover or replay the same request state without duplicate execution. Reusing the same `request_id` with a materially different execution request SHALL fail explicitly. Equivalent execution requests SHALL compare the effective target identity, normalized script content, and canonical script-argument object rather than only the raw transport form.
+The formal CLI SHALL treat `request_id` as a caller-owned idempotency key for top-level `exec`. Reusing the same `request_id` with an equivalent execution request SHALL recover or replay the same request state without duplicate execution.
 
 #### Scenario: Caller idempotently replays the same exec request
 
 - **WHEN** a caller invokes `unity-puer-exec exec ... --request-id R` more than once with equivalent execution content and target identity
 - **THEN** the service does not start a second execution for `R`
 - **AND** the response reports the current or final state of the existing request instead of duplicating side effects
+
+### Requirement: Exec request equivalence is defined over effective identity, not transport form
+
+Reusing the same `request_id` with a materially different execution request SHALL fail explicitly. Equivalent execution requests SHALL compare the effective target identity, normalized script content, and canonical script-argument object rather than only the raw transport form.
 
 #### Scenario: Caller reuses a request identity for different execution content
 
@@ -228,7 +256,7 @@ The formal CLI SHALL expose at most one active top-level `exec` request at a tim
 
 ### Requirement: Wait-for-exec continues an accepted request by request identity
 
-The formal CLI SHALL provide a dedicated `wait-for-exec` follow-up surface that continues or queries an accepted request by `request_id` without resubmitting script content. For project-scoped accepted requests that depend on a local pending artifact, the CLI SHALL treat that artifact as bounded local recovery state rather than as durable unbounded storage. When the accepted request includes caller-supplied script arguments, the bounded local recovery state SHALL preserve those arguments so replayed execution remains equivalent to the accepted request.
+The formal CLI SHALL provide a dedicated `wait-for-exec` follow-up surface that continues or queries an accepted request by `request_id` without resubmitting script content.
 
 #### Scenario: Caller follows up on a running request
 
@@ -242,6 +270,10 @@ The formal CLI SHALL provide a dedicated `wait-for-exec` follow-up surface that 
 - **THEN** the command returns a machine-readable `missing` result
 - **AND** the contract does not require the service to distinguish whether `R` was never accepted, was lost with a replaced service instance, aged out of retention, or was represented only by a malformed local leftover
 
+### Requirement: Bounded local recovery state preserves caller script arguments
+
+For project-scoped accepted requests that depend on a local pending artifact, the CLI SHALL treat that artifact as bounded local recovery state rather than as durable unbounded storage. When the accepted request includes caller-supplied script arguments, that bounded local recovery state SHALL preserve those arguments so replayed execution remains equivalent to the accepted request.
+
 #### Scenario: Project-scoped replay preserves script arguments
 
 - **WHEN** a project-scoped `exec --request-id R --script-args '{...}'` is accepted into a non-terminal state that later resumes through `wait-for-exec --request-id R`
@@ -250,9 +282,7 @@ The formal CLI SHALL provide a dedicated `wait-for-exec` follow-up surface that 
 
 ### Requirement: Async execution remains machine-usable without continuation tokens
 
-Long-running execution SHALL remain machine-usable without token-driven continuation. `exec` SHALL return `log_range` and `brief_sequence` in every response so callers can observe the operation window without an opt-in flag. `log_range.start` SHALL be the authoritative observation checkpoint for `wait-for-log-pattern` and `wait-for-result-marker`, replacing the former `log_offset` field. Any response that includes `brief_sequence` SHALL use the compact run encoding defined by `log-brief` rather than a fully expanded repeated-character string. `wait-for-log-pattern` SHALL remain the regex-oriented observation primitive and SHALL support extraction modes including parsed JSON group extraction for structured markers. The extraction modes that return plain text and parsed JSON SHALL be mutually exclusive. The CLI SHALL provide a higher-level `wait-for-result-marker` path for the recommended single-line JSON result-marker workflow so callers do not need to author brittle full-JSON regexes themselves.
-
-The `exec` entry function SHALL return an immediate JSON-serializable value for top-level `result`. The runtime SHALL NOT automatically await Promise or thenable return values from the default-exported entry function. Promise- or thenable-returning entry functions MUST complete with a `warning` terminal status (code `async_result_not_supported`) so callers understand the function body executed but the return value could not be captured. Long-running async work continues to use result-marker observation instead of implicit return awaiting.
+Long-running execution SHALL remain machine-usable without token-driven continuation. `exec` SHALL return `log_range` and `brief_sequence` in every response. `log_range.start` SHALL be the authoritative observation checkpoint for `wait-for-log-pattern` and `wait-for-result-marker`, replacing the former `log_offset` field. A response that includes `brief_sequence` SHALL use the compact run encoding defined by `log-brief`, not a fully expanded repeated-character string.
 
 #### Scenario: Long-running script uses a correlation-aware result marker
 
@@ -266,17 +296,25 @@ The `exec` entry function SHALL return an immediate JSON-serializable value for 
 - **THEN** the returned offset is compatible with the observer's actual log source
 - **AND** the caller does not need to fall back to scanning from the beginning of the log to find the intended marker
 
+#### Scenario: Caller observes a long import-heavy request
+
+- **WHEN** `exec`, `wait-for-exec`, or another observation-carrying response spans a long run of repeated brief kinds
+- **THEN** `brief_sequence` stays compact enough for machine parsing and human scanning
+- **AND** the compact form remains a faithful representation of the underlying observed brief order
+
+### Requirement: Observation extraction modes stay mutually exclusive
+
+`wait-for-log-pattern` SHALL remain the regex-oriented observation primitive and SHALL support extraction modes including parsed JSON group extraction for structured markers. The extraction modes that return plain text and parsed JSON SHALL be mutually exclusive. The CLI SHALL provide a higher-level `wait-for-result-marker` path for the recommended single-line JSON result-marker workflow so callers do not need to author brittle full-JSON regexes themselves.
+
 #### Scenario: Alias ignores non-matching marker candidates while waiting
 
 - **WHEN** `wait-for-result-marker` observes lines with the standard marker prefix but the extracted JSON is invalid or the `correlation_id` does not match the requested value
 - **THEN** those lines are treated as non-matching candidates rather than terminal command failures
 - **AND** the command continues waiting until a matching marker is found or the normal wait termination condition is reached
 
-#### Scenario: Caller observes a long import-heavy request
+### Requirement: Exec entry returns an immediate value and does not await Promises
 
-- **WHEN** `exec`, `wait-for-exec`, or another observation-carrying response spans a long run of repeated brief kinds
-- **THEN** `brief_sequence` stays compact enough for machine parsing and human scanning
-- **AND** the compact form remains a faithful representation of the underlying observed brief order
+The `exec` entry function SHALL return an immediate JSON-serializable value for top-level `result`. The runtime SHALL NOT automatically await Promise or thenable return values from the default-exported entry function. Promise- or thenable-returning entry functions MUST complete with a `warning` terminal status (code `async_result_not_supported`). Long-running async work continues to use result-marker observation instead of implicit return awaiting.
 
 #### Scenario: Entry function returns a Promise
 
@@ -305,8 +343,6 @@ If session identity checking is needed for safe execution or observation, the fo
 
 `wait-for-log-pattern` and `get-log-source` SHALL remain observation commands. `ensure-closed` SHALL remain the stopped-state command for the Editor process. Observation commands MUST NOT imply Unity launch ownership, and `ensure-closed` in base-url mode MUST NOT kill the target. The play-mode `stop` command SHALL NOT close the Editor process.
 
-In project mode, `ensure-closed` SHALL decide whether the project is stopped from project-local state — the project's Unity lockfile and the Editor's published endpoint — rather than from a process id recorded earlier or from a machine-wide count of Unity processes. A stop action SHALL target only a process the published endpoint identifies as belonging to the target project. Process-liveness detection SHALL be independent of the host operating system's display language.
-
 #### Scenario: Agent checks observable log source
 
 - **WHEN** `get-log-source` succeeds
@@ -318,6 +354,15 @@ In project mode, `ensure-closed` SHALL decide whether the project is stopped fro
 - **WHEN** `ensure-closed --base-url ...` is invoked
 - **THEN** the command may inspect state only
 - **AND** it does not perform kill behavior against that direct-service target
+
+#### Scenario: Play-mode stop leaves the Editor running
+
+- **WHEN** an agent runs `stop`
+- **THEN** the Editor process keeps running in edit mode
+
+### Requirement: Project-mode stopped detection is based on project-local state
+
+In project mode, `ensure-closed` SHALL decide whether the project is stopped from project-local state — the project's Unity lockfile and the Editor's published endpoint — rather than from a process id recorded earlier or from a machine-wide count of Unity processes. A stop action SHALL target only a process the published endpoint identifies as belonging to the target project. Process-liveness detection SHALL be independent of the host operating system's display language.
 
 #### Scenario: Project with no running Editor is reported stopped
 
@@ -343,14 +388,9 @@ In project mode, `ensure-closed` SHALL decide whether the project is stopped fro
 - **THEN** the reported result reflects actual process state
 - **AND** it is not altered by a localized process-listing message
 
-#### Scenario: Play-mode stop leaves the Editor running
-
-- **WHEN** an agent runs `stop`
-- **THEN** the Editor process keeps running in edit mode
-
 ### Requirement: Log source resolution supports custom project-scoped paths
 
-CLI log-related commands SHALL support an effective Unity log source that is not limited to the platform default Editor log path. The CLI SHALL resolve the effective log source in this order: an explicit `--unity-log-path` supplied by the caller, then the console log path published by the project's Editor, then the platform default path as a last resort. The CLI SHALL NOT resolve the effective log path from a session record it wrote itself. `get-log-source` SHALL report which of these tiers produced the effective path, so a caller can distinguish an observed log the Editor named from one the CLI assumed.
+CLI log-related commands SHALL support an effective Unity log source that is not limited to the platform default Editor log path. The CLI SHALL resolve the effective log source in this order: an explicit `--unity-log-path` supplied by the caller, then the console log path published by the project's Editor, then the platform default path as a last resort. The CLI SHALL NOT resolve the effective log path from a session record it wrote itself.
 
 #### Scenario: Published path outranks the platform default
 
@@ -368,6 +408,10 @@ CLI log-related commands SHALL support an effective Unity log source that is not
 
 - **WHEN** no explicit path is supplied and no Editor publication can be read
 - **THEN** the CLI falls back to the platform default path as a last resort
+
+### Requirement: get-log-source reports the resolution tier
+
+`get-log-source` SHALL report which of these tiers produced the effective path, so a caller can distinguish an observed log the Editor named from one the CLI assumed.
 
 #### Scenario: Caller can tell a named path from an assumed one
 
@@ -420,11 +464,8 @@ The CLI SHALL preserve the baseline exit-code model for successful completion, e
 - **THEN** the process exits with the corresponding formal non-zero code instead of collapsing all branchable states into one generic failure code
 
 ### Requirement: Help is sufficient for agent discovery
-Top-level and per-command help SHALL describe the single-entry model, the flat command list, selector exclusivity, workflow examples, key success states, expected non-success states, and minimal invocation examples without requiring repository skill docs as the primary discovery path. When a workflow may return `running`, help SHALL not imply that machine-usable correlation metadata is always present immediately; examples SHALL describe the accepted script-driven way to make correlation ids available when earlier observation is needed. Help for common project-scoped tasks SHALL prioritize the shortest effective workflow so medium-capability agents can identify the preferred path with minimal unnecessary exploration.
 
-Help for `exec` SHALL describe the new module-shaped entry contract, the required default export, the synchronous immediate-result rule, and the fact that Promise-returning entry functions complete with warning status instead of being implicitly awaited. Help SHALL not continue presenting fragment-style `return ...;` snippets or validation-specific helper APIs as the normal public script surface.
-
-Per-command `--help-status` output SHALL include situation-level explanations for each non-success status so agents can query status meanings independently of runtime guidance.
+Top-level and per-command help SHALL describe the single-entry model, the flat command list, selector exclusivity, workflow examples, key success states, expected non-success states, and minimal invocation examples without requiring repository skill docs as the primary discovery path. Help for common project-scoped tasks SHALL prioritize the shortest effective workflow so medium-capability agents can identify the preferred path with minimal unnecessary exploration.
 
 #### Scenario: Agent reads help to discover normal workflow
 
@@ -433,18 +474,19 @@ Per-command `--help-status` output SHALL include situation-level explanations fo
 - **AND** help also explains readiness, observation, and stopped-state workflows
 - **AND** the preferred project-scoped path is easy to identify without scanning secondary command flows first
 
+### Requirement: Help explains the running correlation workflow
+
+When a workflow may return `running`, help SHALL not imply that machine-usable correlation metadata is always present immediately; examples SHALL describe the accepted script-driven way to make correlation ids available when earlier observation is needed.
+
 #### Scenario: Agent reads help for a long-running result-marker workflow
 
 - **WHEN** an agent reads command help or examples for a long-running `exec` workflow
 - **THEN** help explains how a script deliberately exposes `correlation_id` and result-marker output before `wait-for-result-marker`
 - **AND** help does not imply that `running` automatically includes terminal async result data
 
-#### Scenario: Agent reads help for ordinary log-pattern verification
+### Requirement: Help describes the exec script contract
 
-- **WHEN** an agent reads the published help surface for a project-scoped workflow that verifies success through ordinary Unity log output rather than a result marker
-- **THEN** the help surface exposes a first-class workflow example for `exec` plus `wait-for-log-pattern`
-- **AND** that example shows reading `log_range.start` from the `exec` response and passing it to `wait-for-log-pattern --start-offset ...`
-- **AND** the help surface does not force the agent to infer the full ordinary log-verification path only from scattered command-level prose
+Help for `exec` SHALL describe the new module-shaped entry contract, the required default export, the synchronous immediate-result rule, and the fact that Promise-returning entry functions complete with warning status instead of being implicitly awaited. Help SHALL not continue presenting fragment-style `return ...;` snippets or validation-specific helper APIs as the normal public script surface.
 
 #### Scenario: Agent reads help for exec script authoring
 
@@ -452,6 +494,17 @@ Per-command `--help-status` output SHALL include situation-level explanations fo
 - **THEN** help shows the required default-exported module entry shape
 - **AND** help explains that immediate return values populate top-level `result`
 - **AND** help explains that Promise return values complete with warning status (the function body still executes but the return value cannot be serialized) instead of being implicitly awaited
+
+### Requirement: Help-status explains each non-success status
+
+Per-command `--help-status` output SHALL include situation-level explanations for each non-success status so agents can query status meanings independently of runtime guidance.
+
+#### Scenario: Agent reads help for ordinary log-pattern verification
+
+- **WHEN** an agent reads the published help surface for a project-scoped workflow that verifies success through ordinary Unity log output rather than a result marker
+- **THEN** the help surface exposes a first-class workflow example for `exec` plus `wait-for-log-pattern`
+- **AND** that example shows reading `log_range.start` from the `exec` response and passing it to `wait-for-log-pattern --start-offset ...`
+- **AND** the help surface does not force the agent to infer the full ordinary log-verification path only from scattered command-level prose
 
 ### Requirement: Exec Quick Start surfaces ctx-contract limitation before first script attempt
 
@@ -465,6 +518,7 @@ The `exec --help` Quick Start SHALL include a brief warning that the script `ctx
 - **AND** the agent does not need to discover the ctx limitation by trial and error or by separately reading `--help-args`
 
 ### Requirement: Help efficiency improvements are validated against transcript evidence
+
 The repository SHALL evaluate CLI help efficiency changes against transcript-backed validation evidence rather than relying only on maintainers' intuition.
 
 #### Scenario: Contributor proposes a help-surface efficiency change
@@ -476,13 +530,15 @@ The repository SHALL evaluate CLI help efficiency changes against transcript-bac
 
 The default-exported exec entry function SHALL receive a single context object. The public context SHALL expose `request_id`, `globals`, and `args`.
 
-`request_id` SHALL match the accepted exec request identity already exposed at the CLI layer. `globals` SHALL be a mutable same-service shared object that remains available across exec requests within the lifetime of the same execution service instance. `args` SHALL be the caller-supplied script-argument object, and when the caller omits `--script-args` the runtime SHALL still expose `ctx.args` as an empty object. Published help for exec script authoring SHALL identify those fields as the guaranteed context surface and SHALL not imply that undocumented fields such as `ctx.project_path` are available. When scripts need project-local file paths, the published guidance SHALL direct callers toward supported Unity or .NET APIs such as `UnityEngine.Application.dataPath` plus `System.IO.Path.GetDirectoryName(...)`.
-
 #### Scenario: Script reads the accepted request identity
 
 - **WHEN** a script's default-exported entry function reads `ctx.request_id`
 - **THEN** it receives the same request identity that the accepted exec response exposes at top level
 - **AND** the script can include that identity in its immediate result or marker output
+
+### Requirement: The exec context identity matches the accepted request and exposes shared state
+
+The public context's `request_id` SHALL match the accepted exec request identity already exposed at the CLI layer. `globals` SHALL be a mutable same-service shared object that remains available across exec requests within the lifetime of the same execution service instance.
 
 #### Scenario: Script reuses same-service shared state
 
@@ -490,11 +546,19 @@ The default-exported exec entry function SHALL receive a single context object. 
 - **THEN** the script-visible `ctx.globals` object remains shared across those requests
 - **AND** the contract does not describe that object as durable across service restart or replacement
 
+### Requirement: The exec context exposes caller script arguments
+
+`args` SHALL be the caller-supplied script-argument object, and when the caller omits `--script-args` the runtime SHALL still expose `ctx.args` as an empty object.
+
 #### Scenario: Script reads caller-supplied arguments
 
 - **WHEN** a caller invokes `exec` with `--script-args` containing a valid JSON object
 - **THEN** the default-exported entry function receives that object at `ctx.args`
 - **AND** the script does not need a second positional parameter to access caller-supplied arguments
+
+### Requirement: Published help documents the guaranteed exec context surface
+
+Published help for exec script authoring SHALL identify those fields as the guaranteed context surface and SHALL not imply that undocumented fields such as `ctx.project_path` are available. When scripts need project-local file paths, the published guidance SHALL direct callers toward supported Unity or .NET APIs such as `UnityEngine.Application.dataPath` plus `System.IO.Path.GetDirectoryName(...)`.
 
 #### Scenario: Script omits caller-supplied arguments
 
@@ -504,7 +568,7 @@ The default-exported exec entry function SHALL receive a single context object. 
 
 ### Requirement: `resolve-blocker` dismisses supported modal blockers explicitly
 
-The CLI SHALL expose a dedicated `resolve-blocker` command for project-scoped Windows workflows. The first version SHALL require `--project-path`. `--action cancel` SHALL be legal only for the Safe Mode dialog, where it preserves the existing "cancel == Enter Safe Mode" semantics. Every other reported modal dialog, including the save-scene dialogs and any dialog outside the catalog, SHALL be resolved through `--action click --hwnd <int> --button "<label>"` instead. The CLI SHALL reject `--action cancel` for a dialog that is not the Safe Mode dialog rather than silently substituting another action.
+The CLI SHALL expose a dedicated `resolve-blocker` command for project-scoped Windows workflows. The first version SHALL require `--project-path`. `--action cancel` SHALL be legal only for the Safe Mode dialog, where it preserves the existing "cancel == Enter Safe Mode" semantics.
 
 #### Scenario: Caller resolves a supported blocker with cancel
 
@@ -520,6 +584,10 @@ The CLI SHALL expose a dedicated `resolve-blocker` command for project-scoped Wi
 - **WHEN** `resolve-blocker --project-path ... --action cancel` is invoked while the "Enter Safe Mode?" dialog is present
 - **THEN** the CLI dismisses it through the keyboard Enter path
 - **AND** success returns `result.status = "resolved"` with `result.action = "cancel"`
+
+### Requirement: Non-Safe-Mode blockers resolve through explicit button targeting
+
+Every other reported modal dialog, including the save-scene dialogs and any dialog outside the catalog, SHALL be resolved through `--action click --hwnd <int> --button "<label>"` instead. The CLI SHALL reject `--action cancel` for a dialog that is not the Safe Mode dialog rather than silently substituting another action.
 
 #### Scenario: Caller attempts cancel on a save-scene dialog
 
@@ -580,6 +648,7 @@ Resolving a blocker SHALL NOT resubmit or replace the original blocked exec requ
 - **AND** the caller can continue with `wait-for-exec --request-id ...`
 
 ### Requirement: Help explicitly frames script authoring as a PuerTS-style bridge workflow
+
 The formal CLI help surface SHALL explain that `unity-puer-exec` script authoring uses a PuerTS-style JavaScript-to-C# bridge for Unity and .NET API access. This explanation SHALL be discoverable from published help without requiring repository-only artifacts.
 
 #### Scenario: Agent reads help to understand how JavaScript reaches Unity APIs
@@ -589,6 +658,7 @@ The formal CLI help surface SHALL explain that `unity-puer-exec` script authorin
 - **AND** the help does not force the caller to infer the bridge model only from incidental workflow examples
 
 ### Requirement: Help includes a concise bridge mental model
+
 The formal CLI help surface SHALL provide a short bridge-oriented mental model near script authoring guidance so callers can distinguish bridged .NET values from ordinary JavaScript values.
 
 #### Scenario: Agent reads exec help before writing a verification script
@@ -599,10 +669,6 @@ The formal CLI help surface SHALL provide a short bridge-oriented mental model n
 ### Requirement: Project-scoped commands validate control endpoint identity
 
 Project-scoped selector commands SHALL discover the Unity control endpoint from project-local session state and live health checks instead of assuming a globally fixed default endpoint. A session artifact endpoint SHALL be treated as a candidate until a live health response proves that the endpoint belongs to the requested project.
-
-When neither a session artifact nor the preferred port yields a ready endpoint owned by the requested project, the CLI SHALL perform an active discovery scan across the bounded control-port range that the Unity control service binds within, probing live `/health` on each candidate and claiming the candidate whose health identity matches the requested project. The scan SHALL try the preferred port first so the single-instance case keeps its fast path, and SHALL stop at the first ready, project-matched endpoint. Range-aware discovery SHALL apply at every project-scoped readiness site — initial discovery, any re-probe after a launch claim, recovery waiting, and the wait that follows a cold-start launch — so the CLI never waits on the preferred port while the project's actual endpoint is a different port in the range. A ready endpoint whose health identity belongs to a different project SHALL never be claimed, on any port.
-
-A readiness site that already holds a candidate endpoint — a session artifact, a published endpoint, or an endpoint resolved on an earlier poll — SHALL treat that candidate as a fast path only. Whenever the candidate cannot be confirmed against live health as the requested project's own endpoint, the site SHALL fall back to range-scan discovery rather than waiting on the unconfirmed candidate, so a stale candidate never substitutes for discovery and never leaves the CLI reporting a non-terminal outcome while a ready, project-matched endpoint exists on the host.
 
 #### Scenario: Valid artifact endpoint is reused
 
@@ -623,12 +689,26 @@ A readiness site that already holds a candidate endpoint — a session artifact,
 - **THEN** the command does not treat the old artifact endpoint as authoritative during cold start
 - **AND** it waits for a live ready health response from the launched or recovered project before persisting the effective endpoint
 
+### Requirement: Range-aware endpoint discovery covers the control-port range
+
+When neither a session artifact nor the preferred port yields a ready endpoint for the requested project, the CLI SHALL perform an active scan across the control-port range the Unity control service binds within, probing live `/health` on each candidate and claiming the candidate whose health identity matches the requested project. The scan SHALL try the preferred port first so the single-instance case keeps its fast path, and SHALL stop at the first ready, project-matched endpoint.
+
 #### Scenario: Target Editor is live on a non-preferred port with no artifact
 
 - **WHEN** a project-scoped command runs and the requested project's Editor is already ready on a non-preferred port in the control-port range
 - **AND** no session artifact records that endpoint and the preferred port is owned by a different project or is free
 - **THEN** the command discovers the project's endpoint by scanning the control-port range and matching health identity
 - **AND** it routes work to that matched endpoint instead of launching a duplicate Editor or timing out on the preferred port
+
+#### Scenario: The discovery scan covers every port the control service can bind
+
+- **WHEN** the requested project's Editor has rolled over to the last port in the range that the Unity control service is able to bind
+- **THEN** the CLI's discovery scan probes that port and claims the endpoint
+- **AND** the scan range is exactly the service's own bind range rather than stopping short of it
+
+### Requirement: Range-aware discovery applies at every readiness site
+
+Range-aware discovery SHALL apply at every project-scoped readiness site — initial discovery, any re-probe after a launch claim, recovery waiting, and the wait that follows a cold-start launch — so the CLI never waits on the preferred port while the project's actual endpoint is a different port in the range. A ready endpoint whose health identity belongs to a different project SHALL never be claimed, on any port.
 
 #### Scenario: Recovery waits on the actually-bound port
 
@@ -644,11 +724,9 @@ A readiness site that already holds a candidate endpoint — a session artifact,
 - **THEN** the post-launch readiness wait discovers the launched Editor by range scan with health-identity matching
 - **AND** the command does not report the launched project as not ready merely because the preferred port did not become ready
 
-#### Scenario: The discovery scan covers every port the control service can bind
+### Requirement: Readiness sites treat candidate endpoints as a fast path only
 
-- **WHEN** the requested project's Editor has rolled over to the last port in the range that the Unity control service is able to bind
-- **THEN** the CLI's discovery scan probes that port and claims the endpoint
-- **AND** the scan range is exactly the service's own bind range rather than stopping short of it
+A readiness site that already holds a candidate endpoint SHALL treat that candidate as a fast path only. Whenever the candidate cannot be confirmed against live health as the requested project's own endpoint, the site SHALL fall back to range-scan discovery rather than waiting on the unconfirmed candidate, so a stale candidate never substitutes for discovery and never leaves the CLI reporting a non-terminal outcome while a ready, project-matched endpoint exists on the host.
 
 #### Scenario: Preferred port is occupied by a different, already-ready project with no local artifact
 
@@ -668,13 +746,17 @@ A readiness site that already holds a candidate endpoint — a session artifact,
 
 ### Requirement: Direct base-url mode remains explicit
 
-Base-url selector mode SHALL continue to target the caller-supplied endpoint directly. Direct mode SHALL NOT require project artifact validation and SHALL NOT imply Unity launch ownership. When the server reports that it triggered an automatic refresh before an exec, the CLI SHALL settle the resulting compilation cycle by re-probing the same caller-supplied endpoint rather than performing project-scoped re-acquisition. Automatic refresh SHALL be compatible with the direct-mode boundary: it is a server-side decision reported in the exec response, not a CLI-side launch or ownership action.
+Base-url selector mode SHALL continue to target the caller-supplied endpoint directly. Direct mode SHALL NOT require project artifact validation and SHALL NOT imply Unity launch ownership.
 
 #### Scenario: Caller supplies base-url
 
 - **WHEN** a selector-driven command is invoked with `--base-url <url>`
 - **THEN** the command targets that URL directly according to the existing direct-service command boundary
 - **AND** it does not rewrite the endpoint from a project-local session artifact
+
+### Requirement: Automatic refresh stays inside the direct-mode boundary
+
+When the server reports that it triggered an automatic refresh before an exec, the CLI SHALL settle the resulting compilation cycle by re-probing the same caller-supplied endpoint rather than performing project-scoped re-acquisition. Automatic refresh SHALL be compatible with the direct-mode boundary: it is a server-side decision reported in the exec response, not a CLI-side launch or ownership action.
 
 #### Scenario: Base-url caller requests refresh-before-exec
 
@@ -690,6 +772,7 @@ Base-url selector mode SHALL continue to target the caller-supplied endpoint dir
 - **AND** the command does not wait for a compilation that was never started
 
 ### Requirement: Help warns that bridged arrays and generic lists are not plain JS arrays
+
 The formal CLI help surface SHALL include a short warning that bridged C# arrays and generic lists remain bridge objects with .NET-oriented semantics and should not be assumed to behave exactly like native JavaScript arrays.
 
 #### Scenario: Agent reads bridge guidance for collection-shaped values
@@ -698,6 +781,7 @@ The formal CLI help surface SHALL include a short warning that bridged C# arrays
 - **AND** the help points callers toward the intended PuerTS-aware access patterns or reference material for deeper details
 
 ### Requirement: Help exposes a purpose-built bridge discovery path
+
 The formal CLI help surface SHALL expose bridge usage through a purpose-built help path, example, or dedicated section rather than relying only on the existing editor-exit workflow example.
 
 #### Scenario: Agent looks for a canonical bridge usage example
@@ -706,6 +790,7 @@ The formal CLI help surface SHALL expose bridge usage through a purpose-built he
 - **AND** the agent does not need to treat a task-specific exit example as the only discoverable bridge reference
 
 ### Requirement: Official bridge reference links remain supplementary
+
 When the CLI help surface links to external bridge documentation, the link SHALL supplement rather than replace repository-owned help text.
 
 #### Scenario: Agent needs deeper bridge details than the CLI can carry concisely
@@ -714,6 +799,7 @@ When the CLI help surface links to external bridge documentation, the link SHALL
 - **AND** the external link is presented as a deeper reference, not as the only explanation of expected bridge usage
 
 ### Requirement: Basic project-scoped workflows provide a CLI-native verification closure path
+
 The formal CLI SHALL provide a verification-oriented workflow for basic project-scoped tasks that lets callers confirm success without falling back to direct host-file or host-log inspection as the normal path. For workflows that require delayed observation after `exec`, the CLI SHALL expose or document a preferred machine-usable follow-up path that remains inside the formal CLI surface.
 
 #### Scenario: Caller verifies a basic project-scoped task after exec
@@ -722,6 +808,7 @@ The formal CLI SHALL provide a verification-oriented workflow for basic project-
 - **AND** the normal workflow does not require direct host-file or host-log inspection as the primary verification mechanism
 
 ### Requirement: Verification workflows remain usable across compile and observation timing friction
+
 The formal CLI SHALL define a machine-usable verification workflow that remains understandable when delayed editor state changes, compilation, selection timing, or delayed log emission occur after a basic project-scoped `exec`. The preferred workflow SHALL make it possible for callers to recover verification without abandoning the CLI-native observation path.
 
 #### Scenario: Caller encounters delayed verification conditions after exec
@@ -730,6 +817,7 @@ The formal CLI SHALL define a machine-usable verification workflow that remains 
 - **AND** the caller does not need to invent an unrelated host-side inspection method to finish the normal verification workflow
 
 ### Requirement: Project-scoped exec startup continuity stays inside the accepted request lifecycle
+
 For project-scoped work, the formal CLI SHALL treat slow startup or readiness recovery as part of the accepted `exec` request lifecycle once the CLI has taken responsibility for starting or recovering Unity for that request. The normal caller path SHALL remain `exec` followed by `wait-for-exec`, rather than requiring a separate readiness command as the expected recovery branch for ordinary task execution.
 
 #### Scenario: Project-scoped exec is still waiting on startup progress
@@ -746,7 +834,8 @@ For project-scoped work, the formal CLI SHALL treat slow startup or readiness re
 - **AND** the contract does not require automatic retry
 
 ### Requirement: Accepted project-scoped exec responses include an explicit continuation hint
-When a project-scoped `exec` response enters a non-terminal accepted state, the formal CLI SHALL make the next action explicit enough for a medium-capability agent to follow directly. The default accepted response SHALL include a `next_steps` array with multiple follow-up candidates rather than a single `next_step` object. The first candidate for project-scoped execution SHALL point to `wait-for-exec` with the same `request_id`, and additional candidates SHALL cover alternative observation paths with `when` hints.
+
+When a project-scoped `exec` response enters a non-terminal accepted state, the formal CLI SHALL make the next action explicit enough for a medium-capability agent to follow directly. The default accepted response SHALL include a `next_steps` array with multiple follow-up candidates rather than a single `next_step` object.
 
 #### Scenario: Caller receives a running project-scoped exec response
 - **WHEN** `unity-puer-exec exec --project-path ...` returns `status = “running”`
@@ -754,6 +843,10 @@ When a project-scoped `exec` response enters a non-terminal accepted state, the 
 - **AND** the response includes a `next_steps` array with at least three candidates
 - **AND** the first candidate is `wait-for-exec` with a concrete `argv` including the selector and `request_id`
 - **AND** additional candidates include `wait-for-result-marker` and `wait-for-log-pattern` with `when` hints describing when each is appropriate
+
+### Requirement: Continuation candidates name wait-for-exec first and cover alternatives
+
+The first candidate for project-scoped execution SHALL point to `wait-for-exec` with the same `request_id`, and additional candidates SHALL cover alternative observation paths with `when` hints.
 
 #### Scenario: Continuation hint stays machine-usable and separate from script result data
 - **WHEN** a project-scoped `exec` response includes continuation guidance
@@ -801,7 +894,7 @@ The formal CLI SHALL validate `--script-args` before submitting an exec request.
 
 ### Requirement: Exec reports module_cache_stale when file mtime has changed
 
-The formal CLI SHALL expose `module_cache_stale` as a documented non-success status for `exec` when one or more loaded local modules changed or were removed and the effective policy is `error`. The CLI SHALL provide a `situation` explanation, the affected module paths, and `next_steps` candidates including a concrete argv for re-running with `--reset-jsenv-before-exec` and guidance for using `auto-reset`. Under the default policy, the same stale condition SHALL instead produce an accepted exec whose terminal response discloses recovery.
+The formal CLI SHALL expose `module_cache_stale` as a documented non-success status for `exec` when one or more loaded local modules changed or were removed and the effective policy is `error`. The CLI SHALL provide a `situation` explanation, the affected module paths, and `next_steps` candidates including a concrete argv for re-running with `--reset-jsenv-before-exec` and guidance for using `auto-reset`.
 
 #### Scenario: Agent receives module_cache_stale under error policy
 
@@ -812,20 +905,24 @@ The formal CLI SHALL expose `module_cache_stale` as a documented non-success sta
 - **AND** the response identifies all affected tracked module paths
 - **AND** `next_steps` includes explicit reset and automatic recovery choices
 
+#### Scenario: module_cache_stale appears in --help-status
+
+- **WHEN** an agent invokes `unity-puer-exec exec --help-status`
+- **THEN** `module_cache_stale` is listed as the `error`-policy non-success status with its exit code and situation explanation
+
+### Requirement: Default stale-module policy recovers instead of reporting stale
+
+Under the default policy, the same stale condition SHALL instead produce an accepted exec whose terminal response discloses recovery.
+
 #### Scenario: Default policy recovers instead of returning stale status
 
 - **WHEN** the same stale condition is detected with omitted or explicit `auto-reset` policy
 - **THEN** `exec` does not return `module_cache_stale`
 - **AND** the accepted job resets once before evaluation and reports recovery in its terminal response
 
-#### Scenario: module_cache_stale appears in --help-status
-
-- **WHEN** an agent invokes `unity-puer-exec exec --help-status`
-- **THEN** `module_cache_stale` is listed as the `error`-policy non-success status with its exit code and situation explanation
-
 ### Requirement: Help includes a component-detection example
 
-The formal CLI help surface SHALL include a `--help-example` entry for component detection that demonstrates the standard PuerTS pattern for scene-inspection scripts: using direct `CS.UnityEngine.X` access for static members and instance calls, `puer.$typeof(CS.UnityEngine.X)` only where a `System.Type` value is required as a parameter (such as `TryGetComponent`), `puer.$ref()` for out-parameter references, and `get_Item()` for C# indexer access. The example SHALL NOT wrap static member access in `puer.$typeof(...)`. The example script SHALL be verified to execute successfully against a real Unity host as part of the change's acceptance evidence, not solely verified by help-text rendering.
+The formal CLI help surface SHALL include a `--help-example` entry for component detection that demonstrates the standard PuerTS pattern for scene-inspection scripts: using direct `CS.UnityEngine.X` access for static members and instance calls, `puer.$typeof(CS.UnityEngine.X)` only where a `System.Type` parameter is required, `puer.$ref()` for out-parameter references, and `get_Item()` for C# indexer access. The example SHALL NOT wrap static member access in `puer.$typeof(...)`.
 
 #### Scenario: Agent discovers the component-detection example
 
@@ -833,6 +930,10 @@ The formal CLI help surface SHALL include a `--help-example` entry for component
 - **THEN** the output includes a complete script body demonstrating direct `CS.UnityEngine.SceneManagement.SceneManager` static access, `puer.$typeof(CS.UnityEngine.MeshFilter)` used only as the `TryGetComponent` type argument, `puer.$ref()`, `TryGetComponent`, and `get_Item()`
 - **AND** the example notice text explains that `puer.$typeof(CS.XXX)` is only needed where a `System.Type` parameter is required, not for ordinary static or instance member access
 - **AND** the notice text explains that C# indexers require `get_Item()` syntax
+
+### Requirement: Component-detection example is verified against a real host
+
+The example script SHALL be verified to execute successfully against a real Unity host as part of the change's acceptance evidence, not solely verified by help-text rendering.
 
 #### Scenario: Component-detection example executes against a real host
 
@@ -994,7 +1095,7 @@ The formal CLI SHALL accept `--stale-module-policy` with values `auto-reset` and
 
 ### Requirement: Exec responses disclose JsEnv reset recovery
 
-When the server performs an exec-scoped JsEnv reset, the terminal exec response SHALL contain `recovery.performed = true`, `recovery.type = "jsenv_reset"`, `recovery.reason`, `recovery.policy`, and a sorted `recovery.affected_modules` array. `recovery.reason` SHALL be `module_cache_stale` for automatic stale recovery and `explicit_request` for `--reset-jsenv-before-exec`. An exec response for which no reset occurred SHALL omit `recovery`. Recovery metadata SHALL be identical whether returned by `exec` synchronously or later by `wait-for-exec`.
+When the server performs an exec-scoped JsEnv reset, the terminal exec response SHALL contain `recovery.performed = true`, `recovery.type = "jsenv_reset"`, `recovery.reason`, `recovery.policy`, and a sorted `recovery.affected_modules` array. `recovery.reason` SHALL be `module_cache_stale` for automatic stale recovery and `explicit_request` for `--reset-jsenv-before-exec`. An exec response for which no reset occurred SHALL omit `recovery`.
 
 #### Scenario: Automatic recovery is visible
 
@@ -1007,6 +1108,10 @@ When the server performs an exec-scoped JsEnv reset, the terminal exec response 
 - **WHEN** an exec using `--reset-jsenv-before-exec` completes and no tracked module was stale
 - **THEN** the response reports `recovery.reason = "explicit_request"`
 - **AND** `recovery.affected_modules` is an empty array
+
+### Requirement: Recovery metadata is identical across exec and wait-for-exec
+
+Recovery metadata SHALL be identical whether returned by `exec` synchronously or later by `wait-for-exec`.
 
 #### Scenario: Wait returns the accepted job recovery evidence
 
@@ -1072,7 +1177,7 @@ Every machine-readable CLI response SHALL include a top-level `cli_version` fiel
 
 ### Requirement: A project without a control service is reported, not silently attached
 
-When a project-scoped command finds a running Editor that has not activated a control service, the CLI SHALL report that condition as a distinct non-success status rather than attaching to whatever endpoint answers a candidate port. The report SHALL be actionable: it SHALL state the ways the caller can proceed. When the error path can identify a reachable service owning the project whose bridge version differs from the CLI or is absent, the condition SHALL be reported as `version_mismatch` per `cli-version-compatibility` rather than as a missing opt-in, so the caller is pointed at aligning the installation instead of at an activation mechanism the running bridge does not provide.
+When a project-scoped command finds a running Editor that has not activated a control service, the CLI SHALL report that condition as a distinct non-success status rather than attaching to whatever endpoint answers a candidate port. The report SHALL be actionable: it SHALL state the ways the caller can proceed.
 
 #### Scenario: Running Editor has no control service
 
@@ -1080,38 +1185,25 @@ When a project-scoped command finds a running Editor that has not activated a co
 - **THEN** the command reports a distinct status identifying the Editor as not under CLI control
 - **AND** the response states how to proceed rather than only that the command failed
 
-#### Scenario: A version-mismatched bridge is not reported as a missing opt-in
-
-- **WHEN** the project lockfile is held, no endpoint is published, and the error-path scan finds a reachable service owning the project whose bridge version differs from the CLI or is absent
-- **THEN** the command reports `version_mismatch`
-- **AND** the guidance points at aligning the installation rather than at an activation action the running bridge does not provide
-
 #### Scenario: The refusal is not a launch failure
 
 - **WHEN** this status is reported
 - **THEN** it is distinguishable from a failure to launch or a failure to become ready
 - **AND** a caller can tell that the remedy is an activation decision rather than a retry
 
+### Requirement: A mismatched bridge is reported as version_mismatch, not a missing opt-in
+
+When the error path can identify a reachable service owning the project whose bridge version differs from the CLI or is absent, the condition SHALL be reported as `version_mismatch` per `cli-version-compatibility` rather than as a missing opt-in, so the caller is pointed at aligning the installation instead of at an activation mechanism the running bridge does not provide.
+
+#### Scenario: A version-mismatched bridge is not reported as a missing opt-in
+
+- **WHEN** the project lockfile is held, no endpoint is published, and the error-path scan finds a reachable service owning the project whose bridge version differs from the CLI or is absent
+- **THEN** the command reports `version_mismatch`
+- **AND** the guidance points at aligning the installation rather than at an activation action the running bridge does not provide
+
 ### Requirement: Project-scoped launch accepts extra Unity argv tokens
 
-When `unity-puer-exec` cold-starts Unity for a project-scoped workflow, the CLI SHALL forward caller-supplied extra argv tokens to the Unity process so a project that needs host-specific Unity switches can be launched under CLI control.
-
-Extra tokens SHALL be accepted from either or both of:
-
-- a repeatable project-path-mode flag `--unity-launch-arg <token>`, each occurrence one argv token
-- the process environment variable `UNITY_PUER_EXEC_UNITY_LAUNCH_ARGS`, whose value is a JSON array of strings
-
-Ambient tokens SHALL be applied first, then flag tokens; exact-token duplicates SHALL be collapsed. Extra tokens SHALL be appended after the CLI-owned launch arguments (`-projectPath`, the control-service activation switch, and the effective `-logFile`).
-
-Tokens that rebind a CLI-owned switch — `-projectPath`, `-logFile`, or `-unityPuerExecControl` (case insensitive) — SHALL be rejected as a usage error rather than applied. An invalid ambient JSON value SHALL be rejected with a machine-usable reason rather than partially applied.
-
-Extra tokens SHALL apply only when this CLI performs a cold launch. When the CLI attaches to an already-running Editor, supplied tokens SHALL be ignored and SHALL NOT by themselves cause the command to fail. The flag SHALL be valid only in project-path mode; supplying it with `--base-url` SHALL be a usage error.
-
-#### Scenario: Caller supplies a host-required Unity switch on launch
-
-- **WHEN** a project-scoped launch-driven command is invoked with `--unity-launch-arg -force-gles30` and no Editor is yet serving the project
-- **THEN** the launched Unity process receives `-force-gles30` among its argv tokens
-- **AND** the token appears after the CLI-owned `-projectPath`, activation switch, and `-logFile` arguments
+When `unity-puer-exec` cold-starts Unity for a project-scoped workflow, the CLI SHALL forward caller-supplied extra argv tokens to the Unity process so a project that needs host-specific Unity switches can be launched under CLI control. Extra tokens SHALL be accepted from either or both of a repeatable project-path-mode flag `--unity-launch-arg <token>` (each occurrence one argv token) and the process environment variable `UNITY_PUER_EXEC_UNITY_LAUNCH_ARGS` (a JSON array of strings).
 
 #### Scenario: Ambient env supplies launch tokens without a per-command flag
 
@@ -1119,10 +1211,24 @@ Extra tokens SHALL apply only when this CLI performs a cold launch. When the CLI
 - **AND** a project-scoped command cold-starts Unity without `--unity-launch-arg`
 - **THEN** the launched Unity process receives those ambient tokens
 
+### Requirement: Extra Unity launch tokens are ordered and de-duplicated
+
+Ambient tokens SHALL be applied first, then flag tokens; exact-token duplicates SHALL be collapsed. Extra tokens SHALL be appended after the CLI-owned launch arguments (`-projectPath`, the control-service activation switch, and the effective `-logFile`).
+
+#### Scenario: Caller supplies a host-required Unity switch on launch
+
+- **WHEN** a project-scoped launch-driven command is invoked with `--unity-launch-arg -force-gles30` and no Editor is yet serving the project
+- **THEN** the launched Unity process receives `-force-gles30` among its argv tokens
+- **AND** the token appears after the CLI-owned `-projectPath`, activation switch, and `-logFile` arguments
+
 #### Scenario: Flag and ambient tokens merge without duplicating exact matches
 
 - **WHEN** the ambient variable and `--unity-launch-arg` both contribute the same token
 - **THEN** the launched argv contains that token once
+
+### Requirement: CLI-owned Unity switches and invalid ambient JSON are rejected
+
+Tokens that rebind a CLI-owned switch — `-projectPath`, `-logFile`, or `-unityPuerExecControl` (case insensitive) — SHALL be rejected as a usage error rather than applied. An invalid ambient JSON value SHALL be rejected with a machine-usable reason rather than partially applied.
 
 #### Scenario: CLI-owned switches cannot be rebound by passthrough
 
@@ -1135,6 +1241,10 @@ Extra tokens SHALL apply only when this CLI performs a cold launch. When the CLI
 - **WHEN** `UNITY_PUER_EXEC_UNITY_LAUNCH_ARGS` is set to a value that is not a JSON array of strings
 - **THEN** a launch-driven command fails with a machine-usable reason naming the variable
 - **AND** Unity is not launched with a partial or guessed token list
+
+### Requirement: Extra Unity launch tokens apply only to cold project-path launches
+
+Extra tokens SHALL apply only when this CLI performs a cold launch. When the CLI attaches to an already-running Editor, supplied tokens SHALL be ignored and SHALL NOT by themselves cause the command to fail. The flag SHALL be valid only in project-path mode; supplying it with `--base-url` SHALL be a usage error.
 
 #### Scenario: Passthrough tokens are ignored on attach
 
@@ -1262,7 +1372,7 @@ Help SHALL state that application-framework-specific technique — UI widget-tre
 
 ### Requirement: Help states that PlayMode transitions are asynchronous requests
 
-Help SHALL present `play`, `pause`, and `stop` as the normal way to change the Editor play state, and SHALL state that they return after the transition completes. For scripts that set the play state directly through `exec`, help SHALL still state that this issues a request rather than completing a transition, and that a successful `exec` response does not establish that the transition finished. Help SHALL state that application-layer readiness is separate from the play state in both cases. It SHALL present the generic sequence: change the play state, then wait for the readiness signal the task requires.
+Help SHALL present `play`, `pause`, and `stop` as the normal way to change the Editor play state, and SHALL state that they return after the transition completes.
 
 #### Scenario: Agent switches PlayMode before acting
 
@@ -1270,6 +1380,10 @@ Help SHALL present `play`, `pause`, and `stop` as the normal way to change the E
 - **THEN** help presents `play` / `pause` / `stop` as the normal path
 - **AND** help states that application-layer systems may not be ready even after the play state has changed
 - **AND** help presents the change-state-then-wait-for-readiness sequence
+
+### Requirement: Help states that direct play-state changes are asynchronous requests
+
+For scripts that set the play state directly through `exec`, help SHALL still state that this issues a request rather than completing a transition, and that a successful `exec` response does not establish that the transition finished. Help SHALL state that application-layer readiness is separate from the play state in both cases. It SHALL present the generic sequence: change the play state, then wait for the readiness signal the task requires.
 
 #### Scenario: Agent sets PlayMode from a script
 
@@ -1329,7 +1443,7 @@ When project-scoped exec or blocker-query detection observes a blocking modal di
 
 ### Requirement: `resolve-blocker` supports explicit button-targeted resolution
 
-The CLI SHALL support `resolve-blocker --action click --hwnd <int> --button "<label>"` for any reported modal dialog. The `hwnd` value SHALL be re-validated as a visible titled window owned by the requested project's Editor process before any control is activated; a handle failing that validation SHALL return `status = "resolution_failed"` with `error = "window_not_found"`. The `--button` value SHALL be matched against the dialog's enumerated clickable push buttons after stripping `&` mnemonics and trimming, exactly or case-insensitively; no match SHALL return `status = "resolution_failed"` with `error = "button_not_found"`. An explicit `--hwnd` target SHALL be resolved even when more than one blocking dialog is present.
+The CLI SHALL support `resolve-blocker --action click --hwnd <int> --button "<label>"` for any reported modal dialog. The `hwnd` value SHALL be re-validated as a visible titled window owned by the requested project's Editor process before any control is activated; a handle failing that validation SHALL return `status = "resolution_failed"` with `error = "window_not_found"`.
 
 #### Scenario: Caller clicks a named button on a reported dialog
 
@@ -1346,6 +1460,10 @@ The CLI SHALL support `resolve-blocker --action click --hwnd <int> --button "<la
 - **THEN** the CLI returns `status = "resolution_failed"`
 - **AND** `error = "window_not_found"`
 - **AND** no control is activated
+
+### Requirement: Button labels are matched against the dialog's enumerated buttons
+
+The `--button` value SHALL be matched against the dialog's enumerated clickable push buttons after stripping `&` mnemonics and trimming, exactly or case-insensitively; no match SHALL return `status = "resolution_failed"` with `error = "button_not_found"`. An explicit `--hwnd` target SHALL be resolved even when more than one blocking dialog is present.
 
 #### Scenario: Supplied button label matches no enumerated button
 
@@ -1386,7 +1504,7 @@ When the server reports that it triggered an automatic refresh, the CLI SHALL tr
 
 ### Requirement: Help states that only code changes trigger automatic refresh
 
-The formal CLI help surface SHALL state explicitly that automatic refresh watches code changes only — C# sources, assembly definitions and references, and compiler response files — and that scenes, prefabs, metadata files, textures, audio, and other non-code assets do not trigger it. The statement SHALL appear wherever refresh behavior is described, not only in an option list, so that a caller relying on asset import discovers the boundary without inference. Help SHALL direct callers who need a non-code asset imported to invoke `AssetDatabase.Refresh()` through the bridge.
+The formal CLI help surface SHALL state explicitly that automatic refresh watches code changes only — C# sources, assembly definitions and references, and compiler response files — and that scenes, prefabs, metadata files, textures, audio, and other non-code assets do not trigger it. The statement SHALL appear wherever refresh behavior is described, not only in an option list, so that a caller relying on asset import discovers the boundary without inference.
 
 #### Scenario: Agent reads exec help and learns the code-only boundary
 
@@ -1394,6 +1512,10 @@ The formal CLI help surface SHALL state explicitly that automatic refresh watche
 - **THEN** the help states that refresh is automatic for code changes
 - **AND** it names that non-code assets are not watched
 - **AND** it names `AssetDatabase.Refresh()` through the bridge as the remedy for a non-code import
+
+### Requirement: Help directs non-code imports to AssetDatabase.Refresh()
+
+Help SHALL direct callers who need a non-code asset imported to invoke `AssetDatabase.Refresh()` through the bridge.
 
 #### Scenario: Agent reads compile-error guidance and learns the code-only boundary
 

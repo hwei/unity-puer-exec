@@ -101,6 +101,7 @@ The repository SHALL maintain a repeatable real-host validation expectation prov
 - **AND** the workflow does not trigger a blind competing launch for the same project
 
 ### Requirement: Real-host validation can reproduce and record modal dialog blockers
+
 The repository SHALL maintain a repeatable real-host validation expectation for at least one Unity-native modal dialog blocker scenario so contributors can distinguish CLI contract regressions from editor-side blocking behavior.
 
 #### Scenario: Contributor validates a save-scene modal blocker path
@@ -115,7 +116,7 @@ The repository SHALL maintain a repeatable real-host validation expectation for 
 
 ### Requirement: Real-host validation can resolve supported modal blockers
 
-The repository SHALL maintain real-host validation coverage for resolving the reported Unity modal blockers through the CLI. Save-scene dialogs SHALL be resolved through the explicit button-targeted path (`resolve-blocker --action click --hwnd <int> --button "<label>"`) rather than through `--action cancel`, so the validation never demonstrates a default that discards unsaved scene work. The `hwnd` passed to the command SHALL be read from the observed blocker payload. Resolution through `--action cancel` remains validated only for the Safe Mode dialog.
+The repository SHALL maintain real-host validation coverage for resolving the reported Unity modal blockers through the CLI.
 
 #### Scenario: Contributor resolves the modified-scenes prompt through the CLI
 
@@ -131,6 +132,10 @@ The repository SHALL maintain real-host validation coverage for resolving the re
 - **AND** `result.blocker.type = "save_scene_dialog"`
 - **AND** the workflow confirms the dialog is no longer present before treating the resolution as successful
 
+### Requirement: Save-scene blockers are resolved through button targeting
+
+Save-scene dialogs SHALL be resolved through the explicit button-targeted path (`resolve-blocker --action click --hwnd <int> --button "<label>"`) rather than through `--action cancel`, so the validation never demonstrates a default that discards unsaved scene work. The `hwnd` passed to the command SHALL be read from the observed blocker payload, and resolution through `--action cancel` remains validated only for the Safe Mode dialog.
+
 #### Scenario: Cancel is rejected for a save-scene dialog
 
 - **WHEN** the real-host validation workflow triggers a save-scene dialog and then invokes `resolve-blocker --action cancel`
@@ -139,6 +144,7 @@ The repository SHALL maintain real-host validation coverage for resolving the re
 - **AND** the dialog remains present with unsaved scene changes intact
 
 ### Requirement: Real-host validation remains outside the default unit-test workflow
+
 The repository SHALL keep real-host validation as a separate workflow surface from the default automated unit-test action. The default GitHub Actions unit-test workflow MUST NOT treat a skipped real-host test file as the mechanism for separating Unity-dependent validation from mocked/unit coverage.
 
 #### Scenario: Maintainer reviews default CI coverage
@@ -158,7 +164,7 @@ The repository-owned real-host validation workflow SHALL establish a repeatable 
 
 ### Requirement: Validation host preparation reports embedded package shadowing
 
-Repository-owned validation-host preparation tooling SHALL report when the target Unity project contains an embedded package that declares the formal package name and is distinct from the repository-local package root being injected through `Packages/manifest.json`. Detection SHALL identify an embedded package the way Unity does — by the `name` declared in a candidate directory's `package.json` among the immediate children of `Packages/` — and SHALL NOT rely on the directory being named after the package, because Unity loads such a directory under any name. The report SHALL be machine-readable so real-host validation scripts and agents can treat the run as unsafe evidence for repository-local package changes unless the shadowing condition is resolved or intentionally accepted. When more than one embedded directory declares the formal package name, the report SHALL name all of them.
+Validation-host preparation tooling SHALL report when the target Unity project contains an embedded package that declares the formal package name and is distinct from the repository-local root injected through `Packages/manifest.json`. Detection SHALL identify an embedded package the way Unity does -- by the `name` declared in a candidate `package.json` among the immediate children of `Packages/` -- and SHALL NOT rely on the directory being named after the package.
 
 #### Scenario: Embedded package shadows local package injection
 - **WHEN** a contributor prepares a validation host whose `Packages/manifest.json` is rewritten to the repository-local package path
@@ -180,21 +186,23 @@ Repository-owned validation-host preparation tooling SHALL report when the targe
 - **WHEN** a contributor prepares a validation host whose embedded package path resolves to the same directory as the repository-local package root
 - **THEN** the preparation result does not report shadowing
 
-#### Scenario: Multiple shadowing directories are all reported
-- **WHEN** more than one immediate child of `Packages/` declares the formal package name and is distinct from the repository-local package root
-- **THEN** the preparation result reports shadowing
-- **AND** the result names every such directory rather than only the first
-
 #### Scenario: Unrelated or unreadable package directories are ignored
 - **WHEN** an immediate child of `Packages/` has no `package.json`, has one that cannot be parsed, or declares a different package name
 - **THEN** that directory does not contribute to the shadowing report
 - **AND** the preparation run completes rather than failing on the unrelated directory
 
+### Requirement: Shadowing report is machine-readable and names all matches
+
+The report SHALL be machine-readable so real-host validation scripts and agents can treat the run as unsafe evidence for repository-local package changes unless the shadowing condition is resolved or intentionally accepted. When more than one embedded directory declares the formal package name, the report SHALL name all of them.
+
+#### Scenario: Multiple shadowing directories are all reported
+- **WHEN** more than one immediate child of `Packages/` declares the formal package name and is distinct from the repository-local package root
+- **THEN** the preparation result reports shadowing
+- **AND** the result names every such directory rather than only the first
+
 ### Requirement: Real-host validation covers control-port binding behavior
 
 The repository SHALL maintain repeatable real-host validation expectations that prove the Unity control-port binding contract, covering the uniform activation rule in batch mode (both with and without activation requested) and occupied-preferred-port rollover. These expectations SHALL run only under the existing opt-in real-host gate and SHALL skip cleanly when Unity, the host project, or the required process state is unavailable, so the default mocked/unit workflow is unaffected.
-
-A process state that an expectation exists to exercise SHALL NOT be treated as a missing prerequisite. In particular, a control port already occupied by another project's Editor is the precondition of the occupied-preferred-port rollover expectation, so that condition SHALL cause the expectation to run, and SHALL NOT cause it to skip. Skipping SHALL be reserved for conditions under which the expectation cannot be evaluated at all — the gate being disabled, Unity or the host project being absent, the host project being unserviceable, or a required trigger that cannot be staged for reasons outside the suite's control. When an expectation is only partially stageable, the suite SHALL assert the part it can observe and state which part it could not stage, rather than skipping or reporting a pass for the whole expectation.
 
 #### Scenario: Contributor validates that a batch-mode process without activation does not start the control service
 
@@ -214,12 +222,26 @@ A process state that an expectation exists to exercise SHALL NOT be treated as a
 - **THEN** the validation asserts the interactive control service becomes ready on a later port in the bounded range rather than failing the whole scan
 - **AND** the validation asserts the ready health identity reports the later selected port and its base URL
 
+#### Scenario: Prerequisites for binding validation are absent
+
+- **WHEN** the real-host gate is disabled, or Unity / the host project / the required process state is unavailable
+- **THEN** the binding-behavior validation skips with a machine-usable reason
+- **AND** it does not report a failure that would be indistinguishable from a real binding regression
+
+### Requirement: An expected process state is exercised, not skipped
+
+A process state that an expectation exists to exercise SHALL NOT be treated as a missing prerequisite. In particular, a control port already occupied by another project's Editor is the precondition of the occupied-preferred-port rollover expectation, so that condition SHALL cause the expectation to run, and SHALL NOT cause it to skip.
+
 #### Scenario: Another Editor already occupies the preferred control port
 
 - **WHEN** the real-host validation runs while another project's ready Editor already occupies the preferred control port
 - **THEN** the occupied-preferred-port rollover expectation still runs and asserts that the host project's service is ready on a later port in the bounded range
 - **AND** it asserts that a project-scoped command with no explicit base URL discovers that later-port endpoint
 - **AND** it does not skip, and does not report a pass for any assertion it did not evaluate
+
+### Requirement: Partial staging asserts the observable part
+
+Skipping SHALL be reserved for conditions under which the expectation cannot be evaluated at all -- the gate being disabled, Unity or the host project being absent, the host project being unserviceable, or a required trigger that cannot be staged for reasons outside the suite's control. When an expectation is only partially stageable, the suite SHALL assert the part it can observe and state which part it could not stage, rather than skipping or reporting a pass for the whole expectation.
 
 #### Scenario: A reload-staging sub-assertion cannot be staged
 
@@ -234,12 +256,6 @@ A process state that an expectation exists to exercise SHALL NOT be treated as a
 - **THEN** the case fails rather than skipping
 - **AND** the failure reports the bound launch outcome and the ports probed, so an endpoint-discovery regression is not reported as a missing prerequisite
 
-#### Scenario: Prerequisites for binding validation are absent
-
-- **WHEN** the real-host gate is disabled, or Unity / the host project / the required process state is unavailable
-- **THEN** the binding-behavior validation skips with a machine-usable reason
-- **AND** it does not report a failure that would be indistinguishable from a real binding regression
-
 ### Requirement: Real-host run instructions state how embedded shadowing is cleared
 
 The repository's real-host run instructions SHALL state that renaming an embedded package directory does not stop Unity from loading it, because Unity identifies embedded packages by the `name` declared in `package.json`, and that clearing the shadow requires moving or removing the directory out of `Packages/`.
@@ -253,8 +269,6 @@ The repository's real-host run instructions SHALL state that renaming an embedde
 
 Real-host validation SHALL observe the validation host through a log source private to the host project, so a Unity Editor open on an unrelated project cannot share, rotate, or truncate the file the suite reads. A development machine running several Unity projects at once SHALL remain a supported environment for real-host validation.
 
-The suite SHALL establish its clean starting boundary from project-local state — the host project's Unity lockfile and published endpoint — so that a boundary check cannot report the host as stopped while an Editor is still serving it. A case SHALL fail rather than proceed if it would observe a host the suite did not bring up.
-
 #### Scenario: Concurrent unrelated Editor does not invalidate observation
 
 - **WHEN** real-host validation runs while an unrelated Unity Editor is open on a different project
@@ -267,16 +281,20 @@ The suite SHALL establish its clean starting boundary from project-local state �
 - **THEN** the host-private log is established at launch
 - **AND** individual cases do not each have to supply a log-path flag to observe it
 
+#### Scenario: An unrelated Editor does not block the boundary
+
+- **WHEN** the suite establishes its starting boundary while unrelated Unity Editors are running for other projects
+- **THEN** those processes do not prevent the boundary from being established
+
+### Requirement: The suite establishes a clean starting boundary from project-local state
+
+The suite SHALL establish its clean starting boundary from project-local state -- the host project's Unity lockfile and published endpoint -- so that a boundary check cannot report the host as stopped while an Editor is still serving it. A case SHALL fail rather than proceed if it would observe a host the suite did not bring up.
+
 #### Scenario: The boundary cannot pass while the host is still serving
 
 - **WHEN** the suite establishes its starting boundary and an Editor is still serving the host project
 - **THEN** the boundary does not report the host as stopped
 - **AND** no case proceeds against that Editor
-
-#### Scenario: An unrelated Editor does not block the boundary
-
-- **WHEN** the suite establishes its starting boundary while unrelated Unity Editors are running for other projects
-- **THEN** those processes do not prevent the boundary from being established
 
 ### Requirement: Real-host run instructions state the concurrent-Editor condition
 
@@ -306,13 +324,17 @@ The repository's real-host run instructions SHALL state how a contributor suppli
 
 ### Requirement: Real-host validation applies repository-local `.env` launch inputs
 
-Real-host validation SHALL apply repository-local `.env` launch inputs even though it selects the host with an explicit `--project-path`. In particular, `UNITY_PUER_EXEC_UNITY_LAUNCH_ARGS` loaded from `.env` SHALL reach the Unity launch this repository performs, so a host that needs an extra switch (for example a graphics API switch) can be brought up by the suite without per-command flags. Documented precedence SHALL be preserved: a value set explicitly in the process environment overrides the `.env` value, and the explicit project selection is unchanged.
+Real-host validation SHALL apply repository-local `.env` launch inputs even though it selects the host with an explicit `--project-path`. In particular, `UNITY_PUER_EXEC_UNITY_LAUNCH_ARGS` loaded from `.env` SHALL reach the Unity launch this repository performs, so a host that needs an extra switch (for example a graphics API switch) can be brought up by the suite without per-command flags.
 
 #### Scenario: Host switch from `.env` reaches the launched Editor
 
 - **WHEN** the validation host needs an extra Unity switch and `UNITY_PUER_EXEC_UNITY_LAUNCH_ARGS` is set only in repository-local `.env`
 - **THEN** the Editor the suite launches includes that switch in its argv
 - **AND** the suite does not need a per-command flag to supply it
+
+### Requirement: Environment precedence is preserved over .env
+
+Documented precedence SHALL be preserved: a value set explicitly in the process environment overrides the `.env` value, and the explicit project selection is unchanged.
 
 #### Scenario: Process environment overrides `.env`
 
@@ -328,7 +350,7 @@ Real-host validation SHALL apply repository-local `.env` launch inputs even thou
 
 ### Requirement: Real-host validation covers ScriptUpdater consent-dialog recovery
 
-The repository SHALL maintain a repeatable real-host validation expectation for the ScriptUpdater consent-dialog recovery path, so the Win32 matcher, the No-button click, and the `warning = "api_updater_declined"` propagation are exercised against a real Unity dialog rather than mocks only. The validation SHALL use a repository-owned host fixture to make Unity show the dialog and SHALL leave the host clean afterwards. When the dialog cannot be produced deterministically for the current host or Unity version, the case SHALL skip with a machine-usable diagnosed reason instead of reporting a vacuous pass.
+The repository SHALL maintain a repeatable real-host validation expectation for the ScriptUpdater consent-dialog recovery path, so the Win32 matcher, the No-button click, and the `warning = "api_updater_declined"` propagation are exercised against a real Unity dialog rather than mocks only. The validation SHALL use a repository-owned host fixture to make Unity show the dialog and SHALL leave the host clean afterwards.
 
 #### Scenario: Contributor validates consent-dialog auto-decline against a real host
 
@@ -336,21 +358,25 @@ The repository SHALL maintain a repeatable real-host validation expectation for 
 - **THEN** the CLI auto-declines the dialog and the command keeps its primary status while also reporting `warning = "api_updater_declined"`
 - **AND** the workflow confirms the dialog is gone and project source files were not rewritten (declined, not accepted)
 
-#### Scenario: Consent dialog cannot be triggered on the current host
-
-- **WHEN** the real-host validation cannot make the validation host Editor show the ScriptUpdater consent dialog
-- **THEN** the case skips with a diagnosed reason that names the trigger blocker
-- **AND** it does not report a pass that would be indistinguishable from a genuine recovery verification
-
 #### Scenario: Non-English dialog text is recorded
 
 - **WHEN** the validation host Editor shows the consent dialog with message text that does not match the English fingerprint
 - **THEN** the validation records the observed message text
 - **AND** it does not silently report the recovery as verified
 
+### Requirement: An unreproducible consent dialog skips with a diagnosed reason
+
+When the dialog cannot be produced deterministically for the current host or Unity version, the case SHALL skip with a machine-usable diagnosed reason instead of reporting a vacuous pass.
+
+#### Scenario: Consent dialog cannot be triggered on the current host
+
+- **WHEN** the real-host validation cannot make the validation host Editor show the ScriptUpdater consent dialog
+- **THEN** the case skips with a diagnosed reason that names the trigger blocker
+- **AND** it does not report a pass that would be indistinguishable from a genuine recovery verification
+
 ### Requirement: Real-host validation tolerates transient cold-launch failures
 
-Real-host validation SHALL treat a bounded number of transient cold-launch failures as retryable rather than failing a case on the first attempt. A transient failure is one in which the CLI cannot bring the host Editor up for the case (`unity_start_failed`, or the launched Editor exits before becoming ready) while the clean-boundary check otherwise passes. Non-launch failures and genuine assertion failures SHALL NOT be retried. Every attempt SHALL be recorded with enough state to distinguish a flake from a persistent launch regression.
+Real-host validation SHALL treat a bounded number of transient cold-launch failures as retryable rather than failing a case on the first attempt. Non-launch failures and genuine assertion failures SHALL NOT be retried.
 
 #### Scenario: A cold launch races the previous Editor shutdown
 
@@ -358,17 +384,21 @@ Real-host validation SHALL treat a bounded number of transient cold-launch failu
 - **THEN** the suite retries the launch within a bounded budget after confirming the boundary is clean
 - **AND** a launch that succeeds on retry does not fail the case
 
-#### Scenario: A persistent regression is not masked
-
-- **WHEN** every launch attempt fails
-- **THEN** the case fails with the attempt count and last launch status recorded
-- **AND** the failure is not reported as a transient flake
-
 #### Scenario: Non-launch failures are not retried
 
 - **WHEN** a real-host case fails for a reason other than bringing the host up (for example an assertion on a completed CLI response)
 - **THEN** the suite does not retry the case
 - **AND** the original failure is reported directly
+
+### Requirement: Every launch attempt is recorded distinctly
+
+Every attempt SHALL be recorded with enough state to distinguish a flake from a persistent launch regression.
+
+#### Scenario: A persistent regression is not masked
+
+- **WHEN** every launch attempt fails
+- **THEN** the case fails with the attempt count and last launch status recorded
+- **AND** the failure is not reported as a transient flake
 
 ### Requirement: Real-host validation can resolve a modal dialog outside the catalog
 
@@ -395,15 +425,7 @@ The repository SHALL maintain real-host validation coverage for a Unity modal di
 
 ### Requirement: Real-host suite cost scales with cases, not with host relaunches
 
-The repository-owned real-host validation workflow SHALL bring the validation host
-Editor up at most once per suite run and SHALL reuse that Editor across its cases, so
-adding a case does not add a full Editor launch. Per-case isolation SHALL be achieved
-by resetting test-owned state between cases — repository-owned validation temp assets,
-Editor play mode, and any test-owned session or change-signal state — rather than by
-stopping and relaunching the Editor. A case that genuinely requires a pristine process
-(for example batch-mode activation behavior or preferred-port rollover) SHALL be able to
-opt into its own launch boundary, and SHALL say so rather than silently bypass the
-shared host.
+The repository-owned real-host validation workflow SHALL bring the validation host Editor up at most once per suite run and SHALL reuse that Editor across its cases, so adding a case does not add a full Editor launch. Per-case isolation SHALL be achieved by resetting test-owned state between cases -- repository-owned validation temp assets, Editor play mode, and any test-owned session or change-signal state -- rather than by stopping and relaunching the Editor.
 
 #### Scenario: Sequential cases reuse one Editor
 
@@ -419,6 +441,18 @@ shared host.
 - **THEN** the next case starts from a reset state
 - **AND** its assertions are not affected by the previous case's leftovers
 
+#### Scenario: The suite still establishes its starting boundary
+
+- **WHEN** the suite begins
+- **THEN** it establishes the clean starting boundary from project-local state before
+  bringing the host up
+- **AND** the boundary rules for lockfile and published endpoint are unchanged from the
+  per-case model
+
+### Requirement: Pristine-process cases opt into their own launch boundary
+
+A case that genuinely requires a pristine process (for example batch-mode activation behavior or preferred-port rollover) SHALL be able to opt into its own launch boundary, and SHALL say so rather than silently bypass the shared host.
+
 #### Scenario: A pristine-process case keeps its own boundary
 
 - **WHEN** a case requires a process that the shared Editor cannot provide, such as a
@@ -432,14 +466,6 @@ shared host.
 - **THEN** the workflow either re-establishes the host within its bounded retry budget
   or fails the case with machine-usable launch diagnostics
 - **AND** it does not report a pass against a host that was not running
-
-#### Scenario: The suite still establishes its starting boundary
-
-- **WHEN** the suite begins
-- **THEN** it establishes the clean starting boundary from project-local state before
-  bringing the host up
-- **AND** the boundary rules for lockfile and published endpoint are unchanged from the
-  per-case model
 
 ### Requirement: Real-host validation preflights package compilation before launching an interactive Editor
 

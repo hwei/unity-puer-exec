@@ -8,7 +8,7 @@ Define the durable requirements for inferring the Unity project root from the CL
 
 ### Requirement: CLI infers project path from exe install location
 
-When no explicit project path is supplied via `--project-path` and no `UNITY_PROJECT_PATH` environment variable is set, the CLI SHALL attempt to infer the Unity project root from the exe's own install location. The CLI SHALL resolve the exe origin from `sys.argv[0]`, walk up the directory tree, and identify the first ancestor that contains `Packages/manifest.json` with `com.txcombo.unity-puer-exec` listed in its `dependencies` object. If inference succeeds, the inferred path SHALL be used as the project path. If inference fails, the CLI SHALL fall back to the cwd fallback without error.
+When no explicit project path is supplied via `--project-path` and no `UNITY_PROJECT_PATH` environment variable is set, the CLI SHALL attempt to infer the Unity project root from the exe's own install location. The CLI SHALL resolve the exe origin from `sys.argv[0]`, walk up the directory tree, and identify the first ancestor that contains `Packages/manifest.json` with `com.txcombo.unity-puer-exec` listed in its `dependencies` object.
 
 #### Scenario: Exe installed in PackageCache infers project root
 
@@ -22,6 +22,10 @@ When no explicit project path is supplied via `--project-path` and no `UNITY_PRO
 - **WHEN** the CLI exe is invoked by absolute path from `<Project>/Packages/com.txcombo.unity-puer-exec/CLI~/unity-puer-exec.exe`
 - **AND** no `--project-path` argument or `UNITY_PROJECT_PATH` env var is provided
 - **THEN** the CLI infers `<Project>` as the Unity project root
+
+### Requirement: Inference result or silent cwd fallback
+
+If inference succeeds, the inferred path SHALL be used as the project path. If inference fails, the CLI SHALL fall back to the cwd fallback without error.
 
 #### Scenario: Exe not inside a Unity project falls through silently
 

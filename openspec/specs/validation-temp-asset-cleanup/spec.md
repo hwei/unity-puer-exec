@@ -1,7 +1,7 @@
 # validation-temp-asset-cleanup Specification
 
 ## Purpose
-TBD - created by archiving change automate-validation-temp-asset-cleanup. Update Purpose after archive.
+Ensure the validation harness removes the repository-owned temporary assets it created in the external Unity host after successful and failed runs alike, verifies and records the cleanup outcome, and leaves assets the live Editor still references in place.
 
 ## Requirements
 

@@ -1,7 +1,7 @@
 # cli-binary-packaging Specification
 
 ## Purpose
-TBD - created by archiving change publish-to-openupm. Update Purpose after archive.
+Package the CLI as a single-file Windows executable with a stamped release version, and place that executable inside the published package's hidden asset directory so the Unity package ships a runnable CLI.
 ## Requirements
 ### Requirement: CLI is packaged as a single-file Windows executable
 
