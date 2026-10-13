@@ -349,11 +349,29 @@ def validate_project_mode_only(selector, option_name, value):
         raise ValueError("{} is only valid with --project-path".format(option_name))
 
 
+def _resolve_base_url_log_path(args):
+    """The log path a base-url endpoint names, or None when none resolves.
+
+    Base-url `log_range` offset capture and `get-log-briefs` share this so the
+    advertised range and the briefs read the same file. `get_log_source` already
+    applies the resolution order: the Editor-reported console log path, then the
+    platform default when that file exists.
+    """
+    source = unity_session.get_log_source(base_url=args.base_url)
+    if source is None:
+        return None
+    return source[0].effective_log_path
+
+
 def _resolve_log_path(args, session):
     if session is not None and getattr(session, "effective_log_path", None):
         return session.effective_log_path
     if getattr(args, "unity_log_path", None):
         return args.unity_log_path
+    if getattr(args, "base_url", None):
+        resolved = _resolve_base_url_log_path(args)
+        if resolved is not None:
+            return resolved
     return str(unity_session_logs.default_editor_log_path())
 
 
@@ -2185,6 +2203,8 @@ def run_resolve_blocker(args):
 
 
 def run_get_log_briefs(args):
+    selector = resolve_selector(args)
+    validate_project_mode_only(selector, "unity-log-path", getattr(args, "unity_log_path", None))
     range_str = args.range_str
     sep = "," if "," in range_str and "-" not in range_str.lstrip("-") else "-"
     if "," in range_str:
@@ -2239,13 +2259,27 @@ def run_get_log_briefs(args):
             "full_text_requires_include",
         )
 
-    log_path = getattr(args, "unity_log_path", None)
-    if log_path is None and getattr(args, "project_path", None):
-        source = unity_session.get_log_source(project_path=args.project_path, argv0=getattr(args, "argv0", None))
-        if source is not None:
-            log_path = source[0].effective_log_path
-    if log_path is None:
-        log_path = str(unity_session_logs.default_editor_log_path())
+    if selector == "base_url":
+        # Resolve the log source the same way base-url offset capture does: the
+        # endpoint reports its console log path over /health, and the file is read
+        # locally. No log content is transferred over the network.
+        log_path = _resolve_base_url_log_path(args)
+        if log_path is None:
+            payload = expected_failure_payload(
+                "get-log-briefs",
+                "no_observation_target",
+                "no observable Unity log source is available",
+                include_diagnostics=args.include_diagnostics,
+            )
+            return EXIT_NO_OBSERVATION_TARGET, emit_payload(payload), ""
+    else:
+        log_path = getattr(args, "unity_log_path", None)
+        if log_path is None and getattr(args, "project_path", None):
+            source = unity_session.get_log_source(project_path=args.project_path, argv0=getattr(args, "argv0", None))
+            if source is not None:
+                log_path = source[0].effective_log_path
+        if log_path is None:
+            log_path = str(unity_session_logs.default_editor_log_path())
 
     briefs = unity_log_brief.parse_log_briefs(log_path, range_start, range_end)
     filtered = unity_log_brief.filter_briefs(briefs, levels=levels, include_indices=include_indices)

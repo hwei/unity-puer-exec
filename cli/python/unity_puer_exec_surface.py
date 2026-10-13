@@ -176,7 +176,7 @@ def build_parser():
     _add_response_file_arg(wait_compile_parser)
 
     get_log_briefs_parser = parsers["get-log-briefs"]
-    get_log_briefs_parser.add_argument("--project-path", default=None)
+    _add_selector_args(get_log_briefs_parser)
     get_log_briefs_parser.add_argument("--unity-log-path", default=None)
     get_log_briefs_parser.add_argument("--range", required=True, dest="range_str")
     get_log_briefs_parser.add_argument("--levels", default=None)

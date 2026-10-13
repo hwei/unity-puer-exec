@@ -1078,7 +1078,10 @@ def _ensure_session_ready_unguarded(
 def get_log_source(project_path=None, base_url=None, unity_log_path=None, argv0=None):
     resolved_project_path = resolve_project_path(project_path, argv0=argv0)
     if base_url is not None:
-        payload, _error = _probe_health(base_url, DEFAULT_HEALTH_TIMEOUT_SECONDS)
+        # Route through the public probe so the base-url bridge guard and this
+        # resolution share one mockable health seam, and a caller that already
+        # probed does not hit a second, unmockable path.
+        payload, _error = probe_health_payload(base_url, DEFAULT_HEALTH_TIMEOUT_SECONDS)
         reported = _health_console_log_path(payload) if isinstance(payload, dict) and payload.get("status") == "ready" else None
         if reported:
             log_path = Path(reported)

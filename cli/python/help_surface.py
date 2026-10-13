@@ -229,6 +229,7 @@ COMMAND_HELP = {
         "args": {
             "Arguments": [
                 "`--project-path <path>`: resolve the log source from a Unity project session artifact.",
+                "`--base-url <url>`: resolve the log source from a live control-service endpoint that reports its console log path; the endpoint must share this machine's filesystem.",
                 "`--unity-log-path <path>`: explicit Unity Editor log file path; takes priority over project session artifact.",
                 "`--range START-END`: required byte range to parse; also accepts comma-separated `START,END` form.",
                 "`--levels error,warning`: filter results to the specified comma-separated level names (`info`, `warning`, `error`, `unknown`).",
@@ -258,6 +259,7 @@ COMMAND_HELP = {
                 ("full_text_requires_include", 2, "`--full-text` was supplied without `--indexes` (or its `--include` alias); pass one or more explicit 1-based brief indices."),
                 ("conflicting_indexes_include", 2, "`--indexes` and `--include` were both supplied with different values."),
                 ("failed", 1, "the range was invalid, the log file could not be read, an index-syntax value was not comma-separated integers, or another unexpected failure occurred."),
+                ("no_observation_target", EXIT_NO_OBSERVATION_TARGET, "no observable Unity log source is available for the selected target."),
             ],
         },
     },
@@ -2203,7 +2205,7 @@ GUIDANCE_MATRIX[("exec", "removed_refresh_flag")] = {
 # live parser so a new project-path-only command cannot silently acquire a
 # fabricated `--base-url`.
 _PROJECT_PATH_ONLY_COMMANDS = frozenset(
-    {"get-blocker-state", "get-log-briefs", "resolve-blocker"}
+    {"get-blocker-state", "resolve-blocker"}
 )
 
 

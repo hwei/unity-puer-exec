@@ -406,17 +406,22 @@ class UnityPuerExecCliTests(unittest.TestCase):
         }
         self.assertEqual(set(help_surface._PROJECT_PATH_ONLY_COMMANDS), project_path_only)
 
-    def test_project_path_only_error_sweep_keeps_candidate_and_omits_argv_under_base_url(self):
-        """`get-log-briefs` reads a local log; it keeps its candidate and omits argv
-        under `--base-url` rather than advertising a flag it does not accept."""
+    def test_base_url_error_sweep_carries_base_url_argv(self):
+        """`get-log-briefs` accepts `--base-url`, so a base-url completed response
+        carries a complete error sweep addressed to that selector."""
         import help_surface
 
         base_steps = help_surface.build_next_steps(
             "exec", "completed", {"base_url": "http://host", "log_range_span": "10-20"}
         )
         brief = next(step for step in base_steps if step["command"] == "get-log-briefs")
-        self.assertNotIn("argv", brief)
-        self.assertIn("when", brief)
+        self.assertIn("--base-url", brief["argv"])
+        self.assertIn("http://host", brief["argv"])
+        self.assertIn("--range", brief["argv"])
+        self.assertIn("10-20", brief["argv"])
+        self.assertIn("--levels", brief["argv"])
+        self.assertIn("error,warning", brief["argv"])
+        self.assertNotIn("--project-path", brief["argv"])
 
         project_steps = help_surface.build_next_steps(
             "exec", "completed", {"project_path": "X:/p", "log_range_span": "10-20"}
@@ -438,6 +443,82 @@ class UnityPuerExecCliTests(unittest.TestCase):
         )
         for step in steps:
             self.assertNotIn("argv", step)
+
+    def test_base_url_log_path_resolves_endpoint_named_path(self):
+        """A base-url log path comes from the endpoint's reported console log path,
+        so offset capture and `get-log-briefs` read the same file."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            log_path = Path(temp_dir) / "Custom.log"
+            log_path.write_text("x\n", encoding="utf-8")
+            args = mock.Mock(base_url="http://host", unity_log_path=None)
+            with mock.patch.object(
+                unity_session,
+                "probe_health_payload",
+                return_value=(({"status": "ready", "console_log_path": str(log_path)}), None),
+            ):
+                resolved = unity_puer_exec_runtime._resolve_log_path(args, None)
+        self.assertEqual(str(resolved), str(log_path))
+
+    def test_base_url_log_path_falls_back_to_default_when_health_reports_none(self):
+        """A missing or failing health report must not regress offset capture."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            default = Path(temp_dir) / "Editor.log"
+            default.write_text("x\n", encoding="utf-8")
+            args = mock.Mock(base_url="http://host", unity_log_path=None)
+            with mock.patch.object(
+                unity_session, "probe_health_payload", return_value=(None, "no service")
+            ), mock.patch.object(
+                unity_session_logs, "default_editor_log_path", return_value=default
+            ):
+                resolved = unity_puer_exec_runtime._resolve_log_path(args, None)
+        self.assertEqual(str(resolved), str(default))
+
+    def test_base_url_get_log_briefs_reads_endpoint_named_path(self):
+        """`get-log-briefs --base-url` parses the file the endpoint names."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            log_path = Path(temp_dir) / "Editor.log"
+            log_path.write_text("Loading module\n\n[Error] boom\n", encoding="utf-8")
+            with mock.patch.object(
+                unity_session,
+                "probe_health_payload",
+                return_value=(({"status": "ready", "console_log_path": str(log_path)}), None),
+            ), mock.patch.object(
+                unity_puer_exec_runtime.cli_version, "check_bridge", return_value=None
+            ):
+                exit_code, stdout, stderr = unity_puer_exec.run_cli([
+                    "get-log-briefs", "--base-url", "http://127.0.0.1:55231", "--range", "0-100",
+                ])
+        self.assertEqual(stderr, "")
+        self.assertEqual(exit_code, 0)
+        body = json.loads(stdout)
+        self.assertEqual(body["status"], "completed")
+        self.assertTrue(any(brief["level"] == "error" for brief in body["result"]))
+
+    def test_base_url_get_log_briefs_without_source_reports_no_observation_target(self):
+        """No endpoint path and no existing default file means no observable source."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            missing = Path(temp_dir) / "absent.log"
+            with mock.patch.object(
+                unity_session, "probe_health_payload", return_value=(None, "no service")
+            ), mock.patch.object(
+                unity_session_logs, "default_editor_log_path", return_value=missing
+            ):
+                exit_code, stdout, stderr = unity_puer_exec.run_cli([
+                    "get-log-briefs", "--base-url", "http://127.0.0.1:55231", "--range", "0-100",
+                ])
+        self.assertEqual(exit_code, unity_puer_exec_runtime.EXIT_NO_OBSERVATION_TARGET)
+        body = json.loads(stdout)
+        self.assertEqual(body["status"], "no_observation_target")
+
+    def test_base_url_get_log_briefs_rejects_unity_log_path(self):
+        """`--unity-log-path` names a project-host file and is project-path only."""
+        exit_code, stdout, stderr = unity_puer_exec.run_cli([
+            "get-log-briefs", "--base-url", "http://127.0.0.1:55231",
+            "--unity-log-path", "X:/e.log", "--range", "0-100",
+        ])
+        self.assertEqual(exit_code, 2)
+        body = json.loads(stderr)
+        self.assertIn("--project-path", body["error"])
 
     def test_wait_for_exec_help_renders_recovery_guidance(self):
         exit_code, stdout, stderr = unity_puer_exec.run_cli(["wait-for-exec", "--help"])
@@ -3004,10 +3085,10 @@ class UnityPuerExecCliTests(unittest.TestCase):
             next_steps = entry["next_steps"]
             brief_step = next((s for s in next_steps if s["command"] == "get-log-briefs"), None)
             self.assertIsNotNone(brief_step, "({}, completed) missing get-log-briefs candidate".format(cmd))
-            self.assertIn("argv_template", brief_step)
-            self.assertIn("{log_range_span}", str(brief_step["argv_template"]))
-            self.assertIn("--levels", brief_step["argv_template"])
-            self.assertIn("error,warning", brief_step["argv_template"])
+            template = _project_path_template(brief_step)
+            self.assertIn("{log_range_span}", str(template))
+            self.assertIn("--levels", template)
+            self.assertIn("error,warning", template)
 
     def test_wait_for_log_pattern_completed_has_situation_text(self):
         """3.2: wait-for-log-pattern completed situation warns about pattern match limits."""
