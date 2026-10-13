@@ -1,0 +1,7 @@
+change_type: refactor
+priority: P2
+blocked_by:
+- normalize-archived-list-evidence-records
+assumption_state: valid
+evidence: manual-check
+updated_at: 2026-10-13
