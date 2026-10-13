@@ -33,6 +33,17 @@ EXIT_VERSION_MISMATCH = direct_exec_client.EXIT_VERSION_MISMATCH
 EXIT_SESSION_STATE = 14
 EXIT_NO_OBSERVATION_TARGET = 15
 EXIT_NOT_STOPPED = 16
+# A terminal outcome for an automatic refresh the CLI itself could not settle
+# (make-base-url-exec-refresh-recoverable). Deliberately not `missing` (13):
+# `missing` means the addressed service holds no recoverable record for the
+# request_id, while here the CLI holds the request it never let through -- the
+# script has not run, and re-submitting it runs the script for the first time.
+EXIT_REFRESH_UNSETTLED = 25
+# Terminal outcome detail codes for EXIT_REFRESH_UNSETTLED, named so a caller can
+# branch without parsing prose.
+REFRESH_UNSETTLED_SETTLE_TIMEOUT = "refresh_settle_timeout"
+REFRESH_UNSETTLED_REFRESH_PERSISTED = "refresh_persisted"
+REFRESH_UNSETTLED_COMPILE_IN_PROGRESS = "compile_in_progress"
 # A running Editor that never activated a control service. Distinct from a launch
 # failure (20) and a readiness failure (21) so a caller can tell that retrying
 # cannot help and an activation decision is what is missing.
@@ -654,6 +665,12 @@ def _build_guidance_context(args, request_id=None):
         context["request_id"] = request_id
     if getattr(args, "wait_timeout_ms", None) is not None:
         context["wait_timeout_ms"] = args.wait_timeout_ms
+    # `--base-url` is not a documented forwardable arg, but the base-url
+    # continuation candidates are built from it (see
+    # _no_replayable_record_context), so it has to reach the guidance context.
+    base_url = getattr(args, "base_url", None)
+    if base_url:
+        context["base_url"] = str(base_url)
     if getattr(args, "unity_exe_path", None):
         context["unity_exe_path"] = args.unity_exe_path
     if getattr(args, "unity_log_path", None):
@@ -715,12 +732,13 @@ def _attach_guidance(payload, command, status, args, request_id=None):
         _log_end = log_range.get("end")
         if _log_start is not None and _log_end is not None:
             context["log_range_span"] = "{}-{}".format(_log_start, _log_end)
-    # `compile_blocked` is a CLI-composed envelope object (never a script-authored
+    # `refresh_block` is a CLI-composed envelope object (never a script-authored
     # result field), so its presence is a CLI-owned guidance selector: it adds the
     # play-mode exit guidance to whatever the warning/status already selected.
     compile_blocked = isinstance(payload.get("compile_blocked"), dict)
     next_steps = help_surface.build_next_steps(
-        command, status, context, warning=payload.get("warning"), compile_blocked=compile_blocked
+        command, status, context, warning=payload.get("warning"), compile_blocked=compile_blocked,
+        replayable_record=_has_replayable_record(payload, context),
     )
     if next_steps:
         payload["next_steps"] = next_steps
@@ -851,7 +869,71 @@ def _finalize_pending_after_submit(args, request_id, pending, exit_code, stdout_
     return None
 
 
-def _emit_running_payload(operation, session, request_id, args, phase=None, refresh=None):
+def _has_replayable_record(payload, context):
+    """Whether `wait-for-exec --request-id <id>` can actually continue this request.
+
+    The project-path pending artifact is the only thing a `wait-for-exec
+    --request-id` can replay, and it is written only under the `project_path`
+    selector. A base-url exec keeps no such record, so the response must not
+    advertise that continuation for it: naming it there is what turned an
+    unsettled refresh into a non-recoverable `missing` (see
+    make-base-url-exec-refresh-recoverable).
+    """
+    if payload.get("record_replayable") is False:
+        return False
+    return bool(context.get("project_path"))
+
+
+def _emit_refresh_unsettled_payload(
+    operation, session, request_id, args, refresh=None, phase=None,
+    reason=REFRESH_UNSETTLED_SETTLE_TIMEOUT, base_url=None, wait_timeout_ms=None,
+):
+    """Terminal response for an automatic refresh the CLI could not settle.
+
+    Non-terminal while the refresh is still in flight, but the settle has reached
+    the compile-scale budget, so this invocation will not converge on the script
+    result. Reporting `running` here kept the response's own `next_steps`
+    promising a `wait-for-exec --request-id` continuation that answers `missing`,
+    because the server had not accepted the job at the refreshing phase and
+    base-url mode keeps no client-side record.
+    """
+    payload = {
+        "ok": False,
+        "status": "refresh_unsettled",
+        "operation": operation,
+        "request_id": request_id,
+        "error": reason,
+        "reason": reason,
+        "situation": (
+            "This CLI triggered an automatic refresh whose compile cycle did not settle "
+            "within its own compile-scale budget, so the script has not run yet and this "
+            "invocation stopped waiting. The request was never accepted by the service and "
+            "this CLI keeps no replayable record for it, so `wait-for-exec --request-id` "
+            "cannot continue it. Re-submit the same `exec`; because the script never ran, "
+            "a re-submit runs it for the first time."
+        ),
+        "record_replayable": False,
+        "resubmit_safe": True,
+        "recoverable": True,
+        "phase": phase or PHASE_REFRESHING,
+    }
+    if refresh is not None:
+        payload["refresh"] = refresh
+    if base_url is None:
+        base_url = getattr(args, "base_url", None)
+    if base_url:
+        payload["base_url"] = base_url
+    if wait_timeout_ms is None:
+        wait_timeout_ms = getattr(args, "wait_timeout_ms", None)
+    if wait_timeout_ms is not None:
+        payload["wait_timeout_ms"] = wait_timeout_ms
+    if session is not None:
+        payload["session"] = session.to_payload()
+    _attach_guidance(payload, operation, "refresh_unsettled", args, request_id=request_id)
+    return attach_diagnostics(payload, include_diagnostics=args.include_diagnostics, session=session)
+
+
+def _emit_running_payload(operation, session, request_id, args, phase=None, refresh=None, record_replayable=None):
     payload = {
         "ok": True,
         "status": "running",
@@ -862,6 +944,8 @@ def _emit_running_payload(operation, session, request_id, args, phase=None, refr
         payload["phase"] = phase
     if refresh is not None:
         payload["refresh"] = refresh
+    if record_replayable is not None:
+        payload["record_replayable"] = record_replayable
     if session is not None:
         payload["session"] = session.to_payload()
     _attach_guidance(payload, operation, "running", args, request_id=request_id)
@@ -1542,7 +1626,34 @@ def _run_exec_impl(args, recovery):
         if selector == "project_path":
             _refresh_pending_exec(args, request_id, _read_pending_exec(args, request_id), PHASE_REFRESHING)
         settled = _settle_after_automatic_refresh(args, selector, session, base_url, recovery)
-        if settled is None or refresh_attempts >= 1:
+        if settled is None:
+            # The refresh is still in flight, so the phase stays non-terminal --
+            # but it is still terminal for THIS invocation: the compile-scale settle
+            # budget is spent and the CLI keeps no record it can replay, so an
+            # accepted-looking `running` here would only promise a continuation that
+            # answers `missing`. Report the exhaustion with a resubmit path instead.
+            if selector == "base_url":
+                payload = _emit_refresh_unsettled_payload(
+                    "exec", None, request_id, args, refresh=refresh_block,
+                )
+                _inject_log_range_into_payload(payload, log_path, log_start, _capture_log_offset(log_path))
+                return EXIT_REFRESH_UNSETTLED, emit_payload(payload), ""
+            payload = _emit_running_payload(
+                "exec", session, request_id, args, phase=PHASE_REFRESHING, refresh=refresh_block
+            )
+            _inject_log_range_into_payload(payload, log_path, log_start, _capture_log_offset(log_path))
+            return EXIT_RUNNING, emit_payload(payload), ""
+        if refresh_attempts >= 1:
+            # The single permitted resubmit is answered `refreshing` again, so the
+            # request is still unaccepted. Base-url mode has no pending artifact to
+            # replay, so this is the second branch whose record exists nowhere.
+            if selector == "base_url":
+                payload = _emit_refresh_unsettled_payload(
+                    "exec", None, request_id, args, refresh=refresh_block,
+                    reason=REFRESH_UNSETTLED_REFRESH_PERSISTED,
+                )
+                _inject_log_range_into_payload(payload, log_path, log_start, _capture_log_offset(log_path))
+                return EXIT_REFRESH_UNSETTLED, emit_payload(payload), ""
             payload = _emit_running_payload(
                 "exec", session, request_id, args, phase=PHASE_REFRESHING, refresh=refresh_block
             )
@@ -1552,6 +1663,20 @@ def _run_exec_impl(args, recovery):
         if selector == "project_path":
             _set_pending_phase(args, request_id, _read_pending_exec(args, request_id), PHASE_EXECUTING)
         refresh_attempts += 1
+
+    if selector == "base_url" and _is_compiling_response(exit_code, stdout_text):
+        # The post-settle resubmit was answered `compiling`: the server rejected it
+        # before `TryAcceptExecRequest`, so the script has not run and no record
+        # exists. Project-path mode normalizes this to `running` because its pending
+        # artifact gives `wait-for-exec --request-id` something to replay; base-url
+        # mode has none, so report the terminal outcome rather than an accepted-looking
+        # non-terminal state.
+        payload = _emit_refresh_unsettled_payload(
+            "exec", None, request_id, args, refresh=refresh_block,
+            phase=PHASE_COMPILING, reason=REFRESH_UNSETTLED_COMPILE_IN_PROGRESS,
+        )
+        _inject_log_range_into_payload(payload, log_path, log_start, _capture_log_offset(log_path))
+        return EXIT_REFRESH_UNSETTLED, emit_payload(payload), ""
 
     if selector == "project_path":
         pending = _read_pending_exec(args, request_id)

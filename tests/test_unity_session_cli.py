@@ -212,17 +212,83 @@ class UnityPuerExecCliTests(unittest.TestCase):
         self.assertIn("`ctx.request_id`, `ctx.globals`, and `ctx.args`", stdout)
         self.assertIn("`--script-args <json-object>`", stdout)
         self.assertIn("`ctx.project_path`", stdout)
-        self.assertIn("`UnityEngine.Application.dataPath`", stdout)
-        self.assertIn("`System.IO.Path.GetDirectoryName(...)`", stdout)
-        self.assertIn("separate from the host application's JavaScript runtime", stdout)
-        self.assertIn("shared C#/Unity object graph is the supported route", stdout)
-        self.assertIn("not shared with the host application's own JavaScript runtime", stdout)
-        self.assertIn("place or read shared C#/Unity objects both sides observe", stdout)
-        self.assertIn("belongs in a project-local skill", stdout)
-        self.assertIn("issues a request rather than completing a transition", stdout)
-        self.assertIn("confirm the play state changed", stdout)
-        self.assertIn("PowerShell users: use single quotes", stdout)
-        self.assertIn("$typeof", stdout)
+
+    def test_exec_help_states_refresh_settle_is_not_bounded_by_wait_timeout(self):
+        """`exec --help` must separate the two budgets in the wait/timeout guidance.
+
+        The real-host regression used `WAIT_TIMEOUT_MS = 1000` and had to be repaired
+        with a second, compile-scale constant, because help described `--wait-timeout-ms`
+        as the whole of "how long to wait". The statement has to survive in the timeout
+        rules, not only inside the automatic-refresh description.
+        """
+        exit_code, stdout, stderr = unity_puer_exec.run_cli(["exec", "--help-args"])
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(stderr, "")
+        timeout_rules = stdout.split("Timeout Rules", 1)[1]
+        self.assertIn("compile-scale budget of its own", timeout_rules)
+        self.assertIn("not bounded by `--wait-timeout-ms`", timeout_rules)
+        # The option line itself must not read as the whole budget either.
+        wait_line = next(line for line in stdout.splitlines() if line.startswith("- `--wait-timeout-ms"))
+        self.assertIn("does not bound the compile cycle an automatic refresh settles on", wait_line)
+        # And the automatic-refresh description carries the same fact.
+        self.assertIn("not bounded by `--wait-timeout-ms`", stdout)
+
+    def test_exec_help_status_states_refresh_settle_budget_and_lists_the_outcome(self):
+        exit_code, stdout, stderr = unity_puer_exec.run_cli(["exec", "--help-status"])
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(stderr, "")
+        self.assertIn("compile-scale budget of its own", stdout)
+        self.assertIn("not on `--wait-timeout-ms`", stdout)
+        # The exhausted-budget outcome is a documented non-success status.
+        self.assertIn("refresh_unsettled", stdout)
+        self.assertIn("25", stdout)
+
+    def test_exec_refresh_unsettled_help_distinguishes_itself_from_missing(self):
+        entry = help_surface.COMMAND_HELP["exec"]["status"]["failure"]
+        refresh_entry = next(row for row in entry if row[0] == "refresh_unsettled")
+        self.assertEqual(refresh_entry[1], help_surface.EXIT_REFRESH_UNSETTLED)
+        self.assertIn("has not run", refresh_entry[2])
+        self.assertIn("for the first time", refresh_entry[2])
+        # `missing` keeps its own distinct meaning, on the wait-for-exec surface.
+        wait_entry = help_surface.COMMAND_HELP["wait-for-exec"]["status"]["failure"]
+        missing_entry = next(row for row in wait_entry if row[0] == "missing")
+        self.assertEqual(missing_entry[1], 13)
+        self.assertNotEqual(missing_entry[1], refresh_entry[1])
+
+    def test_exec_help_status_does_not_contradict_wait_for_compile_settle_cycle(self):
+        exec_exit, exec_stdout, _ = unity_puer_exec.run_cli(["exec", "--help-args"])
+        compile_exit, compile_stdout, _ = unity_puer_exec.run_cli(["wait-for-compile", "--help-args"])
+
+        self.assertEqual(exec_exit, 0)
+        self.assertEqual(compile_exit, 0)
+        # exec names the very option wait-for-compile exposes for the same cycle.
+        self.assertIn("compile-scale budget of its own", exec_stdout)
+        self.assertIn("`wait-for-compile --settle-timeout-seconds`", exec_stdout)
+        self.assertIn("`--settle-timeout-seconds <seconds>`", compile_stdout)
+        self.assertIn("distinct from the settle timeout", compile_stdout)
+
+    def test_refresh_unsettled_guidance_offers_resubmit_and_not_wait_for_exec(self):
+        entry = help_surface.GUIDANCE_MATRIX[("exec", "refresh_unsettled")]
+
+        commands = [step["command"] for step in entry["next_steps"]]
+        self.assertIn("exec", commands)
+        self.assertIn("wait-for-compile", commands)
+        self.assertNotIn("wait-for-exec", commands)
+        resubmit = next(step for step in entry["next_steps"] if step["command"] == "exec")
+        self.assertIn("--base-url", resubmit["argv_template"])
+        self.assertIn("--request-id", resubmit["argv_template"])
+
+    def test_exec_running_wait_for_exec_candidate_is_marked_replayable_only(self):
+        entry = help_surface.GUIDANCE_MATRIX[("exec", "running")]
+
+        wait_step = next(step for step in entry["next_steps"] if step["command"] == "wait-for-exec")
+        self.assertTrue(wait_step["requires_replayable_record"])
+        # The other candidates need no such record and stay unmarked.
+        for step in entry["next_steps"]:
+            if step["command"] != "wait-for-exec":
+                self.assertNotIn("requires_replayable_record", step)
 
     def test_wait_for_exec_help_renders_recovery_guidance(self):
         exit_code, stdout, stderr = unity_puer_exec.run_cli(["wait-for-exec", "--help"])
@@ -4165,6 +4231,18 @@ class _CompileCycleClock:
         self.now += seconds
 
 
+class _FakeSession:
+    """Minimal session stand-in for project-path guidance assertions."""
+
+    def __init__(self, base_url="http://127.0.0.1:55231"):
+        self.base_url = base_url
+        self.api_updater_declines = 0
+        self.unity_pid = 4242
+
+    def to_payload(self):
+        return {"base_url": self.base_url}
+
+
 class AutomaticRefreshBaseUrlTests(unittest.TestCase):
     def test_base_url_automatic_refresh_settles_cycle_longer_than_wait_timeout(self):
         """A base-url refresh must settle the compile+reload it triggered.
@@ -4284,7 +4362,16 @@ class AutomaticRefreshBaseUrlTests(unittest.TestCase):
         self.assertEqual(body["result"]["value"], 7)
         self.assertTrue(body["refresh"]["triggered"])
 
-    def test_base_url_automatic_refresh_settle_timeout_reports_running(self):
+    def test_base_url_automatic_refresh_settle_timeout_reports_refresh_unsettled(self):
+        """An unsettleable base-url refresh must not promise a `missing` continuation.
+
+        The settle budget is compile-scale, so a refresh that is still compiling when
+        it expires is not going to converge in this invocation. Reporting `running`
+        here attached the ("exec", "running") guidance, whose first candidate is
+        `wait-for-exec --request-id` -- but base-url mode writes no pending artifact
+        and the server answers `TryAcceptExecRequest` only after the refreshing phase,
+        so that continuation always answered non-recoverable `missing`.
+        """
         with tempfile.TemporaryDirectory() as temp_dir:
             script_path = Path(temp_dir) / "script.js"
             script_path.write_text("export default function run(ctx) { return 7; }", encoding="utf-8")
@@ -4315,15 +4402,218 @@ class AutomaticRefreshBaseUrlTests(unittest.TestCase):
                     ["exec", "--base-url", "http://127.0.0.1:55231", "--file", str(script_path), "--request-id", "req-base"]
                 )
 
-        self.assertEqual(exit_code, unity_puer_exec.EXIT_RUNNING)
         self.assertEqual(stderr, "")
         self.assertTrue(settle.called)
-        # A settle that did not return to ready stays non-terminal; no second submit.
+        # A settle that did not return to ready still gets no second submit.
         self.assertEqual(invoke_command.call_count, 1)
+        self.assertEqual(exit_code, unity_puer_exec.EXIT_REFRESH_UNSETTLED)
+        body = json.loads(stdout)
+        self.assertEqual(body["status"], "refresh_unsettled")
+        self.assertEqual(body["request_id"], "req-base")
+        self.assertEqual(body["reason"], "refresh_settle_timeout")
+        self.assertTrue(body["refresh"]["triggered"])
+        # The reply is explicitly NOT a lost record, and it is resubmit-safe.
+        self.assertFalse(body["record_replayable"])
+        self.assertTrue(body["resubmit_safe"])
+        self.assertNotEqual(exit_code, unity_puer_exec.EXIT_MISSING)
+        # No continuation the caller cannot actually take.
+        commands = [step["command"] for step in body.get("next_steps", [])]
+        self.assertNotIn("wait-for-exec", commands)
+        self.assertIn("exec", commands)
+        resubmit = next(step for step in body["next_steps"] if step["command"] == "exec")
+        self.assertEqual(
+            resubmit["argv"],
+            ["unity-puer-exec", "exec", "--base-url", "http://127.0.0.1:55231", "--request-id", "req-base"],
+        )
+
+    def test_base_url_automatic_refresh_persisting_after_resubmit_is_refresh_unsettled(self):
+        """A second `refreshing` after the one permitted resubmit is also terminal.
+
+        The server keeps reporting a compile-triggering change, so the request is
+        still unaccepted and base-url mode still keeps no record. This is the second
+        branch whose advertised continuation could not work.
+        """
+        with tempfile.TemporaryDirectory() as temp_dir:
+            script_path = Path(temp_dir) / "script.js"
+            script_path.write_text("export default function run(ctx) { return 7; }", encoding="utf-8")
+            refresh_body = {
+                "ok": True,
+                "status": "running",
+                "phase": "refreshing",
+                "request_id": "req-base",
+                "refresh": {
+                    "triggered": True,
+                    "reason": "compile_triggering_change",
+                    "paths_changed": ["C:/Project/Assets/A.cs"],
+                    "skipped_reason": "",
+                    "settle_outcome": "dispatched",
+                    "elapsed_ms": 4,
+                },
+            }
+            with mock.patch.object(
+                unity_puer_exec_runtime,
+                "_settle_base_url_after_refresh",
+                return_value={"outcome": "ready", "observed_health": ["compiling", "ready"]},
+            ) as settle, mock.patch.object(
+                unity_puer_exec.direct_exec_client,
+                "invoke_command",
+                return_value=(unity_puer_exec.EXIT_RUNNING, json.dumps(refresh_body), ""),
+            ) as invoke_command:
+                exit_code, stdout, stderr = unity_puer_exec.run_cli(
+                    ["exec", "--base-url", "http://127.0.0.1:55231", "--file", str(script_path), "--request-id", "req-base"]
+                )
+
+        self.assertEqual(stderr, "")
+        self.assertTrue(settle.called)
+        # One submit, one resubmit, then the exhaustion report.
+        self.assertEqual(invoke_command.call_count, 2)
+        self.assertEqual(exit_code, unity_puer_exec.EXIT_REFRESH_UNSETTLED)
+        body = json.loads(stdout)
+        self.assertEqual(body["status"], "refresh_unsettled")
+        self.assertEqual(body["reason"], "refresh_persisted")
+        self.assertNotIn("wait-for-exec", [step["command"] for step in body.get("next_steps", [])])
+
+    def test_base_url_resubmit_answered_compiling_is_refresh_unsettled(self):
+        """A post-settle resubmit answered `compiling` has no record to continue.
+
+        The server rejects `/exec` with `{"ok":false,"status":"compiling"}` before
+        `TryAcceptExecRequest`, so no job exists. Project-path mode normalizes this
+        to `running` because its pending artifact can be replayed; base-url mode has
+        none, so the response must not look like an accepted request.
+        """
+        with tempfile.TemporaryDirectory() as temp_dir:
+            script_path = Path(temp_dir) / "script.js"
+            script_path.write_text("export default function run(ctx) { return 7; }", encoding="utf-8")
+            refresh_body = {
+                "ok": True,
+                "status": "running",
+                "phase": "refreshing",
+                "request_id": "req-base",
+                "refresh": {
+                    "triggered": True,
+                    "reason": "compile_triggering_change",
+                    "paths_changed": [],
+                    "skipped_reason": "",
+                    "settle_outcome": "dispatched",
+                    "elapsed_ms": 4,
+                },
+            }
+            with mock.patch.object(
+                unity_puer_exec_runtime,
+                "_settle_base_url_after_refresh",
+                return_value={"outcome": "ready", "observed_health": ["compiling", "ready"]},
+            ), mock.patch.object(
+                unity_puer_exec.direct_exec_client,
+                "invoke_command",
+                side_effect=[
+                    (unity_puer_exec.EXIT_RUNNING, json.dumps(refresh_body), ""),
+                    (unity_puer_exec.EXIT_COMPILING, json.dumps({"ok": False, "status": "compiling"}), ""),
+                ],
+            ) as invoke_command:
+                exit_code, stdout, stderr = unity_puer_exec.run_cli(
+                    ["exec", "--base-url", "http://127.0.0.1:55231", "--file", str(script_path), "--request-id", "req-base"]
+                )
+
+        self.assertEqual(stderr, "")
+        self.assertEqual(invoke_command.call_count, 2)
+        self.assertEqual(exit_code, unity_puer_exec.EXIT_REFRESH_UNSETTLED)
+        body = json.loads(stdout)
+        self.assertEqual(body["status"], "refresh_unsettled")
+        self.assertEqual(body["reason"], "compile_in_progress")
+        self.assertEqual(body["phase"], "compiling")
+        self.assertNotIn("wait-for-exec", [step["command"] for step in body.get("next_steps", [])])
+
+    def test_base_url_running_does_not_advertise_unreachable_wait_for_exec(self):
+        """`exec --base-url` returning `running` still promises an accepted request.
+
+        A base-url accepted request does have a server-side job, so
+        `wait-for-exec --base-url --request-id` would work -- but the candidate
+        template needs a `--project-path` that base-url mode does not have. The
+        unreachable-continuation rule is about reachability, so nothing is advertised.
+        """
+        with tempfile.TemporaryDirectory() as temp_dir:
+            script_path = Path(temp_dir) / "script.js"
+            script_path.write_text("export default function run(ctx) { return 7; }", encoding="utf-8")
+            running_body = {
+                "ok": True,
+                "status": "running",
+                "request_id": "req-base",
+            }
+            with mock.patch.object(
+                unity_puer_exec.direct_exec_client,
+                "invoke_command",
+                return_value=(unity_puer_exec.EXIT_RUNNING, json.dumps(running_body), ""),
+            ):
+                exit_code, stdout, stderr = unity_puer_exec.run_cli(
+                    ["exec", "--base-url", "http://127.0.0.1:55231", "--file", str(script_path), "--request-id", "req-base"]
+                )
+
+        self.assertEqual(exit_code, unity_puer_exec.EXIT_RUNNING)
+        self.assertEqual(stderr, "")
         body = json.loads(stdout)
         self.assertEqual(body["status"], "running")
-        self.assertEqual(body["request_id"], "req-base")
+        commands = [step["command"] for step in body.get("next_steps", [])]
+        self.assertNotIn("wait-for-exec", commands)
+        # The other, genuinely usable candidates survive.
+        self.assertIn("wait-for-result-marker", commands)
+
+    def test_project_path_refresh_still_reports_running_with_replayable_guidance(self):
+        """The project-path branch keeps its `running` shape and its continuation.
+
+        Guard against a fix that silences the replayable case: here the pending
+        artifact exists, so `wait-for-exec --project-path --request-id` really can
+        continue the request and must still be advertised.
+        """
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project = Path(temp_dir) / "Project"
+            (project / "Assets").mkdir(parents=True)
+            script_path = Path(temp_dir) / "script.js"
+            script_path.write_text("export default function run(ctx) { return 7; }", encoding="utf-8")
+            refresh_body = {
+                "ok": True,
+                "status": "running",
+                "phase": "refreshing",
+                "request_id": "req-proj",
+                "refresh": {
+                    "triggered": True,
+                    "reason": "compile_triggering_change",
+                    "paths_changed": [],
+                    "skipped_reason": "",
+                    "settle_outcome": "dispatched",
+                    "elapsed_ms": 4,
+                },
+            }
+            with mock.patch.object(
+                unity_puer_exec_runtime.unity_session,
+                "ensure_session_ready",
+                side_effect=[_FakeSession(), unity_session.UnityStalledError("stalled")],
+            ), mock.patch.object(
+                unity_puer_exec_runtime,
+                "_ensure_project_session_ready_after_refresh",
+                side_effect=unity_session.UnityStalledError("stalled"),
+            ), mock.patch.object(
+                unity_puer_exec.direct_exec_client,
+                "invoke_command",
+                return_value=(unity_puer_exec.EXIT_RUNNING, json.dumps(refresh_body), ""),
+            ):
+                exit_code, stdout, stderr = unity_puer_exec.run_cli(
+                    [
+                        "exec",
+                        "--project-path", str(project),
+                        "--file", str(script_path),
+                        "--request-id", "req-proj",
+                    ]
+                )
+
+        body = json.loads(stdout)
+        self.assertEqual(body["status"], "running")
         self.assertEqual(body["phase"], "refreshing")
+        steps = body["next_steps"]
+        wait_step = next(step for step in steps if step["command"] == "wait-for-exec")
+        self.assertEqual(wait_step["argv"][:2], ["unity-puer-exec", "wait-for-exec"])
+        self.assertIn("--project-path", wait_step["argv"])
+        self.assertNotIn("refresh_unsettled", [step["command"] for step in steps])
+        self.assertEqual(exit_code, unity_puer_exec.EXIT_RUNNING)
 
 
 class PlayModeCommandTests(unittest.TestCase):

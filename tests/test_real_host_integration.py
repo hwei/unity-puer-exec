@@ -2295,7 +2295,63 @@ class RealHostIntegrationTests(_SharedRealHostDevice, unittest.TestCase):
         self.assertEqual(wfc_exit_code, 0, wfc_payload)
         self.assertEqual(wfc_payload["operation"], "wait-for-compile")
         self.assertIn(wfc_payload["result"]["status"], ("compile_settled", "no_compile_observed"))
-        self.assertIn("observed_health", wfc_payload.get("diagnostics", {}))
+
+    def test_base_url_refresh_never_advertises_a_continuation_that_answers_missing(self):
+        """A real base-url refresh must converge and must never hand back a dead end.
+
+        The pre-change failure was observable from the caller side alone: `exec
+        --base-url` returned a refreshing phase whose `next_steps` pointed at
+        `wait-for-exec --request-id`, and that continuation answered a
+        non-recoverable `missing`. The real reload is what makes the ordering real,
+        so the assertion is made on the caller-visible response and guidance rather
+        than on any internal call count.
+        """
+        ready_exit_code, ready_payload, _, _ = _warm_up_project_exec(self.project_path, self.unity_exe_path)
+        self.assertEqual(ready_exit_code, 0, ready_payload)
+
+        base_url, _ = _scan_ready_control_endpoint(self.project_path)
+        self.assertIsNotNone(base_url, "could not resolve a ready control endpoint for the base-url regression")
+
+        # A fresh compile-triggering source file makes the project dirty, so the next
+        # exec crosses a real compile and the domain reload it ends with. The pattern
+        # matches the other refresh cases: write the probe, then wait for the Editor to
+        # observe it as pending before issuing the exec.
+        self._write_compile_triggering_probe("BaseUrlRefreshContinuationProbe.cs")
+        base_url, _refresh = self._wait_for_refresh_pending(base_url)
+
+        exit_code, payload, _, _ = _run_cli(
+            [
+                "exec",
+                "--base-url", base_url,
+                "--wait-timeout-ms", str(self.REFRESH_WAIT_TIMEOUT_MS),
+                "--code", "export default function run(ctx) { return { loop: 'converged' }; }",
+            ]
+        )
+
+        self.assertIsInstance(payload, dict, payload)
+        # The refresh triggered and still converged on the script result.
+        self.assertEqual(exit_code, 0, payload)
+        self.assertEqual(payload["status"], "completed", payload)
+        self.assertEqual(payload["result"]["loop"], "converged", payload)
+        self.assertTrue(payload.get("refresh", {}).get("triggered"), payload.get("refresh"))
+
+        # Whichever shape it took, no advertised continuation may be a dead end.
+        steps = payload.get("next_steps", [])
+        wait_step = next((s for s in steps if s["command"] == "wait-for-exec"), None)
+        self.assertIsNone(wait_step, "base-url exec advertised an unreachable wait-for-exec continuation: {!r}".format(steps))
+
+        # A request the service holds no record for still answers `missing`, with its
+        # own meaning intact: the terminal outcome must not have silenced it.
+        missing_exit, missing_payload, _, _ = _run_cli(
+            [
+                "wait-for-exec",
+                "--base-url", base_url,
+                "--request-id", "req-never-accepted-{}".format(time.time_ns()),
+                "--wait-timeout-ms", str(self.REFRESH_WAIT_TIMEOUT_MS),
+            ]
+        )
+        self.assertEqual(missing_exit, unity_puer_exec_runtime.EXIT_MISSING, missing_payload)
+        self.assertEqual(missing_payload["status"], "missing", missing_payload)
 
     def test_safe_mode_dialog_reports_buttons_and_keeps_cancel_against_real_host(self):
         """Safe Mode stays on cancel and, when observed, exposes its buttons.

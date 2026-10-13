@@ -25,6 +25,20 @@ When the server reports that it triggered an automatic refresh, the CLI SHALL tr
 - **AND** the CLI either keeps resubmitting the request until the script runs or reports a terminal outcome naming the exhausted budget
 - **AND** the CLI does not present `wait-for-exec --request-id` as the continuation for a request whose record exists nowhere
 
+#### Scenario: An exhausted base-url refresh budget is its own terminal outcome
+
+- **WHEN** a base-url `exec` cannot settle the compile cycle an automatic refresh started before its compile-scale budget expires, or the refresh still triggers on the one resubmit it is permitted
+- **THEN** the response reports the non-success status `refresh_unsettled` with its own exit code, distinct from `missing`
+- **AND** the payload states that the script has not run and that no replayable record exists for the request
+- **AND** the payload carries a `next_steps` resubmit path using the same `request_id`
+- **AND** the CLI reports this only for a request the service never accepted, so resubmitting cannot run a script that already ran
+
+#### Scenario: Continuation guidance names only continuations that work
+
+- **WHEN** a response offers `wait-for-exec --request-id` as a continuation
+- **THEN** the addressed service holds a replayable record for that `request_id` at the moment the guidance is built
+- **AND** a request the CLI itself left unsettled offers no `wait-for-exec` continuation
+
 #### Scenario: Caller observes an intermediate refreshing or compiling phase
 
 - **WHEN** an exec request is still refreshing or compiling when a response is returned

@@ -8,6 +8,10 @@ INVOCABLE_COMMANDS = command_registry.INVOCABLE_COMMANDS
 COMMAND_ALIASES = command_registry.COMMAND_ALIASES
 
 EXIT_NO_OBSERVATION_TARGET = 15
+# Terminal outcome for an automatic refresh the CLI itself could not settle
+# (make-base-url-exec-refresh-recoverable). Distinct from `missing` (13), which
+# means the addressed service holds no recoverable record for the request_id.
+EXIT_REFRESH_UNSETTLED = 25
 EXIT_NOT_STOPPED = 16
 EXIT_EDITOR_NOT_UNDER_CLI_CONTROL = 17
 EXIT_UNITY_START_FAILED = 20
@@ -356,10 +360,10 @@ COMMAND_HELP = {
                 "`--unity-exe-path <path>`: override the Unity executable for project-scoped startup only.",
                 "`--unity-log-path <path>`: explicit Unity Editor log path for project-scoped startup, overriding the project-private log a CLI-launched Editor otherwise gets under the project's `Temp/`. An Editor the CLI did not launch keeps whatever log it was started with; the CLI discovers that path from the endpoint rather than assuming the platform default.",
                 "`--unity-launch-arg <token>`: extra Unity argv token for a cold launch this CLI owns (repeatable). Applied after CLI-owned `-projectPath`, the activation switch, and `-logFile`. Cannot rebind those CLI-owned switches. Ignored when the CLI attaches to an already-running Editor. Ambient alternative: env `UNITY_PUER_EXEC_UNITY_LAUNCH_ARGS` as a JSON array of strings (e.g. `[\"-force-gles30\"]`).",
-                "`--wait-timeout-ms <ms>`: how long to wait before returning the current execution state.",
+                "`--wait-timeout-ms <ms>`: how long to wait before returning the current execution state. This bounds one request wait for an already-accepted request; it does not bound the compile cycle an automatic refresh settles on.",
                 "`--request-id <id>`: optional caller-owned exec identity for recovery or idempotent replay; omitted values are generated automatically.",
                 "`--script-args <json-object>`: optional caller-supplied JSON object that becomes `ctx.args`; malformed JSON or non-object values fail before runtime execution.",
-                "Automatic refresh: before each exec the server checks for compile-triggering code changes (`.cs`, `.asmdef`, `.asmref`, `.rsp`) and runs `AssetDatabase.Refresh()` only when one is detected, then settles the compile cycle before running the script. Scenes (`.unity`), prefabs (`.prefab`), metadata (`.meta`), textures, audio, and other non-code assets are not watched and do not trigger a refresh; a caller that needs one of those imported calls `AssetDatabase.Refresh()` through the bridge.",
+                "Automatic refresh: before each exec the server checks for compile-triggering code changes (`.cs`, `.asmdef`, `.asmref`, `.rsp`) and runs `AssetDatabase.Refresh()` only when one is detected, then settles the compile cycle before running the script. That settle runs on a compile-scale budget of its own and is not bounded by `--wait-timeout-ms`, so a small request-wait budget does not abandon a refresh. Scenes (`.unity`), prefabs (`.prefab`), metadata (`.meta`), textures, audio, and other non-code assets are not watched and do not trigger a refresh; a caller that needs one of those imported calls `AssetDatabase.Refresh()` through the bridge.",
                 "`--reset-jsenv-before-exec`: ask the Unity server to perform one JsEnv reset immediately before this exec; the CLI does not issue a separate reset request.",
                 "`--stale-module-policy auto-reset|error`: default `auto-reset` recovers changed or removed loaded local modules in the same invocation; `error` withholds reset and returns `module_cache_stale`, preserving JsEnv state. Automatic or explicit recovery reports affected module paths in `recovery`.",
                 "`--include-diagnostics`: include top-level debug diagnostics in the machine-readable response.",
@@ -399,6 +403,7 @@ COMMAND_HELP = {
             "Timeout Rules": [
                 "`--wait-timeout-ms` must be a positive integer.",
                 "The command may return `running` when the wait budget ends before the request finishes.",
+                "An automatic refresh settles the compile cycle it starts on a compile-scale budget of its own -- the same cycle `wait-for-compile --settle-timeout-seconds` waits for. That settle is not bounded by `--wait-timeout-ms`, so a small request-wait budget does not abandon a refresh.",
                 "Reusing the same `--request-id` with equivalent execution content and equivalent canonical `--script-args` is recovery, not a duplicate execution attempt.",
                 "The default-exported entry function must return an immediate JSON-serializable value; Promise return values complete with warning status (the function body still executes but the return value is not captured).",
             ],
@@ -409,6 +414,7 @@ COMMAND_HELP = {
                 "`running`: the request is still active; continue with `wait-for-exec --request-id ...` or the script's own observation workflow. The response always includes `log_range` and `brief_sequence` for the observation window so far.",
                 "When the Editor is in play mode with a compile-triggering change pending, the response is `status: warning` with `warning: compile_blocked_by_play_mode`, a `compile_blocked` object naming `play_mode`, and `warning_detail`. The script ran, but against code that does not include the pending change; exit play mode before waiting for the deferred compile.",
                 "When `phase` is present, it names the current request stage without changing the top-level `running` contract; first-version values may include `refreshing`, `compiling`, and `executing`.",
+                "An automatic refresh settles the compile cycle it starts on a compile-scale budget of its own, not on `--wait-timeout-ms`; `running`/`refreshing` therefore never means the refresh was abandoned at the caller's request-wait budget.",
                 "When this command declined a ScriptUpdater consent dialog while preparing or waiting, the payload keeps its primary status and also carries `warning = \"api_updater_declined\"` plus `warning_detail`.",
             ],
             "failure": [
@@ -426,6 +432,7 @@ COMMAND_HELP = {
                 ("warning", 0, "the script body executed successfully but the entry function returned a Promise; the return value could not be serialized. Use console.log() with wait-for-result-marker for async result observation."),
                 ("module_cache_stale", direct_exec_client.EXIT_MODULE_CACHE_STALE, "one or more loaded local modules changed or were removed; `--stale-module-policy error` withheld reset so JsEnv state is preserved. Choose explicit reset or omit the error policy for same-invocation auto recovery."),
                 ("unity_compile_error", direct_exec_client.EXIT_UNITY_COMPILE_ERROR, "C# compilation has errors; the script was not executed. Fix the C# errors and re-run `exec` -- saving the fix is itself enough to trigger recompilation on the next exec."),
+                ("refresh_unsettled", EXIT_REFRESH_UNSETTLED, "an automatic refresh this CLI started did not settle its compile cycle within that compile-scale budget, so the script has not run and the addressed service holds no record to continue. Distinct from `missing`: nothing is lost, and re-running the same `exec` runs the script for the first time. `next_steps` carries the resubmit path."),
             ],
         },
     },
@@ -459,6 +466,7 @@ COMMAND_HELP = {
             "Timeout Rules": [
                 "`--wait-timeout-ms` must be a positive integer.",
                 "`missing` means the addressed service currently has no recoverable record for that `request_id`, including local pending artifacts that have already expired or were cleaned up as malformed leftovers.",
+                "An automatic refresh `exec` could not settle does not produce `missing` here: it produces `refresh_unsettled`, and the script has not run. Re-run the same `exec` with the same `--request-id`; it runs the script for the first time.",
             ],
         },
         "status": {
@@ -1003,6 +1011,7 @@ GUIDANCE_MATRIX = {
             {
                 "command": "wait-for-exec",
                 "when": "you want to continue waiting for the accepted request to finish",
+                "requires_replayable_record": True,
                 "argv_template": [
                     "unity-puer-exec", "wait-for-exec",
                     "--project-path", "{project_path}",
@@ -1284,6 +1293,27 @@ GUIDANCE_MATRIX = {
     },
     ("wait-for-exec", "launch_conflict"): {
         "situation": "Project-scoped launch ownership could not be established safely. Another process may be launching Unity for this project.",
+    },
+    ("exec", "refresh_unsettled"): {
+        "next_steps": [
+            {
+                "command": "exec",
+                "when": "you want to run the script for the first time, or to keep waiting for a refresh whose compile cycle has not settled yet",
+                "argv_template": [
+                    "unity-puer-exec", "exec",
+                    "--base-url", "{base_url}",
+                    "--request-id", "{request_id}",
+                ],
+            },
+            {
+                "command": "wait-for-compile",
+                "when": "you want to observe the compile cycle the automatic refresh started before re-submitting",
+                "argv_template": [
+                    "unity-puer-exec", "wait-for-compile",
+                    "--base-url", "{base_url}",
+                ],
+            },
+        ],
     },
     ("wait-for-exec", "unity_start_failed"): {
         "situation": "Unity could not be launched for the selected project.",
@@ -2170,9 +2200,16 @@ def _build_argv(template, target_command, context):
     return argv
 
 
-def _render_next_steps(templates, context):
+def _render_next_steps(templates, context, replayable_record=True):
     result = []
     for template in templates or ():
+        # A continuation the caller cannot actually take is worse than no candidate.
+        # `wait-for-exec --request-id` replays the project-path pending artifact and
+        # nothing else, so it is suppressed when the addressed service holds no
+        # replayable record for the request (a base-url request, or a refresh phase
+        # the CLI itself left unsettled).
+        if not replayable_record and template.get("requires_replayable_record"):
+            continue
         step = {"command": template["command"], "when": template["when"]}
         static_argv = template.get("argv")
         if static_argv is not None:
@@ -2202,7 +2239,7 @@ def _guidance_entry(command, status, warning):
     return entry
 
 
-def build_next_steps(command, status, context, warning=None, compile_blocked=False):
+def build_next_steps(command, status, context, warning=None, compile_blocked=False, replayable_record=True):
     entry = _guidance_entry(command, status, warning)
     own_templates = entry.get("next_steps") if entry else None
     if _play_mode_block_adds_guidance(warning, compile_blocked):
@@ -2214,7 +2251,7 @@ def build_next_steps(command, status, context, warning=None, compile_blocked=Fal
         return combined if combined else None
     if not own_templates:
         return None
-    result = _render_next_steps(own_templates, context)
+    result = _render_next_steps(own_templates, context, replayable_record)
     return result if result else None
 
 
