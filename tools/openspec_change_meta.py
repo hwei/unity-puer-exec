@@ -19,6 +19,17 @@ ALLOWED_PRIORITY = ("P0", "P1", "P2")
 ALLOWED_ASSUMPTION_STATE = ("valid", "needs-review", "invalid")
 ALLOWED_EVIDENCE = ("tests", "host-validation", "cli-transcript", "manual-check")
 
+# `evidence` is stored as a single display string in `ChangeMeta`, so a
+# multi-value input collapses into a deterministic comma-separated join
+# instead of silently keeping only the first entry. `dump_meta` writes that
+# joined string back out as a scalar, and re-parsing splits it again, so the
+# collapse round-trips.
+EVIDENCE_SEPARATOR = ", "
+_EVIDENCE_FORM_HINT = (
+    "Accepted forms: scalar 'evidence: tests', inline list "
+    "'evidence: [tests, manual-check]', or a block list of '- item' lines."
+)
+
 
 @dataclass(frozen=True)
 class ChangeMeta:
@@ -35,6 +46,43 @@ def _validate_choice(value: str, allowed: Iterable[str], field_name: str) -> str
     if value not in allowed:
         raise ValueError(f"Unsupported {field_name} '{value}'. Allowed values: {', '.join(allowed)}")
     return value
+
+
+def _normalize_evidence(raw: object) -> str:
+    """Accept scalar, inline-list, and block-list `evidence` input.
+
+    The parser hands block lists over as `list` objects and leaves inline
+    lists as the raw `"[a, b]"` text, so both shapes are unwrapped here before
+    each entry is validated individually.
+    """
+    if raw is None or raw == "[]" or raw == "":
+        raise ValueError(
+            f"evidence must name at least one value. {_EVIDENCE_FORM_HINT}"
+        )
+
+    if isinstance(raw, list):
+        entries = [str(item).strip() for item in raw]
+    else:
+        text = str(raw).strip()
+        if text.startswith("[") and text.endswith("]"):
+            text = text[1:-1]
+        entries = [part.strip() for part in text.split(EVIDENCE_SEPARATOR)]
+
+    entries = [entry for entry in entries if entry]
+    if not entries:
+        raise ValueError(
+            f"evidence must name at least one value. {_EVIDENCE_FORM_HINT}"
+        )
+
+    unsupported = [entry for entry in entries if entry not in ALLOWED_EVIDENCE]
+    if unsupported:
+        raise ValueError(
+            f"Unsupported evidence value(s) {', '.join(repr(e) for e in unsupported)} "
+            f"parsed from '{raw}' "
+            f"(parsed values: {EVIDENCE_SEPARATOR.join(entries)}). "
+            f"Allowed values: {', '.join(ALLOWED_EVIDENCE)}. {_EVIDENCE_FORM_HINT}"
+        )
+    return EVIDENCE_SEPARATOR.join(entries)
 
 
 def _validate_date(value: str) -> str:
@@ -65,7 +113,7 @@ def normalize_meta(raw: dict[str, object]) -> ChangeMeta:
         assumption_state=_validate_choice(
             str(raw["assumption_state"]), ALLOWED_ASSUMPTION_STATE, "assumption_state"
         ),
-        evidence=_validate_choice(str(raw["evidence"]), ALLOWED_EVIDENCE, "evidence"),
+        evidence=_normalize_evidence(raw.get("evidence")),
         updated_at=_validate_date(str(raw["updated_at"])),
     )
 

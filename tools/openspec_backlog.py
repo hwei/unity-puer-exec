@@ -17,6 +17,19 @@ EVIDENCE_ORDER = {
     "cli-transcript": 2,
     "manual-check": 3,
 }
+
+
+def evidence_rank(value: str) -> int:
+    """Rank a possibly multi-valued `evidence` string by its strongest entry.
+
+    `evidence` is stored as a joined string, so a record may carry several
+    values. Ranking uses the best (lowest) order among them; unknown entries
+    rank last rather than raising, so one odd record cannot break a listing.
+    """
+    parts = [part.strip() for part in value.split(",") if part.strip()]
+    if not parts:
+        return len(EVIDENCE_ORDER)
+    return min(EVIDENCE_ORDER.get(part, len(EVIDENCE_ORDER)) for part in parts)
 ARCHIVE_NAME_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}-(.+)$")
 
 
@@ -265,7 +278,7 @@ def rank_records(records: list[EvaluatedRecord]) -> list[EvaluatedRecord]:
             git_distance,
             -record.unlock_count,
             ASSUMPTION_ORDER[meta.assumption_state],
-            EVIDENCE_ORDER[meta.evidence],
+            evidence_rank(meta.evidence),
             record.record.name,
         )
 
