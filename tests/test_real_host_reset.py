@@ -346,3 +346,61 @@ class RealHostResetTests(unittest.TestCase):
                 mock.patch.object(real_host, "_scan_ready_control_endpoint", return_value=(None, None)):
             device._remove_script_updater_fixture(fixture)
         cleanup.assert_called_once_with(wait_for_editor=True)
+
+
+class RealHostCompileTriggeringProbeTests(unittest.TestCase):
+    def test_watched_extensions_are_read_from_the_exec_help_statement(self):
+        watched = real_host._watched_compile_triggering_extensions()
+        self.assertEqual(watched, (".cs", ".asmdef", ".asmref", ".rsp"))
+
+    def test_probe_without_a_watched_extension_is_rejected_before_writing(self):
+        device = _device()
+        with tempfile.TemporaryDirectory() as tmp:
+            device.project_path = Path(tmp)
+            with self.assertRaises(AssertionError) as raised:
+                device._write_compile_triggering_probe("BaseUrlRefreshContinuationProbe")
+            message = str(raised.exception)
+            for extension in real_host._watched_compile_triggering_extensions():
+                self.assertIn(extension, message)
+            # Rejected before any validation-host write.
+            self.assertEqual(list(Path(tmp).rglob("*")), [])
+
+    def test_probe_with_a_watched_extension_still_stages(self):
+        device = _device()
+        with tempfile.TemporaryDirectory() as tmp:
+            device.project_path = Path(tmp)
+            probe = device._write_compile_triggering_probe("AutomaticRefreshProbe.cs")
+            self.assertTrue(probe.exists())
+            self.assertEqual(probe.suffix, ".cs")
+
+    def test_pending_wait_failure_names_watched_extensions_and_skipped_reason(self):
+        device = _device()
+        health = {
+            "ok": True,
+            "status": "ready",
+            "refresh": {"pending": "not_pending", "skipped_reason": "play_mode"},
+        }
+        with mock.patch.object(
+            real_host.unity_session, "_probe_health", return_value=(None, "dropped")
+        ), mock.patch.object(
+            real_host, "_scan_ready_control_endpoint", return_value=("http://127.0.0.1:55240", health)
+        ), mock.patch.object(real_host.time, "sleep"):
+            with self.assertRaises(AssertionError) as raised:
+                device._wait_for_refresh_pending("http://127.0.0.1:55231", timeout_seconds=0.3)
+        message = str(raised.exception)
+        self.assertIn("watched extensions", message)
+        self.assertIn(".cs", message)
+        self.assertIn("play_mode", message)
+
+    def test_pending_wait_dropped_endpoint_keeps_its_own_message(self):
+        device = _device()
+        with mock.patch.object(
+            real_host.unity_session, "_probe_health", return_value=(None, "dropped")
+        ), mock.patch.object(
+            real_host, "_scan_ready_control_endpoint", return_value=(None, None)
+        ), mock.patch.object(real_host.time, "sleep"):
+            with self.assertRaises(AssertionError) as raised:
+                device._wait_for_refresh_pending("http://127.0.0.1:55231", timeout_seconds=0.3)
+        message = str(raised.exception)
+        self.assertIn("endpoint did not return", message)
+        self.assertNotIn("change signal did not become pending", message)

@@ -290,6 +290,38 @@ class UnityPuerExecCliTests(unittest.TestCase):
             if step["command"] != "wait-for-exec":
                 self.assertNotIn("requires_replayable_record", step)
 
+    def test_exec_running_wait_for_exec_variants_share_when_and_differ_only_by_selector(self):
+        entry = help_surface.GUIDANCE_MATRIX[("exec", "running")]
+        wait_step = next(step for step in entry["next_steps"] if step["command"] == "wait-for-exec")
+
+        variants = wait_step["argv_templates"]
+        self.assertEqual([variant["selector"] for variant in variants], ["project_path", "base_url"])
+        # `when` is candidate-level, so no variant can drift from the other.
+        for variant in variants:
+            self.assertNotIn("when", variant)
+
+        _selector_tokens = {"--project-path", "--base-url", "{project_path}", "{base_url}"}
+        stripped = [
+            [item for item in variant["argv_template"] if item not in _selector_tokens]
+            for variant in variants
+        ]
+        self.assertEqual(stripped[0], stripped[1])
+
+        # Both selectors render the same candidate and the same `when`.
+        project_steps = help_surface.build_next_steps(
+            "exec", "running", {"project_path": "X:/p", "request_id": "r"}
+        )
+        base_steps = help_surface.build_next_steps(
+            "exec", "running", {"base_url": "http://host", "request_id": "r"}
+        )
+        project_wait = next(step for step in project_steps if step["command"] == "wait-for-exec")
+        base_wait = next(step for step in base_steps if step["command"] == "wait-for-exec")
+        self.assertEqual(project_wait["when"], base_wait["when"])
+        self.assertIn("--project-path", project_wait["argv"])
+        self.assertNotIn("--base-url", project_wait["argv"])
+        self.assertIn("--base-url", base_wait["argv"])
+        self.assertNotIn("--project-path", base_wait["argv"])
+
     def test_wait_for_exec_help_renders_recovery_guidance(self):
         exit_code, stdout, stderr = unity_puer_exec.run_cli(["wait-for-exec", "--help"])
 
@@ -4523,13 +4555,13 @@ class AutomaticRefreshBaseUrlTests(unittest.TestCase):
         self.assertEqual(body["phase"], "compiling")
         self.assertNotIn("wait-for-exec", [step["command"] for step in body.get("next_steps", [])])
 
-    def test_base_url_running_does_not_advertise_unreachable_wait_for_exec(self):
-        """`exec --base-url` returning `running` still promises an accepted request.
+    def test_base_url_running_advertises_reachable_wait_for_exec(self):
+        """`exec --base-url` returning `running` promises an accepted request with a record.
 
-        A base-url accepted request does have a server-side job, so
-        `wait-for-exec --base-url --request-id` would work -- but the candidate
-        template needs a `--project-path` that base-url mode does not have. The
-        unreachable-continuation rule is about reachability, so nothing is advertised.
+        A base-url accepted request has a server-side job, so
+        `wait-for-exec --base-url --request-id` does continue it. The candidate
+        must therefore carry the `--base-url` invocation that actually works
+        rather than being dropped because its only template named `--project-path`.
         """
         with tempfile.TemporaryDirectory() as temp_dir:
             script_path = Path(temp_dir) / "script.js"
@@ -4552,10 +4584,44 @@ class AutomaticRefreshBaseUrlTests(unittest.TestCase):
         self.assertEqual(stderr, "")
         body = json.loads(stdout)
         self.assertEqual(body["status"], "running")
+        steps = body["next_steps"]
+        wait_step = next(step for step in steps if step["command"] == "wait-for-exec")
+        self.assertEqual(wait_step["argv"][:2], ["unity-puer-exec", "wait-for-exec"])
+        self.assertIn("--base-url", wait_step["argv"])
+        self.assertIn("http://127.0.0.1:55231", wait_step["argv"])
+        self.assertIn("--request-id", wait_step["argv"])
+        self.assertIn("req-base", wait_step["argv"])
+        self.assertNotIn("--project-path", wait_step["argv"])
+        # The other, genuinely usable candidates survive.
+        self.assertIn("wait-for-result-marker", [step["command"] for step in steps])
+
+    def test_exec_busy_response_advertises_no_wait_for_exec_candidate(self):
+        """`busy` names a different request and is unaffected by the record rule.
+
+        The relaxed `requires_replayable_record` condition is scoped to the
+        (`exec`, `running`) candidate. A `busy` refusal carries no candidate at all,
+        so it cannot start advertising a continuation for a request the caller does
+        not own.
+        """
+        with tempfile.TemporaryDirectory() as temp_dir:
+            script_path = Path(temp_dir) / "script.js"
+            script_path.write_text("export default function run(ctx) { return 7; }", encoding="utf-8")
+            busy_body = {"ok": False, "status": "busy", "request_id": "req-busy"}
+            with mock.patch.object(
+                unity_puer_exec.direct_exec_client,
+                "invoke_command",
+                return_value=(unity_puer_exec_runtime.EXIT_BUSY, json.dumps(busy_body), ""),
+            ):
+                exit_code, stdout, stderr = unity_puer_exec.run_cli(
+                    ["exec", "--base-url", "http://127.0.0.1:55231", "--file", str(script_path), "--request-id", "req-busy"]
+                )
+
+        self.assertEqual(exit_code, unity_puer_exec_runtime.EXIT_BUSY)
+        self.assertEqual(stderr, "")
+        body = json.loads(stdout)
+        self.assertEqual(body["status"], "busy")
         commands = [step["command"] for step in body.get("next_steps", [])]
         self.assertNotIn("wait-for-exec", commands)
-        # The other, genuinely usable candidates survive.
-        self.assertIn("wait-for-result-marker", commands)
 
     def test_project_path_refresh_still_reports_running_with_replayable_guidance(self):
         """The project-path branch keeps its `running` shape and its continuation.

@@ -1012,10 +1012,28 @@ GUIDANCE_MATRIX = {
                 "command": "wait-for-exec",
                 "when": "you want to continue waiting for the accepted request to finish",
                 "requires_replayable_record": True,
-                "argv_template": [
-                    "unity-puer-exec", "wait-for-exec",
-                    "--project-path", "{project_path}",
-                    "--request-id", "{request_id}",
+                # One candidate, two selector-keyed argv variants: the invocation
+                # that actually continues the request names whichever selector
+                # addresses it. The first variant whose selector is present in the
+                # guidance context wins; when none is, the candidate stays and only
+                # its argv is omitted. Both variants must render the same `when`.
+                "argv_templates": [
+                    {
+                        "selector": "project_path",
+                        "argv_template": [
+                            "unity-puer-exec", "wait-for-exec",
+                            "--project-path", "{project_path}",
+                            "--request-id", "{request_id}",
+                        ],
+                    },
+                    {
+                        "selector": "base_url",
+                        "argv_template": [
+                            "unity-puer-exec", "wait-for-exec",
+                            "--base-url", "{base_url}",
+                            "--request-id", "{request_id}",
+                        ],
+                    },
                 ],
             },
             {
@@ -2204,23 +2222,44 @@ def _render_next_steps(templates, context, replayable_record=True):
     result = []
     for template in templates or ():
         # A continuation the caller cannot actually take is worse than no candidate.
-        # `wait-for-exec --request-id` replays the project-path pending artifact and
-        # nothing else, so it is suppressed when the addressed service holds no
-        # replayable record for the request (a base-url request, or a refresh phase
-        # the CLI itself left unsettled).
+        # Presence follows the addressed service's record, not the CLI's ability to
+        # fill an argv template: the record is denied only when the response says so
+        # (`record_replayable: false`, the refresh_unsettled case).
         if not replayable_record and template.get("requires_replayable_record"):
             continue
         step = {"command": template["command"], "when": template["when"]}
         static_argv = template.get("argv")
         if static_argv is not None:
             step["argv"] = list(static_argv)
-        argv_template = template.get("argv_template")
-        if argv_template is not None:
-            argv = _build_argv(argv_template, template["command"], context)
-            if argv is not None:
-                step["argv"] = argv
+        argv = _select_argv(template, context)
+        if argv is not None:
+            step["argv"] = argv
         result.append(step)
     return result
+
+
+def _select_argv(template, context):
+    """Render the selector-appropriate argv for a candidate, if one applies.
+
+    A candidate may carry a single `argv_template`, or selector-keyed
+    `argv_templates` when more than one addressing mode reaches the same command.
+    For the latter, the first variant whose selector is present in context wins.
+    Neither form fabricates an argv: if no variant's selector is present, or the
+    selected template has an unfilled placeholder, the candidate keeps its
+    `command` and `when` and omits `argv`.
+    """
+    argv_variants = template.get("argv_templates")
+    if argv_variants is not None:
+        for variant in argv_variants:
+            selector = variant.get("selector")
+            if not selector or not context.get(selector):
+                continue
+            return _build_argv(variant["argv_template"], template["command"], context)
+        return None
+    argv_template = template.get("argv_template")
+    if argv_template is None:
+        return None
+    return _build_argv(argv_template, template["command"], context)
 
 
 def _play_mode_block_adds_guidance(warning, compile_blocked):

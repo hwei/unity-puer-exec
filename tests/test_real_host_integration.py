@@ -1,6 +1,7 @@
 import itertools
 import json
 import os
+import re
 import socket
 import subprocess
 import sys
@@ -86,6 +87,50 @@ def _require_unity_editor(project_path):
         return unity_session._resolve_unity_exe_path(project_path, None)
     except unity_session.UnityLaunchError as exc:
         raise unittest.SkipTest(str(exc))
+
+
+# The watched compile-triggering extensions are named in the durable
+# `exec --help-args` statement. The harness reads them from there rather than
+# repeating the list, so the two cannot drift.
+_COMPILE_TRIGGERING_HELP_PATTERN = re.compile(
+    r"compile-triggering code changes \(([^)]*)\)"
+)
+_HELP_EXTENSION_PATTERN = re.compile(r"`(\.[A-Za-z0-9]+)`")
+
+
+def _watched_compile_triggering_extensions():
+    """The extensions the Editor's change signal watches, read from durable help.
+
+    A reworded help statement raises here, at staging time, instead of silently
+    accepting a probe name the Editor ignores and failing later after an Editor
+    launch with a message about the change signal.
+    """
+    _exit_code, stdout, stderr = unity_puer_exec.run_cli(["exec", "--help-args"])
+    help_text = stdout or stderr or ""
+    statement = _COMPILE_TRIGGERING_HELP_PATTERN.search(help_text)
+    if statement is None:
+        raise AssertionError(
+            "could not read the watched compile-triggering extensions from the exec help: "
+            "the 'compile-triggering code changes (...)' statement is missing or reworded"
+        )
+    extensions = tuple(_HELP_EXTENSION_PATTERN.findall(statement.group(1)))
+    if not extensions:
+        raise AssertionError(
+            "the exec help statement on compile-triggering code changes named no extensions"
+        )
+    return extensions
+
+
+def _validate_compile_triggering_probe_name(name, watched):
+    """Reject a probe name the change signal would ignore, before anything is written."""
+    suffix = Path(name).suffix.lower()
+    if suffix not in watched:
+        raise AssertionError(
+            "compile-triggering probe {!r} does not end in a watched extension ({}); "
+            "the Editor's change signal ignores it, so no refresh would be observed".format(
+                name, ", ".join(watched)
+            )
+        )
 
 
 def _pick_cancel_button_label(blocker):
@@ -809,7 +854,14 @@ class _SharedRealHostDevice:
                     timeout_seconds
                 )
             )
-        self.fail("change signal did not become pending: {}".format(last))
+        watched = _watched_compile_triggering_extensions()
+        skipped_reason = last.get("skipped_reason") if isinstance(last, dict) else None
+        self.fail(
+            "change signal did not become pending (watched extensions: {}; "
+            "skipped_reason: {!r}): {}".format(
+                ", ".join(watched), skipped_reason, last
+            )
+        )
 
     def _wait_for_play_exit(self, base_url, timeout_seconds=180):
         """Wait until play mode has ended or the deferred compile is visible.
@@ -867,6 +919,8 @@ class _SharedRealHostDevice:
         return exit_code, payload
 
     def _write_compile_triggering_probe(self, name):
+        watched = _watched_compile_triggering_extensions()
+        _validate_compile_triggering_probe_name(name, watched)
         temp_dir = self.project_path / "Assets" / "__codex_validation_temp"
         temp_dir.mkdir(parents=True, exist_ok=True)
         path = temp_dir / name

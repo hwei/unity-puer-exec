@@ -666,8 +666,8 @@ def _build_guidance_context(args, request_id=None):
     if getattr(args, "wait_timeout_ms", None) is not None:
         context["wait_timeout_ms"] = args.wait_timeout_ms
     # `--base-url` is not a documented forwardable arg, but the base-url
-    # continuation candidates are built from it (see
-    # _no_replayable_record_context), so it has to reach the guidance context.
+    # continuation candidates are built from it (see help_surface._select_argv),
+    # so it has to reach the guidance context.
     base_url = getattr(args, "base_url", None)
     if base_url:
         context["base_url"] = str(base_url)
@@ -738,7 +738,7 @@ def _attach_guidance(payload, command, status, args, request_id=None):
     compile_blocked = isinstance(payload.get("compile_blocked"), dict)
     next_steps = help_surface.build_next_steps(
         command, status, context, warning=payload.get("warning"), compile_blocked=compile_blocked,
-        replayable_record=_has_replayable_record(payload, context),
+        replayable_record=_has_replayable_record(payload),
     )
     if next_steps:
         payload["next_steps"] = next_steps
@@ -869,19 +869,18 @@ def _finalize_pending_after_submit(args, request_id, pending, exit_code, stdout_
     return None
 
 
-def _has_replayable_record(payload, context):
-    """Whether `wait-for-exec --request-id <id>` can actually continue this request.
+def _has_replayable_record(payload):
+    """Whether the addressed service holds a record `wait-for-exec --request-id` can replay.
 
-    The project-path pending artifact is the only thing a `wait-for-exec
-    --request-id` can replay, and it is written only under the `project_path`
-    selector. A base-url exec keeps no such record, so the response must not
-    advertise that continuation for it: naming it there is what turned an
-    unsettled refresh into a non-recoverable `missing` (see
-    make-base-url-exec-refresh-recoverable).
+    Presence follows the record, not the CLI's ability to fill an argv template.
+    The CLI-composed envelope denies the record explicitly
+    (`record_replayable: false`) for a request the service never accepted -- the
+    `refresh_unsettled` case. Every other response that carries the candidate
+    reached the server's accept path, so a record exists in either selector. The
+    selector shape is deliberately not consulted: inferring the answer from it is
+    what made an accepted base-url request look like an unreplayable one.
     """
-    if payload.get("record_replayable") is False:
-        return False
-    return bool(context.get("project_path"))
+    return payload.get("record_replayable") is not False
 
 
 def _emit_refresh_unsettled_payload(
