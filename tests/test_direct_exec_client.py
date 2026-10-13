@@ -1,3 +1,4 @@
+import http.client
 import json
 import socket
 import sys
@@ -49,6 +50,25 @@ class InvalidUtf8BodyTransport:
 
     def post_json(self, url, payload, timeout_seconds):
         raise UnicodeDecodeError("utf-8", b"\xff\xfe", 0, 1, "invalid start byte")
+
+
+class RaisingTransport:
+    def __init__(self, exc):
+        self.exc = exc
+
+    def post_json(self, url, payload, timeout_seconds):
+        raise self.exc
+
+
+def peer_reset_exception():
+    """The exception CPython raises when a peer resets a keep-alive socket.
+
+    `RemoteDisconnected` is constructed with the `ConnectionResetError` that came
+    from the socket read, which is what carries the `[WinError 10054]` text.
+    """
+    return http.client.RemoteDisconnected(
+        ConnectionResetError(10054, "remote host forcibly closed an existing connection")
+    )
 
 
 class DirectExecClientTests(unittest.TestCase):
@@ -312,6 +332,62 @@ class DirectExecClientTests(unittest.TestCase):
                 {"request_id": "req-boom"},
                 1000,
                 transport=UnexpectedFailureTransport(),
+            )
+
+    def test_peer_reset_is_classified_as_a_retryable_transport_drop(self):
+        # A peer reset matches none of the narrower handlers, so it used to escape
+        # `invoke_command` and reach the top-level envelope as status "failed" / exit 1,
+        # which put `_post_play_mode`'s retry branch out of reach entirely.
+        code, out, _err = direct_exec_client.invoke_command(
+            "play-mode",
+            "http://127.0.0.1:55231",
+            {"action": "play", "request_id": "req-reset"},
+            1000,
+            transport=RaisingTransport(peer_reset_exception()),
+        )
+        body = json.loads(out)
+        self.assertEqual(code, direct_exec_client.EXIT_NOT_AVAILABLE)
+        self.assertEqual(body["status"], "not_available")
+        self.assertEqual(body["operation"], "play-mode")
+        self.assertEqual(body["request_id"], "req-reset")
+        # The reset errno must stay visible so a recurrence is recognizable.
+        self.assertIn("10054", body["error"])
+        self.assertEqual(body["transport_detail"]["reason"], "RemoteDisconnected")
+
+    def test_peer_reset_siblings_map_to_not_available(self):
+        # `OSError` is a broad base, so each condition the widened catch admits is
+        # asserted rather than assumed. All of them mean "the endpoint is not
+        # answering", which is what `not_available` denotes.
+        cases = [
+            (http.client.BadStatusLine("garbage status line"), "BadStatusLine", "garbage status line"),
+            (ConnectionRefusedError(10061, "connection refused"), "ConnectionRefusedError", "10061"),
+            (ConnectionAbortedError(10053, "software caused connection abort"), "ConnectionAbortedError", "10053"),
+            (ConnectionResetError(10054, "connection reset by peer"), "ConnectionResetError", "10054"),
+        ]
+        for exc, reason, text in cases:
+            with self.subTest(reason=reason):
+                code, out, _err = direct_exec_client.invoke_command(
+                    "play-mode",
+                    "http://127.0.0.1:55231",
+                    {"action": "play"},
+                    1000,
+                    transport=RaisingTransport(exc),
+                )
+                body = json.loads(out)
+                self.assertEqual(code, direct_exec_client.EXIT_NOT_AVAILABLE)
+                self.assertEqual(body["status"], "not_available")
+                self.assertIn(text, body["error"])
+                self.assertEqual(body["transport_detail"]["reason"], reason)
+
+    def test_unrelated_exceptions_still_escape_the_boundary(self):
+        # Widening to OSError/HTTPException must not swallow programming errors.
+        with self.assertRaises(RuntimeError):
+            direct_exec_client.invoke_command(
+                "exec",
+                "http://127.0.0.1:55231",
+                {},
+                1000,
+                transport=RaisingTransport(RuntimeError("unexpected boom")),
             )
 
     def test_busy_payload_is_non_zero_on_stdout(self):

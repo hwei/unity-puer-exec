@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import http.client
 import json
 import socket
 import urllib.error
@@ -132,6 +133,41 @@ def _payload_request_id(payload):
     return payload.get("request_id") or payload.get("id")
 
 
+def _transport_drop_error_text(exc):
+    """Diagnostic text for a peer-side transport drop, keeping the errno visible.
+
+    ``http.client.RemoteDisconnected`` is constructed with the ``ConnectionResetError``
+    that came from the socket read, so the reset errno (``[WinError 10054] ...``) lives
+    in ``args[0]`` rather than in ``str(exc)``. Normalizing the status to
+    ``not_available`` must not erase that detail: a reset whose errno is invisible is
+    hard to recognize when it recurs.
+    """
+    text = str(exc) or type(exc).__name__
+    underlying = exc.args[0] if exc.args else None
+    if isinstance(underlying, BaseException):
+        detail = str(underlying)
+        if detail and detail not in text:
+            text = "{}: {}".format(text, detail)
+    return text
+
+
+def _not_available_payload(command, error, request_id=None, reason=None):
+    """Structured ``not_available`` payload for an endpoint that is not answering."""
+    payload = {
+        "ok": False,
+        "status": "not_available",
+        "operation": command,
+        "error": error,
+        "exit_code": EXIT_NOT_AVAILABLE,
+        "exit_code_meaning": "the control endpoint is not answering",
+    }
+    if reason:
+        payload["transport_detail"] = {"reason": reason}
+    if request_id:
+        payload["request_id"] = request_id
+    return payload
+
+
 def _empty_response_payload(command, exc, request_id=None):
     """Structured, branchable payload for an empty/unparseable response body.
 
@@ -207,6 +243,20 @@ def invoke_command(command, base_url, payload, wait_timeout_ms, transport=None):
         }
         if request_id:
             error_payload["request_id"] = request_id
+        return EXIT_NOT_AVAILABLE, json.dumps(error_payload, ensure_ascii=True), ""
+    except (OSError, http.client.HTTPException) as exc:
+        # A peer that accepts the connection and then drops it without a status line
+        # raises `RemoteDisconnected`, whose MRO is ConnectionResetError (OSError) plus
+        # BadStatusLine (HTTPException). It matches none of the handlers above, so it used
+        # to escape `invoke_command`, escape `_post_play_mode`'s retry branch, and surface
+        # as a generic `status: "failed"` / exit 1. Classify it here so every caller
+        # inherits the retry. `socket.timeout` is an OSError, so it is handled above.
+        error_payload = _not_available_payload(
+            command,
+            _transport_drop_error_text(exc),
+            request_id=request_id,
+            reason=type(exc).__name__,
+        )
         return EXIT_NOT_AVAILABLE, json.dumps(error_payload, ensure_ascii=True), ""
 
     exit_code = status_to_exit_code(response)

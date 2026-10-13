@@ -5342,6 +5342,69 @@ class PlayModeCommandTests(unittest.TestCase):
         body = json.loads(stdout)
         self.assertEqual(body["status"], "version_mismatch")
 
+    def test_play_recovers_from_a_peer_reset_inside_the_bound(self):
+        # A peer reset reaches `_post_play_mode` as a `not_available` body, so the
+        # command must enter the re-resolve/retry branch instead of failing. Before the
+        # transport boundary classified it, the exception escaped the whole loop and no
+        # second `play-mode` attempt was ever made.
+        attempts = {"count": 0}
+
+        def play_mode_handler(payload):
+            attempts["count"] += 1
+            if attempts["count"] == 1:
+                return (
+                    12,
+                    {
+                        "ok": False,
+                        "status": "not_available",
+                        "error": "[Errno 10054] remote host forcibly closed an existing connection",
+                        "transport_detail": {"reason": "RemoteDisconnected"},
+                    },
+                )
+            return (0, self._play_mode_body(play_state="playing"))
+
+        invoke_map, _calls, holder = self._default_invoke_map(**{"play-mode": play_mode_handler})
+        holder["value"] = "playing"
+        code, stdout, stderr = self._run(
+            unity_puer_exec_runtime.run_play,
+            self._args("play"),
+            [self._health("edit"), self._health("entering"), self._health("playing")],
+            invoke_map,
+        )
+        self.assertEqual(code, 0, stderr)
+        body = json.loads(stdout)
+        self.assertEqual(body["status"], "completed")
+        self.assertEqual(body["result"]["play_state"], "playing")
+        # The assertion that names the branch the previous failure could not reach:
+        # a retry happened at all.
+        self.assertGreaterEqual(attempts["count"], 2)
+
+    def test_play_reset_for_the_whole_bound_exits_with_the_not_available_code(self):
+        # A genuine outage now retries until the bound instead of failing fast, so the
+        # bound must still end in the structured not-available exit code.
+        def play_mode_handler(_payload):
+            return (
+                12,
+                {
+                    "ok": False,
+                    "status": "not_available",
+                    "error": "[Errno 10054] remote host forcibly closed an existing connection",
+                },
+            )
+
+        invoke_map, _calls, _holder = self._default_invoke_map(**{"play-mode": play_mode_handler})
+        code, stdout, stderr = self._run(
+            unity_puer_exec_runtime.run_play,
+            self._args("play"),
+            [self._health("edit")],
+            invoke_map,
+        )
+        self.assertEqual(code, unity_puer_exec.direct_exec_client.EXIT_NOT_AVAILABLE, stderr)
+        body = json.loads(stdout)
+        self.assertNotEqual(body.get("status"), "failed")
+        self.assertEqual(body["status"], "not_available")
+        self.assertIn("10054", json.dumps(body))
+
     def test_play_discloses_a_pre_settle_refresh(self):
         refresh_calls = {"count": 0}
         play_state_holder = {"value": "entering"}
