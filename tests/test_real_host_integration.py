@@ -1,3 +1,4 @@
+import itertools
 import json
 import os
 import socket
@@ -59,6 +60,7 @@ ROLLOVER_OBSERVE_TIMEOUT_SECONDS = 180
 # mean something the suite cannot displace holds it, so the mid-reload rebind race
 # (P2) is unstageable and only the later-port rollover (P1) can be asserted.
 _FOREIGN_PREFERRED_STATES = {"foreign_endpoint", "foreign_process"}
+_REQUEST_ID_COUNTER = itertools.count()
 
 
 def _real_host_tests_enabled():
@@ -109,6 +111,19 @@ def _run_cli(argv):
     body = stdout or stderr
     payload = json.loads(body) if body else None
     return exit_code, payload, stdout, stderr
+
+
+def _unique_request_id(prefix):
+    """Build a real-host exec request id that changes on every call.
+
+    The server replays a repeated ``request_id`` that carries the same code
+    instead of running the script again, so a process-scoped id
+    (``os.getpid()``) makes a second run of a case in one process a no-op.
+    A nanosecond stamp plus a per-process counter keeps that from happening;
+    the counter is required because the platform clock can return the same
+    nanosecond value for two rapid calls.
+    """
+    return "{}-{}-{}".format(prefix, time.time_ns(), next(_REQUEST_ID_COUNTER))
 
 
 def _single_warm_up_project_exec(project_path, unity_exe_path, include_diagnostics=False):
@@ -1412,7 +1427,7 @@ class RealHostIntegrationTests(_SharedRealHostDevice, unittest.TestCase):
         self.assertEqual(len(result["results"]), result["rootCount"])
 
     def test_exec_checkpoint_observation_chain_against_real_host(self):
-        correlation_id = "sync-{}".format(os.getpid())
+        correlation_id = _unique_request_id("sync")
         script = "\n".join(
             [
                 "export default function run(ctx) {",
@@ -1639,7 +1654,7 @@ class RealHostIntegrationTests(_SharedRealHostDevice, unittest.TestCase):
         ready_exit_code, ready_payload, _, _ = _warm_up_project_exec(self.project_path, self.unity_exe_path)
         self.assertEqual(ready_exit_code, 0, ready_payload)
 
-        request_id = "modal-modified-{}".format(os.getpid())
+        request_id = _unique_request_id("modal-modified")
         exec_exit_code, exec_payload, _, _ = _run_cli(
             [
                 "exec",
@@ -1686,7 +1701,7 @@ class RealHostIntegrationTests(_SharedRealHostDevice, unittest.TestCase):
         _, log_info = log_source
         log_path = Path(log_info["path"])
 
-        request_id = "disconnect-recover-{}".format(os.getpid())
+        request_id = _unique_request_id("disconnect-recover")
         exec_exit_code, exec_payload, _, _ = _run_cli(
             [
                 "exec",
@@ -1755,7 +1770,7 @@ class RealHostIntegrationTests(_SharedRealHostDevice, unittest.TestCase):
         ready_exit_code, ready_payload, _, _ = _warm_up_project_exec(self.project_path, self.unity_exe_path)
         self.assertEqual(ready_exit_code, 0, ready_payload)
 
-        request_id = "modal-save-scene-{}".format(os.getpid())
+        request_id = _unique_request_id("modal-save-scene")
         _run_cli(
             [
                 "exec",
@@ -1789,7 +1804,7 @@ class RealHostIntegrationTests(_SharedRealHostDevice, unittest.TestCase):
         ready_exit_code, ready_payload, _, _ = _warm_up_project_exec(self.project_path, self.unity_exe_path)
         self.assertEqual(ready_exit_code, 0, ready_payload)
 
-        request_id = "resolve-modified-{}".format(os.getpid())
+        request_id = _unique_request_id("resolve-modified")
         _run_cli(
             [
                 "exec",
@@ -1862,7 +1877,7 @@ class RealHostIntegrationTests(_SharedRealHostDevice, unittest.TestCase):
         ready_exit_code, ready_payload, _, _ = _warm_up_project_exec(self.project_path, self.unity_exe_path)
         self.assertEqual(ready_exit_code, 0, ready_payload)
 
-        request_id = "resolve-save-scene-{}".format(os.getpid())
+        request_id = _unique_request_id("resolve-save-scene")
         _run_cli(
             [
                 "exec",
@@ -1944,7 +1959,7 @@ class RealHostIntegrationTests(_SharedRealHostDevice, unittest.TestCase):
                 "--unity-exe-path",
                 str(self.unity_exe_path),
                 "--request-id",
-                "cancel-rejected-{}".format(time.time_ns()),
+                _unique_request_id("cancel-rejected"),
                 "--wait-timeout-ms",
                 str(WAIT_TIMEOUT_MS),
                 "--code",
@@ -2012,7 +2027,7 @@ class RealHostIntegrationTests(_SharedRealHostDevice, unittest.TestCase):
                 "--unity-exe-path",
                 str(self.unity_exe_path),
                 "--request-id",
-                "unknown-dialog-{}".format(os.getpid()),
+                _unique_request_id("unknown-dialog"),
                 "--wait-timeout-ms",
                 str(WAIT_TIMEOUT_MS),
                 "--code",
@@ -2080,7 +2095,7 @@ class RealHostIntegrationTests(_SharedRealHostDevice, unittest.TestCase):
                 "--unity-exe-path",
                 str(self.unity_exe_path),
                 "--request-id",
-                "open-panels-{}".format(os.getpid()),
+                _unique_request_id("open-panels"),
                 "--wait-timeout-ms",
                 str(WAIT_TIMEOUT_MS),
                 "--code",

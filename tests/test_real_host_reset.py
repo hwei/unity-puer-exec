@@ -1,3 +1,4 @@
+import ast
 import inspect
 import tempfile
 import unittest
@@ -15,6 +16,33 @@ def _device():
     device = Device()
     device.setUp()
     return device
+
+
+def _request_id_segments_built_from_pid(source):
+    """Return source segments that build a request id using os.getpid()."""
+    tree = ast.parse(source)
+    parents = {}
+    for parent in ast.walk(tree):
+        for child in ast.iter_child_nodes(parent):
+            parents[child] = parent
+    flagged = []
+    for node in ast.walk(tree):
+        if not (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "getpid"
+        ):
+            continue
+        # Climb to the enclosing expression/statement: the request id is
+        # either assigned there or passed as a --request-id argument nearby.
+        current = node
+        while current is not None:
+            segment = ast.get_source_segment(source, current) or ""
+            if "request_id" in segment or "request-id" in segment:
+                flagged.append(segment)
+                break
+            current = parents.get(current)
+    return flagged
 
 
 class RealHostReloadProbeTests(unittest.TestCase):
@@ -86,6 +114,24 @@ class RealHostReloadProbeTests(unittest.TestCase):
             shared = getattr(real_host._SharedRealHostDevice, name)
             self.assertIs(getattr(real_host.RefreshOnChangeRealHostTests, name), shared, name)
             self.assertIs(getattr(real_host.PlayModeCompileBlockRealHostTests, name), shared, name)
+
+
+class RealHostRequestIdUniquenessTests(unittest.TestCase):
+    def test_helper_changes_value_on_each_call(self):
+        first = real_host._unique_request_id("probe")
+        second = real_host._unique_request_id("probe")
+        self.assertTrue(first.startswith("probe-"))
+        self.assertNotEqual(first, second)
+
+    def test_no_exec_request_id_is_built_from_the_process_id_alone(self):
+        flagged = _request_id_segments_built_from_pid(
+            inspect.getsource(real_host)
+        )
+        self.assertEqual(
+            flagged,
+            [],
+            "exec request ids must not be built from os.getpid(): {}".format(flagged),
+        )
 
 
 class RealHostResetTests(unittest.TestCase):

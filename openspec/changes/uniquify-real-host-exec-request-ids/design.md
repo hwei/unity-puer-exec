@@ -26,7 +26,7 @@ See proposal.md — Why. Inherited from `harden-real-host-per-case-reset`:
 
 ### D1. One helper, called at each submission
 
-Add `_unique_request_id(prefix)` next to the other module helpers. It returns `prefix` plus a value that changes per call (`time.time_ns()` is enough). Each of the eight `os.getpid()` sites, and the save-scene cancel site that already calls `time.time_ns()`, calls the helper at the moment it builds the CLI argument. Do not cache the id on the class.
+Add `_unique_request_id(prefix)` next to the other module helpers. It returns `prefix` plus a value that changes per call: a nanosecond timestamp and a per-process counter. The counter is required because `time.time_ns()` alone is not enough — the platform clock can return the same instant for two rapid calls (observed on Windows). Each of the eight `os.getpid()` sites, and the save-scene cancel site that already calls `time.time_ns()`, calls the helper at the moment it builds the CLI argument. Do not cache the id on the class.
 
 ### D2. Lock the source, not the Editor
 
