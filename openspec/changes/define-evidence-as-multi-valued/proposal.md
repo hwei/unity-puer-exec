@@ -4,30 +4,47 @@
 may name more than one:
 
 ```
-- Allowed `evidence` values: `tests`, `host-validation`, `cli-transcript`, and `manual-check`.
+- Allowed `evidence` values: `tests`, `host-validation`, `cli-transcript`, `manual-check`.
 ```
 
-As of `2026-10-13-fix-change-meta-evidence-list-parsing`, the code no longer agrees with that
-silence in one direction and disagrees with it in another:
+As of `2026-10-13-fix-change-meta-evidence-list-parsing`, the tooling treats `evidence` as
+multi-valued in some places and single-valued in others:
 
 - `tools/openspec_change_meta.py` accepts scalar, inline-list, and block-list `evidence`, and
   collapses several values into one display string joined with `", "`.
-- `tools/openspec_backlog.py:evidence_rank` ranks such a string by its strongest entry.
-- Three archived records already carry the list form, so the multi-value shape is real history,
-  not a hypothetical.
-- Nothing documents the collapse format, the ranking rule, or whether a new record *should* name
-  one value or several.
+- `tools/openspec_backlog.py:evidence_rank` splits that string and ranks by its strongest entry.
+- `tools/openspec_backlog.py:filter_records` compares the **whole** string:
 
-Left undocumented, the next author re-derives this by reading source, and the `"tests, cli-transcript"`
-string becomes an accidental de facto format that nobody agreed to.
+  ```python
+  if evidence and meta.evidence != evidence:
+      continue
+  ```
+
+  So `--evidence` no longer means what its flag name promises:
+
+  | Stored `evidence` | `--evidence tests` | `--evidence "tests, cli-transcript"` |
+  |---|---|---|
+  | `tests` | match | no match |
+  | `tests, cli-transcript` | **no match** | match |
+  | `cli-transcript, tests` | **no match** | no match (order-sensitive) |
+
+- Nothing documents the collapse format, the ranking rule, which input form is canonical, or
+  whether a new record *should* name one value or several.
+
+Defining the field and fixing the filter are one decision: documenting multi-valued `evidence`
+while the filter treats it as opaque would either ratify a defect or require a temporary "known
+limitation" note that the fix immediately deletes. This change absorbs the superseded
+`match-evidence-filter-on-multi-value`.
 
 ## What Changes
 
-- State in `AGENTS.md` that `evidence` is multi-valued.
-- State the accepted input forms, the `", "` collapse format, and the ranking rule.
-- State whether the collapse is stable enough to be relied on by tooling.
-
-This is a documentation change to an existing convention. It edits no behavior.
+- State in `AGENTS.md` that `evidence` is multi-valued (one or more values), the accepted input
+  forms, that the scalar joined form (`", "`, written order) is canonical, and the ranking rule.
+- Make `openspec_backlog.py --evidence` an includes-match: a record matches if the requested value
+  is one of the values it names, independent of order.
+- Restrict `--evidence` to the known single values via argparse `choices`, so a joined value is
+  rejected rather than accidentally string-matched.
+- Extract one shared splitter used by both filtering and ranking.
 
 ## Capabilities
 
@@ -39,12 +56,15 @@ This is a documentation change to an existing convention. It edits no behavior.
 
 (none)
 
-`AGENTS.md` is repository convention, not an `openspec/specs/` capability, so this records a
-governance decision without creating a delta spec. `.openspec.yaml` sets `skip_specs: true`.
+`AGENTS.md` is repository convention and `openspec_backlog.py` is repository-local tooling; neither
+is an `openspec/specs/` capability. `.openspec.yaml` sets `skip_specs: true`.
 
 ## Impact
 
-- Affected file: `AGENTS.md` (Change metadata section).
-- No code, test, or record changes.
-- Downstream readers: `tools/openspec_backlog.py` and `tools/new_openspec_change.py`, whose
-  behavior stays as-is and becomes documented.
+- Affected files: `AGENTS.md` (Change metadata section), `tools/openspec_backlog.py`
+  (`evidence_rank`, `filter_records`, `--evidence` argument), `tests/test_openspec_backlog.py`,
+  and possibly `tests/test_openspec_change_meta.py` for pinning documented rules.
+- CLI behavior change: `--evidence tests` returns a superset of today's result;
+  `--evidence "tests, cli-transcript"` now errors instead of exact-matching.
+- No record changes. Independent of `backfill-legacy-change-meta-records`, which applies the
+  canonical scalar form to archived records; either may land first.

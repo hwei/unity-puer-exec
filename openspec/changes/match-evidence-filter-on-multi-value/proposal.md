@@ -1,3 +1,6 @@
+> **Superseded** by `define-evidence-as-multi-valued` (2026-10-13), which absorbs this change's scope and tasks so the
+> ordering and guard edits stay consistent. Archive this change without applying it.
+
 ## Why
 
 `openspec_backlog.py --evidence` compares the whole stored string:

@@ -1,3 +1,6 @@
+> **Superseded** by `backfill-legacy-change-meta-records` (2026-10-13), which absorbs this change's scope and tasks so the
+> ordering and guard edits stay consistent. Archive this change without applying it.
+
 ## Why
 
 `2026-10-13-fix-change-meta-evidence-list-parsing` made the parser accept the list form of

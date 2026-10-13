@@ -1,7 +1,7 @@
+status: superseded
 change_type: refactor
 priority: P2
-blocked_by:
-- define-evidence-as-multi-valued
+blocked_by: []
 assumption_state: valid
 evidence: tests
 updated_at: 2026-10-13
