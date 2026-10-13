@@ -6,22 +6,22 @@ The repository-owned real-host validation workflow SHALL stage a refresh trigger
 
 #### Scenario: A probe without a watched extension is rejected locally
 
-- **WHEN** a real-host case stages a refresh trigger whose name does not end in a watched
-  extension
+- **WHEN** a real-host case stages a refresh trigger whose name does not end in a watched extension
 - **THEN** the staging helper fails with the watched extensions named
 - **AND** no Editor launch and no validation-host write occurs for that probe
 
 #### Scenario: A change signal that never becomes pending names the cause
 
-- **WHEN** a real-host case waits for a staged change to be observed as pending and the Editor
-  never reports it as pending
-- **THEN** the failure message names the watched extensions: C# sources, assembly definitions
-  and references, and compiler response files
+- **WHEN** a real-host case waits for a staged change to be observed as pending and the Editor never reports it as pending
+- **THEN** the failure message names the watched extensions: C# sources, assembly definitions and references, and compiler response files
 - **AND** it reports the observed `skipped_reason` from the last health payload
+
+#### Scenario: A dropped control endpoint keeps its own failure message
+
+- **WHEN** the control endpoint never returns a health payload during the pending wait
+- **THEN** the failure names the unreachable control endpoint rather than the change signal
 
 #### Scenario: A correctly staged probe still crosses a real refresh
 
-- **WHEN** a real-host case stages a probe with a watched extension, waits for it to be observed
-  as pending, and then runs `exec` against the host's control endpoint
-- **THEN** the case proceeds unchanged and asserts the refresh disclosure on the terminal `exec`
-  response
+- **WHEN** a real-host case stages a probe with a watched extension, waits for it to be observed as pending, and then runs `exec` against the host's control endpoint
+- **THEN** the case proceeds unchanged and asserts the refresh disclosure on the terminal `exec` response
