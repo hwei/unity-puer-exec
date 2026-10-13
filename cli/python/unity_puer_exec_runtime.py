@@ -1408,15 +1408,6 @@ def _settle_after_automatic_refresh(args, selector, session, base_url, recovery)
         return None
 
 
-def _invoke_reset_jsenv(base_url, args):
-    return direct_exec_client.invoke_command(
-        "reset-jsenv",
-        base_url,
-        {},
-        args.wait_timeout_ms,
-    )
-
-
 def _running_or_timed_out_response(exit_code, stdout_text):
     if not stdout_text:
         return False
