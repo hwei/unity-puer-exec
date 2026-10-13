@@ -62,6 +62,28 @@ def _expand_brief_sequence(sequence):
     return "".join(expanded)
 
 
+def _selector_variant_steps(help_surface):
+    """Yield every distinct continuation step that carries selector-keyed argv variants."""
+    seen = set()
+    for matrix in (help_surface.GUIDANCE_MATRIX, help_surface.WARNING_GUIDANCE_MATRIX):
+        for entry in matrix.values():
+            for step in entry.get("next_steps") or ():
+                if not step.get("argv_templates"):
+                    continue
+                if id(step) in seen:
+                    continue
+                seen.add(id(step))
+                yield step
+
+
+def _project_path_template(step):
+    """The authored project-path argv of a selector-keyed continuation step."""
+    variants = step.get("argv_templates")
+    if variants is None:
+        return step["argv_template"]
+    return next(v["argv_template"] for v in variants if v["selector"] == "project_path")
+
+
 def _make_session(project_path=SAMPLE_PROJECT_PATH):
     session = unity_session.UnitySession(
         owner="launched",
@@ -322,6 +344,101 @@ class UnityPuerExecCliTests(unittest.TestCase):
         self.assertIn("--base-url", base_wait["argv"])
         self.assertNotIn("--project-path", base_wait["argv"])
 
+    def test_every_selector_keyed_candidate_renders_both_ways_without_fabricated_flags(self):
+        """Every converted candidate names both selectors, differs only by the
+        selector, and renders an argv whose flags its command actually accepts."""
+        import help_surface
+        import unity_puer_exec_surface as surface
+
+        parser = surface.build_parser()
+        selector_tokens = {"--project-path", "--base-url", "{project_path}", "{base_url}"}
+        context = {
+            "project_path": "X:/p", "base_url": "http://host", "request_id": "r",
+            "file_path": "X:/p/f.js", "log_range_span": "10-20",
+        }
+        commands = set()
+        for step in _selector_variant_steps(help_surface):
+            command = step["command"]
+            commands.add(command)
+            variants = step["argv_templates"]
+            self.assertEqual(
+                [variant["selector"] for variant in variants],
+                ["project_path", "base_url"],
+                "{} variants must name both selectors in order".format(command),
+            )
+            stripped = [
+                [token for token in variant["argv_template"] if token not in selector_tokens]
+                for variant in variants
+            ]
+            self.assertEqual(
+                stripped[0], stripped[1],
+                "{} variants drift beyond the selector flag and placeholder".format(command),
+            )
+            options = set(surface.option_strings_for_command(parser, command))
+            for variant, flag in zip(variants, ("--project-path", "--base-url")):
+                argv = help_surface._build_argv(variant["argv_template"], command, context)
+                self.assertIsNotNone(argv, "{} {} did not render".format(command, flag))
+                self.assertIn(flag, argv)
+                for token in argv:
+                    if token.startswith("--"):
+                        self.assertIn(
+                            token, options,
+                            "{} {} rendered a flag the command rejects: {}".format(command, flag, token),
+                        )
+        # The families this change is about are actually covered.
+        self.assertIn("wait-for-exec", commands)
+        self.assertIn("stop", commands)
+
+    def test_base_url_selector_capability_set_matches_parser(self):
+        """The project-path-only set driving the conversion matches the live parser.
+
+        A new command that accepts only `--project-path` fails this rather than
+        silently gaining a fabricated `--base-url` variant.
+        """
+        import command_registry
+        import help_surface
+        import unity_puer_exec_surface as surface
+
+        parser = surface.build_parser()
+        project_path_only = {
+            command for command in command_registry.INVOCABLE_COMMANDS
+            if "--base-url" not in surface.option_strings_for_command(parser, command)
+        }
+        self.assertEqual(set(help_surface._PROJECT_PATH_ONLY_COMMANDS), project_path_only)
+
+    def test_project_path_only_error_sweep_keeps_candidate_and_omits_argv_under_base_url(self):
+        """`get-log-briefs` reads a local log; it keeps its candidate and omits argv
+        under `--base-url` rather than advertising a flag it does not accept."""
+        import help_surface
+
+        base_steps = help_surface.build_next_steps(
+            "exec", "completed", {"base_url": "http://host", "log_range_span": "10-20"}
+        )
+        brief = next(step for step in base_steps if step["command"] == "get-log-briefs")
+        self.assertNotIn("argv", brief)
+        self.assertIn("when", brief)
+
+        project_steps = help_surface.build_next_steps(
+            "exec", "completed", {"project_path": "X:/p", "log_range_span": "10-20"}
+        )
+        brief_project = next(step for step in project_steps if step["command"] == "get-log-briefs")
+        self.assertIn("--project-path", brief_project["argv"])
+        self.assertNotIn("--base-url", brief_project["argv"])
+
+    def test_project_path_only_source_gains_no_base_url_variant(self):
+        """A `resolve-blocker` response is project-path-only, so even its
+        `wait-for-exec` continuation keeps the authored single template."""
+        import help_surface
+
+        entry = help_surface.GUIDANCE_MATRIX[("resolve-blocker", "completed")]
+        for step in entry["next_steps"]:
+            self.assertNotIn("argv_templates", step)
+        steps = help_surface.build_next_steps(
+            "resolve-blocker", "completed", {"base_url": "http://host"}
+        )
+        for step in steps:
+            self.assertNotIn("argv", step)
+
     def test_wait_for_exec_help_renders_recovery_guidance(self):
         exit_code, stdout, stderr = unity_puer_exec.run_cli(["wait-for-exec", "--help"])
 
@@ -524,8 +641,8 @@ class UnityPuerExecCliTests(unittest.TestCase):
         import help_surface
 
         entry = help_surface.GUIDANCE_MATRIX[("exec", "module_cache_stale")]
-        self.assertIn("--reset-jsenv-before-exec", entry["next_steps"][0]["argv_template"])
-        self.assertIn("--stale-module-policy", entry["next_steps"][1]["argv_template"])
+        self.assertIn("--reset-jsenv-before-exec", _project_path_template(entry["next_steps"][0]))
+        self.assertIn("--stale-module-policy", _project_path_template(entry["next_steps"][1]))
 
     def test_exit_help_example_renders_inline_request_exit_script(self):
         exit_code, stdout, stderr = unity_puer_exec.run_cli(["--help-example", "request-editor-exit-via-exec"])
@@ -2735,8 +2852,7 @@ class UnityPuerExecCliTests(unittest.TestCase):
         next_steps = entry["next_steps"]
         exec_step = next((s for s in next_steps if s["command"] == "exec"), None)
         self.assertIsNotNone(exec_step, "next_steps missing exec candidate")
-        self.assertIn("argv_template", exec_step)
-        self.assertNotIn("--refresh-before-exec", exec_step["argv_template"])
+        self.assertNotIn("--refresh-before-exec", _project_path_template(exec_step))
         self.assertIn("saving the fix is itself enough", exec_step["when"])
 
     def test_guidance_matrix_has_unity_compile_error_for_wait_for_exec(self):

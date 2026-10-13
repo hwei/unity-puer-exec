@@ -1231,10 +1231,29 @@ GUIDANCE_MATRIX = {
             {
                 "command": "wait-for-exec",
                 "when": "you want to continue waiting for the same request",
-                "argv_template": [
-                    "unity-puer-exec", "wait-for-exec",
-                    "--project-path", "{project_path}",
-                    "--request-id", "{request_id}",
+                # Selector-keyed variants, mirroring ("exec", "running"): a
+                # base-url `wait-for-exec` that returns `running` again must
+                # advertise the `--base-url` invocation that continues the
+                # request. The first variant whose selector is present in the
+                # guidance context wins; when none is, the candidate stays and
+                # only its argv is omitted.
+                "argv_templates": [
+                    {
+                        "selector": "project_path",
+                        "argv_template": [
+                            "unity-puer-exec", "wait-for-exec",
+                            "--project-path", "{project_path}",
+                            "--request-id", "{request_id}",
+                        ],
+                    },
+                    {
+                        "selector": "base_url",
+                        "argv_template": [
+                            "unity-puer-exec", "wait-for-exec",
+                            "--base-url", "{base_url}",
+                            "--request-id", "{request_id}",
+                        ],
+                    },
                 ],
             },
             {
@@ -2173,6 +2192,69 @@ GUIDANCE_MATRIX[("exec", "removed_refresh_flag")] = {
         },
     ],
 }
+
+
+# Commands whose parser accepts only `--project-path`. A continuation candidate
+# that targets one of these cannot be addressed over `--base-url`, so it keeps
+# its authored project-path `argv_template`. A response produced by one of these
+# commands is likewise reachable only in project-path mode, so it gains no
+# base-url variant even when the command it recommends would accept one.
+# `test_base_url_selector_capability_set_matches_parser` pins this against the
+# live parser so a new project-path-only command cannot silently acquire a
+# fabricated `--base-url`.
+_PROJECT_PATH_ONLY_COMMANDS = frozenset(
+    {"get-blocker-state", "get-log-briefs", "resolve-blocker"}
+)
+
+
+def _selector_variants(project_argv_template):
+    """The authored project-path template and the same invocation over `--base-url`.
+
+    The two differ only by the selector flag and its placeholder, so they cannot
+    drift from each other.
+    """
+    base_url_template = [
+        "--base-url" if token == "--project-path"
+        else "{base_url}" if token == "{project_path}"
+        else token
+        for token in project_argv_template
+    ]
+    return [
+        {"selector": "project_path", "argv_template": list(project_argv_template)},
+        {"selector": "base_url", "argv_template": base_url_template},
+    ]
+
+
+def _install_selector_variants(matrix):
+    """Give eligible `--project-path` candidates a selector-keyed variant pair.
+
+    Eligibility is checked on both ends of the continuation: the source command
+    the response comes from and the target command the candidate recommends must
+    accept `--base-url`, and the candidate must still carry the authored single
+    project-path template. Already-converted candidates (`argv_templates`) and
+    static-`argv` candidates are left alone.
+    """
+    for (source_command, _status), entry in matrix.items():
+        if source_command in _PROJECT_PATH_ONLY_COMMANDS:
+            continue
+        for step in entry.get("next_steps") or ():
+            if step.get("command") in _PROJECT_PATH_ONLY_COMMANDS:
+                continue
+            if "argv_templates" in step or "argv" in step:
+                continue
+            template = step.get("argv_template")
+            if not template or "--project-path" not in template:
+                continue
+            step["argv_templates"] = _selector_variants(template)
+            del step["argv_template"]
+
+
+# Applied after every matrix entry (including dynamically-added ones and alias
+# derivations) exists, so the pass sees the final data. This is the only place
+# the base-url variants are constructed; `_select_argv` remains the only
+# selection mechanism.
+for _matrix in (GUIDANCE_MATRIX, WARNING_GUIDANCE_MATRIX):
+    _install_selector_variants(_matrix)
 
 
 # Commands that accept a caller-supplied log start offset, and can therefore report
