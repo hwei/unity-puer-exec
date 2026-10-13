@@ -5303,6 +5303,38 @@ class PlayModeCommandTests(unittest.TestCase):
         self.assertEqual(body["result"]["compile"]["compile_errors_total"], 3)
         self.assertEqual(body["next_steps"][0]["command"], "get-compile-errors")
 
+    def test_stop_survives_a_reset_while_reading_compile_error_total(self):
+        # `_read_compile_error_total` is best-effort enrichment on the stop flow, not a
+        # command of its own. A reset on that read must not fail the stop; it degrades to
+        # 0. This pins the observed contract and the change audit records why it is a
+        # finding rather than widened into a classified failure.
+        reset_body = {
+            "ok": False,
+            "operation": "get-compile-errors",
+            "status": "not_available",
+            "error": "[Errno 10054] remote host forcibly closed an existing connection",
+            "transport_detail": {"reason": "RemoteDisconnected"},
+        }
+        invoke_map, _calls, holder = self._default_invoke_map(
+            **{"get-compile-errors": lambda _p: (12, reset_body)}
+        )
+        holder["value"] = "edit"
+        cycle = mock.patch.object(
+            unity_puer_exec_runtime,
+            "wait_for_compile_cycle",
+            return_value={"outcome": unity_puer_exec_runtime.COMPILE_OUTCOME_READY, "observed_health": [], "api_updater_declines": 0},
+        )
+        code, stdout, _stderr = self._run(
+            unity_puer_exec_runtime.run_stop,
+            self._args("stop"),
+            [self._health("playing", generation=5, pending="pending"), self._health("edit", generation=5, pending="pending")],
+            invoke_map,
+            extra_patches=[cycle],
+        )
+        self.assertEqual(code, 0)
+        body = json.loads(stdout)
+        self.assertEqual(body["result"]["compile"]["compile_errors_total"], 0)
+
     def test_stop_reports_a_modal_blocker(self):
         invoke_map, _calls, holder = self._default_invoke_map()
         holder["value"] = "playing"
@@ -5541,6 +5573,139 @@ class PlayModeCommandTests(unittest.TestCase):
             step["command"] for step in help_surface.GUIDANCE_MATRIX[("wait-for-compile", "compile_blocked")]["next_steps"]
         ]
         self.assertEqual(compile_blocked_steps, ["stop"])
+
+
+class PeerResetCommandContractTests(unittest.TestCase):
+    """Command-layer coverage for a peer reset on the non-play transport callers.
+
+    The exception-to-status mapping is asserted in tests/test_direct_exec_client.py.
+    These cases assert what each *command* does with the classified body, so a future
+    regression points at the command rather than at the shared boundary. See the change's
+    design.md audit table for the per-call-site expectation.
+    """
+
+    BASE_URL = "http://127.0.0.1:55231"
+
+    def _reset_body(self, operation, request_id=None):
+        body = {
+            "ok": False,
+            "operation": operation,
+            "status": "not_available",
+            "error": "[Errno 10054] remote host forcibly closed an existing connection",
+            "transport_detail": {"reason": "RemoteDisconnected"},
+        }
+        if request_id is not None:
+            body["request_id"] = request_id
+        return body
+
+    def _assert_classified(self, exit_code, body, operation):
+        self.assertEqual(exit_code, unity_puer_exec.EXIT_NOT_AVAILABLE)
+        self.assertEqual(body["status"], "not_available")
+        self.assertNotEqual(body["status"], "failed")
+        self.assertEqual(body["operation"], operation)
+        self.assertIn("10054", body["error"])
+        self.assertEqual(body["transport_detail"]["reason"], "RemoteDisconnected")
+
+    def test_exec_reset_is_reported_as_a_classified_not_available_body(self):
+        with mock.patch.object(
+            unity_puer_exec.direct_exec_client,
+            "invoke_command",
+            return_value=(
+                unity_puer_exec.EXIT_NOT_AVAILABLE,
+                json.dumps(self._reset_body("exec", "req-reset")),
+                "",
+            ),
+        ):
+            exit_code, stdout, stderr = unity_puer_exec.run_cli(
+                [
+                    "exec",
+                    "--base-url",
+                    self.BASE_URL,
+                    "--code",
+                    "export default function run(ctx) { return 1; }",
+                    "--request-id",
+                    "req-reset",
+                ]
+            )
+        self.assertEqual(stderr, "")
+        body = json.loads(stdout)
+        self._assert_classified(exit_code, body, "exec")
+        self.assertEqual(body["request_id"], "req-reset")
+
+    def test_exec_reset_in_project_mode_keeps_the_request_replayable(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_path = Path(temp_dir) / "Project"
+            project_path.mkdir()
+            with mock.patch.object(
+                unity_session,
+                "ensure_session_ready",
+                return_value=_make_session(project_path=str(project_path)),
+            ), mock.patch.object(
+                unity_puer_exec.direct_exec_client,
+                "invoke_command",
+                return_value=(
+                    unity_puer_exec.EXIT_NOT_AVAILABLE,
+                    json.dumps(self._reset_body("exec", "req-reset")),
+                    "",
+                ),
+            ):
+                exit_code, stdout, _stderr = unity_puer_exec.run_cli(
+                    [
+                        "exec",
+                        "--project-path",
+                        str(project_path),
+                        "--code",
+                        "export default function run(ctx) { return 1; }",
+                        "--request-id",
+                        "req-reset",
+                    ]
+                )
+            body = json.loads(stdout)
+            self._assert_classified(exit_code, body, "exec")
+            # The command's own contract, distinct from the boundary classifying the
+            # exception: an accepted-but-undelivered request stays replayable, which is
+            # exactly what a follow-up `wait-for-exec --request-id` reads.
+            self.assertIsNotNone(
+                unity_session.read_pending_exec_artifact(str(project_path), "req-reset")
+            )
+
+    def test_wait_for_exec_reset_is_reported_as_a_classified_not_available_body(self):
+        with mock.patch.object(
+            unity_puer_exec.direct_exec_client,
+            "invoke_command",
+            return_value=(
+                unity_puer_exec.EXIT_NOT_AVAILABLE,
+                json.dumps(self._reset_body("wait-for-exec", "req-reset")),
+                "",
+            ),
+        ) as invoke_command:
+            exit_code, stdout, stderr = unity_puer_exec.run_cli(
+                ["wait-for-exec", "--base-url", self.BASE_URL, "--request-id", "req-reset"]
+            )
+        self.assertEqual(stderr, "")
+        self.assertEqual(invoke_command.call_args.args[0], "wait-for-exec")
+        body = json.loads(stdout)
+        self._assert_classified(exit_code, body, "wait-for-exec")
+
+    def test_get_compile_messages_reset_is_propagated_unchanged(self):
+        for command in ("get-compile-errors", "get-compile-warnings"):
+            with self.subTest(command=command):
+                with mock.patch.object(
+                    unity_puer_exec.direct_exec_client,
+                    "invoke_command",
+                    return_value=(
+                        unity_puer_exec.EXIT_NOT_AVAILABLE,
+                        json.dumps(self._reset_body(command)),
+                        "",
+                    ),
+                ) as invoke_command:
+                    exit_code, stdout, stderr = unity_puer_exec.run_cli(
+                        [command, "--base-url", self.BASE_URL]
+                    )
+                self.assertEqual(stderr, "")
+                self.assertEqual(invoke_command.call_args.args[0], command)
+                body = json.loads(stdout)
+                self._assert_classified(exit_code, body, command)
 
 
 if __name__ == "__main__":
