@@ -2,8 +2,5 @@ change_type: validation
 priority: P2
 blocked_by: []
 assumption_state: invalid
-evidence:
-  - tests
-  - cli-transcript
-  - host-validation
+evidence: tests, cli-transcript, host-validation
 updated_at: 2026-10-13

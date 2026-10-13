@@ -1,6 +1,7 @@
 import sys
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 
 
@@ -12,22 +13,14 @@ if str(TOOLS_DIR) not in sys.path:
 import openspec_change_meta  # type: ignore
 
 
-# Decision (task 2.3): the archive guard tolerates exactly these records by
-# name. They fail because they predate the `blocked_by` / `evidence`
-# required-field rule, not because of any parse defect in this change, so
-# rewriting them is a separate governance decision. The guard fails on any
-# other unparseable record, including any record that fails on `evidence`.
-KNOWN_LEGACY_ARCHIVE_RECORDS = frozenset(
-    {
-        "2026-03-26-exec-import-support",
-        "2026-03-26-readme-user-facing-rewrite",
-        "2026-05-12-exec-async-warning-status",
-        "2026-05-14-relax-runtime-guidance-compile-count-situation",
-    }
-)
-
-
 def collect_archive_meta_failures():
+    """Parse every archived `meta.yaml` and return `(name, error)` for each failure.
+
+    There is no exemption list: any archived record that fails to load fails
+    this guard. `openspec_change_meta.ARCHIVE_DIR.glob("*/meta.yaml")` cannot
+    see a directory with no `meta.yaml` at all, so presence is asserted
+    separately by `collect_archive_dirs_without_meta`.
+    """
     failures = []
     for meta_path in sorted(openspec_change_meta.ARCHIVE_DIR.glob("*/meta.yaml")):
         try:
@@ -35,6 +28,52 @@ def collect_archive_meta_failures():
         except Exception as exc:  # noqa: BLE001 - the guard reports any failure kind
             failures.append((meta_path.parent.name, str(exc)))
     return failures
+
+
+def collect_archive_dirs_without_meta():
+    """Return every archive directory that has no `meta.yaml` file."""
+    if not openspec_change_meta.ARCHIVE_DIR.is_dir():
+        return []
+    return [
+        path.name
+        for path in sorted(openspec_change_meta.ARCHIVE_DIR.iterdir())
+        if path.is_dir() and not (path / "meta.yaml").is_file()
+    ]
+
+
+def collect_list_form_evidence_files():
+    """Return archived `meta.yaml` paths whose raw text uses list-form `evidence`.
+
+    This inspects raw text on purpose. `load_meta` deliberately accepts both
+    the scalar and list forms and collapses them to the same string, so the
+    parsed `ChangeMeta` cannot tell them apart and cannot enforce the
+    canonical scalar form.
+    """
+    offenders = []
+    for meta_path in sorted(openspec_change_meta.ARCHIVE_DIR.glob("*/meta.yaml")):
+        lines = meta_path.read_text(encoding="utf-8").splitlines()
+        for index, raw_line in enumerate(lines):
+            stripped = raw_line.strip()
+            if not stripped.startswith("evidence:"):
+                continue
+            value = stripped[len("evidence:") :].strip()
+            # `evidence: [a, b]` is an inline list.
+            if value.startswith("["):
+                offenders.append((meta_path.parent.name, index + 1, stripped))
+                break
+            # A bare `evidence:` key is a block list only when the following
+            # non-empty line is a `- item` entry.
+            if value:
+                continue
+            for following in lines[index + 1 :]:
+                following_stripped = following.strip()
+                if not following_stripped or following_stripped.startswith("#"):
+                    continue
+                if following_stripped.startswith("- "):
+                    offenders.append((meta_path.parent.name, index + 1, stripped))
+                break
+            break
+    return offenders
 
 
 class OpenSpecChangeMetaTests(unittest.TestCase):
@@ -247,27 +286,81 @@ class OpenSpecChangeMetaTests(unittest.TestCase):
             )
         self.assertIn("parsed values", str(ctx.exception))
 
-    def test_real_archive_records_all_parse_except_known_legacy_ones(self):
-        failures = collect_archive_meta_failures()
-        unexpected = [
-            failure for failure in failures if failure[0] not in KNOWN_LEGACY_ARCHIVE_RECORDS
-        ]
-        self.assertEqual(unexpected, [])
+    def test_real_archive_records_all_parse_with_no_exemptions(self):
+        # No name-based exemptions: the guard means "the whole archive parses".
+        self.assertEqual(collect_archive_meta_failures(), [])
 
-        # The tolerated records must only fail for the missing-required-field
-        # reason; anything else (notably `evidence`) is a real regression.
-        for name, message in failures:
-            self.assertIn(name, KNOWN_LEGACY_ARCHIVE_RECORDS)
-            self.assertIn("Missing required metadata fields", message)
-            self.assertNotIn("Unsupported evidence", message)
+    def test_every_archive_directory_has_a_meta_file(self):
+        # The `*/meta.yaml` glob cannot see a directory with no record at all,
+        # which is how ten archived changes went unnoticed.
+        self.assertEqual(collect_archive_dirs_without_meta(), [])
 
-        # And the records that carry the list form are now parseable.
-        for name in (
-            "2026-04-01-remove-wait-until-ready-command",
-            "2026-10-13-make-base-url-exec-refresh-recoverable",
-            "2026-10-13-reproduce-play-mode-transport-reset-flake",
-        ):
-            self.assertNotIn(name, [failure[0] for failure in failures])
+    def test_no_archived_meta_uses_list_form_evidence(self):
+        # Raw-text assertion: the parser accepts both forms on purpose.
+        self.assertEqual(collect_list_form_evidence_files(), [])
+
+    def test_presence_and_list_form_collectors_detect_their_violations(self):
+        # Keeps the two guards above from becoming vacuous: each collector is
+        # exercised against a fixture that actually violates its rule.
+        violations = {
+            "no-record-at-all": "",
+            "inline-list-form": (
+                "change_type: feature\npriority: P1\nblocked_by: []\n"
+                "assumption_state: valid\nevidence: [tests, manual-check]\n"
+                "updated_at: 2026-03-26\n"
+            ),
+            "block-list-form": (
+                "change_type: feature\npriority: P1\nblocked_by: []\n"
+                "assumption_state: valid\nevidence:\n- tests\n- manual-check\n"
+                "updated_at: 2026-03-26\n"
+            ),
+        }
+
+        for label, text in violations.items():
+            with self.subTest(label=label):
+                with tempfile.TemporaryDirectory() as temp_dir:
+                    archive_dir = Path(temp_dir) / "archive"
+                    change_dir = archive_dir / "2026-03-26-fixture-change"
+                    change_dir.mkdir(parents=True)
+                    if text:
+                        (change_dir / "meta.yaml").write_text(text, encoding="utf-8")
+
+                    with unittest.mock.patch.object(
+                        openspec_change_meta, "ARCHIVE_DIR", archive_dir
+                    ):
+                        self.assertEqual(
+                            collect_archive_dirs_without_meta(),
+                            [] if text else ["2026-03-26-fixture-change"],
+                        )
+                        self.assertEqual(
+                            len(collect_list_form_evidence_files()),
+                            0 if label == "no-record-at-all" else 1,
+                        )
+
+    def test_scalar_and_empty_list_forms_are_not_flagged_as_list_form(self):
+        # The presence of a valid `meta.yaml` is enough; the scalar form and
+        # the empty `evidence: []` form must not trip the raw-text guard.
+        fixture = (
+            "change_type: feature\npriority: P1\nblocked_by: []\n"
+            "assumption_state: valid\nevidence: tests, manual-check\n"
+            "updated_at: 2026-03-26\n"
+        )
+        blocked_fixture = fixture.replace("blocked_by: []", "blocked_by:\n- other-change")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            archive_dir = Path(temp_dir) / "archive"
+            scalar_dir = archive_dir / "2026-03-26-scalar-evidence"
+            scalar_dir.mkdir(parents=True)
+            (scalar_dir / "meta.yaml").write_text(fixture, encoding="utf-8")
+            blocked_dir = archive_dir / "2026-03-26-blocked-by"
+            blocked_dir.mkdir(parents=True)
+            (blocked_dir / "meta.yaml").write_text(blocked_fixture, encoding="utf-8")
+
+            with unittest.mock.patch.object(
+                openspec_change_meta, "ARCHIVE_DIR", archive_dir
+            ):
+                self.assertEqual(collect_archive_dirs_without_meta(), [])
+                self.assertEqual(collect_list_form_evidence_files(), [])
 
     def test_list_non_archived_change_dirs_skips_archive(self):
         with tempfile.TemporaryDirectory() as temp_dir:

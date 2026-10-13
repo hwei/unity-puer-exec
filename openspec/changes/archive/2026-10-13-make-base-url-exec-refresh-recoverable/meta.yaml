@@ -2,5 +2,5 @@ change_type: feature
 priority: P2
 blocked_by: []
 assumption_state: valid
-evidence: [tests, host-validation, cli-transcript]
+evidence: tests, host-validation, cli-transcript
 updated_at: 2026-10-13
