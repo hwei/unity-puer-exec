@@ -2644,6 +2644,13 @@ def _play_success_result(operation, args, session, transition, play_state, force
 
 
 def _read_compile_error_total(base_url, args):
+    """Best-effort read of the current compile-error total.
+
+    Returns the integer total when the response carries a usable one, or ``None``
+    when the total could not be read (missing/unparseable body, or a non-success
+    body such as a ``not_available`` peer reset). ``0`` therefore unambiguously
+    means "a real total of zero was read".
+    """
     exit_code, stdout_text, stderr_text = direct_exec_client.invoke_command(
         "get-compile-errors", base_url, {"start": 0, "count": 1}, 5000
     )
@@ -2652,7 +2659,7 @@ def _read_compile_error_total(base_url, args):
         total = body.get("total")
         if isinstance(total, int):
             return total
-    return 0
+    return None
 
 
 def _stop_wait_for_compile(selector, args, session, base_url, baseline, recovery):
@@ -2724,14 +2731,21 @@ def _stop_success_result(operation, selector, args, session, base_url, transitio
         return EXIT_RUNNING, emit_payload(running), ""
 
     if compile_info["outcome"] == "no_compile_observed":
+        # A positive observation: no compile cycle ran, so the total is a real zero.
         compile_info["compile_errors_total"] = 0
     else:
-        compile_info["compile_errors_total"] = _read_compile_error_total(base_url, args)
+        total = _read_compile_error_total(base_url, args)
+        if total is None:
+            # The read failed. Omit the field instead of asserting a false 0, and
+            # say explicitly that the total is unavailable.
+            compile_info["compile_error_total_available"] = False
+        else:
+            compile_info["compile_errors_total"] = total
 
     result = {"play_state": PLAY_STATE_EDIT, "transition": transition, "compile": compile_info}
     payload = success_payload(operation, session=session, result=result, include_diagnostics=args.include_diagnostics)
     _attach_guidance(payload, operation, "completed", args)
-    if compile_info["compile_errors_total"] > 0:
+    if compile_info.get("compile_errors_total", 0) > 0:
         step = {
             "command": "get-compile-errors",
             "when": "read the compile errors the deferred compile just produced",

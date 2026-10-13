@@ -5301,13 +5301,56 @@ class PlayModeCommandTests(unittest.TestCase):
         self.assertEqual(code, 0)
         body = json.loads(stdout)
         self.assertEqual(body["result"]["compile"]["compile_errors_total"], 3)
+        self.assertNotIn("compile_error_total_available", body["result"]["compile"])
         self.assertEqual(body["next_steps"][0]["command"], "get-compile-errors")
+
+    def test_read_compile_error_total_returns_none_for_a_not_available_reset_body(self):
+        reset_body = {
+            "ok": False,
+            "operation": "get-compile-errors",
+            "status": "not_available",
+            "error": "[Errno 10054] remote host forcibly closed an existing connection",
+            "transport_detail": {"reason": "RemoteDisconnected"},
+        }
+        with mock.patch.object(
+            unity_puer_exec_runtime.direct_exec_client,
+            "invoke_command",
+            return_value=(12, json.dumps(reset_body), ""),
+        ):
+            self.assertIsNone(unity_puer_exec_runtime._read_compile_error_total("http://127.0.0.1:1", None))
+
+    def test_read_compile_error_total_returns_none_for_an_unusable_body(self):
+        with mock.patch.object(
+            unity_puer_exec_runtime.direct_exec_client,
+            "invoke_command",
+            return_value=(12, "", ""),
+        ):
+            self.assertIsNone(unity_puer_exec_runtime._read_compile_error_total("http://127.0.0.1:1", None))
+
+    def test_read_compile_error_total_returns_none_for_a_non_integer_total(self):
+        with mock.patch.object(
+            unity_puer_exec_runtime.direct_exec_client,
+            "invoke_command",
+            return_value=(0, json.dumps({"ok": True, "status": "completed", "total": "3"}), ""),
+        ):
+            self.assertIsNone(unity_puer_exec_runtime._read_compile_error_total("http://127.0.0.1:1", None))
+
+    def test_read_compile_error_total_returns_the_reported_total(self):
+        for total in (0, 3):
+            with mock.patch.object(
+                unity_puer_exec_runtime.direct_exec_client,
+                "invoke_command",
+                return_value=(0, json.dumps({"ok": True, "status": "completed", "total": total}), ""),
+            ):
+                self.assertEqual(
+                    unity_puer_exec_runtime._read_compile_error_total("http://127.0.0.1:1", None),
+                    total,
+                )
 
     def test_stop_survives_a_reset_while_reading_compile_error_total(self):
         # `_read_compile_error_total` is best-effort enrichment on the stop flow, not a
         # command of its own. A reset on that read must not fail the stop; it degrades to
-        # 0. This pins the observed contract and the change audit records why it is a
-        # finding rather than widened into a classified failure.
+        # an explicit "total unavailable" instead of asserting a false zero.
         reset_body = {
             "ok": False,
             "operation": "get-compile-errors",
@@ -5333,7 +5376,10 @@ class PlayModeCommandTests(unittest.TestCase):
         )
         self.assertEqual(code, 0)
         body = json.loads(stdout)
-        self.assertEqual(body["result"]["compile"]["compile_errors_total"], 0)
+        compile_info = body["result"]["compile"]
+        self.assertNotIn("compile_errors_total", compile_info)
+        self.assertIs(compile_info["compile_error_total_available"], False)
+        self.assertNotIn("get-compile-errors", [step.get("command") for step in (body.get("next_steps") or [])])
 
     def test_stop_reports_a_modal_blocker(self):
         invoke_map, _calls, holder = self._default_invoke_map()
