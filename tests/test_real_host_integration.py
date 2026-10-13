@@ -1121,7 +1121,7 @@ class _SharedRealHostDevice:
         Leaves directories and non-script assets for the Editor delete. Removing a
         ``.meta`` the Editor still has open is the ``Opening file failed`` modal.
         """
-        extensions = (".cs", ".asmdef", ".asmref", ".rsp")
+        extensions = _watched_compile_triggering_extensions()
         project = Path(self.project_path)
         for root in cleanup_validation_host.DECLARED_VALIDATION_TEMP_ROOTS:
             directory = project / root
@@ -1360,7 +1360,7 @@ class _SharedRealHostDevice:
         dialog. Imported scripts under the same declared root are left for the
         Editor-side delete.
         """
-        triggering = {".cs", ".asmdef", ".asmref", ".rsp"}
+        triggering = set(_watched_compile_triggering_extensions())
         for relative_root in cleanup_validation_host.DECLARED_VALIDATION_TEMP_ROOTS:
             root = self.project_path / relative_root
             if not root.is_dir():

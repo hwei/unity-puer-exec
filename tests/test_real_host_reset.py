@@ -304,6 +304,44 @@ class RealHostResetTests(unittest.TestCase):
             exec_settled.assert_not_called()
             touch.assert_not_called()
 
+    def test_drop_latched_temp_scripts_uses_the_derived_extension_set(self):
+        device = _device()
+        with tempfile.TemporaryDirectory() as tmp:
+            device.project_path = Path(tmp)
+            root = Path(tmp) / "Assets" / "__codex_validation_temp"
+            root.mkdir(parents=True)
+            stubbed = root / "LatchedProbe.codexext"
+            stubbed.write_text("stub\n", encoding="utf-8")
+            ignored = root / "LatchedProbe.cs"
+            ignored.write_text("stub\n", encoding="utf-8")
+            with mock.patch.object(
+                real_host,
+                "_watched_compile_triggering_extensions",
+                return_value=(".codexext",),
+            ):
+                device._drop_latched_temp_scripts()
+            self.assertFalse(stubbed.exists())
+            self.assertTrue(ignored.exists())
+
+    def test_drop_unimported_compile_probes_uses_the_derived_extension_set(self):
+        device = _device()
+        with tempfile.TemporaryDirectory() as tmp:
+            device.project_path = Path(tmp)
+            hidden = Path(tmp) / "Assets" / "__codex_validation_temp" / ".not_imported"
+            hidden.mkdir(parents=True)
+            stubbed = hidden / "Probe.codexext"
+            stubbed.write_text("stub\n", encoding="utf-8")
+            ignored = hidden / "Probe.cs"
+            ignored.write_text("stub\n", encoding="utf-8")
+            with mock.patch.object(
+                real_host,
+                "_watched_compile_triggering_extensions",
+                return_value=(".codexext",),
+            ):
+                device._drop_unimported_compile_probes()
+            self.assertFalse(stubbed.exists())
+            self.assertTrue(ignored.exists())
+
     def test_pending_signal_reset_writes_a_compilable_probe(self):
         device = _device()
         with tempfile.TemporaryDirectory() as tmp:
