@@ -19,14 +19,25 @@ EVIDENCE_ORDER = {
 }
 
 
+def evidence_values(evidence: str) -> tuple[str, ...]:
+    """Split a joined `evidence` string into the individual values it names.
+
+    `evidence` is multi-valued and stored as one scalar string, so every
+    consumer that needs "which values does this record name" goes through
+    here. Splitting on `,`, stripping, and dropping empties matches what
+    `openspec_change_meta` writes back out.
+    """
+    return tuple(part.strip() for part in evidence.split(",") if part.strip())
+
+
 def evidence_rank(value: str) -> int:
     """Rank a possibly multi-valued `evidence` string by its strongest entry.
 
-    `evidence` is stored as a joined string, so a record may carry several
-    values. Ranking uses the best (lowest) order among them; unknown entries
-    rank last rather than raising, so one odd record cannot break a listing.
+    Ranking uses the best (lowest) order among the values named by `value`;
+    unknown entries rank last rather than raising, so one odd record cannot
+    break a listing.
     """
-    parts = [part.strip() for part in value.split(",") if part.strip()]
+    parts = evidence_values(value)
     if not parts:
         return len(EVIDENCE_ORDER)
     return min(EVIDENCE_ORDER.get(part, len(EVIDENCE_ORDER)) for part in parts)
@@ -260,7 +271,7 @@ def filter_records(
             continue
         if priority and meta.priority != priority:
             continue
-        if evidence and meta.evidence != evidence:
+        if evidence and evidence not in evidence_values(meta.evidence):
             continue
         if assumption_state and meta.assumption_state != assumption_state:
             continue
@@ -306,7 +317,14 @@ def build_parser():
         )
         subparser.add_argument("--type", dest="change_type", help="Filter by change type.")
         subparser.add_argument("--priority", help="Filter by priority.")
-        subparser.add_argument("--evidence", help="Filter by evidence target.")
+        subparser.add_argument(
+            "--evidence",
+            choices=tuple(EVIDENCE_ORDER),
+            help=(
+                "Filter by evidence value. Includes-match: a record matches when this value is "
+                "one of the values its `evidence` names, regardless of order."
+            ),
+        )
         subparser.add_argument("--assumption-state", help="Filter by assumption state.")
         subparser.add_argument(
             "--backlog",

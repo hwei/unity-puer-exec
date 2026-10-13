@@ -257,6 +257,175 @@ class OpenSpecBacklogTests(unittest.TestCase):
             self.assertEqual(evaluated[0].derived_status, "blocked")
             self.assertIn("missing_tasks", evaluated[0].diagnostics)
 
+    def test_evidence_values_splits_strips_and_drops_empties(self):
+        self.assertEqual(openspec_backlog.evidence_values("tests"), ("tests",))
+        self.assertEqual(
+            openspec_backlog.evidence_values("tests, cli-transcript"),
+            ("tests", "cli-transcript"),
+        )
+        self.assertEqual(
+            openspec_backlog.evidence_values(" tests ,, manual-check ,"),
+            ("tests", "manual-check"),
+        )
+        self.assertEqual(openspec_backlog.evidence_values(""), ())
+        self.assertEqual(openspec_backlog.evidence_values("  ,  "), ())
+
+    def test_evidence_values_is_the_single_evidence_splitter(self):
+        source = (TOOLS_DIR / "openspec_backlog.py").read_text(encoding="utf-8")
+        splitting_lines = [
+            line
+            for line in source.splitlines()
+            if "split" in line and "evidence" in line.lower() and "def evidence_values" not in line
+        ]
+        self.assertEqual(
+            [line.strip() for line in splitting_lines],
+            ['return tuple(part.strip() for part in evidence.split(",") if part.strip())'],
+        )
+
+    def test_evidence_rank_matches_documented_heuristic(self):
+        last = len(openspec_backlog.EVIDENCE_ORDER)
+        self.assertEqual(openspec_backlog.evidence_rank("tests"), 0)
+        self.assertEqual(openspec_backlog.evidence_rank("tests, manual-check"), 0)
+        self.assertEqual(openspec_backlog.evidence_rank("manual-check, tests"), 0)
+        self.assertEqual(openspec_backlog.evidence_rank("manual-check"), last - 1)
+        self.assertEqual(openspec_backlog.evidence_rank("tests, not-a-real-value"), 0)
+        self.assertEqual(openspec_backlog.evidence_rank("not-a-real-value"), last)
+        self.assertEqual(openspec_backlog.evidence_rank(""), last)
+        self.assertEqual(openspec_backlog.evidence_rank("   "), last)
+
+    def _filtered_names(self, changes_dir: Path, archive_dir: Path, **kwargs):
+        records = openspec_backlog.load_change_records(changes_dir)
+        with mock.patch.object(openspec_backlog, "get_git_commit_distance", return_value=0):
+            evaluated = openspec_backlog.evaluate_records(records, archive_dir=archive_dir)
+        return [item.record.name for item in openspec_backlog.filter_records(evaluated, **kwargs)]
+
+    def test_evidence_filter_is_includes_match_over_multi_value_evidence(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            changes_dir = Path(temp_dir) / "changes"
+            archive_dir = changes_dir / "archive"
+            changes_dir.mkdir()
+            archive_dir.mkdir()
+            self._write_change(changes_dir, "joined-in-order", evidence="tests, cli-transcript")
+            self._write_change(changes_dir, "joined-out-of-order", evidence="cli-transcript, tests")
+            self._write_change(changes_dir, "single", evidence="tests")
+            self._write_change(changes_dir, "other", evidence="manual-check")
+
+            matched = self._filtered_names(changes_dir, archive_dir, evidence="tests")
+            self.assertEqual(sorted(matched), ["joined-in-order", "joined-out-of-order", "single"])
+
+            # Includes-match, not exact-set match: a lone `tests` record still matches,
+            # and does not match a different requested value.
+            self.assertEqual(self._filtered_names(changes_dir, archive_dir, evidence="manual-check"), ["other"])
+
+    def test_evidence_filter_tolerates_unknown_stored_value(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            changes_dir = Path(temp_dir) / "changes"
+            archive_dir = changes_dir / "archive"
+            changes_dir.mkdir()
+            archive_dir.mkdir()
+            unknown_dir = changes_dir / "unknown-evidence"
+            unknown_dir.mkdir()
+            (unknown_dir / "meta.yaml").write_text(
+                "\n".join(
+                    [
+                        "change_type: feature",
+                        "priority: P1",
+                        "blocked_by: []",
+                        "assumption_state: valid",
+                        "evidence: tests, retired-value",
+                        "updated_at: 2026-03-23",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            (unknown_dir / "tasks.md").write_text("## 1. Work\n\n- [ ] 1.1 Task\n", encoding="utf-8")
+
+            # `retired-value` is rejected by the parser, so build the record past the
+            # parser to model a value that later became unrecognized.
+            record = openspec_backlog.ChangeRecord(
+                name="unknown-evidence",
+                path=unknown_dir,
+                meta=openspec_change_meta.ChangeMeta(
+                    status=None,
+                    change_type="feature",
+                    priority="P1",
+                    blocked_by=(),
+                    assumption_state="valid",
+                    evidence="tests, retired-value",
+                    updated_at="2026-03-23",
+                ),
+            )
+            with mock.patch.object(openspec_backlog, "get_git_commit_distance", return_value=0):
+                evaluated = openspec_backlog.evaluate_records([record], archive_dir=archive_dir)
+
+            # An unknown stored value does not raise and simply fails to match;
+            # argparse `choices` keeps such a value from ever reaching the filter
+            # from the CLI, and the recognized values in the same record still match.
+            self.assertEqual(
+                [item.record.name for item in openspec_backlog.filter_records(evaluated, evidence="host-validation")],
+                [],
+            )
+            self.assertEqual(
+                [item.record.name for item in openspec_backlog.filter_records(evaluated, evidence="tests")],
+                ["unknown-evidence"],
+            )
+            self.assertEqual(openspec_backlog.evidence_rank("retired-value"), len(openspec_backlog.EVIDENCE_ORDER))
+
+    def test_evidence_flag_rejects_joined_value(self):
+        parser = openspec_backlog.build_parser()
+        with self.assertRaises(SystemExit):
+            with mock.patch("sys.stderr", new_callable=io.StringIO):
+                parser.parse_args(["list", "--evidence", "tests, cli-transcript"])
+        self.assertEqual(
+            parser.parse_args(["list", "--evidence", "tests"]).evidence,
+            "tests",
+        )
+
+    def test_evidence_flag_help_states_includes_match(self):
+        parser = openspec_backlog.build_parser()
+        subparsers = [
+            action
+            for action in parser._subparsers._group_actions  # noqa: SLF001
+        ]
+        self.assertTrue(subparsers)
+        help_text = subparsers[0].choices["list"].format_help()
+        self.assertIn("--evidence", help_text)
+        self.assertIn("Includes-match", help_text)
+
+    def test_non_evidence_filters_are_unchanged(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            changes_dir = Path(temp_dir) / "changes"
+            archive_dir = changes_dir / "archive"
+            changes_dir.mkdir()
+            archive_dir.mkdir()
+            self._write_change(
+                changes_dir,
+                "baseline",
+                status="queued",
+                change_type="harness",
+                priority="P0",
+                assumption_state="valid",
+                evidence="tests",
+            )
+            self._write_change(
+                changes_dir,
+                "other",
+                status="blocked",
+                change_type="feature",
+                priority="P2",
+                assumption_state="invalid",
+                evidence="manual-check",
+            )
+
+            self.assertEqual(self._filtered_names(changes_dir, archive_dir, status="eligible"), ["baseline"])
+            self.assertEqual(self._filtered_names(changes_dir, archive_dir, status="blocked"), ["other"])
+            self.assertEqual(self._filtered_names(changes_dir, archive_dir, meta_status="queued"), ["baseline"])
+            self.assertEqual(self._filtered_names(changes_dir, archive_dir, change_type="harness"), ["baseline"])
+            self.assertEqual(self._filtered_names(changes_dir, archive_dir, priority="P2"), ["other"])
+            self.assertEqual(self._filtered_names(changes_dir, archive_dir, assumption_state="valid"), ["baseline"])
+            self.assertEqual(self._filtered_names(changes_dir, archive_dir, backlog_only=True), ["baseline"])
+
 
 if __name__ == "__main__":
     unittest.main()

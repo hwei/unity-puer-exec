@@ -28,6 +28,12 @@
 - `blocked_by` is a one-way list of prerequisite change names. Do not maintain reciprocal `unblocks` fields.
 - Allowed `assumption_state` values: `valid`, `needs-review`, `invalid`.
 - Allowed `evidence` values: `tests`, `host-validation`, `cli-transcript`, `manual-check`.
+- `evidence` is multi-valued and must name one or more of those values; an empty list is invalid.
+- The canonical written form is scalar, in written order, joined with `", "`: `evidence: tests` or
+  `evidence: tests, manual-check`. The parser also accepts inline `[a, b]` and block `- a` list forms,
+  but records should be written in the canonical scalar form.
+- Ranking uses the strongest value a record names. `openspec_backlog.py --evidence` takes a single
+  value and is an includes-match: a record matches when that value is one of the values it names.
 - `updated_at` uses `YYYY-MM-DD`.
 - Backlog is the subset of non-archived changes that repository-local tooling derives as `eligible`.
 - Explicit `status=blocked` means the change is not currently actionable even if dependency checks alone would not detect that.
