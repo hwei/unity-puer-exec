@@ -18,8 +18,8 @@
 
 - [x] 4.1 Locally verify the pack command shape against the package tree. Verify: `npm pack` semantics hold (no `.npmignore`/`.gitignore` in the package root excludes required assets) or record the result under `.tmp/`.
 - [x] 4.2 Confirm the assembled tree used by CI contains exactly `Editor/`, `Editor.meta`, `CLI~/`, `package.json`, `package.json.meta`, `LICENSE`, `LICENSE.meta`, `README.md`, `README.md.meta`. Verify: read the `Assemble UPM package tree` step.
-- [ ] 4.3 After the change lands, confirm on the next real `v*` tag run that a GitHub Release exists with the `.tgz` asset. If no release has occurred before archive, record the unverified release run as a `validation-gap`.
-- [ ] 4.4 Complete the required apply closeout review and record the finding with allowed categories.
+- [x] 4.3 After the change lands, confirm on the next real `v*` tag run that a GitHub Release exists with the `.tgz` asset. If no release has occurred before archive, record the unverified release run as a `validation-gap`. Verify: release run `38499346245` (v0.10.1) succeeded; GitHub Release `v0.10.1` carries `com.txcombo.unity-puer-exec-0.10.1.tgz` (9.1 MB) whose contents include a real `CLI~/unity-puer-exec.exe` (9.27 MB PE32+) and all `.meta` files; `upm/v0.10.1` tag was created as before.
+- [x] 4.4 Complete the required apply closeout review and record the finding with allowed categories.
 
 ## Workflow follow-up
 
