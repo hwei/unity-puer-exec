@@ -104,6 +104,34 @@ jobs:
 
           "UPM_STAGE_DIR=$stageDir" >> $env:GITHUB_ENV
 
+      - name: Pack UPM tarball
+        shell: pwsh
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          # Pack the package into registry-standard npm format so Unity Package Manager
+          # can install it directly. The destination is outside $UPM_STAGE_DIR so the
+          # tarball never lands on the upm branch. The CLI under CLI~/ is included, so
+          # the executable ships together with the package that hosts it.
+          $packDir = Join-Path $env:RUNNER_TEMP "upm-release-asset"
+          Remove-Item $packDir -Recurse -Force -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Path $packDir | Out-Null
+
+          Push-Location $env:UPM_STAGE_DIR
+          npm pack --pack-destination $packDir
+          $packExit = $LASTEXITCODE
+          Pop-Location
+          if ($packExit -ne 0) {
+            throw "npm pack failed with exit code $packExit."
+          }
+
+          $tarball = Join-Path $packDir "com.txcombo.unity-puer-exec-$env:VERSION.tgz"
+          if (-not (Test-Path $tarball)) {
+            throw "npm pack did not produce '$tarball'."
+          }
+
+          "UPM_TARBALL=$tarball" >> $env:GITHUB_ENV
+
       - name: Publish upm branch and tag
         shell: pwsh
         env:
@@ -128,3 +156,21 @@ jobs:
           git tag -f $env:UPM_TAG
           git push --force origin "refs/tags/$env:UPM_TAG"
           Pop-Location
+
+      - name: Create GitHub Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          # Re-runs must not fail on an already-created release: update the asset when
+          # the release exists, otherwise create it with generated notes.
+          gh release view $env:TAG *> $null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload $env:TAG $env:UPM_TARBALL --clobber
+          } else {
+            gh release create $env:TAG $env:UPM_TARBALL --title $env:TAG --generate-notes
+          }
+          if ($LASTEXITCODE -ne 0) {
+            throw "Failed to create or update GitHub Release for '$env:TAG'."
+          }
