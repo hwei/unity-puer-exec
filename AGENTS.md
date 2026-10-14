@@ -6,6 +6,12 @@
 - This repository does not assume a repository-local `Project/` directory.
 - `./.env` is local-only and should not be committed; use `./.env.example` as the tracked template.
 
+## Windows shell (git-bash)
+
+- git-bash (MSYS) rewrites a literal `/` inside arguments passed to native Windows executables. Run native tools such as `gh` with `MSYS_NO_PATHCONV=1` when an argument contains `/`-joined text, for example
+  `MSYS_NO_PATHCONV=1 gh run view <id> --json status,conclusion --jq '.status+"/"+.conclusion'`.
+- Without it, the `/` in that jq filter is replaced by the MSYS install root, so a real `completed/success` comes back as `completedC:/Program Files/Git/success` and string comparisons silently fail.
+
 ## OpenSpec entry points
 
 - `openspec/config.yaml` carries repository-wide context for OpenSpec workflows.
