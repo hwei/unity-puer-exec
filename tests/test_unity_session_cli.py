@@ -5609,6 +5609,40 @@ class PlayModeCommandTests(unittest.TestCase):
         _code, args_stdout, _stderr = unity_puer_exec.run_cli(["play", "--help-args"])
         self.assertIn("--no-run-in-background", args_stdout)
 
+    def test_play_mode_post_with_service_internal_body_keeps_failure_origin_and_does_not_retry(self):
+        internal_error = {
+            "ok": False,
+            "status": "not_available",
+            "error": "HTTP Error 500: Internal Server Error",
+            "http_status": 500,
+            "failure_origin": "service_internal",
+        }
+        attempts = {"count": 0}
+
+        def play_mode_handler(_payload):
+            attempts["count"] += 1
+            return (12, internal_error)
+
+        invoke_map, _calls, _holder = self._default_invoke_map(**{"play-mode": play_mode_handler})
+        code, stdout, stderr = self._run(
+            unity_puer_exec_runtime.run_pause,
+            self._args("pause", "--timeout-seconds", "1"),
+            [self._health("playing")],
+            invoke_map,
+        )
+
+        self.assertEqual(code, unity_puer_exec.EXIT_NOT_AVAILABLE, stderr)
+        # A body naming the tool as the origin is a command result, not a reload edge.
+        self.assertEqual(attempts["count"], 1)
+        body = json.loads(stdout)
+        self.assertEqual(body["status"], "not_available")
+        self.assertEqual(body["failure_origin"], "service_internal")
+        self.assertIn("--help-feedback", body["situation"])
+        self.assertIn(
+            ["unity-puer-exec", "--help-feedback"],
+            [step.get("argv") for step in body["next_steps"]],
+        )
+
     def test_play_mode_exit_guidance_uses_stop_not_exec(self):
         commands = [step["command"] for step in help_surface._PLAY_MODE_EXIT_STEPS]
         self.assertEqual(commands, ["stop"])
@@ -5752,6 +5786,175 @@ class PeerResetCommandContractTests(unittest.TestCase):
                 self.assertEqual(invoke_command.call_args.args[0], command)
                 body = json.loads(stdout)
                 self._assert_classified(exit_code, body, command)
+
+
+class AgentIssueFeedbackTests(unittest.TestCase):
+    """Feedback invitation: top-level pointer, `--help-feedback`, and failure_origin."""
+
+    BASE_URL = "http://127.0.0.1:55231"
+    TRACKER_URL = "https://github.com/hwei/unity-puer-exec/issues"
+
+    def _feedback_block(self, stdout):
+        blocks = [block for block in stdout.split("\n\n") if block.startswith("Feedback\n")]
+        self.assertEqual(len(blocks), 1, stdout)
+        return blocks[0]
+
+    def _args(self, *argv):
+        parser = unity_puer_exec.surface.build_parser()
+        return parser.parse_args(list(argv))
+
+    def test_top_level_help_has_a_one_bullet_feedback_pointer_only(self):
+        exit_code, stdout, stderr = unity_puer_exec.run_cli(["--help"])
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(stderr, "")
+        block = self._feedback_block(stdout)
+        lines = block.splitlines()
+        self.assertEqual(len(lines), 2, block)
+        self.assertIn("unity-puer-exec --help-feedback", lines[1])
+        # The procedure itself stays behind the topic so a normal help read is cheap.
+        self.assertNotIn("issues/new", stdout)
+        self.assertNotIn("File only after the user explicitly confirms", stdout)
+
+    def test_help_feedback_prints_the_reporting_procedure_without_contacting_unity(self):
+        with mock.patch.object(unity_puer_exec.direct_exec_client, "invoke_command") as invoke, mock.patch.object(
+            unity_session, "probe_health_payload"
+        ) as probe:
+            exit_code, stdout, stderr = unity_puer_exec.run_cli(["--help-feedback"])
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(stderr, "")
+        invoke.assert_not_called()
+        probe.assert_not_called()
+        # Confirmation gate and tracker.
+        self.assertIn("File only after the user explicitly confirms", stdout)
+        self.assertIn(self.TRACKER_URL, stdout)
+        # Public-tracker redaction list.
+        self.assertIn("The tracker is public", stdout)
+        for item in ("project paths", "project code", "asset names"):
+            self.assertIn(item, stdout)
+        self.assertIn("log content the user has not approved for sharing", stdout)
+        # Duplicate search before filing.
+        self.assertIn("Search existing issues", stdout)
+        self.assertIn("instead of opening a duplicate", stdout)
+        # Report contents.
+        self.assertIn("`unity-puer-exec --version` output", stdout)
+        self.assertIn("The command line that failed", stdout)
+        self.assertIn("`status` and the process exit code", stdout)
+        self.assertIn("Expected versus actual behavior", stdout)
+        self.assertIn("reproduction steps", stdout)
+        # No-gh fallback.
+        self.assertIn("issues/new", stdout)
+        self.assertIn("`title` and `body`", stdout)
+        # Friction is reportable too.
+        self.assertIn("confusing responses", stdout)
+        self.assertIn("clumsy", stdout)
+
+    def test_help_feedback_rejects_extra_arguments(self):
+        exit_code, stdout, stderr = unity_puer_exec.run_cli(["--help-feedback", "extra"])
+
+        self.assertEqual(exit_code, 2)
+        self.assertEqual(stdout, "")
+        self.assertIn("usage: unity-puer-exec --help-feedback", stderr)
+
+    def test_uncaught_cli_exception_is_cli_internal_with_a_feedback_hint(self):
+        with mock.patch.object(
+            unity_puer_exec.direct_exec_client,
+            "invoke_command",
+            side_effect=RuntimeError("unexpected boom"),
+        ):
+            exit_code, stdout, stderr = unity_puer_exec.run_cli([
+                "exec", "--base-url", self.BASE_URL, "--code", "export default function run() { return 1; }",
+            ])
+
+        self.assertEqual(exit_code, 1)
+        body = json.loads(stdout or stderr)
+        self.assertFalse(body["ok"])
+        self.assertEqual(body["status"], "failed")
+        self.assertEqual(body["failure_origin"], "cli_internal")
+        self.assertIn("--help-feedback", body["situation"])
+        feedback = [step for step in body["next_steps"] if step.get("argv") == ["unity-puer-exec", "--help-feedback"]]
+        self.assertEqual(len(feedback), 1, body["next_steps"])
+        self.assertEqual(feedback[0]["command"], "exec")
+
+    def test_suppress_guidance_keeps_failure_origin_and_drops_the_hint(self):
+        with mock.patch.object(
+            unity_puer_exec.direct_exec_client,
+            "invoke_command",
+            side_effect=RuntimeError("unexpected boom"),
+        ):
+            exit_code, stdout, stderr = unity_puer_exec.run_cli([
+                "--suppress-guidance",
+                "exec", "--base-url", self.BASE_URL, "--code", "export default function run() { return 1; }",
+            ])
+
+        self.assertEqual(exit_code, 1)
+        body = json.loads(stdout or stderr)
+        self.assertEqual(body["failure_origin"], "cli_internal")
+        self.assertNotIn("next_steps", body)
+        self.assertNotIn("situation", body)
+
+    def test_script_failure_and_usage_and_transport_statuses_are_never_marked(self):
+        script_failure = {"ok": False, "status": "failed", "operation": "exec", "error": "ReferenceError: x"}
+        with mock.patch.object(
+            unity_puer_exec.direct_exec_client,
+            "invoke_command",
+            return_value=(1, json.dumps(script_failure), ""),
+        ):
+            exit_code, stdout, stderr = unity_puer_exec.run_cli([
+                "exec", "--base-url", self.BASE_URL, "--code", "export default function run() { return 1; }",
+            ])
+        self.assertEqual(exit_code, 1)
+        body = json.loads(stdout or stderr)
+        self.assertEqual(body["status"], "failed")
+        self.assertNotIn("failure_origin", body)
+        self.assertNotIn("--help-feedback", json.dumps(body.get("next_steps") or []))
+
+        exit_code, stdout, stderr = unity_puer_exec.run_cli([
+            "exec", "--base-url", self.BASE_URL, "--timeout-ms", "5000", "--code", "export default function run() { return 1; }",
+        ])
+        self.assertEqual(exit_code, 2)
+        body = json.loads(stdout or stderr)
+        self.assertEqual(body["status"], "invalid_arguments")
+        self.assertNotIn("failure_origin", body)
+
+        refused = {"ok": False, "status": "not_available", "error": "[Errno 61] connection refused"}
+        with mock.patch.object(
+            unity_puer_exec.direct_exec_client,
+            "invoke_command",
+            return_value=(unity_puer_exec.EXIT_NOT_AVAILABLE, json.dumps(refused), ""),
+        ):
+            exit_code, stdout, _stderr = unity_puer_exec.run_cli([
+                "exec", "--base-url", self.BASE_URL, "--code", "export default function run() { return 1; }",
+            ])
+        self.assertEqual(exit_code, unity_puer_exec.EXIT_NOT_AVAILABLE)
+        body = json.loads(stdout)
+        self.assertEqual(body["status"], "not_available")
+        self.assertNotIn("failure_origin", body)
+
+    def test_feedback_candidate_is_appended_after_the_matrix_candidates(self):
+        args = self._args("exec", "--base-url", self.BASE_URL, "--code", "export default function run() { return 1; }")
+        matrix_steps = help_surface.build_next_steps("exec", "invalid_arguments", {})
+        self.assertTrue(matrix_steps)
+
+        payload = {"ok": False, "status": "invalid_arguments", "failure_origin": "cli_internal"}
+        unity_puer_exec_runtime._attach_guidance(payload, "exec", "invalid_arguments", args)
+
+        commands = [step["command"] for step in payload["next_steps"]]
+        self.assertEqual(len(payload["next_steps"]), len(matrix_steps) + 1)
+        self.assertEqual(commands[: len(matrix_steps)], [step["command"] for step in matrix_steps])
+        self.assertEqual(payload["next_steps"][-1]["argv"], ["unity-puer-exec", "--help-feedback"])
+        self.assertIn("--help-feedback", payload["situation"])
+
+    def test_classified_status_without_failure_origin_carries_no_feedback_hint(self):
+        args = self._args("exec", "--base-url", self.BASE_URL, "--code", "export default function run() { return 1; }")
+        payload = {"ok": False, "status": "refresh_unsettled", "reason": "settle_timeout"}
+
+        unity_puer_exec_runtime._attach_guidance(payload, "exec", "refresh_unsettled", args)
+
+        self.assertNotIn("failure_origin", payload)
+        self.assertNotIn("--help-feedback", json.dumps(payload.get("next_steps") or []))
+        self.assertNotIn("--help-feedback", payload.get("situation") or "")
 
 
 if __name__ == "__main__":

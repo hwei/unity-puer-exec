@@ -93,6 +93,8 @@ The CLI binary ships inside the package at `CLI~/unity-puer-exec.exe`. Your agen
 
 Start by letting the agent discover the CLI surface through `--help` and per-command help instead of assuming command syntax from memory.
 
+If a command fails in a way that looks like a defect in the tool itself, or the workflow is awkward enough to be worth fixing, read `unity-puer-exec --help-feedback` and offer the user a report before filing anything.
+
 Example prompt: simple scene operation
 
 ```text

@@ -1,0 +1,66 @@
+name: Workflow friction
+description: A unity-puer-exec response confused you, guidance was missing or misleading, or the workflow was clumsy.
+title: "friction: "
+labels: ["friction"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Defects are not the only reportable outcome. Confusing responses, missing or
+        misleading guidance, and clumsy workflows around an otherwise working command all
+        belong here.
+
+        This tracker is public. Remove project paths, project code, asset names, and any log
+        content the user has not approved for sharing. Read `unity-puer-exec --help-feedback`
+        first: describe the report to the user, search for an existing issue, and file only
+        after the user confirms.
+  - type: checkboxes
+    id: agent_filed
+    attributes:
+      label: Filing context
+      options:
+        - label: Filed by an agent on the user's behalf, after the user confirmed the report
+        - label: I searched existing issues and none matched
+  - type: input
+    id: version
+    attributes:
+      label: unity-puer-exec --version
+      description: Paste the exact output, unchanged.
+      placeholder: unity-puer-exec 0.10.1
+    validations:
+      required: true
+  - type: textarea
+    id: command
+    attributes:
+      label: Command line or workflow
+      description: What you ran, with private paths replaced.
+      render: shell
+    validations:
+      required: true
+  - type: input
+    id: status
+    attributes:
+      label: Response status and exit code
+      description: Even a success status is useful when the friction is in the guidance.
+      placeholder: status=completed exit=0
+    validations:
+      required: true
+  - type: textarea
+    id: expected_actual
+    attributes:
+      label: What was confusing or missing, and what you expected instead
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal steps to reach the same point
+    validations:
+      required: true
+  - type: textarea
+    id: proposed_guidance
+    attributes:
+      label: Suggested wording or guidance
+      description: Optional. If you can name the response field or help text that would have helped, say so.
+    validations:
+      required: false

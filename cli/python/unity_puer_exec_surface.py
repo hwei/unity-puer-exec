@@ -306,6 +306,10 @@ def render_version_text():
 def handle_top_level_help(argv):
     if not argv or argv == ["--help"]:
         return 0, help_surface.render_top_level_help(), ""
+    if argv[0] == "--help-feedback":
+        if len(argv) != 1:
+            return _usage_text_error("usage: unity-puer-exec --help-feedback")
+        return 0, help_surface.render_feedback_help(), ""
     if argv[0] != "--help-example":
         return None
     if len(argv) != 2:

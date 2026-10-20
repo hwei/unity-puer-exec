@@ -197,6 +197,27 @@ def _empty_response_payload(command, exc, request_id=None):
     return payload
 
 
+def _http_error_body_excerpt(exc):
+    """The JSON body of an `HTTPError`, read defensively, or None.
+
+    `HTTPError` is also a file-like response, so the service's own error body is
+    still readable here. Reading it must never turn a classified transport failure
+    into an uncaught exception: a broken connection, a non-JSON body, or a body that
+    is not an object all fall back to None.
+    """
+    try:
+        raw = exc.read()
+    except Exception:  # noqa: BLE001 - a body read must never fail the command.
+        return None
+    if not raw:
+        return None
+    try:
+        body = json.loads(raw.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError):
+        return None
+    return body if isinstance(body, dict) else None
+
+
 def invoke_command(command, base_url, payload, wait_timeout_ms, transport=None):
     transport = transport or HttpTransport()
     request_id = _payload_request_id(payload)
@@ -217,6 +238,15 @@ def invoke_command(command, base_url, payload, wait_timeout_ms, transport=None):
             "error": str(exc),
             "http_status": exc.code,
         }
+        # The C# request handler's own catch writes HTTP 500 with
+        # `{"ok":false,"status":"failed","error":"internal_error"}`. That body is
+        # the only signal that the service itself threw, so it is the only case that
+        # is marked as a likely tool defect. Status, `http_status`, and exit code
+        # stay exactly as the HTTP 500 path already reported them.
+        if exc.code == 500:
+            body = _http_error_body_excerpt(exc)
+            if body is not None and body.get("error") == "internal_error":
+                error_payload["failure_origin"] = "service_internal"
         if request_id:
             error_payload["request_id"] = request_id
         return EXIT_NOT_AVAILABLE, json.dumps(error_payload, ensure_ascii=True), ""

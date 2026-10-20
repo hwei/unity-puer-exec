@@ -1,0 +1,74 @@
+name: Bug report
+description: A unity-puer-exec command failed in a way that looks like a defect in the tool itself.
+title: "bug: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This tracker is public. Remove project paths, project code, asset names, and any log
+        content the user has not approved for sharing before submitting.
+
+        Read `unity-puer-exec --help-feedback` first: describe the report to the user, search
+        for an existing issue, and file only after the user confirms. If a matching issue
+        already exists, comment there instead of opening a duplicate.
+  - type: checkboxes
+    id: agent_filed
+    attributes:
+      label: Filing context
+      options:
+        - label: Filed by an agent on the user's behalf, after the user confirmed the report
+        - label: I searched existing issues and none matched
+  - type: input
+    id: version
+    attributes:
+      label: unity-puer-exec --version
+      description: Paste the exact output, unchanged.
+      placeholder: unity-puer-exec 0.10.1
+    validations:
+      required: true
+  - type: textarea
+    id: command
+    attributes:
+      label: Command line
+      description: The invocation that failed, with private paths replaced.
+      render: shell
+      placeholder: unity-puer-exec exec --project-path <redacted> --code "..."
+    validations:
+      required: true
+  - type: input
+    id: status
+    attributes:
+      label: Response status and exit code
+      description: The response `status` field and the process exit code.
+      placeholder: status=not_available exit=12
+    validations:
+      required: true
+  - type: input
+    id: failure_origin
+    attributes:
+      label: failure_origin (if present)
+      description: The CLI sets this only when the failure very likely originates in the tool itself.
+      placeholder: cli_internal or service_internal
+    validations:
+      required: false
+  - type: textarea
+    id: expected_actual
+    attributes:
+      label: Expected vs actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction steps
+    validations:
+      required: true
+  - type: textarea
+    id: redacted_output
+    attributes:
+      label: Redacted response or logs
+      description: Optional. Include only material the user has approved for a public tracker.
+      render: json
+    validations:
+      required: false

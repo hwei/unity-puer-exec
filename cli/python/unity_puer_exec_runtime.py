@@ -631,6 +631,9 @@ def run_command(args):
             exc,
             include_diagnostics=getattr(args, "include_diagnostics", False),
         )
+        # Every specific handler above declined this exception, so a CLI defect is the
+        # most likely explanation. This is the only place `cli_internal` is set.
+        payload["failure_origin"] = "cli_internal"
         _attach_guidance(payload, args.command, "failed", args)
         return 1, emit_payload(payload), ""
 
@@ -758,6 +761,14 @@ def _attach_guidance(payload, command, status, args, request_id=None):
         command, status, context, warning=payload.get("warning"), compile_blocked=compile_blocked,
         replayable_record=_has_replayable_record(payload),
     )
+    # `failure_origin` is a CLI-owned envelope field, so its presence -- never a
+    # script-authored `result` -- is what adds the feedback continuation. It is
+    # appended after the matrix candidates so their own continuation stays first.
+    feedback_origin = payload.get("failure_origin")
+    feedback_candidate = help_surface.build_feedback_candidate(command) if feedback_origin else None
+    if feedback_candidate is not None:
+        next_steps = list(next_steps or [])
+        next_steps.append(feedback_candidate)
     if next_steps:
         payload["next_steps"] = next_steps
     detail = payload.get("version_mismatch")
@@ -765,6 +776,9 @@ def _attach_guidance(payload, command, status, args, request_id=None):
     situation = help_surface.build_situation(
         command, status, guard=guard, warning=payload.get("warning"), compile_blocked=compile_blocked
     )
+    if feedback_origin:
+        hint = help_surface.FEEDBACK_HINT_SITUATION
+        situation = "{} {}".format(situation, hint) if situation else hint
     if situation:
         payload["situation"] = situation
     _maybe_hint_puer_prefix(payload, command, args=args)
@@ -2409,11 +2423,17 @@ def _is_play_mode_transport_drop(body):
     ``empty_response`` and ``not_available`` are transport conditions (the endpoint
     dropped mid-reload); an absent route (``http_status == 404``) is also
     ``not_available`` but must stay terminal so the caller can report a version
-    mismatch. A missing body is treated as a drop defensively.
+    mismatch. A body carrying ``failure_origin`` is likewise terminal: the service
+    answered and reported its own internal failure. A missing body is treated as a
+    drop defensively.
     """
     if body is None:
         return True
     if body.get("http_status") == 404:
+        return False
+    if body.get("failure_origin"):
+        # A body that names the tool as the failure origin is a command result, not a
+        # reload edge: the service answered and threw. Retrying cannot change it.
         return False
     return body.get("status") in (direct_exec_client.STATUS_EMPTY_RESPONSE, "not_available")
 
@@ -2841,7 +2861,7 @@ def _run_play_mode_command(operation, args, recovery):
             session=session,
             include_diagnostics=args.include_diagnostics,
         )
-        for key in ("blocker", "exit_code_meaning", "response_detail"):
+        for key in ("blocker", "exit_code_meaning", "response_detail", "failure_origin"):
             if key in body:
                 payload[key] = body[key]
         _attach_guidance(payload, operation, status, args)

@@ -17,6 +17,12 @@ EXIT_EDITOR_NOT_UNDER_CLI_CONTROL = 17
 EXIT_UNITY_START_FAILED = 20
 EXIT_UNITY_NOT_READY = 21
 
+# Single source of truth for the tracker named by every feedback surface, so the
+# top-level pointer, the `--help-feedback` topic, and the tests cannot drift apart.
+ISSUE_TRACKER_URL = "https://github.com/hwei/unity-puer-exec/issues"
+ISSUE_NEW_URL = ISSUE_TRACKER_URL + "/new"
+FEEDBACK_HELP_ARGV = ("unity-puer-exec", "--help-feedback")
+
 WORKFLOW_IDS = (
     "exec-and-wait-for-result-marker",
     "exec-and-wait-for-log-pattern",
@@ -2389,6 +2395,88 @@ def build_situation(command, status, guard=None, warning=None, compile_blocked=F
     return situation
 
 
+FEEDBACK_HINT_SITUATION = (
+    "This failure most likely originates in `unity-puer-exec` itself rather than in the "
+    "script or the project. Read `unity-puer-exec --help-feedback`, then offer the user a "
+    "report and file it only after they confirm."
+)
+
+
+def build_feedback_candidate(command):
+    """The `--help-feedback` continuation for a likely tool defect.
+
+    Appended after whatever the guidance matrix selected, so the matrix's own
+    continuation stays first. The argv is static: the topic needs no selector.
+    """
+    return {
+        "command": command,
+        "when": (
+            "the failure looks like a defect in `unity-puer-exec` itself; read this topic, "
+            "then offer the user a report"
+        ),
+        "argv": list(FEEDBACK_HELP_ARGV),
+    }
+
+
+def render_feedback_help():
+    """Reporting procedure for agents that hit a defect or workflow friction.
+
+    Progressive disclosure: the top-level help carries one pointer to this topic, and
+    everything an agent needs to file a safe, useful report lives here.
+    """
+    sections = [
+        "Goal\nReport a defect in `unity-puer-exec` or friction in how it behaves to the "
+        "maintainers, without leaking project-private content into a public tracker.",
+        "Before Filing\n{}".format(
+            _bullet_lines([
+                "Describe the report to the user first: what failed, what the report will say, "
+                "and where it will be filed.",
+                "File only after the user explicitly confirms. Never file on your own initiative, "
+                "and never file while the user is unsure.",
+                "Name the tracker in the proposal: {}".format(ISSUE_TRACKER_URL),
+            ])
+        ),
+        "Redaction\nThe tracker is public. Remove project-private material before filing:\n{}".format(
+            _bullet_lines([
+                "project paths",
+                "project code",
+                "asset names",
+                "log content the user has not approved for sharing",
+                "anything else that identifies an employer, client, or unreleased product",
+            ])
+        ),
+        "Duplicate Check\n{}".format(
+            _bullet_lines([
+                "Search existing issues at {} first.".format(ISSUE_TRACKER_URL),
+                "When a matching issue exists, comment on it with your additional detail instead "
+                "of opening a duplicate.",
+            ])
+        ),
+        "Report Contents\n{}".format(
+            _bullet_lines([
+                "`unity-puer-exec --version` output, unchanged.",
+                "The command line that failed, with private paths replaced.",
+                "The response `status` and the process exit code.",
+                "Expected versus actual behavior.",
+                "Minimal reproduction steps.",
+            ])
+        ),
+        "Filing\n{}".format(
+            _bullet_lines([
+                "Prefer `gh issue create` when the GitHub CLI is available and authenticated.",
+                "When `gh` is unavailable or unauthenticated, hand the user a prefilled URL instead "
+                "of abandoning the report: {}".format(ISSUE_NEW_URL),
+                "That URL accepts `title` and `body` query parameters, so the report text survives "
+                "the handover.",
+            ])
+        ),
+        "Friction Counts\nDefects are not the only reportable outcome. Say so when you report, and "
+        "invite a report for: confusing responses, missing or misleading guidance, and clumsy "
+        "workflows around an otherwise working command.",
+    ]
+    return _join_sections(sections)
+
+
 def render_top_level_help():
     command_group_sections = []
     for title, commands in COMMAND_GROUPS:
@@ -2402,6 +2490,7 @@ def render_top_level_help():
         "Command Groups\n{}".format("\n\n".join(command_group_sections)),
         "Global Options\n- `--version`: report the acting CLI build and exit, without a command and without contacting Unity. The CLI executable and the Unity Editor package ship as one release; when their versions disagree, commands refuse with `version_mismatch` and there is no bypass -- reconcile the installation instead.\n- `--suppress-guidance`: omit `next_steps` and `situation` from command responses. Status explanations remain available via `<command> --help-status`.\n- `--response-file <path>`: persist the complete normalized command response to a local file and print a compact reference (with `byte_count` and `sha256`) instead of the full JSON; use this when a response may exceed the caller's output budget. `wait-for-exec --response-file` can recover an already-completed large result by the same `request_id` without re-executing the script.",
         "Global Selector Rules\n- Use exactly one selector on commands that target a Unity session: `--project-path` or `--base-url`.\n- `--project-path` is the normal choice when the CLI should discover, launch, or recover Unity for a project.\n- `--base-url` is for a direct service you already know how to reach.",
+        "Feedback\n- Hit a bug or friction? Read `unity-puer-exec --help-feedback` before reporting it.",
         "Common Help Examples\nUse `unity-puer-exec --help-example <example-id>` to view full steps.\n{}".format(
             _bullet_lines(
                 "`{}`: help-example id for `unity-puer-exec --help-example {}`; {}".format(

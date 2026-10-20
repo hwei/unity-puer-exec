@@ -1,4 +1,5 @@
 import http.client
+import io
 import json
 import socket
 import sys
@@ -58,6 +59,36 @@ class RaisingTransport:
 
     def post_json(self, url, payload, timeout_seconds):
         raise self.exc
+
+
+class HttpErrorTransport:
+    """Raises the `HTTPError` the real transport raises for a non-2xx answer.
+
+    `HTTPError` is itself the readable response, so the CLI can still inspect the
+    body the service wrote alongside its status code.
+    """
+
+    def __init__(self, code, body=b"", message="error"):
+        self.code = code
+        self.body = body
+        self.message = message
+        self.calls = []
+
+    def post_json(self, url, payload, timeout_seconds):
+        self.calls.append((url, payload, timeout_seconds))
+        raise urllib.error.HTTPError(url, self.code, self.message, {}, io.BytesIO(self.body))
+
+
+class _UnreadableBody:
+    def read(self, *_args):
+        raise OSError("connection lost while reading the error body")
+
+
+class UnreadableHttpErrorTransport:
+    """An `HTTPError` whose body cannot be read at all."""
+
+    def post_json(self, url, payload, timeout_seconds):
+        raise urllib.error.HTTPError(url, 500, "error", {}, _UnreadableBody())
 
 
 def peer_reset_exception():
@@ -486,6 +517,68 @@ class DirectExecClientTests(unittest.TestCase):
         self.assertEqual(body["status"], "unity_compile_error")
         self.assertEqual(body["compile_errors_total"], 3)
         self.assertEqual(body["compile_warnings_total"], 0)
+
+
+class ServiceInternalClassificationTests(unittest.TestCase):
+    """`failure_origin: service_internal` only for the service's own 500 body."""
+
+    BASE_URL = "http://127.0.0.1:55231"
+    INTERNAL_BODY = b'{"ok": false, "status": "failed", "error": "internal_error"}'
+
+    def _invoke(self, transport):
+        return direct_exec_client.invoke_command(
+            "exec",
+            self.BASE_URL,
+            {"request_id": "req-500", "code": "export default function(ctx) {}"},
+            1000,
+            transport=transport,
+        )
+
+    def test_http_500_with_internal_error_body_is_marked_without_changing_status(self):
+        exit_code, stdout, stderr = self._invoke(HttpErrorTransport(500, self.INTERNAL_BODY))
+
+        self.assertEqual(exit_code, direct_exec_client.EXIT_NOT_AVAILABLE)
+        self.assertEqual(stderr, "")
+        body = json.loads(stdout)
+        self.assertEqual(body["failure_origin"], "service_internal")
+        # The field is additive: the pre-existing HTTP 500 reporting is untouched.
+        self.assertEqual(body["status"], "not_available")
+        self.assertEqual(body["http_status"], 500)
+        self.assertEqual(body["request_id"], "req-500")
+
+    def test_http_500_without_a_usable_body_is_not_marked(self):
+        cases = {
+            "empty": b"",
+            "not_json": b"<html>Internal Server Error</html>",
+            "not_an_object": b"[1, 2, 3]",
+            "other_error": b'{"ok": false, "status": "failed", "error": "script_error"}',
+        }
+        for label, payload in cases.items():
+            with self.subTest(label):
+                exit_code, stdout, _stderr = self._invoke(HttpErrorTransport(500, payload))
+                self.assertEqual(exit_code, direct_exec_client.EXIT_NOT_AVAILABLE)
+                body = json.loads(stdout)
+                self.assertEqual(body["status"], "not_available")
+                self.assertNotIn("failure_origin", body)
+
+    def test_other_http_statuses_are_not_marked(self):
+        for code in (404, 400, 503):
+            with self.subTest(code):
+                exit_code, stdout, _stderr = self._invoke(HttpErrorTransport(code, self.INTERNAL_BODY))
+                self.assertEqual(exit_code, direct_exec_client.EXIT_NOT_AVAILABLE)
+                body = json.loads(stdout)
+                self.assertEqual(body["http_status"], code)
+                self.assertNotIn("failure_origin", body)
+
+    def test_an_unreadable_error_body_still_degrades_to_the_plain_payload(self):
+        exit_code, stdout, stderr = self._invoke(UnreadableHttpErrorTransport())
+
+        self.assertEqual(exit_code, direct_exec_client.EXIT_NOT_AVAILABLE)
+        self.assertEqual(stderr, "")
+        body = json.loads(stdout)
+        self.assertEqual(body["status"], "not_available")
+        self.assertEqual(body["http_status"], 500)
+        self.assertNotIn("failure_origin", body)
 
 
 if __name__ == "__main__":
