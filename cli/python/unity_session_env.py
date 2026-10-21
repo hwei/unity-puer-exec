@@ -70,6 +70,20 @@ def ensure_dotenv_loaded(module_file, env=None, dotenv_file=None, force=False):
     return loaded
 
 
+def _absolute_project_path(value, cwd):
+    """Resolve an explicit project path against cwd once, at the boundary.
+
+    A relative argument stays useful only until the next command runs from a
+    different directory. Downstream identity checks, publication reads, and
+    ``session.project_path`` all consume this absolute form.
+    """
+    path = Path(value)
+    if not path.is_absolute():
+        base = Path.cwd() if cwd is None else Path(cwd)
+        path = base / path
+    return path.resolve()
+
+
 def resolve_project_path(module_file, project_path=None, cwd=None, env=None, ensure_dotenv_loaded_fn=None, argv0=None):
     env = os.environ if env is None else env
     if ensure_dotenv_loaded_fn is not None:
@@ -78,10 +92,10 @@ def resolve_project_path(module_file, project_path=None, cwd=None, env=None, ens
         ensure_dotenv_loaded(module_file, env=env)
 
     if project_path:
-        return Path(project_path)
+        return _absolute_project_path(project_path, cwd)
     env_project_path = env.get(UNITY_PROJECT_PATH_ENV)
     if env_project_path:
-        return Path(env_project_path)
+        return _absolute_project_path(env_project_path, cwd)
 
     if argv0 is not None:
         inferred = _infer_project_from_exe(argv0)

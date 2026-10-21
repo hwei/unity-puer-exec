@@ -1214,9 +1214,16 @@ def get_blocker_state(project_path=None, argv0=None):
         if unity_pid is not None and not _is_pid_running(unity_pid):
             unity_pid = None
 
+    # The reported session is one Editor. With no publication there is no
+    # endpoint to claim, and the preferred port may belong to a different
+    # project, so base_url stays null instead of the default.
+    published_base_url = None
+    if publication is not None:
+        published_base_url = publication.get("base_url") or None
+
     session = UnitySession(
         owner=owner,
-        base_url=direct_exec_client.DEFAULT_BASE_URL,
+        base_url=published_base_url,
         project_path=resolved_project_path,
         unity_pid=unity_pid,
         launched=False,
@@ -1254,11 +1261,17 @@ def _guard_owned_endpoint_version(base_url, payload, require_version=None):
 
 
 def _payload_matches_project(payload, project_path):
-    """Check whether a health payload belongs to the target project."""
+    """Check whether a health payload belongs to the target project.
+
+    Delegates to ``paths_equal`` so a relative caller path, a forward-slash
+    ``Application.dataPath`` parent, and an 8.3 short name still name one
+    directory. Callers that never passed through ``resolve_project_path`` rely
+    on this rather than on the entry-point absolutizing.
+    """
     health_project_path = payload.get("project_path")
     if not isinstance(health_project_path, str) or not health_project_path:
         return False
-    return os.path.normcase(os.path.normpath(health_project_path)) == os.path.normcase(os.path.normpath(str(project_path)))
+    return unity_session_endpoint.paths_equal(health_project_path, project_path)
 
 
 def validate_endpoint_identity(base_url, project_path, health_timeout_seconds=DEFAULT_HEALTH_TIMEOUT_SECONDS):

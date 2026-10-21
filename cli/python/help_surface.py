@@ -274,6 +274,7 @@ COMMAND_HELP = {
             "Secondary troubleshooting command for confirming whether a supported Unity modal blocker is currently open for the selected project.",
             "`unity-puer-exec get-blocker-state --project-path X:/project`",
             "Use this after an exec-side timeout or stall when you need to distinguish a supported save-scene modal dialog from a generic timeout.",
+            "`session.base_url` is the endpoint this project's Editor published. It is `null` when the project has no publication, and it is never a default port that may belong to another Editor.",
         ],
         "related_workflows": ("recover-exec-by-request-id",),
         "args": {
@@ -301,6 +302,7 @@ COMMAND_HELP = {
             "`unity-puer-exec resolve-blocker --project-path X:/project --action click --hwnd <int> --button \"<label>\"`",
             "Read `hwnd` and the button label from the reported blocker payload, then name the button you intend to activate.",
             "`--action cancel` is legal only for the Safe Mode dialog; every other dialog requires `--action click`.",
+            "`session.base_url` is the endpoint this project's Editor published. It is `null` when the project has no publication, and it is never a default port that may belong to another Editor.",
         ],
         "related_workflows": ("recover-exec-by-request-id",),
         "args": {
@@ -577,7 +579,7 @@ COMMAND_HELP = {
             "success": [
                 "`completed`: the Editor reached `playing`; `result.play_state` is `playing` and `result.transition` is `performed`, `already_in_state`, or `resumed`.",
                 "`result.run_in_background` reports whether the override was forced, the project's own setting, and the `--no-run-in-background` option.",
-                "`running`: the transition did not finish within the budget; `result.play_state` names the current state and `next_steps` re-run `play`.",
+                "`running`: the transition did not finish within the budget when the endpoint was reached; `result.target_play_state` names the target, `result.play_state` is the last observed state, and `next_steps` re-run `play`. When `result.endpoint_resolved` is false, no probe reached the project's endpoint and the situation names endpoint resolution rather than the unfinished transition.",
             ],
             "failure": [
                 ("address_conflict", 2, "both selectors were provided; choose exactly one."),
@@ -614,7 +616,7 @@ COMMAND_HELP = {
         "status": {
             "success": [
                 "`completed`: the Editor reached `paused`; `result.play_state` is `paused`.",
-                "`running`: the transition did not finish within the budget; `result.play_state` names the current state.",
+                "`running`: the transition did not finish within the budget when the endpoint was reached; `result.target_play_state` names the target and `result.play_state` is the last observed state. When `result.endpoint_resolved` is false, no probe reached the project's endpoint and the situation names endpoint resolution rather than the unfinished transition.",
             ],
             "failure": [
                 ("address_conflict", 2, "both selectors were provided; choose exactly one."),
@@ -653,7 +655,7 @@ COMMAND_HELP = {
             "success": [
                 "`completed`: the Editor reached `edit`; `result.play_state` is `edit` and `result.compile` is `compile_settled` or `no_compile_observed` with `compile_errors_total`.",
                 "A generation-advance settle reports `result.compile.edge: generation_advance`, because the exit's forced recompile is hidden behind a domain reload.",
-                "`running`: the exit or its deferred compile did not settle within the budget.",
+                "`running`: the exit or its deferred compile did not settle within the budget when the endpoint was reached; `result.target_play_state` names the target and `result.play_state` is the last observed state. When `result.endpoint_resolved` is false, no probe reached the project's endpoint and the situation names endpoint resolution rather than the play-mode exit.",
             ],
             "failure": [
                 ("address_conflict", 2, "both selectors were provided; choose exactly one."),
@@ -2352,6 +2354,32 @@ def _select_argv(template, context):
     return _build_argv(argv_template, template["command"], context)
 
 
+# A play-mode `running` result whose probes never identified the project's
+# endpoint is a different wait from an unfinished transition. The matrix entry
+# stays the reached-endpoint wording; this overrides it when the CLI-owned
+# `result.endpoint_resolved` flag is false.
+_UNRESOLVED_ENDPOINT_SITUATION = (
+    "The project's endpoint could not be reached or identified within the budget. "
+    "Check `get-blocker-state` and whether that project's Editor is still running. "
+    "This wait is for endpoint resolution, not for the play-mode transition to finish."
+)
+_UNRESOLVED_ENDPOINT_STEPS = [
+    {
+        "command": "get-blocker-state",
+        "when": "confirm which endpoint this project published, and whether a modal dialog is blocking the Editor",
+        "argv_template": ["unity-puer-exec", "get-blocker-state", "--project-path", "{project_path}"],
+    },
+]
+
+
+def _unresolved_endpoint_running(command, status, endpoint_resolved):
+    return (
+        endpoint_resolved is False
+        and status == "running"
+        and command in ("play", "pause", "stop")
+    )
+
+
 def _play_mode_block_adds_guidance(warning, compile_blocked):
     """Whether the CLI-composed play-mode block adds guidance to this response."""
     if not compile_blocked:
@@ -2368,7 +2396,10 @@ def _guidance_entry(command, status, warning):
     return entry
 
 
-def build_next_steps(command, status, context, warning=None, compile_blocked=False, replayable_record=True):
+def build_next_steps(command, status, context, warning=None, compile_blocked=False, replayable_record=True, endpoint_resolved=None):
+    if _unresolved_endpoint_running(command, status, endpoint_resolved):
+        result = _render_next_steps(_UNRESOLVED_ENDPOINT_STEPS, context, replayable_record)
+        return result if result else None
     entry = _guidance_entry(command, status, warning)
     own_templates = entry.get("next_steps") if entry else None
     if _play_mode_block_adds_guidance(warning, compile_blocked):
@@ -2384,9 +2415,11 @@ def build_next_steps(command, status, context, warning=None, compile_blocked=Fal
     return result if result else None
 
 
-def build_situation(command, status, guard=None, warning=None, compile_blocked=False):
+def build_situation(command, status, guard=None, warning=None, compile_blocked=False, endpoint_resolved=None):
     if guard is not None and guard in VERSION_MISMATCH_SITUATIONS:
         return VERSION_MISMATCH_SITUATIONS[guard]
+    if _unresolved_endpoint_running(command, status, endpoint_resolved):
+        return _UNRESOLVED_ENDPOINT_SITUATION
     entry = _guidance_entry(command, status, warning)
     situation = entry.get("situation") if entry else None
     if _play_mode_block_adds_guidance(warning, compile_blocked):

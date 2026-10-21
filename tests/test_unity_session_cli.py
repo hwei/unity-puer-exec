@@ -602,6 +602,8 @@ class UnityPuerExecCliTests(unittest.TestCase):
         self.assertEqual(stderr, "")
         self.assertIn("Secondary troubleshooting command", stdout)
         self.assertIn("supported Unity modal blocker", stdout)
+        self.assertIn("session.base_url", stdout)
+        self.assertIn("`null`", stdout)
 
     def test_get_blocker_state_help_status_mentions_modal_result(self):
         exit_code, stdout, stderr = unity_puer_exec.run_cli(["get-blocker-state", "--help-status"])
@@ -2093,6 +2095,8 @@ class UnityPuerExecCliTests(unittest.TestCase):
         self.assertEqual(stderr, "")
         self.assertIn("dismissing a reported Unity modal blocker", stdout)
         self.assertIn("--action click --hwnd <int> --button \"<label>\"", stdout)
+        self.assertIn("session.base_url", stdout)
+        self.assertIn("`null`", stdout)
 
     def test_resolve_blocker_help_scopes_cancel_to_safe_mode(self):
         """Cancel must not be advertised as the general unblock action."""
@@ -5653,6 +5657,261 @@ class PlayModeCommandTests(unittest.TestCase):
             step["command"] for step in help_surface.GUIDANCE_MATRIX[("wait-for-compile", "compile_blocked")]["next_steps"]
         ]
         self.assertEqual(compile_blocked_steps, ["stop"])
+
+    def test_stop_help_status_names_unresolved_endpoint_and_target_state(self):
+        exit_code, stdout, stderr = unity_puer_exec.run_cli(["stop", "--help-status"])
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(stderr, "")
+        self.assertIn("endpoint_resolved", stdout)
+        self.assertIn("endpoint resolution", stdout)
+        self.assertIn("target_play_state", stdout)
+        self.assertIn("play-mode exit", stdout)
+
+    def _project_args(self, command, project_path, *extra):
+        parser = unity_puer_exec.surface.build_parser()
+        return parser.parse_args([command, "--project-path", project_path, *extra])
+
+    def _published_health(self, play_state, marker, project_path, generation=1):
+        payload = self._health(play_state, generation=generation)
+        payload["session_marker"] = marker
+        payload["project_path"] = project_path
+        payload["unity_pid"] = 7
+        payload["bridge_version"] = version_test_support.matching_bridge_version()
+        return payload
+
+    def _run_project(self, handler, args, probe, read_publication, session, invoke_map, extra_patches=()):
+        clock = _FakeClock()
+        posted = []
+
+        def invoke(command, base_url, payload, _wait_timeout_ms, transport=None):
+            posted.append((command, base_url))
+            spec = invoke_map.get(command)
+            if spec is None:
+                return 12, json.dumps({"ok": False, "status": "not_available", "error": command}), ""
+            if callable(spec):
+                spec = spec(payload)
+            if isinstance(spec, tuple) and len(spec) == 3:
+                return spec
+            exit_code, body = spec
+            return exit_code, json.dumps(body), ""
+
+        patches = [
+            mock.patch.object(unity_puer_exec_runtime, "time", clock),
+            mock.patch.object(unity_session, "ensure_session_ready", return_value=session),
+            mock.patch.object(unity_session, "sweep_pending_exec_artifacts", return_value=None),
+            mock.patch.object(unity_session, "read_endpoint_publication", side_effect=read_publication),
+            mock.patch.object(unity_session, "_probe_health", side_effect=probe),
+            mock.patch.object(unity_session, "probe_health_payload", side_effect=probe),
+            mock.patch.object(unity_puer_exec_runtime.direct_exec_client, "invoke_command", side_effect=invoke),
+        ]
+        patches.extend(extra_patches)
+        for patch in patches:
+            patch.start()
+        try:
+            return (*handler(args), posted)
+        finally:
+            for patch in reversed(patches):
+                patch.stop()
+
+    def test_stop_relative_project_path_follows_a_republished_endpoint(self):
+        url_a = "http://127.0.0.1:55240"
+        url_b = "http://127.0.0.1:55241"
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            project = root / "Project"
+            project.mkdir()
+            abs_path = str(project.resolve())
+            reads = {"n": 0}
+            probed = []
+
+            def read_publication(_path):
+                reads["n"] += 1
+                if reads["n"] <= 1:
+                    return {
+                        "base_url": url_a,
+                        "session_marker": "marker-a",
+                        "unity_pid": 7,
+                        "project_path": abs_path,
+                    }
+                return {
+                    "base_url": url_b,
+                    "session_marker": "marker-b",
+                    "unity_pid": 7,
+                    "project_path": abs_path,
+                }
+
+            def probe(base_url, _timeout):
+                probed.append(base_url)
+                if base_url == url_a:
+                    return self._published_health("playing", "marker-a", abs_path), None
+                if base_url == url_b:
+                    return self._published_health("edit", "marker-b", abs_path), None
+                return None, "connection refused"
+
+            session = unity_session.UnitySession(
+                owner="published_endpoint", base_url=url_a, project_path=abs_path
+            )
+            invoke_map, _calls, _holder = self._default_invoke_map()
+            previous = os.getcwd()
+            os.chdir(root)
+            try:
+                code, stdout, stderr, posted = self._run_project(
+                    unity_puer_exec_runtime.run_stop,
+                    self._project_args("stop", "Project", "--timeout-seconds", "5"),
+                    probe,
+                    read_publication,
+                    session,
+                    invoke_map,
+                )
+            finally:
+                os.chdir(previous)
+
+        self.assertEqual(code, 0, stdout or stderr)
+        body = json.loads(stdout)
+        self.assertEqual(body["status"], "completed")
+        self.assertEqual(body["result"]["play_state"], "edit")
+        self.assertIn(url_a, probed)
+        self.assertIn(url_b, probed)
+        self.assertIn(("play-mode", url_a), posted)
+        self.assertTrue(reads["n"] >= 2)
+
+    def test_stop_ignores_a_foreign_editor_on_the_preferred_port(self):
+        preferred = "http://127.0.0.1:55231"
+        target = "http://127.0.0.1:55240"
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            project = root / "Project"
+            other = root / "Other"
+            project.mkdir()
+            other.mkdir()
+            abs_path = str(project.resolve())
+            foreign_path = str(other.resolve())
+            probed = []
+
+            def read_publication(_path):
+                return {
+                    "base_url": target,
+                    "session_marker": "marker-target",
+                    "unity_pid": 9,
+                    "project_path": abs_path,
+                }
+
+            def probe(base_url, _timeout):
+                probed.append(base_url)
+                if base_url == preferred:
+                    return self._published_health("playing", "marker-foreign", foreign_path), None
+                if base_url == target:
+                    return self._published_health("edit", "marker-target", abs_path), None
+                return None, "connection refused"
+
+            session = unity_session.UnitySession(
+                owner="published_endpoint", base_url=target, project_path=abs_path
+            )
+            invoke_map, _calls, _holder = self._default_invoke_map()
+            code, stdout, stderr, posted = self._run_project(
+                unity_puer_exec_runtime.run_stop,
+                self._project_args("stop", abs_path, "--timeout-seconds", "5"),
+                probe,
+                read_publication,
+                session,
+                invoke_map,
+            )
+
+        self.assertEqual(code, 0, stderr)
+        body = json.loads(stdout)
+        self.assertEqual(body["status"], "completed")
+        self.assertEqual(body["result"]["play_state"], "edit")
+        self.assertNotEqual(body["result"]["play_state"], "playing")
+        self.assertNotIn(preferred, probed)
+        self.assertTrue(all(url == target for _command, url in posted))
+
+    def test_stop_running_names_target_state_when_the_endpoint_was_reached(self):
+        url = "http://127.0.0.1:55240"
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp) / "Project"
+            project.mkdir()
+            abs_path = str(project.resolve())
+
+            def read_publication(_path):
+                return {
+                    "base_url": url,
+                    "session_marker": "marker-target",
+                    "unity_pid": 9,
+                    "project_path": abs_path,
+                }
+
+            def probe(base_url, _timeout):
+                if base_url == url:
+                    return self._published_health("playing", "marker-target", abs_path), None
+                return None, "connection refused"
+
+            session = unity_session.UnitySession(
+                owner="published_endpoint", base_url=url, project_path=abs_path
+            )
+            invoke_map, _calls, _holder = self._default_invoke_map()
+            short_budget = mock.patch.object(
+                unity_puer_exec_runtime, "_post_refresh_ready_timeout_seconds", return_value=0.05
+            )
+            code, stdout, stderr, _posted = self._run_project(
+                unity_puer_exec_runtime.run_stop,
+                self._project_args("stop", abs_path, "--timeout-seconds", "0.05"),
+                probe,
+                read_publication,
+                session,
+                invoke_map,
+                extra_patches=[short_budget],
+            )
+
+        self.assertEqual(code, unity_puer_exec.EXIT_RUNNING, stderr)
+        body = json.loads(stdout)
+        self.assertEqual(body["status"], "running")
+        self.assertEqual(body["result"]["play_state"], "playing")
+        self.assertEqual(body["result"]["target_play_state"], "edit")
+        self.assertIs(body["result"]["endpoint_resolved"], True)
+        self.assertIn("has not settled", body["situation"])
+        self.assertNotIn("endpoint resolution", body["situation"])
+
+    def test_stop_running_marks_an_unresolved_endpoint(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp) / "Project"
+            project.mkdir()
+            abs_path = str(project.resolve())
+
+            def read_publication(_path):
+                return None
+
+            def probe(_base_url, _timeout):
+                return None, "connection refused"
+
+            session = unity_session.UnitySession(
+                owner="published_endpoint",
+                base_url="http://127.0.0.1:55231",
+                project_path=abs_path,
+            )
+            invoke_map, _calls, _holder = self._default_invoke_map()
+            short_budget = mock.patch.object(
+                unity_puer_exec_runtime, "_post_refresh_ready_timeout_seconds", return_value=0.05
+            )
+            code, stdout, stderr, _posted = self._run_project(
+                unity_puer_exec_runtime.run_stop,
+                self._project_args("stop", "Project", "--timeout-seconds", "0.05"),
+                probe,
+                read_publication,
+                session,
+                invoke_map,
+                extra_patches=[short_budget],
+            )
+
+        self.assertEqual(code, unity_puer_exec.EXIT_RUNNING, stderr)
+        body = json.loads(stdout)
+        self.assertEqual(body["status"], "running")
+        self.assertIsNone(body["play_state"])
+        self.assertIsNone(body["result"]["play_state"])
+        self.assertEqual(body["result"]["target_play_state"], "edit")
+        self.assertIs(body["result"]["endpoint_resolved"], False)
+        self.assertIn("endpoint resolution", body["situation"])
+        self.assertNotIn("has not settled", body["situation"])
+        self.assertIn("get-blocker-state", [step["command"] for step in body["next_steps"]])
 
 
 class PeerResetCommandContractTests(unittest.TestCase):

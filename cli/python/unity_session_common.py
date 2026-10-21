@@ -130,7 +130,9 @@ class UnitySession:
         effective_log_path=None,
     ):
         self.owner = owner
-        self.base_url = base_url.rstrip("/")
+        # None is a deliberate "no endpoint" claim. Callers that have a URL
+        # still pass a string, which is stored without a trailing slash.
+        self.base_url = None if base_url is None else base_url.rstrip("/")
         self.project_path = str(project_path)
         self.unity_pid = unity_pid
         self.unity_exe_path = unity_exe_path

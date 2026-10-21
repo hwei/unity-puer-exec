@@ -757,9 +757,12 @@ def _attach_guidance(payload, command, status, args, request_id=None):
     # result field), so its presence is a CLI-owned guidance selector: it adds the
     # play-mode exit guidance to whatever the warning/status already selected.
     compile_blocked = isinstance(payload.get("compile_blocked"), dict)
+    result = payload.get("result") if isinstance(payload, dict) else None
+    endpoint_resolved = result.get("endpoint_resolved") if isinstance(result, dict) else None
     next_steps = help_surface.build_next_steps(
         command, status, context, warning=payload.get("warning"), compile_blocked=compile_blocked,
         replayable_record=_has_replayable_record(payload),
+        endpoint_resolved=endpoint_resolved,
     )
     # `failure_origin` is a CLI-owned envelope field, so its presence -- never a
     # script-authored `result` -- is what adds the feedback continuation. It is
@@ -774,7 +777,12 @@ def _attach_guidance(payload, command, status, args, request_id=None):
     detail = payload.get("version_mismatch")
     guard = detail.get("guard") if isinstance(detail, dict) else None
     situation = help_surface.build_situation(
-        command, status, guard=guard, warning=payload.get("warning"), compile_blocked=compile_blocked
+        command,
+        status,
+        guard=guard,
+        warning=payload.get("warning"),
+        compile_blocked=compile_blocked,
+        endpoint_resolved=endpoint_resolved,
     )
     if feedback_origin:
         hint = help_surface.FEEDBACK_HINT_SITUATION
@@ -2397,24 +2405,35 @@ def _parse_response_body(stdout_text, stderr_text):
     return None
 
 
-def _play_probe_endpoint(selector, args, base_url, health_timeout_seconds):
-    """Probe the target and return ``(play_state, payload, base_url)``.
+def _play_probe_endpoint(selector, args, base_url, health_timeout_seconds, endpoint_resolver=None):
+    """Probe the target and return ``(play_state, payload, base_url, reached)``.
 
-    ``play_state`` is ``None`` when no ready target answered. In project mode the
+    ``play_state`` is ``None`` when no ready target answered. ``reached`` is true
+    when this probe identified the project's own endpoint (or, in base-url mode,
+    got a ready payload from the addressed endpoint). In project mode the
     endpoint is re-resolved on every probe, because a play-mode domain reload can
-    drop the listener and rebind it on a different port.
+    drop the listener and rebind it on a different port. The resolver is built
+    once per command so its scan fallback stays locked across polls.
     """
     if selector == "project_path":
-        candidate, payload, _error, _other = unity_session.discover_project_endpoint(
-            args.project_path, health_timeout_seconds=health_timeout_seconds
-        )
-        if candidate is None:
-            return None, None, base_url
-        return _health_play_state(payload), payload, candidate
+        if endpoint_resolver is None:
+            candidate, payload, _error, _other = unity_session.discover_project_endpoint(
+                args.project_path, health_timeout_seconds=health_timeout_seconds
+            )
+            if candidate is None:
+                return None, None, base_url, False
+            return _health_play_state(payload), payload, candidate, True
+        candidate = endpoint_resolver()
+        if not candidate:
+            return None, None, base_url, False
+        payload, _error = unity_session.probe_health_payload(candidate, health_timeout_seconds)
+        if not isinstance(payload, dict) or not (payload.get("ok") and payload.get("status") == HEALTH_STATUS_READY):
+            return None, payload if isinstance(payload, dict) else None, candidate, True
+        return _health_play_state(payload), payload, candidate, True
     payload, _error = unity_session.probe_health_payload(base_url, health_timeout_seconds)
     if not isinstance(payload, dict) or not (payload.get("ok") and payload.get("status") == HEALTH_STATUS_READY):
-        return None, payload, base_url
-    return _health_play_state(payload), payload, base_url
+        return None, payload, base_url, False
+    return _health_play_state(payload), payload, base_url, True
 
 
 def _is_play_mode_transport_drop(body):
@@ -2438,7 +2457,7 @@ def _is_play_mode_transport_drop(body):
     return body.get("status") in (direct_exec_client.STATUS_EMPTY_RESPONSE, "not_available")
 
 
-def _post_play_mode(selector, args, session, base_url, action, force_run_in_background):
+def _post_play_mode(selector, args, session, base_url, action, force_run_in_background, endpoint_resolver=None):
     """Post the play-mode action, re-resolving a dropped endpoint within a bound.
 
     A transport drop (an empty/unreachable body) is a domain-reload edge: re-resolve
@@ -2467,7 +2486,9 @@ def _post_play_mode(selector, args, session, base_url, action, force_run_in_back
             return last_exit_code, last_body, base_url
         # The endpoint dropped between the health probe and the post: a reload edge.
         # Re-resolve before retrying instead of reporting a transport failure.
-        _state, _probe_payload, new_base = _play_probe_endpoint(selector, args, base_url, health_timeout)
+        _state, _probe_payload, new_base, _reached = _play_probe_endpoint(
+            selector, args, base_url, health_timeout, endpoint_resolver
+        )
         if new_base:
             base_url = new_base
         time.sleep(min(unity_session.POLL_INTERVAL_SECONDS, max(deadline - time.monotonic(), 0.0)))
@@ -2477,38 +2498,45 @@ def _play_mode_absent(body):
     return isinstance(body, dict) and body.get("http_status") == 404
 
 
-def _wait_for_play_state(operation, selector, args, session, base_url, target, timeout_seconds):
+def _wait_for_play_state(operation, selector, args, session, base_url, target, timeout_seconds, endpoint_resolver=None):
     """Poll health until the target state is reached.
 
-    Returns ``(state, payload, base_url, blocker)``. ``state`` is the last observed
-    play state (possibly ``None``); ``blocker`` is a modal blocker that stalled the
-    transition, or ``None``. A transport failure is expected while a domain reload
-    is in progress and is never reported as failure on its own.
+    Returns ``(state, payload, base_url, blocker, endpoint_resolved)``. ``state``
+    is the last observed play state (possibly ``None``); ``blocker`` is a modal
+    blocker that stalled the transition, or ``None``. ``endpoint_resolved`` is
+    true once any probe in this wait identified the target endpoint. A transport
+    failure is expected while a domain reload is in progress and is never
+    reported as failure on its own.
     """
     health_timeout = getattr(args, "health_timeout_seconds", unity_session.DEFAULT_HEALTH_TIMEOUT_SECONDS)
     deadline = time.monotonic() + timeout_seconds
     state = None
     payload = None
     blocker = None
+    endpoint_resolved = False
     next_blocker_check = time.monotonic() + 5.0
     while True:
         remaining = deadline - time.monotonic()
         if remaining <= 0:
-            return state, payload, base_url, blocker
-        probed, probed_payload, new_base = _play_probe_endpoint(selector, args, base_url, health_timeout)
+            return state, payload, base_url, blocker, endpoint_resolved
+        probed, probed_payload, new_base, reached = _play_probe_endpoint(
+            selector, args, base_url, health_timeout, endpoint_resolver
+        )
+        if reached:
+            endpoint_resolved = True
         if new_base:
             base_url = new_base
         if probed is not None:
             state = probed
             payload = probed_payload
             if probed == target:
-                return probed, payload, base_url, None
+                return probed, payload, base_url, None, endpoint_resolved
         now = time.monotonic()
         if now >= next_blocker_check:
             next_blocker_check = now + 5.0
             detected = _detect_exec_modal_blocker(session)
             if detected is not None:
-                return state, payload, base_url, detected
+                return state, payload, base_url, detected, endpoint_resolved
         time.sleep(min(unity_session.POLL_INTERVAL_SECONDS, max(remaining, 0.0)))
 
 
@@ -2605,14 +2633,18 @@ def _play_refreshing_payload(args, session, refresh_block):
     return attach_diagnostics(payload, include_diagnostics=args.include_diagnostics, session=session)
 
 
-def _play_running_result(operation, session, args, state):
+def _play_running_result(operation, session, args, state, endpoint_resolved):
     payload = {
         "ok": True,
         "status": "running",
         "operation": operation,
         "phase": PHASE_PLAY_MODE,
         "play_state": state,
-        "result": {"play_state": state},
+        "result": {
+            "play_state": state,
+            "target_play_state": PLAY_ACTION_TARGET[operation],
+            "endpoint_resolved": bool(endpoint_resolved),
+        },
     }
     if session is not None:
         payload["session"] = session.to_payload()
@@ -2682,7 +2714,7 @@ def _read_compile_error_total(base_url, args):
     return None
 
 
-def _stop_wait_for_compile(selector, args, session, base_url, baseline, recovery):
+def _stop_wait_for_compile(selector, args, session, base_url, baseline, recovery, endpoint_resolver=None):
     """Wait for the compile cycle deferred by a play-mode exit.
 
     Returns ``(compile_info, base_url)`` or ``(None, base_url)`` when the cycle did
@@ -2694,7 +2726,9 @@ def _stop_wait_for_compile(selector, args, session, base_url, baseline, recovery
     holder = {"base_url": base_url}
 
     def probe(_ignored_base_url, health_timeout):
-        _state, payload, new_base = _play_probe_endpoint(selector, args, holder["base_url"], health_timeout)
+        _state, payload, new_base, _reached = _play_probe_endpoint(
+            selector, args, holder["base_url"], health_timeout, endpoint_resolver
+        )
         if new_base:
             holder["base_url"] = new_base
         return payload, None
@@ -2721,16 +2755,22 @@ def _stop_wait_for_compile(selector, args, session, base_url, baseline, recovery
     return info, holder["base_url"]
 
 
-def _stop_success_result(operation, selector, args, session, base_url, transition, baseline, pending, recovery):
-    _state, payload, base_url = _play_probe_endpoint(
-        selector, args, base_url, getattr(args, "health_timeout_seconds", unity_session.DEFAULT_HEALTH_TIMEOUT_SECONDS)
+def _stop_success_result(operation, selector, args, session, base_url, transition, baseline, pending, recovery, endpoint_resolver=None):
+    _state, payload, base_url, _reached = _play_probe_endpoint(
+        selector,
+        args,
+        base_url,
+        getattr(args, "health_timeout_seconds", unity_session.DEFAULT_HEALTH_TIMEOUT_SECONDS),
+        endpoint_resolver,
     )
     generation = _compile_generation_from_health(payload)
     compile_info = None
     if baseline is not None and generation is not None and generation > baseline:
         compile_info = {"outcome": "compile_settled", "edge": COMPILE_EDGE_GENERATION_ADVANCE}
     elif pending == "pending":
-        compile_info, base_url = _stop_wait_for_compile(selector, args, session, base_url, baseline, recovery)
+        compile_info, base_url = _stop_wait_for_compile(
+            selector, args, session, base_url, baseline, recovery, endpoint_resolver
+        )
     else:
         compile_info = {"outcome": "no_compile_observed"}
 
@@ -2824,7 +2864,17 @@ def _run_play_mode_command(operation, args, recovery):
             return error_result
 
     health_timeout = getattr(args, "health_timeout_seconds", unity_session.DEFAULT_HEALTH_TIMEOUT_SECONDS)
-    pre_state, pre_payload, base_url = _play_probe_endpoint(selector, args, base_url, health_timeout)
+    # One resolver per invocation. Re-reading the publication each poll follows a
+    # domain reload's new marker and port; the scan fallback inside it locks on,
+    # so steady state stays a single confirmation plus the play-state probe.
+    endpoint_resolver = None
+    if selector == "project_path":
+        endpoint_resolver = unity_session._make_published_endpoint_resolver(
+            session.project_path, health_timeout
+        )
+    pre_state, pre_payload, base_url, pre_reached = _play_probe_endpoint(
+        selector, args, base_url, health_timeout, endpoint_resolver
+    )
 
     baseline = None
     pending = None
@@ -2836,7 +2886,7 @@ def _run_play_mode_command(operation, args, recovery):
                 pending = refresh.get("pending")
 
     exit_code, body, base_url = _post_play_mode(
-        selector, args, session, base_url, action, force_run_in_background
+        selector, args, session, base_url, action, force_run_in_background, endpoint_resolver
     )
     if _play_mode_absent(body):
         return _version_mismatch_result(args, cli_version.feature_missing_detail(base_url))
@@ -2871,18 +2921,29 @@ def _run_play_mode_command(operation, args, recovery):
     exit_wait_seconds = float(args.timeout_seconds)
     if operation == "stop":
         exit_wait_seconds = max(exit_wait_seconds, _post_refresh_ready_timeout_seconds(args))
-    state, _state_payload, base_url, blocker = _wait_for_play_state(
-        operation, selector, args, session, base_url, target, exit_wait_seconds
+    state, _state_payload, base_url, blocker, endpoint_resolved = _wait_for_play_state(
+        operation, selector, args, session, base_url, target, exit_wait_seconds, endpoint_resolver
     )
     if state != target:
         if blocker is not None:
             return _play_blocker_result(operation, session, args, blocker)
-        return _play_running_result(operation, session, args, state)
+        return _play_running_result(
+            operation, session, args, state, endpoint_resolved or pre_reached
+        )
 
     transition = _play_transition(operation, pre_state)
     if operation == "stop":
         return _stop_success_result(
-            operation, selector, args, session, base_url, transition, baseline, pending, recovery
+            operation,
+            selector,
+            args,
+            session,
+            base_url,
+            transition,
+            baseline,
+            pending,
+            recovery,
+            endpoint_resolver,
         )
     return _play_success_result(
         operation,

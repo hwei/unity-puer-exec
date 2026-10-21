@@ -1,0 +1,16 @@
+# Host check 2026-10-21
+
+cwd: F:\C3\unity-puer-exec-workspace\c3-client-tree2
+selector: --project-path Project
+Other Unity processes were already running. The validation-host Editor bound http://127.0.0.1:55233, not the preferred port.
+
+play exit 0
+{"ok": true, "status": "completed", "operation": "play", "session": {"owner": "launched", "launched": true, "base_url": "http://127.0.0.1:55233", "project_path": "F:\\C3\\unity-puer-exec-workspace\\c3-client-tree2\\Project", "unity_pid": 95348, "unity_exe_path": "E:\\Program Files\\Unity\\Hub\\Editor\\2022.3.62f2\\Editor\\Unity.exe"}, "result": {"play_state": "playing", "transition": "performed", "run_in_background": {"forced": true, "project_setting": true, "option": "--no-run-in-background"}}, "cli_version": "0.10.1"}
+
+stop exit 0
+{"ok": true, "status": "completed", "operation": "stop", "session": {"owner": "published_endpoint", "launched": false, "base_url": "http://127.0.0.1:55233", "project_path": "F:\\C3\\unity-puer-exec-workspace\\c3-client-tree2\\Project", "unity_pid": 95348}, "result": {"play_state": "edit", "transition": "performed", "compile": {"outcome": "no_compile_observed", "compile_errors_total": 0}}, "cli_version": "0.10.1"}
+
+get-blocker-state exit 0
+{"ok": true, "status": "completed", "operation": "get-blocker-state", "session": {"owner": "published_endpoint", "launched": false, "base_url": "http://127.0.0.1:55233", "project_path": "F:\\C3\\unity-puer-exec-workspace\\c3-client-tree2\\Project", "unity_pid": 95348}, "result": {"status": "no_blocker"}, "cli_version": "0.10.1"}
+
+stop and get-blocker-state report the same base_url, unity_pid, and absolute project_path.

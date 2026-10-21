@@ -685,7 +685,7 @@ class ExeOriginProjectInferenceTests(unittest.TestCase):
                 ensure_dotenv_loaded_fn=no_loader,
                 argv0=str(exe_path),
             )
-            self.assertEqual(resolved, root / "explicit")
+            self.assertEqual(resolved, (root / "explicit").resolve())
 
     def test_resolve_priority_env_var_beats_inference(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -706,7 +706,7 @@ class ExeOriginProjectInferenceTests(unittest.TestCase):
                 ensure_dotenv_loaded_fn=no_loader,
                 argv0=str(exe_path),
             )
-            self.assertEqual(resolved, env_path)
+            self.assertEqual(resolved, env_path.resolve())
 
     def test_resolve_priority_inference_beats_cwd(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -747,6 +747,46 @@ class ExeOriginProjectInferenceTests(unittest.TestCase):
                 argv0=str(exe_path),
             )
             self.assertEqual(resolved, Path(cwd))
+
+    def test_resolve_project_path_makes_a_relative_argument_absolute_against_cwd(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            project = root / "Project"
+            project.mkdir()
+
+            def no_loader(**kwargs):
+                return False
+
+            resolved = unity_session_env.resolve_project_path(
+                __file__,
+                project_path="Project",
+                cwd=str(root),
+                env={},
+                ensure_dotenv_loaded_fn=no_loader,
+            )
+
+        self.assertEqual(resolved, project.resolve())
+        self.assertTrue(resolved.is_absolute())
+
+    def test_resolve_project_path_makes_a_relative_env_value_absolute_against_cwd(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            project = root / "FromEnv"
+            project.mkdir()
+
+            def no_loader(**kwargs):
+                return False
+
+            resolved = unity_session_env.resolve_project_path(
+                __file__,
+                project_path=None,
+                cwd=str(root),
+                env={"UNITY_PROJECT_PATH": "FromEnv"},
+                ensure_dotenv_loaded_fn=no_loader,
+            )
+
+        self.assertEqual(resolved, project.resolve())
+        self.assertTrue(resolved.is_absolute())
 
 
 class HealthIdentityProtocolTests(unittest.TestCase):

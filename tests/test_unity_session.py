@@ -799,6 +799,89 @@ class RangeAwareDiscoveryTests(unittest.TestCase):
         self.assertIsNone(error)
         self.assertFalse(saw_other)
 
+    def test_payload_matches_relative_path_against_absolute_forward_slash_health(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            project = root / "Project"
+            other = root / "Other"
+            project.mkdir()
+            other.mkdir()
+            health_path = str(project.resolve()).replace("\\", "/")
+            foreign_path = str(other.resolve()).replace("\\", "/")
+            previous = os.getcwd()
+            os.chdir(root)
+            try:
+                self.assertTrue(
+                    unity_session._payload_matches_project({"project_path": health_path}, "Project")
+                )
+                self.assertFalse(
+                    unity_session._payload_matches_project({"project_path": foreign_path}, "Project")
+                )
+            finally:
+                os.chdir(previous)
+
+    def test_discover_project_endpoint_matches_relative_path_and_skips_foreign_preferred_port(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            project = root / "Project"
+            other = root / "Other"
+            project.mkdir()
+            other.mkdir()
+            health_path = str(project.resolve()).replace("\\", "/")
+            foreign_path = str(other.resolve()).replace("\\", "/")
+            probe = mock.Mock(side_effect=_probe_by_url({
+                self.PREFERRED: (_ready_payload(foreign_path), None),
+                self.ROLLED_OVER: (_ready_payload(health_path), None),
+            }))
+            previous = os.getcwd()
+            os.chdir(root)
+            try:
+                with mock.patch.object(unity_session, "_probe_health", probe):
+                    base_url, payload, error, saw_other = unity_session.discover_project_endpoint("Project")
+            finally:
+                os.chdir(previous)
+
+        self.assertEqual(base_url, self.ROLLED_OVER)
+        self.assertEqual(payload["project_path"], health_path)
+        self.assertIsNone(error)
+        self.assertTrue(saw_other)
+        # Preferred answered a different project, so the scan continued.
+        self.assertGreater(probe.call_count, 1)
+
+    def test_get_blocker_state_reports_the_published_endpoint(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            publication = {
+                "base_url": "http://127.0.0.1:55240/",
+                "unity_pid": 4242,
+                "project_path": str(project),
+                "session_marker": "marker-1",
+            }
+            with mock.patch.object(unity_session, "read_endpoint_publication", return_value=publication), mock.patch.object(
+                unity_session, "_is_pid_running", return_value=True
+            ):
+                session = unity_session.get_blocker_state(project_path=str(project))
+
+        self.assertEqual(session.base_url, "http://127.0.0.1:55240")
+        self.assertEqual(session.unity_pid, 4242)
+        payload = session.to_payload()
+        self.assertEqual(payload["base_url"], "http://127.0.0.1:55240")
+        self.assertEqual(payload["unity_pid"], 4242)
+        self.assertEqual(Path(payload["project_path"]), project.resolve())
+
+    def test_get_blocker_state_without_publication_emits_null_base_url(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            with mock.patch.object(unity_session, "read_endpoint_publication", return_value=None):
+                session = unity_session.get_blocker_state(project_path=str(project))
+
+        self.assertIsNone(session.base_url)
+        self.assertIsNone(session.unity_pid)
+        payload = session.to_payload()
+        self.assertIsNone(payload["base_url"])
+        self.assertNotIn("unity_pid", payload)
+        self.assertIn('"base_url": null', json.dumps(payload))
+
     def test_discover_project_endpoint_reports_no_match_when_nothing_reachable(self):
         probe = mock.Mock(return_value=(None, "connection refused"))
         with mock.patch.object(unity_session, "_probe_health", probe):
