@@ -99,6 +99,38 @@ Prerequisites:
 
   Unity identifies an embedded package by the `name` declared in its `package.json`, not by the directory name. **Renaming the directory does not clear the shadow** — a directory renamed to `com.txcombo.unity-puer-exec.bak` is still loaded as `com.txcombo.unity-puer-exec`. Clearing the shadow requires **moving or removing the directory out of `Project/Packages/`** entirely.
 
+### Release-time: the loaded copy must declare the version being released
+
+When the host loads an embedded copy, that copy decides the `bridge_version` the
+suite compares against the CLI, and the release helper cannot infer it from this
+repository. Before a real-host run counts as evidence for a release, the loaded
+copy must declare **the version being released** — not just any version, and not
+a stamped number over stale code.
+
+`python tools/release_openupm.py --real-host-validation` enforces that:
+
+- It refuses (`host_package_version_mismatch`) when the loaded copy declares a
+  different version, naming the loaded path and both versions, before any test
+  runs. This replaces the previous failure mode of 40-odd identical
+  `version_mismatch` stack traces after a full suite run.
+- It refuses (`host_project_unavailable`) instead of letting the suite skip when
+  no usable host is configured.
+- `--sync-host-version` writes the release candidate version into the loaded
+  copy, but only when that copy's package content matches this repository's:
+  same relative path set, `package.json` equal as parsed JSON apart from the
+  `version` key, and other files equal after CRLF/LF normalisation. `CLI~/` is
+  excluded on both sides — the host copy carries a published executable that is
+  not package content under validation. Divergence refuses as
+  `host_package_stale` and names the differing paths.
+- The aligned version is reverted together with the repository version if
+  preparation fails or is interrupted before the release commit.
+
+A host wired only through a manifest `file:` dependency pointing at this
+repository's package needs no action: the loaded package *is* the repository
+package, so the version moves with the bump.
+
+See [openupm-release-pipeline/how-to-run.md](../openupm-release-pipeline/how-to-run.md).
+
 Run command:
 ```
 UNITY_PUER_EXEC_RUN_REAL_HOST_TESTS=1 python -m unittest tests.test_real_host_integration
