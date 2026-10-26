@@ -1334,5 +1334,111 @@ class ExecJournalTests(unittest.TestCase):
         self.assertEqual(unity_session_logs.sweep_exec_journal_entries(self.project_path), [])
 
 
+class HostToolOutputDecodingTests(unittest.TestCase):
+    """Windows' tools write in the console code page; the interpreter may read UTF-8.
+
+    A strict decode raises inside subprocess' reader thread and leaves the stream as
+    `None`. That used to reach `.strip()` and fail `ensure-closed` *after* it had
+    already killed the Editor, so a completed stop was reported as an internal error.
+    These pin the two halves of the fix: replace instead of raise, and never treat an
+    absent stream as text.
+    """
+
+    def _run_patch(self, **kwargs):
+        return mock.patch.object(
+            unity_session_process.subprocess,
+            "run",
+            return_value=subprocess.CompletedProcess(args=["taskkill"], **kwargs),
+        )
+
+    def test_runner_asks_for_text_mode_with_replacement_decoding(self):
+        with self._run_patch(returncode=0, stdout="ok", stderr="") as run:
+            unity_session_process._run_host_tool(["tasklist"])
+
+        kwargs = run.call_args.kwargs
+        self.assertTrue(kwargs.get("universal_newlines") or kwargs.get("text"))
+        self.assertEqual(kwargs.get("errors"), "replace")
+
+    def test_runner_turns_an_absent_stream_into_empty_text(self):
+        with self._run_patch(returncode=0, stdout=None, stderr=None):
+            result = unity_session_process._run_host_tool(["taskkill", "/PID", "1"])
+
+        self.assertEqual(result.stdout, "")
+        self.assertEqual(result.stderr, "")
+
+    def test_ensure_closed_immediate_kill_survives_an_undecodable_stream(self):
+        lockfile_held = iter([True, False])
+        time_ref = SimpleNamespace(time=lambda: 0.0, sleep=lambda _seconds: None)
+
+        with self._run_patch(returncode=0, stdout=None, stderr=None):
+            stopped, session = unity_session_process.ensure_closed(
+                project_path="X:/project",
+                mode="immediate_kill",
+                resolve_project_path_fn=lambda value: Path(value),
+                read_endpoint_publication_fn=lambda _path: {
+                    "base_url": "http://127.0.0.1:55231",
+                    "unity_pid": 1234,
+                },
+                endpoint_publication_path_fn=lambda _path: Path("X:/project/Temp/UnityPuerExec/endpoint.json"),
+                lockfile_held_fn=lambda _path: next(lockfile_held),
+                is_pid_running_fn=lambda _pid: True,
+                default_base_url="http://127.0.0.1:55231",
+                time_ref=time_ref,
+            )
+
+        self.assertTrue(stopped)
+        self.assertEqual(session.diagnostics["taskkill_stdout"], "")
+        self.assertEqual(session.diagnostics["taskkill_stderr"], "")
+        self.assertEqual(session.diagnostics["taskkill_exit_code"], 0)
+
+    def test_close_session_survives_an_undecodable_stream(self):
+        session = SimpleNamespace(launched=True, unity_pid=1234)
+        pids_running = iter([True, False])
+
+        with self._run_patch(returncode=0, stdout=None, stderr=None):
+            cleanup = unity_session_process.close_session(
+                session, is_pid_running_fn=lambda _pid: next(pids_running)
+            )
+
+        self.assertTrue(cleanup["attempted"])
+        self.assertTrue(cleanup["closed"])
+        self.assertEqual(cleanup["stdout"], "")
+        self.assertEqual(cleanup["stderr"], "")
+        self.assertNotIn("error", cleanup)
+
+    def test_close_session_still_fails_when_the_kill_failed(self):
+        session = SimpleNamespace(launched=True, unity_pid=1234)
+
+        with self._run_patch(returncode=1, stdout=None, stderr=None):
+            cleanup = unity_session_process.close_session(
+                session, is_pid_running_fn=lambda _pid: True
+            )
+
+        self.assertFalse(cleanup["closed"])
+        self.assertEqual(cleanup["error"], "taskkill failed with code 1")
+
+    def test_liveness_answer_does_not_depend_on_decoded_text(self):
+        with self._run_patch(returncode=0, stdout=None, stderr=None):
+            self.assertFalse(unity_session_process.is_pid_running(999999))
+
+        with self._run_patch(
+            returncode=0,
+            stdout='"Unity.exe","1234","Console","1","1,000 K"\n',
+            stderr="",
+        ):
+            self.assertTrue(unity_session_process.is_pid_running(1234))
+
+    def test_listing_does_not_depend_on_decoded_text(self):
+        with self._run_patch(returncode=0, stdout=None, stderr=None):
+            self.assertEqual(unity_session_process.list_unity_pids(), [])
+
+        with self._run_patch(
+            returncode=0,
+            stdout='"Unity.exe","42","Console","1","1 K"\r\n"Unity.exe","43","Console","1","1 K"\r\n',
+            stderr="",
+        ):
+            self.assertEqual(unity_session_process.list_unity_pids(), [42, 43])
+
+
 if __name__ == "__main__":
     unittest.main()

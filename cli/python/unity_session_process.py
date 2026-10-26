@@ -19,6 +19,31 @@ from unity_session_common import (
 )
 
 
+def _run_host_tool(args):
+    """Run a host process tool whose output can never fail decoding.
+
+    Windows' own tools (`tasklist`, `taskkill`) write in the console code page while
+    the interpreter may decode as UTF-8 (`PYTHONUTF8=1`, a UTF-8 locale). A strict
+    decode raises inside subprocess' reader thread and leaves that stream as `None`,
+    which used to reach `.strip()` and fail the whole command -- after the kill had
+    already succeeded. Replacement decoding keeps the text (mojibake is acceptable in
+    a diagnostic) and an absent stream becomes empty text, so no caller sees `None`.
+    """
+    result = subprocess.run(
+        args,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        universal_newlines=True,
+        errors="replace",
+        check=False,
+    )
+    if result.stdout is None:
+        result.stdout = ""
+    if result.stderr is None:
+        result.stderr = ""
+    return result
+
+
 def _is_cli_owned_unity_switch(token):
     if token is None:
         return False
@@ -83,12 +108,8 @@ def merge_unity_launch_args(cli_args=None, env=None):
 
 
 def list_unity_pids():
-    result = subprocess.run(
-        ["tasklist", "/FI", "IMAGENAME eq Unity.exe", "/NH", "/FO", "CSV"],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        universal_newlines=True,
-        check=False,
+    result = _run_host_tool(
+        ["tasklist", "/FI", "IMAGENAME eq Unity.exe", "/NH", "/FO", "CSV"]
     )
     rows = []
     reader = csv.reader(io.StringIO(result.stdout))
@@ -128,12 +149,8 @@ def _pid_present_in_tasklist_csv(output, pid):
 def is_pid_running(pid):
     if pid is None:
         return False
-    result = subprocess.run(
-        ["tasklist", "/FI", "PID eq {}".format(pid), "/NH", "/FO", "CSV"],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        universal_newlines=True,
-        check=False,
+    result = _run_host_tool(
+        ["tasklist", "/FI", "PID eq {}".format(pid), "/NH", "/FO", "CSV"]
     )
     return _pid_present_in_tasklist_csv(result.stdout, pid)
 
@@ -339,16 +356,10 @@ def ensure_closed(
             session.diagnostics["kill_skipped_reason"] = "no_published_process_to_target"
             return False, session
 
-        result = subprocess.run(
-            ["taskkill", "/PID", str(target_pid), "/T", "/F"],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            universal_newlines=True,
-            check=False,
-        )
+        result = _run_host_tool(["taskkill", "/PID", str(target_pid), "/T", "/F"])
         session.diagnostics["taskkill_target_pid"] = target_pid
-        session.diagnostics["taskkill_stdout"] = result.stdout.strip()
-        session.diagnostics["taskkill_stderr"] = result.stderr.strip()
+        session.diagnostics["taskkill_stdout"] = (result.stdout or "").strip()
+        session.diagnostics["taskkill_stderr"] = (result.stderr or "").strip()
         session.diagnostics["taskkill_exit_code"] = result.returncode
         settle_deadline = time_ref.time() + max(POLL_INTERVAL_SECONDS, min(timeout_seconds, 2.0))
         while time_ref.time() < settle_deadline:
@@ -380,15 +391,9 @@ def close_session(session, keep_unity=False, is_pid_running_fn=None):
         cleanup["already_stopped"] = True
         return cleanup
 
-    result = subprocess.run(
-        ["taskkill", "/PID", str(session.unity_pid), "/T", "/F"],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        universal_newlines=True,
-        check=False,
-    )
-    cleanup["stdout"] = result.stdout.strip()
-    cleanup["stderr"] = result.stderr.strip()
+    result = _run_host_tool(["taskkill", "/PID", str(session.unity_pid), "/T", "/F"])
+    cleanup["stdout"] = (result.stdout or "").strip()
+    cleanup["stderr"] = (result.stderr or "").strip()
     cleanup["closed"] = result.returncode == 0 or not is_pid_running_fn(session.unity_pid)
     if result.returncode != 0 and not cleanup["closed"]:
         cleanup["error"] = "taskkill failed with code {}".format(result.returncode)
