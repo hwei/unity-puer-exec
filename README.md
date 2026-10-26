@@ -21,6 +21,7 @@ Most Unity automation tools assume a human has already opened the Editor and wil
   - **Focus stealing:** modal dialogs are dismissed with window messages first and only fall back to bringing the window to the foreground (Safe Mode always takes the foreground path). One agent clearing a dialog does not disrupt the other Editors or the human's active window.
   - **Launch races:** launch claims and per-project session artifacts stop two agents from cold-launching the same project at once.
 - **PuerTS-powered instant execution.** Scripts run through the PuerTS JavaScript bridge — interpreted, no compilation step, no external compiler dependency. If your project already uses PuerTS, there is nothing extra to install.
+- **A crash is reported, not replayed.** When a script takes the Editor process down, the request ends as `editor_crashed_during_request` (exit code 26) with the Editor log and the Unity crash report as evidence. It is never automatically re-executed after the next relaunch, and the crashed Editor's log is preserved instead of being overwritten by a relaunch.
 
 ### Real-world scenario: asset pipeline automation
 
@@ -94,6 +95,11 @@ The CLI binary ships inside the package at `CLI~/unity-puer-exec.exe`. Your agen
 Start by letting the agent discover the CLI surface through `--help` and per-command help instead of assuming command syntax from memory.
 
 If a command fails in a way that looks like a defect in the tool itself, or the workflow is awkward enough to be worth fixing, read `unity-puer-exec --help-feedback` and offer the user a report before filing anything.
+
+### Scripting notes
+
+- **A script that kills the Editor is reported, never retried.** If the Editor process dies while an `exec` script is running, the request ends as `editor_crashed_during_request` (exit code 26), carrying the Editor log path and the Unity crash report directory when one exists. The CLI does not relaunch Unity for that request and does not replay the script: the script is the most likely cause, and a relaunch would overwrite the log that explains the crash. Fix the script and submit it as a new request with a new `request_id`.
+- **Passing `null` for a C# `out` parameter crashes the Editor natively.** When an API loaded through the bridge declares an `out` parameter, pass a ref object such as `puer.$ref(0)` for that argument instead of `null`. A `null` there reaches native code and takes the whole Editor process down — the crash the status above reports.
 
 Example prompt: simple scene operation
 

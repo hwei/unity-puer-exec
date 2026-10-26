@@ -1,4 +1,5 @@
 import json
+import datetime
 import os
 import sys
 import tempfile
@@ -6214,6 +6215,313 @@ class AgentIssueFeedbackTests(unittest.TestCase):
         self.assertNotIn("failure_origin", payload)
         self.assertNotIn("--help-feedback", json.dumps(payload.get("next_steps") or []))
         self.assertNotIn("--help-feedback", payload.get("situation") or "")
+
+
+class ExecCrashReplayLoopTests(unittest.TestCase):
+    """The CLI half of `editor_crashed_during_request`.
+
+    One crashed script used to be re-executed after every Editor relaunch. These
+    pin the two ways the CLI can learn better: the start journal (a request that
+    already ran in a process that is gone) and the server guard (a new Editor that
+    refuses to re-run it). Both must produce the same terminal answer, and neither
+    may launch Unity or resubmit the script.
+    """
+
+    CODE = "export default function run(ctx) { return 1; }"
+
+    def _write_journal(self, project_path, request_id, editor_pid=4242, started_at=None):
+        started_at = started_at or datetime.datetime.utcnow()
+        path = unity_session_logs.exec_journal_entry_path(str(project_path), request_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "schema_version": unity_session_common.EXEC_JOURNAL_SCHEMA_VERSION,
+            "request_id": request_id,
+            "editor_pid": editor_pid,
+            "process_start_utc": "2026-10-26T06:00:00.000Z",
+            "started_at_utc": started_at.strftime("%Y-%m-%dT%H:%M:%S.000Z"),
+            "editor_log_path": "C:/project/Temp/UnityPuerExec/Editor.log",
+        }
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        return path
+
+    def _help_args(self, project_path=None):
+        return mock.Mock(
+            include_diagnostics=False,
+            suppress_guidance=True,
+            project_path=project_path,
+            base_url=None,
+            wait_timeout_ms=1000,
+        )
+
+    def test_exec_reports_a_crashed_request_without_launching_unity(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_path = Path(temp_dir) / "Project"
+            project_path.mkdir()
+            journal_path = self._write_journal(project_path, "rid-crash")
+
+            with mock.patch.object(unity_session, "ensure_session_ready") as ensure_session_ready, mock.patch.object(
+                unity_puer_exec.direct_exec_client, "invoke_command"
+            ) as invoke_command, mock.patch.object(unity_session, "is_pid_running", return_value=False):
+                exit_code, stdout, stderr = unity_puer_exec.run_cli(
+                    ["exec", "--project-path", str(project_path), "--code", self.CODE, "--request-id", "rid-crash"]
+                )
+
+            ensure_session_ready.assert_not_called()
+            invoke_command.assert_not_called()
+            # The evidence is kept for later waits rather than consumed by this one.
+            self.assertTrue(journal_path.exists())
+
+        self.assertEqual(exit_code, unity_puer_exec.EXIT_EDITOR_CRASHED_DURING_REQUEST)
+        self.assertEqual(exit_code, 26)
+        self.assertEqual(stderr, "")
+        body = json.loads(stdout)
+        self.assertFalse(body["ok"])
+        self.assertEqual(body["status"], "editor_crashed_during_request")
+        self.assertEqual(body["request_id"], "rid-crash")
+        self.assertEqual(body["editor_pid"], 4242)
+        self.assertFalse(body["resubmit_safe"])
+        self.assertFalse(body["recoverable"])
+        self.assertEqual(body["editor_log_path"], "C:/project/Temp/UnityPuerExec/Editor.log")
+        self.assertIn("log_range", body)
+
+    def test_wait_for_exec_reports_the_same_crash_on_every_wait(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_path = Path(temp_dir) / "Project"
+            project_path.mkdir()
+            self._write_journal(project_path, "rid-crash")
+            unity_session.write_pending_exec_artifact(
+                str(project_path),
+                "rid-crash",
+                {"request_id": "rid-crash", "code": self.CODE, "script_args": {}, "script_args_json": "{}"},
+            )
+
+            with mock.patch.object(unity_session, "ensure_session_ready") as ensure_session_ready, mock.patch.object(
+                unity_puer_exec.direct_exec_client, "invoke_command"
+            ) as invoke_command, mock.patch.object(unity_session, "is_pid_running", return_value=False):
+                first = unity_puer_exec.run_cli(
+                    ["wait-for-exec", "--project-path", str(project_path), "--request-id", "rid-crash"]
+                )
+                second = unity_puer_exec.run_cli(
+                    ["wait-for-exec", "--project-path", str(project_path), "--request-id", "rid-crash"]
+                )
+
+            ensure_session_ready.assert_not_called()
+            invoke_command.assert_not_called()
+            # The pending artifact is what a replay would have used.
+            self.assertIsNone(unity_session.read_pending_exec_artifact(str(project_path), "rid-crash"))
+
+        for exit_code, stdout, stderr in (first, second):
+            self.assertEqual(exit_code, 26)
+            self.assertEqual(stderr, "")
+            body = json.loads(stdout)
+            self.assertEqual(body["status"], "editor_crashed_during_request")
+            self.assertEqual(body["request_id"], "rid-crash")
+
+    def test_exec_reports_the_crash_when_the_editor_exits_inside_the_grace_window(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_path = Path(temp_dir) / "Project"
+            project_path.mkdir()
+            self._write_journal(project_path, "rid-crash")
+            unity_session.write_pending_exec_artifact(
+                str(project_path),
+                "rid-crash",
+                {"request_id": "rid-crash", "code": self.CODE, "script_args": {}, "script_args_json": "{}"},
+            )
+
+            with mock.patch.object(
+                unity_session,
+                "ensure_session_ready",
+                return_value=_make_session(project_path=str(project_path)),
+            ), mock.patch.object(
+                unity_puer_exec.direct_exec_client,
+                "invoke_command",
+                return_value=(
+                    unity_puer_exec.EXIT_NOT_AVAILABLE,
+                    json.dumps({"ok": False, "status": "not_available", "request_id": "rid-crash"}),
+                    "",
+                ),
+            ) as invoke_command, mock.patch.object(
+                unity_session, "is_pid_running", side_effect=[True, False]
+            ), mock.patch.object(
+                unity_puer_exec_runtime, "EDITOR_CRASH_GRACE_POLL_SECONDS", 0.0
+            ):
+                exit_code, stdout, stderr = unity_puer_exec.run_cli(
+                    ["exec", "--project-path", str(project_path), "--code", self.CODE, "--request-id", "rid-crash"]
+                )
+
+            self.assertEqual(invoke_command.call_count, 1)
+            self.assertIsNone(unity_session.read_pending_exec_artifact(str(project_path), "rid-crash"))
+
+        self.assertEqual(exit_code, 26)
+        self.assertEqual(stderr, "")
+        body = json.loads(stdout)
+        self.assertEqual(body["status"], "editor_crashed_during_request")
+        self.assertFalse(body["resubmit_safe"])
+
+    def test_exec_keeps_not_available_when_the_editor_survives_the_grace_window(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_path = Path(temp_dir) / "Project"
+            project_path.mkdir()
+            self._write_journal(project_path, "rid-transport")
+
+            with mock.patch.object(
+                unity_session,
+                "ensure_session_ready",
+                return_value=_make_session(project_path=str(project_path)),
+            ), mock.patch.object(
+                unity_puer_exec.direct_exec_client,
+                "invoke_command",
+                return_value=(
+                    unity_puer_exec.EXIT_NOT_AVAILABLE,
+                    json.dumps({"ok": False, "status": "not_available", "request_id": "rid-transport"}),
+                    "",
+                ),
+            ), mock.patch.object(
+                unity_session, "is_pid_running", return_value=True
+            ), mock.patch.object(
+                unity_puer_exec_runtime, "EDITOR_CRASH_GRACE_SECONDS", 0.0
+            ):
+                exit_code, stdout, stderr = unity_puer_exec.run_cli(
+                    ["exec", "--project-path", str(project_path), "--code", self.CODE, "--request-id", "rid-transport"]
+                )
+
+            # The request may still be alive in the Editor, so the retryable answer
+            # and the replayable artifact both stay.
+            self.assertIsNotNone(unity_session.read_pending_exec_artifact(str(project_path), "rid-transport"))
+
+        self.assertEqual(exit_code, unity_puer_exec.EXIT_NOT_AVAILABLE)
+        self.assertEqual(stderr, "")
+        self.assertEqual(json.loads(stdout)["status"], "not_available")
+
+    def test_server_guard_answer_is_enriched_like_a_local_crash(self):
+        server_body = {
+            "ok": False,
+            "status": "editor_crashed_during_request",
+            "request_id": "rid-guard",
+            "editor_pid": 4242,
+            "started_at": "2026-10-26T06:29:00.000Z",
+            "editor_log_path": "C:/project/Temp/UnityPuerExec/Editor.log",
+            "resubmit_safe": False,
+            "recoverable": False,
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_path = Path(temp_dir) / "Project"
+            project_path.mkdir()
+            with mock.patch.object(
+                unity_session,
+                "ensure_session_ready",
+                return_value=_make_session(project_path=str(project_path)),
+            ), mock.patch.object(
+                unity_puer_exec.direct_exec_client,
+                "invoke_command",
+                return_value=(26, json.dumps(server_body), ""),
+            ):
+                exit_code, stdout, stderr = unity_puer_exec.run_cli(
+                    ["exec", "--project-path", str(project_path), "--code", self.CODE, "--request-id", "rid-guard"]
+                )
+
+        self.assertEqual(exit_code, 26)
+        self.assertEqual(stderr, "")
+        body = json.loads(stdout)
+        self.assertEqual(body["status"], "editor_crashed_during_request")
+        self.assertEqual(body["editor_pid"], 4242)
+        self.assertEqual(body["started_at"], "2026-10-26T06:29:00.000Z")
+        self.assertEqual(body["editor_log_path"], "C:/project/Temp/UnityPuerExec/Editor.log")
+        self.assertFalse(body["resubmit_safe"])
+        self.assertIn("situation", body)
+        self.assertIn("log_range", body)
+        self.assertEqual([step["command"] for step in body["next_steps"]], ["exec", "get-log-source"])
+
+    def test_crash_payload_carries_the_crash_report_directory(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            crashes_root = Path(temp_dir) / "Unity" / "Editor" / "Crashes"
+            report_dir = crashes_root / "Crash_2026-10-26_062900"
+            report_dir.mkdir(parents=True)
+            started_at = datetime.datetime.utcnow()
+
+            with mock.patch.object(unity_puer_exec_runtime.tempfile, "gettempdir", return_value=temp_dir):
+                payload = unity_puer_exec_runtime._emit_editor_crash_payload(
+                    "exec",
+                    "rid",
+                    self._help_args(),
+                    editor_pid=4242,
+                    started_at=started_at.strftime("%Y-%m-%dT%H:%M:%S.000Z"),
+                )
+
+        self.assertEqual(payload["crash_report_dir"], str(report_dir))
+
+    def test_crash_payload_omits_a_crash_report_older_than_the_request(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            crashes_root = Path(temp_dir) / "Unity" / "Editor" / "Crashes"
+            report_dir = crashes_root / "Crash_2026-10-20_100000"
+            report_dir.mkdir(parents=True)
+            # A crash from days ago belongs to a different Editor run.
+            old = (datetime.datetime.utcnow() - datetime.timedelta(days=5)).timestamp()
+            os.utime(str(report_dir), (old, old))
+
+            with mock.patch.object(unity_puer_exec_runtime.tempfile, "gettempdir", return_value=temp_dir):
+                payload = unity_puer_exec_runtime._emit_editor_crash_payload(
+                    "exec",
+                    "rid",
+                    self._help_args(),
+                    editor_pid=4242,
+                    started_at=datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S.000Z"),
+                )
+
+        self.assertNotIn("crash_report_dir", payload)
+
+    def test_crash_payload_without_an_editor_log_path_omits_it(self):
+        payload = unity_puer_exec_runtime._emit_editor_crash_payload(
+            "wait-for-exec",
+            "rid",
+            self._help_args(),
+            editor_pid=4242,
+            started_at="",
+        )
+
+        self.assertNotIn("editor_log_path", payload)
+        self.assertNotIn("started_at", payload)
+        self.assertEqual(payload["editor_pid"], 4242)
+        self.assertEqual(payload["status"], "editor_crashed_during_request")
+
+    def test_exec_help_status_lists_the_crash_status_with_exit_26(self):
+        exit_code, stdout, stderr = unity_puer_exec.run_cli(["exec", "--help-status"])
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(stderr, "")
+        self.assertIn("editor_crashed_during_request", stdout)
+        self.assertIn("26", stdout)
+
+        failure_rows = help_surface.COMMAND_HELP["exec"]["status"]["failure"]
+        crash_row = next(row for row in failure_rows if row[0] == "editor_crashed_during_request")
+        self.assertEqual(crash_row[1], 26)
+        self.assertIn("not re-run", crash_row[2])
+
+    def test_wait_for_exec_help_status_lists_the_crash_status_with_exit_26(self):
+        exit_code, stdout, stderr = unity_puer_exec.run_cli(["wait-for-exec", "--help-status"])
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(stderr, "")
+        self.assertIn("editor_crashed_during_request", stdout)
+
+        failure_rows = help_surface.COMMAND_HELP["wait-for-exec"]["status"]["failure"]
+        crash_row = next(row for row in failure_rows if row[0] == "editor_crashed_during_request")
+        self.assertEqual(crash_row[1], 26)
+        self.assertNotEqual(crash_row[1], help_surface.COMMAND_HELP["wait-for-exec"]["status"]["failure"][2][1])
+
+    def test_crash_guidance_never_continues_the_crashed_request_id(self):
+        context = {"project_path": "X:/p", "base_url": "http://127.0.0.1:55231", "request_id": "rid-crash"}
+
+        for command in ("exec", "wait-for-exec"):
+            entry = help_surface.GUIDANCE_MATRIX[(command, "editor_crashed_during_request")]
+            self.assertNotIn("wait-for-exec", [step["command"] for step in entry["next_steps"]])
+
+            steps = help_surface.build_next_steps(command, "editor_crashed_during_request", context)
+            self.assertEqual([step["command"] for step in steps], ["exec", "get-log-source"])
+            for step in steps:
+                argv = step.get("argv") or []
+                self.assertNotIn("rid-crash", argv)
+                self.assertNotIn("--request-id", argv)
 
 
 if __name__ == "__main__":

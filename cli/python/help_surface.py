@@ -415,6 +415,7 @@ COMMAND_HELP = {
                 "The command may return `running` when the wait budget ends before the request finishes.",
                 "An automatic refresh settles the compile cycle it starts on a compile-scale budget of its own -- the same cycle `wait-for-compile --settle-timeout-seconds` waits for. That settle is not bounded by `--wait-timeout-ms`, so a small request-wait budget does not abandon a refresh.",
                 "Reusing the same `--request-id` with equivalent execution content and equivalent canonical `--script-args` is recovery, not a duplicate execution attempt.",
+                "A request whose script started and then lost the Editor process to a native crash is reported as `editor_crashed_during_request`, not `not_available`. That outcome is terminal: the script is not re-run, and a new `request_id` is required.",
                 "The default-exported entry function must return an immediate JSON-serializable value; Promise return values complete with warning status (the function body still executes but the return value is not captured).",
             ],
         },
@@ -443,6 +444,7 @@ COMMAND_HELP = {
                 ("module_cache_stale", direct_exec_client.EXIT_MODULE_CACHE_STALE, "one or more loaded local modules changed or were removed; `--stale-module-policy error` withheld reset so JsEnv state is preserved. Choose explicit reset or omit the error policy for same-invocation auto recovery."),
                 ("unity_compile_error", direct_exec_client.EXIT_UNITY_COMPILE_ERROR, "C# compilation has errors; the script was not executed. Fix the C# errors and re-run `exec` -- saving the fix is itself enough to trigger recompilation on the next exec."),
                 ("refresh_unsettled", EXIT_REFRESH_UNSETTLED, "an automatic refresh this CLI started did not settle its compile cycle within that compile-scale budget, so the script has not run and the addressed service holds no record to continue. Distinct from `missing`: nothing is lost, and re-running the same `exec` runs the script for the first time. `next_steps` carries the resubmit path."),
+                ("editor_crashed_during_request", direct_exec_client.EXIT_EDITOR_CRASHED_DURING_REQUEST, "the Editor process died while this request's script was running, so the request was not re-run and will not be. Terminal: fix the script and submit it as a new request with a new `request_id`. `editor_log_path` and `crash_report_dir` carry the evidence; `next_steps` never offers a continuation of the same `request_id`."),
             ],
         },
     },
@@ -476,6 +478,7 @@ COMMAND_HELP = {
             "Timeout Rules": [
                 "`--wait-timeout-ms` must be a positive integer.",
                 "`missing` means the addressed service currently has no recoverable record for that `request_id`, including local pending artifacts that have already expired or were cleaned up as malformed leftovers.",
+                "A `request_id` whose script started and then lost the Editor process to a native crash is reported as `editor_crashed_during_request`, not `missing` and not a replay. The wait never relaunches Unity for it, so the crashed Editor's log stays as the crash left it.",
                 "An automatic refresh `exec` could not settle does not produce `missing` here: it produces `refresh_unsettled`, and the script has not run. Re-run the same `exec` with the same `--request-id`; it runs the script for the first time.",
             ],
         },
@@ -490,6 +493,7 @@ COMMAND_HELP = {
                 ("address_conflict", 2, "both selectors were provided; choose exactly one."),
                 ("modal_blocked", direct_exec_client.EXIT_MODAL_BLOCKED, "a supported Unity modal dialog is blocking the accepted exec request; inspect `blocker.type` and avoid starting a fresh request."),
                 ("missing", direct_exec_client.EXIT_MISSING, "the addressed service has no recoverable record for that `request_id`, including expired or malformed local pending leftovers."),
+                ("editor_crashed_during_request", direct_exec_client.EXIT_EDITOR_CRASHED_DURING_REQUEST, "the Editor process died while this request's script was running, so the script was not re-run and this wait will not replay it. Terminal: `missing` is deliberately not reported here, because the request did exist and may have crashed the Editor. Fix the script and submit it as a new request."),
                 ("not_available", direct_exec_client.EXIT_NOT_AVAILABLE, "the direct execution target could not be reached."),
                 ("launch_conflict", EXIT_UNITY_START_FAILED, "project-scoped launch ownership could not be established safely, so the CLI refused a competing launch."),
                 ("editor_not_under_cli_control", EXIT_EDITOR_NOT_UNDER_CLI_CONTROL, "an Editor is running for this project but never activated a control service; `ways_forward` lists how to proceed. The remedy is an activation decision, not a retry."),
@@ -1013,6 +1017,45 @@ _PLAY_MODE_EXIT_STEPS = [
     },
 ]
 
+# Shared by the payload and the guidance matrix so the two cannot describe the same
+# outcome differently. `--suppress-guidance` keeps the payload copy, guided responses
+# get the matrix copy; both read from here.
+EDITOR_CRASH_SITUATION = (
+    "The Unity Editor process died while this request's script was running. The "
+    "request was not re-run and will not be: exec scripts are not idempotent, and this "
+    "script is the most likely cause of the crash. The Editor log and any Unity crash "
+    "report in the payload are the evidence. Fix the script and submit it as a new "
+    "request with a new request id; the next project-scoped command relaunches the "
+    "Editor."
+)
+
+_EDITOR_CRASH_NEXT_STEPS = [
+    {
+        "command": "exec",
+        "when": "the script has been fixed and you want to run it for the first time as a new request; use a new request id, because the crashed request is never resumed",
+    },
+    {
+        "command": "get-log-source",
+        "when": "you want the resolved Editor log path and its resolution tier before reading the crash tail",
+        "argv_templates": [
+            {
+                "selector": "project_path",
+                "argv_template": [
+                    "unity-puer-exec", "get-log-source",
+                    "--project-path", "{project_path}",
+                ],
+            },
+            {
+                "selector": "base_url",
+                "argv_template": [
+                    "unity-puer-exec", "get-log-source",
+                    "--base-url", "{base_url}",
+                ],
+            },
+        ],
+    },
+]
+
 
 GUIDANCE_MATRIX = {
     # --- exec ---
@@ -1334,6 +1377,16 @@ GUIDANCE_MATRIX = {
                 "when": "you need to resubmit the script as a new execution attempt",
             },
         ],
+    },
+    # Terminal. Deliberately offers no `wait-for-exec` for the same request_id and no
+    # `exec` with it: the request already ran, and re-running it is the crash loop.
+    ("exec", "editor_crashed_during_request"): {
+        "situation": EDITOR_CRASH_SITUATION,
+        "next_steps": _EDITOR_CRASH_NEXT_STEPS,
+    },
+    ("wait-for-exec", "editor_crashed_during_request"): {
+        "situation": EDITOR_CRASH_SITUATION,
+        "next_steps": _EDITOR_CRASH_NEXT_STEPS,
     },
     ("wait-for-exec", "not_available"): {
         "situation": "The execution target could not be reached.",

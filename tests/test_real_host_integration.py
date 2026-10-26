@@ -1442,7 +1442,29 @@ _OWN_BOUNDARY_INTEGRATION_TESTS = {
     "test_control_port_rolls_over_when_preferred_port_occupied_against_real_host": "running",
     "test_exec_discovers_rolled_over_control_port_against_real_host": "running",
     "test_cold_launch_retries_on_transient_failure_against_real_host": "stop",
+    # The case's whole point is a dead Editor process; it relaunches one at the end,
+    # so it owns a running boundary rather than riding the shared host.
+    "test_script_that_crashes_the_editor_is_reported_and_never_replayed_against_real_host": "running",
 }
+
+
+# Natively crashes the Editor through PuerTS. `Utils.ForceCrash` takes a
+# `ForcedCrashCategory` on modern Unity and the older `ForceCrashKind` before that;
+# both are resolved at runtime so the case does not pin one API generation.
+_CRASH_THE_EDITOR_SCRIPT = """export default function run(ctx) {
+  const Utils = puer.loadType('UnityEngine.Diagnostics.Utils');
+  let category = null;
+  try {
+    category = puer.loadType('UnityEngine.Diagnostics.ForcedCrashCategory').AccessViolation;
+  } catch (error) {
+    category = null;
+  }
+  if (category === null) {
+    category = puer.loadType('UnityEngine.Diagnostics.ForceCrashKind').NativeCrash;
+  }
+  Utils.ForceCrash(category);
+  return { crashed: false };
+}"""
 
 
 class RealHostIntegrationTests(_SharedRealHostDevice, unittest.TestCase):
@@ -3094,6 +3116,101 @@ class RealHostIntegrationTests(_SharedRealHostDevice, unittest.TestCase):
         self.assertEqual(non_launch_payload["attempt_count"], 1)
         self.assertEqual(non_launch_payload["last_launch_status"], "compile_error")
         self.assertEqual(len(non_launch_payload["attempts"]), 1)
+
+
+    def test_script_that_crashes_the_editor_is_reported_and_never_replayed_against_real_host(self):
+        """One crashing script must produce one crash, not one per relaunch.
+
+        Issue #2: a script that killed the Editor was replayed by every following
+        `wait-for-exec`, which relaunched Unity and crashed again. The fix has three
+        observable parts, all asserted here: the crashing request ends as
+        `editor_crashed_during_request`, the wait does not relaunch Unity and so
+        leaves the crash log intact, and a later request runs in a fresh Editor
+        without the crashed request being run a second time.
+        """
+        self._ensure_shared_host_ready()
+        self._mark_own_boundary_perturbed()
+        log_path = unity_session_logs.project_launch_log_path(self.project_path)
+        request_id = _unique_request_id("crash-loop")
+
+        exit_code, payload, _stdout, _stderr = _run_cli(
+            [
+                "exec",
+                "--project-path", str(self.project_path),
+                "--unity-exe-path", str(self.unity_exe_path),
+                "--wait-timeout-ms", str(WAIT_TIMEOUT_MS),
+                "--request-id", request_id,
+                "--code", _CRASH_THE_EDITOR_SCRIPT,
+            ]
+        )
+
+        self.assertIsInstance(payload, dict, payload)
+        self.assertEqual(
+            exit_code,
+            unity_puer_exec.EXIT_EDITOR_CRASHED_DURING_REQUEST,
+            "a native crash must be reported as editor_crashed_during_request, not as a transport failure: {}".format(payload),
+        )
+        self.assertEqual(payload["status"], "editor_crashed_during_request")
+        self.assertEqual(payload["request_id"], request_id)
+        self.assertFalse(payload["resubmit_safe"])
+        self.assertFalse(payload["recoverable"])
+        # The Editor states its own log path with forward slashes; compare normalized.
+        self.assertEqual(
+            Path(payload["editor_log_path"]).as_posix(),
+            log_path.as_posix(),
+        )
+
+        start_line = "Exec starting request={}".format(request_id)
+        crashed_log = log_path.read_text(encoding="utf-8", errors="replace")
+        self.assertEqual(crashed_log.count(start_line), 1, "the script must have started exactly once")
+        crashed_size = log_path.stat().st_size
+        # The request never reached a terminal response: the start line is the last
+        # exec lifecycle line the crashed process wrote.
+        exec_markers = [
+            line for line in crashed_log.splitlines() if line.startswith("[UnityPuerExec] Exec ")
+        ]
+        self.assertTrue(exec_markers, crashed_log[-2000:])
+        self.assertIn(start_line, exec_markers[-1])
+        self.assertNotIn("responding", exec_markers[-1])
+
+        # 1. The crashed request is never resumed, and waiting does not relaunch Unity.
+        wait_exit_code, wait_payload, _stdout, _stderr = _run_cli(
+            [
+                "wait-for-exec",
+                "--project-path", str(self.project_path),
+                "--unity-exe-path", str(self.unity_exe_path),
+                "--request-id", request_id,
+                "--wait-timeout-ms", str(WAIT_TIMEOUT_MS),
+            ]
+        )
+        self.assertEqual(wait_exit_code, unity_puer_exec.EXIT_EDITOR_CRASHED_DURING_REQUEST, wait_payload)
+        self.assertEqual(wait_payload["status"], "editor_crashed_during_request")
+        self.assertEqual(wait_payload["request_id"], request_id)
+
+        after_wait_log = log_path.read_text(encoding="utf-8", errors="replace")
+        self.assertEqual(log_path.stat().st_size, crashed_size, "wait-for-exec must not truncate the crash log")
+        self.assertEqual(after_wait_log.count(start_line), 1)
+        self.assertEqual(after_wait_log, crashed_log, "wait-for-exec must leave the crashed Editor's log untouched")
+
+        # 2. A new request relaunches the Editor and completes; the crashed one stays dead.
+        new_exit_code, new_payload, _, _ = _single_warm_up_project_exec(
+            self.project_path, self.unity_exe_path
+        )
+        self.assertEqual(new_exit_code, 0, new_payload)
+
+        relaunched_log = log_path.read_text(encoding="utf-8", errors="replace")
+        self.assertNotIn(
+            start_line,
+            relaunched_log,
+            "the crashed request must never be replayed: {}".format(relaunched_log[-2000:]),
+        )
+        self._record_own_boundary(
+            "crash_relaunch",
+            crash_exit_code=exit_code,
+            wait_exit_code=wait_exit_code,
+            relaunch_exit_code=new_exit_code,
+            crashed_request_runs=crashed_log.count(start_line),
+        )
 
 
 def _post_control_json(base_url, path, payload, timeout_seconds=5.0):

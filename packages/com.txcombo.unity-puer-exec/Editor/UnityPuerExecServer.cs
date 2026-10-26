@@ -339,6 +339,7 @@ namespace UnityPuerExec
             StopListener();
             sessionMarker = Guid.NewGuid().ToString("N");
             RefreshConsoleLogPathCache();
+            UnityPuerExecExecJournal.Sweep();
 
             listenerCancellation = new CancellationTokenSource();
             selectedPort = 0;
@@ -776,10 +777,29 @@ namespace UnityPuerExec
                 request,
                 out var execJob,
                 out var isNewRequest,
-                out var staleModules
+                out var staleModules,
+                out var crashedEntry
             );
             request.code = normalizedCode;
             request.script_args_json = normalizedScriptArgsJson;
+            if (acceptStatus == "editor_crashed")
+            {
+                Debug.LogWarning(
+                    $"[UnityPuerExec] Exec refused request={request.request_id} reason=editor_crashed "
+                    + $"editor_pid={crashedEntry.EditorPid}"
+                );
+                await WriteJsonAsync(
+                    context,
+                    UnityPuerExecProtocol.BuildEditorCrashedResponseJson(
+                        request.request_id,
+                        crashedEntry.EditorPid,
+                        crashedEntry.StartedAtUtc,
+                        crashedEntry.EditorLogPath
+                    )
+                );
+                return;
+            }
+
             if (acceptStatus == "busy")
             {
                 await WriteJsonAsync(
@@ -1129,6 +1149,23 @@ namespace UnityPuerExec
 
             if (!Requests.TryGetValue(request.request_id, out var execJob))
             {
+                // A record that only ever existed in a dead Editor process leaves a
+                // journal entry behind. Answering `missing` there would hide a crash
+                // behind "nothing to recover", so the crash is reported instead.
+                if (UnityPuerExecExecJournal.TryReadForeign(request.request_id, out var crashedEntry))
+                {
+                    await WriteJsonAsync(
+                        context,
+                        UnityPuerExecProtocol.BuildEditorCrashedResponseJson(
+                            request.request_id,
+                            crashedEntry.EditorPid,
+                            crashedEntry.StartedAtUtc,
+                            crashedEntry.EditorLogPath
+                        )
+                    );
+                    return;
+                }
+
                 await WriteJsonAsync(
                     context,
                     UnityPuerExecProtocol.BuildSimpleErrorJson(
@@ -1368,10 +1405,12 @@ namespace UnityPuerExec
             ExecRequest request,
             out UnityPuerExecJob job,
             out bool isNewRequest,
-            out List<string> staleModules
+            out List<string> staleModules,
+            out UnityPuerExecExecJournal.Entry crashedEntry
         )
         {
             staleModules = new List<string>();
+            crashedEntry = null;
             lock (RequestGate)
             {
                 if (Requests.TryGetValue(requestId, out job))
@@ -1380,6 +1419,19 @@ namespace UnityPuerExec
                     return job.NormalizedCode == normalizedCode && job.NormalizedScriptArgsJson == normalizedScriptArgsJson
                         ? "accepted"
                         : "request_id_conflict";
+                }
+
+                // A journal entry written by another process means the script started
+                // there and that process died mid-request. Nothing was recorded in this
+                // process, so this request must not run again -- regardless of what is
+                // active here now. Checked before `busy` because a crashed request is
+                // terminal, not retryable. See design D4.
+                if (UnityPuerExecExecJournal.TryReadForeign(requestId, out var journalEntry))
+                {
+                    job = null;
+                    isNewRequest = false;
+                    crashedEntry = journalEntry;
+                    return "editor_crashed";
                 }
 
                 if (
@@ -1469,6 +1521,16 @@ namespace UnityPuerExec
 
             try
             {
+                // Evidence that execution is starting, written before the engine is
+                // called: if this process dies inside the script, the entry is the only
+                // thing that survives to tell the next Editor not to run it again.
+                if (!UnityPuerExecExecJournal.TryWrite(job.RequestId, cachedConsoleLogPath, out var journalError))
+                {
+                    job.Fail(journalError, string.Empty);
+                    ReleaseActiveRequest(job.RequestId);
+                    return;
+                }
+
                 jsEnv.ExecuteModule(harnessSpecifier);
             }
             catch (Exception ex)
@@ -1809,6 +1871,11 @@ namespace UnityPuerExec
                     activeRequestId = "";
                 }
             }
+
+            // Every terminal path goes through here, so this is the single place the
+            // journal entry stops being evidence of a crash. A delete failure is
+            // ignored: an entry naming this process is never treated as a crash.
+            UnityPuerExecExecJournal.Delete(requestId);
         }
 
         private static string NormalizeCode(string code)

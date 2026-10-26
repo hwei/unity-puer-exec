@@ -1,4 +1,5 @@
 import json
+import datetime
 import sys
 import tempfile
 import unittest
@@ -1195,6 +1196,142 @@ class ObservationReliabilityTests(unittest.TestCase):
         result = self._classify(self.DEFAULT, other_count=0)
         self.assertEqual(result, unity_session_endpoint.OBSERVATION_PLATFORM_DEFAULT_SOLE_EDITOR)
         self.assertTrue(unity_session_endpoint.observation_is_reliable(result))
+
+
+class ExecJournalTests(unittest.TestCase):
+    """The CLI half of the exec start journal: read it, never write it.
+
+    The journal is written by the Editor before a script runs. The CLI's only job is
+    to answer "did this request already start in an Editor that is gone?" without
+    inventing a crash from a file it cannot trust, so these cover the trust rules:
+    malformed, mismatched, and expired entries are removed rather than believed.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.project_path = Path(self._tmp.name)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    @staticmethod
+    def _utc(moment):
+        return moment.strftime("%Y-%m-%dT%H:%M:%S.") + "{:03d}Z".format(moment.microsecond // 1000)
+
+    def _write_entry(self, request_id, *, started_at=None, editor_pid=4242, key=None, payload=None):
+        started_at = started_at or (datetime.datetime.utcnow() - datetime.timedelta(minutes=1))
+        directory = unity_session_logs.exec_journal_dir_path(self.project_path)
+        directory.mkdir(parents=True, exist_ok=True)
+        path = directory / "{}.json".format(key or unity_session_logs.exec_journal_key(request_id))
+        if payload is None:
+            payload = {
+                "schema_version": unity_session_common.EXEC_JOURNAL_SCHEMA_VERSION,
+                "request_id": request_id,
+                "editor_pid": editor_pid,
+                "process_start_utc": "2026-10-26T06:00:00.000Z",
+                "started_at_utc": self._utc(started_at),
+                "editor_log_path": "C:/project/Temp/UnityPuerExec/Editor.log",
+            }
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        return path
+
+    def test_safe_request_ids_name_the_entry_file_directly(self):
+        self.assertEqual(unity_session_logs.exec_journal_key("exec-1.2_A"), "exec-1.2_A")
+        self.assertEqual(
+            unity_session_logs.exec_journal_entry_path(self.project_path, "exec-1.2_A").name,
+            "exec-1.2_A.json",
+        )
+
+    def test_unsafe_request_ids_are_stored_under_their_sha256(self):
+        key = unity_session_logs.exec_journal_key("../../escape/me")
+
+        self.assertEqual(len(key), 64)
+        self.assertRegex(key, "^[0-9a-f]{64}$")
+        self.assertEqual(key, unity_session_logs.exec_journal_key("../../escape/me"))
+        self.assertEqual(len(unity_session_logs.exec_journal_key("a" * 129)), 64)
+
+    def test_fresh_entry_is_read_back_with_its_start_time(self):
+        started_at = datetime.datetime.utcnow() - datetime.timedelta(minutes=2)
+        self._write_entry("rid-1", started_at=started_at)
+
+        entry = unity_session_logs.read_exec_journal_entry(self.project_path, "rid-1")
+
+        self.assertIsNotNone(entry)
+        self.assertEqual(entry["editor_pid"], 4242)
+        self.assertEqual(entry["request_id"], "rid-1")
+        self.assertEqual(entry["editor_log_path"], "C:/project/Temp/UnityPuerExec/Editor.log")
+        self.assertEqual(entry["started_at"].strftime("%Y-%m-%dT%H:%M:%S"), started_at.strftime("%Y-%m-%dT%H:%M:%S"))
+
+    def test_entry_stored_under_a_hashed_key_is_readable(self):
+        self._write_entry("../../escape/me")
+
+        entry = unity_session_logs.read_exec_journal_entry(self.project_path, "../../escape/me")
+
+        self.assertIsNotNone(entry)
+        self.assertEqual(entry["request_id"], "../../escape/me")
+
+    def test_malformed_entry_is_removed_and_reported_absent(self):
+        directory = unity_session_logs.exec_journal_dir_path(self.project_path)
+        directory.mkdir(parents=True, exist_ok=True)
+        path = directory / "rid-2.json"
+        path.write_text("{ not json", encoding="utf-8")
+
+        self.assertIsNone(unity_session_logs.read_exec_journal_entry(self.project_path, "rid-2"))
+        self.assertFalse(path.exists())
+
+    def test_entry_naming_a_different_request_is_removed(self):
+        # The file is addressed by "rid-other" but its content claims another request:
+        # stale or hand-edited state must not become crash evidence.
+        path = self._write_entry("rid-3", key="rid-other")
+
+        self.assertIsNone(unity_session_logs.read_exec_journal_entry(self.project_path, "rid-other"))
+        self.assertFalse(path.exists())
+
+    def test_expired_entry_is_removed_and_is_not_evidence_of_a_crash(self):
+        path = self._write_entry(
+            "rid-4",
+            started_at=datetime.datetime.utcnow() - datetime.timedelta(hours=25),
+        )
+
+        self.assertIsNone(unity_session_logs.read_exec_journal_entry(self.project_path, "rid-4"))
+        self.assertFalse(path.exists())
+
+    def test_sweep_removes_expired_malformed_and_stray_entries(self):
+        fresh = self._write_entry("rid-fresh")
+        hashed = self._write_entry("../../escape/me")
+        expired = self._write_entry(
+            "rid-expired",
+            started_at=datetime.datetime.utcnow() - datetime.timedelta(hours=30),
+        )
+        directory = unity_session_logs.exec_journal_dir_path(self.project_path)
+        malformed = directory / "rid-malformed.json"
+        malformed.write_text("@", encoding="utf-8")
+        stray = directory / "rid-stray.json"
+        stray.write_text(
+            json.dumps(
+                {
+                    "schema_version": unity_session_common.EXEC_JOURNAL_SCHEMA_VERSION,
+                    "request_id": "rid-elsewhere",
+                    "editor_pid": 1,
+                    "process_start_utc": "2026-10-26T06:00:00.000Z",
+                    "started_at_utc": self._utc(datetime.datetime.utcnow()),
+                    "editor_log_path": "",
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        removed = unity_session_logs.sweep_exec_journal_entries(self.project_path)
+
+        self.assertTrue(fresh.exists())
+        self.assertTrue(hashed.exists())
+        self.assertFalse(expired.exists())
+        self.assertFalse(malformed.exists())
+        self.assertFalse(stray.exists())
+        self.assertEqual(len(removed), 3)
+
+    def test_sweep_is_a_no_op_without_a_journal_directory(self):
+        self.assertEqual(unity_session_logs.sweep_exec_journal_entries(self.project_path), [])
 
 
 if __name__ == "__main__":

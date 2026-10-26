@@ -9,6 +9,7 @@ import sys
 import tempfile
 import time
 import uuid
+from pathlib import Path
 
 import cli_version
 import command_registry
@@ -39,6 +40,20 @@ EXIT_NOT_STOPPED = 16
 # request_id, while here the CLI holds the request it never let through -- the
 # script has not run, and re-submitting it runs the script for the first time.
 EXIT_REFRESH_UNSETTLED = 25
+# The Editor process died while the script was running. Terminal, and deliberately
+# not `not_available` (12): the transport did fail, but the reason it failed is knowable
+# and the request must not be re-run -- exec scripts are not idempotent, and this one
+# may be what killed the Editor. Defined with the other status->exit mappings so the
+# server-returned status maps without a special case.
+EXIT_EDITOR_CRASHED_DURING_REQUEST = direct_exec_client.EXIT_EDITOR_CRASHED_DURING_REQUEST
+# How long `exec` keeps watching the crashed Editor's pid after its submit loses the
+# connection. Unity's crash handler stays alive while it writes the dump, so the
+# process is not necessarily gone the moment the socket drops. Patchable in tests.
+EDITOR_CRASH_GRACE_SECONDS = 15.0
+EDITOR_CRASH_GRACE_POLL_SECONDS = 0.5
+# Slack for matching a Unity crash report directory to the request start time: the
+# dump directory is created shortly after the script started, never long before.
+EDITOR_CRASH_REPORT_MTIME_SLACK_SECONDS = 5.0
 # Terminal outcome detail codes for EXIT_REFRESH_UNSETTLED, named so a caller can
 # branch without parsing prose.
 REFRESH_UNSETTLED_SETTLE_TIMEOUT = "refresh_settle_timeout"
@@ -891,6 +906,233 @@ def _clear_pending_exec(args, request_id):
     unity_session.clear_pending_exec_artifact(_project_path_arg(args), request_id)
 
 
+def _sweep_exec_journal(args):
+    project_path = _project_path_arg(args)
+    if project_path:
+        unity_session.sweep_exec_journal_entries(project_path)
+
+
+def _read_exec_journal(args, request_id):
+    project_path = _project_path_arg(args)
+    if not project_path:
+        return None
+    return unity_session.read_exec_journal_entry(project_path, request_id)
+
+
+def _journaled_editor_is_gone(entry):
+    """Whether the Editor named by a journal entry is no longer running.
+
+    Liveness is the whole test on this side: pid reuse would need the pid to be alive
+    *and* belong to another process, and the server guard compares process start
+    times for that case.
+    """
+    if not isinstance(entry, dict):
+        return False
+    editor_pid = entry.get("editor_pid")
+    if not isinstance(editor_pid, int) or editor_pid <= 0:
+        return False
+    return not unity_session.is_pid_running(editor_pid)
+
+
+def _wait_for_journaled_editor_exit(entry):
+    """Watch a crashed Editor's pid for the post-submit grace window.
+
+    Unity's crash handler keeps the process alive while it writes the dump, so the
+    connection can drop before the pid is gone. Returns True when the process exits
+    inside the window, False when it is still alive when the window ends (or when
+    there is nothing to watch).
+    """
+    if not isinstance(entry, dict):
+        return False
+    editor_pid = entry.get("editor_pid")
+    if not isinstance(editor_pid, int) or editor_pid <= 0:
+        return False
+    deadline = time.time() + max(float(EDITOR_CRASH_GRACE_SECONDS), 0.0)
+    while True:
+        if not unity_session.is_pid_running(editor_pid):
+            return True
+        if time.time() >= deadline:
+            return False
+        time.sleep(max(float(EDITOR_CRASH_GRACE_POLL_SECONDS), 0.0))
+
+
+def _find_editor_crash_report_dir(started_at):
+    """Newest Unity crash report created at or after the request started."""
+    started = unity_session_logs.parse_exec_journal_utc(started_at)
+    if started is None:
+        return None
+
+    crashes_root = Path(tempfile.gettempdir()) / "Unity" / "Editor" / "Crashes"
+    try:
+        candidates = [path for path in crashes_root.glob("Crash_*") if path.is_dir()]
+    except OSError:
+        return None
+
+    threshold = started.timestamp() - EDITOR_CRASH_REPORT_MTIME_SLACK_SECONDS
+    newest = None
+    newest_mtime = None
+    for path in candidates:
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            continue
+        if mtime < threshold:
+            continue
+        if newest_mtime is None or mtime > newest_mtime:
+            newest = path
+            newest_mtime = mtime
+    return None if newest is None else str(newest)
+
+
+# The guidance matrix carries the same text; reading it from there keeps the guided
+# and `--suppress-guidance` payloads from describing the same outcome differently.
+EDITOR_CRASH_SITUATION = help_surface.EDITOR_CRASH_SITUATION
+
+
+def _emit_editor_crash_payload(
+    operation,
+    request_id,
+    args,
+    editor_pid=None,
+    started_at=None,
+    editor_log_path=None,
+    session=None,
+    log_path=None,
+    log_start=None,
+    log_end=None,
+    offsets_invalidated=None,
+):
+    payload = {
+        "ok": False,
+        "status": "editor_crashed_during_request",
+        "operation": operation,
+        "request_id": request_id,
+        "resubmit_safe": False,
+        "recoverable": False,
+        "situation": EDITOR_CRASH_SITUATION,
+    }
+    if isinstance(editor_pid, int) and editor_pid > 0:
+        payload["editor_pid"] = editor_pid
+    if started_at:
+        payload["started_at"] = started_at
+    resolved_log_path = editor_log_path or log_path
+    if resolved_log_path:
+        payload["editor_log_path"] = str(resolved_log_path)
+    crash_report_dir = _find_editor_crash_report_dir(started_at)
+    if crash_report_dir:
+        payload["crash_report_dir"] = crash_report_dir
+    if session is not None:
+        payload["session"] = session.to_payload()
+    if log_path is not None:
+        _apply_log_range_and_brief_sequence(
+            payload,
+            log_path,
+            log_start if log_start is not None else 0,
+            log_end if log_end is not None else _capture_log_offset(log_path),
+            offsets_invalidated=offsets_invalidated,
+        )
+    _attach_guidance(payload, operation, "editor_crashed_during_request", args, request_id=request_id)
+    return attach_diagnostics(payload, include_diagnostics=args.include_diagnostics, session=session)
+
+
+def _emit_journaled_crash(operation, request_id, entry, args, session=None, log_path=None, log_start=None, log_end=None, offsets_invalidated=None):
+    """Crash payload for a request the journal says already ran in a dead Editor.
+
+    The pending artifact is cleared as well: replaying it is exactly what this
+    outcome exists to prevent.
+    """
+    _clear_pending_exec(args, request_id)
+    return _emit_editor_crash_payload(
+        operation,
+        request_id,
+        args,
+        editor_pid=entry.get("editor_pid"),
+        started_at=entry.get("started_at_utc"),
+        editor_log_path=entry.get("editor_log_path"),
+        session=session,
+        log_path=log_path,
+        log_start=log_start,
+        log_end=log_end,
+        offsets_invalidated=offsets_invalidated,
+    )
+
+
+def _is_editor_crashed_response(stdout_text):
+    if not stdout_text:
+        return False
+    try:
+        body = json.loads(stdout_text)
+    except ValueError:
+        return False
+    return isinstance(body, dict) and body.get("status") == "editor_crashed_during_request"
+
+
+def _server_crash_body(stdout_text):
+    try:
+        body = json.loads(stdout_text)
+    except ValueError:
+        return {}
+    return body if isinstance(body, dict) else {}
+
+
+def _journal_log_path(args, entry):
+    """Log file the crashed Editor wrote, as best the CLI can name it."""
+    if isinstance(entry, dict):
+        journal_log_path = entry.get("editor_log_path")
+        if journal_log_path:
+            return journal_log_path
+    if getattr(args, "unity_log_path", None):
+        return args.unity_log_path
+    project_path = _project_path_arg(args)
+    if project_path:
+        return str(unity_session_logs.project_launch_log_path(project_path))
+    return str(unity_session_logs.default_editor_log_path())
+
+
+def _editor_crashed_result(
+    operation,
+    request_id,
+    args,
+    stdout_text,
+    session,
+    log_path,
+    log_start,
+    offsets_invalidated=None,
+):
+    """Re-emit a server-guard crash answer in the CLI's own crash shape.
+
+    The server knows the request started and this process is not the one that did
+    it; the CLI knows the log and crash-report evidence. Both answers must look the
+    same to the caller, so the server's fields seed the same builder the journal
+    path uses.
+    """
+    body = _server_crash_body(stdout_text)
+    payload = _emit_editor_crash_payload(
+        operation,
+        request_id,
+        args,
+        editor_pid=body.get("editor_pid"),
+        started_at=body.get("started_at"),
+        editor_log_path=body.get("editor_log_path"),
+        session=session,
+        log_path=log_path,
+        log_start=log_start,
+        log_end=_capture_log_offset(log_path),
+        offsets_invalidated=offsets_invalidated,
+    )
+    return EXIT_EDITOR_CRASHED_DURING_REQUEST, emit_payload(payload), ""
+
+
+def _is_not_available_response(exit_code, stdout_text):
+    if exit_code != EXIT_NOT_AVAILABLE or not stdout_text:
+        return False
+    try:
+        body = json.loads(stdout_text)
+    except ValueError:
+        return False
+    return isinstance(body, dict) and body.get("status") == "not_available"
+
+
 def _refresh_pending_exec(args, request_id, pending, phase=None):
     if pending is None:
         return None
@@ -1577,6 +1819,25 @@ def _run_exec_impl(args, recovery):
 
     if selector == "project_path":
         _sweep_pending_exec(args)
+        _sweep_exec_journal(args)
+        # Before any relaunch: if the journal says this request already ran in an
+        # Editor process that is gone, launching a new Editor would only replay a
+        # script that may have crashed the last one -- and would truncate the log
+        # that holds the evidence.
+        journal_entry = _read_exec_journal(args, request_id)
+        if _journaled_editor_is_gone(journal_entry):
+            crash_log_path = _journal_log_path(args, journal_entry)
+            crash_log_end = _capture_log_offset(crash_log_path)
+            payload = _emit_journaled_crash(
+                "exec",
+                request_id,
+                journal_entry,
+                args,
+                log_path=crash_log_path,
+                log_start=crash_log_end,
+                log_end=crash_log_end,
+            )
+            return EXIT_EDITOR_CRASHED_DURING_REQUEST, emit_payload(payload), ""
         try:
             session = unity_session.ensure_session_ready(
                 project_path=args.project_path,
@@ -1708,6 +1969,23 @@ def _run_exec_impl(args, recovery):
         _inject_log_range_into_payload(payload, log_path, log_start, _capture_log_offset(log_path))
         return EXIT_REFRESH_UNSETTLED, emit_payload(payload), ""
 
+    if selector == "project_path" and _is_not_available_response(exit_code, stdout_text):
+        # The connection dropped, which is also what a crash looks like. If the server
+        # journalled a start for this request, the Editor did run the script; watch the
+        # pid for the crash handler's tail and report the crash once it exits.
+        journal_entry = _read_exec_journal(args, request_id)
+        if journal_entry is not None and _wait_for_journaled_editor_exit(journal_entry):
+            payload = _emit_journaled_crash(
+                "exec",
+                request_id,
+                journal_entry,
+                args,
+                log_path=log_path,
+                log_start=log_start,
+                log_end=_capture_log_offset(log_path),
+            )
+            return EXIT_EDITOR_CRASHED_DURING_REQUEST, emit_payload(payload), ""
+
     if selector == "project_path":
         pending = _read_pending_exec(args, request_id)
         _finalize_pending_after_submit(args, request_id, pending, exit_code, stdout_text)
@@ -1721,6 +1999,8 @@ def _run_exec_impl(args, recovery):
         default_phase=default_phase,
     )
     stdout_text = _inject_refresh_block_into_stdout(stdout_text, refresh_block)
+    if _is_editor_crashed_response(stdout_text):
+        return _editor_crashed_result("exec", request_id, args, stdout_text, session, log_path, log_start)
     stdout_text = _inject_log_range_into_stdout(stdout_text, log_path, log_start, _capture_log_offset(log_path))
     stdout_text, stderr_text = _apply_play_mode_compile_block(stdout_text, stderr_text, base_url, args)
     stdout_text, stderr_text = _inject_guidance_into_response(stdout_text, stderr_text, "exec", args, request_id=request_id)
@@ -1752,6 +2032,24 @@ def _run_wait_for_exec_impl(args, recovery):
 
     if selector == "project_path":
         _sweep_pending_exec(args)
+        _sweep_exec_journal(args)
+        journal_entry = _read_exec_journal(args, args.request_id)
+        if _journaled_editor_is_gone(journal_entry):
+            # A pending artifact for a request that already ran must not be replayed,
+            # and Unity must not be relaunched: that would overwrite the crashed
+            # Editor's log under the CLI's own -logFile.
+            crash_log_path = _journal_log_path(args, journal_entry)
+            crash_log_end = _capture_log_offset(crash_log_path)
+            payload = _emit_journaled_crash(
+                "wait-for-exec",
+                args.request_id,
+                journal_entry,
+                args,
+                log_path=crash_log_path,
+                log_start=crash_log_end,
+                log_end=crash_log_end,
+            )
+            return EXIT_EDITOR_CRASHED_DURING_REQUEST, emit_payload(payload), ""
         pending = _read_pending_exec(args, args.request_id)
         try:
             session = unity_session.ensure_session_ready(
@@ -1840,6 +2138,17 @@ def _run_wait_for_exec_impl(args, recovery):
         default_phase=default_phase,
     )
     _wfe_final_log_path = _resolve_log_path(args, session)
+    if _is_editor_crashed_response(stdout_text):
+        return _editor_crashed_result(
+            "wait-for-exec",
+            args.request_id,
+            args,
+            stdout_text,
+            session,
+            _wfe_final_log_path,
+            _wfe_log_start,
+            offsets_invalidated=_wfe_offsets_invalidated,
+        )
     stdout_text = _inject_log_range_into_stdout(stdout_text, _wfe_final_log_path, _wfe_log_start, _capture_log_offset(_wfe_final_log_path), offsets_invalidated=_wfe_offsets_invalidated)
     # The replayed exec response carries the same refresh block, so the terminal
     # response discloses a play-mode compile block exactly as `exec` does. Only the

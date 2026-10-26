@@ -21,6 +21,7 @@ Agent 自行启动 Editor、编写代码、处理编译错误、解除阻塞对�
   - **抢焦点：** 模态对话框优先通过窗口消息解除，失败时才回退到置前窗口（Safe Mode 例外，始终走置前路径）。一个 Agent 处理弹窗不会打断其它 Editor，也不会抢走人正在用的窗口。
   - **启动竞争：** launch claim 与 per-project 会话产物防止两个 Agent 同时冷启动同一个项目。
 - **基于 PuerTS 的即时执行。** 脚本通过 PuerTS JavaScript 桥接执行——解释执行，无编译步骤，无外部编译器依赖。如果你的项目已经在使用 PuerTS，则无需安装任何额外依赖。
+- **崩溃会被报告，不会被重放。** 脚本把 Editor 进程带崩后，请求以 `editor_crashed_during_request`（exit code 26）结束，并附带 Editor 日志和 Unity 崩溃报告作为证据。它不会在下次重启后被自动重新执行，崩溃 Editor 的日志也会被保留，而不是被新一次启动覆盖。
 
 ### 真实场景：资源管线自动化
 
@@ -94,6 +95,11 @@ CLI 二进制会随包一起发布，位于包内的 `CLI~/unity-puer-exec.exe`�
 建议先让 Agent 通过 `--help` 和各子命令帮助自行发现 CLI 的工作流，而不是凭记忆假设命令语法。
 
 如果某个命令的失败看起来像工具本身的缺陷，或者工作流别扭到值得修复，请阅读 `unity-puer-exec --help-feedback`，并向用户提议提交报告，确认后再提交。
+
+### 脚本编写注意事项
+
+- **把 Editor 打死的脚本会被报告，不会被重试。** 如果 Editor 进程在 `exec` 脚本执行期间死亡，请求以 `editor_crashed_during_request`（exit code 26）结束，并携带 Editor 日志路径，以及能找到的 Unity 崩溃报告目录。CLI 不会为该请求重启 Unity，也不会重放脚本：脚本本身就是最可能的原因，而且重启会覆盖解释崩溃原因的那份日志。修好脚本后用一个新 `request_id` 重新提交。
+- **给 C# 的 `out` 参数传 `null` 会原生崩溃 Editor。** 通过桥接加载的 API 若声明了 `out` 参数，该实参要传 ref 对象（例如 `puer.$ref(0)`）而不是 `null`。`null` 会一路传到原生代码，直接把整个 Editor 进程带崩——也就是上面这个状态要报告的那种崩溃。
 
 示例提示词：简单场景操作
 

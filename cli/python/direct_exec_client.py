@@ -17,6 +17,9 @@ EXIT_MODAL_BLOCKED = 19
 EXIT_MODULE_CACHE_STALE = 22
 EXIT_UNITY_COMPILE_ERROR = 23
 EXIT_VERSION_MISMATCH = 24
+# The Editor process died while the accepted request's script was running. Terminal,
+# and deliberately distinct from `not_available`: the request must not be re-run.
+EXIT_EDITOR_CRASHED_DURING_REQUEST = 26
 
 # Named non-success state for a control-endpoint response whose body is empty or
 # cannot be parsed as JSON. `json.loads("")` is the common case (the endpoint
@@ -113,6 +116,8 @@ def status_to_exit_code(payload):
         return EXIT_UNITY_COMPILE_ERROR
     if status == "version_mismatch":
         return EXIT_VERSION_MISMATCH
+    if status == "editor_crashed_during_request":
+        return EXIT_EDITOR_CRASHED_DURING_REQUEST
     if status in ("session_missing", "session_stale"):
         return EXIT_SESSION_STATE
     return 1

@@ -340,6 +340,35 @@ namespace UnityPuerExec
                    "}";
         }
 
+        /// <summary>
+        /// Terminal answer for a request whose script started in an Editor process that
+        /// has since died. Carries what the journal knows so the caller can look at the
+        /// crash instead of guessing. The CLI enriches the same shape with the crash
+        /// report directory and the observed log range.
+        /// </summary>
+        internal static string BuildEditorCrashedResponseJson(
+            string requestId,
+            int editorPid,
+            string startedAtUtc,
+            string editorLogPath
+        )
+        {
+            var logPathJson = string.IsNullOrEmpty(editorLogPath)
+                ? string.Empty
+                : ",\"editor_log_path\":\"" + JsonEscape(editorLogPath) + "\"";
+            return "{" +
+                   "\"ok\":false," +
+                   "\"status\":\"editor_crashed_during_request\"," +
+                   "\"request_id\":\"" + JsonEscape(requestId) + "\"," +
+                   "\"editor_pid\":" + editorPid + "," +
+                   "\"started_at\":\"" + JsonEscape(startedAtUtc ?? "") + "\"," +
+                   "\"error\":\"the Editor process died while this request was running, so the script was not re-run\"" +
+                   logPathJson +
+                   ",\"resubmit_safe\":false," +
+                   "\"recoverable\":false" +
+                   "}";
+        }
+
         internal static string BuildPlayModeResponseJson(
             bool ok,
             string status,

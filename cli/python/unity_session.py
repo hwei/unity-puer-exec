@@ -88,8 +88,12 @@ def _list_unity_pids():
     return unity_session_process.list_unity_pids()
 
 
-def _is_pid_running(pid):
+def is_pid_running(pid):
     return unity_session_process.is_pid_running(pid)
+
+
+def _is_pid_running(pid):
+    return is_pid_running(pid)
 
 
 def _project_lockfile_is_held(project_path):
@@ -160,6 +164,18 @@ def clear_pending_exec_artifact(project_path, request_id):
 
 def sweep_pending_exec_artifacts(project_path):
     return unity_session_logs.sweep_pending_exec_artifacts(project_path)
+
+
+def read_exec_journal_entry(project_path, request_id):
+    return unity_session_logs.read_exec_journal_entry(project_path, request_id)
+
+
+def sweep_exec_journal_entries(project_path):
+    return unity_session_logs.sweep_exec_journal_entries(project_path)
+
+
+def exec_journal_entry_path(project_path, request_id):
+    return unity_session_logs.exec_journal_entry_path(project_path, request_id)
 
 
 def _project_lock_details(project_path):

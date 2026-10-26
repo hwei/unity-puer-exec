@@ -1,9 +1,16 @@
 #!/usr/bin/env python3
+import hashlib
 import json
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 from unity_session_common import (
+    EXEC_JOURNAL_DIR_RELATIVE_PATH,
+    EXEC_JOURNAL_RETENTION_MS,
+    EXEC_JOURNAL_SAFE_KEY_CHARS,
+    EXEC_JOURNAL_SAFE_KEY_MAX_LENGTH,
+    EXEC_JOURNAL_SCHEMA_VERSION,
     LAUNCH_CLAIM_RELATIVE_PATH,
     PENDING_EXEC_DIR_RELATIVE_PATH,
     PENDING_EXEC_RETENTION_MS,
@@ -290,6 +297,129 @@ def write_pending_exec_artifact(project_path, request_id, payload):
 
 def clear_pending_exec_artifact(project_path, request_id):
     _delete_file_if_present(pending_exec_artifact_path(project_path, request_id))
+
+
+# --- Exec start journal (written by the Editor, read here) -------------------
+#
+# The CLI never writes these. It only asks one question of them: did the request
+# already start in an Editor process that is no longer running? A "yes" means the
+# script must not be submitted again -- it may have crashed the Editor, and exec
+# scripts are not idempotent.
+
+_EXEC_JOURNAL_UTC_FORMAT = "%Y-%m-%dT%H:%M:%S.%fZ"
+
+
+def exec_journal_dir_path(project_path):
+    return Path(project_path) / EXEC_JOURNAL_DIR_RELATIVE_PATH
+
+
+def exec_journal_key(request_id):
+    """Journal file stem for a request id, matching the Editor's derivation."""
+    if not request_id:
+        return ""
+    if len(request_id) <= EXEC_JOURNAL_SAFE_KEY_MAX_LENGTH and all(
+        character in EXEC_JOURNAL_SAFE_KEY_CHARS for character in request_id
+    ):
+        return request_id
+    return hashlib.sha256(request_id.encode("utf-8")).hexdigest()
+
+
+def exec_journal_entry_path(project_path, request_id):
+    key = exec_journal_key(request_id)
+    if not key:
+        return None
+    return exec_journal_dir_path(project_path) / ("{}.json".format(key))
+
+
+def parse_exec_journal_utc(value):
+    """Parse a journal timestamp, or None when it is not the documented shape."""
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed = datetime.strptime(value, _EXEC_JOURNAL_UTC_FORMAT)
+    except ValueError:
+        return None
+    return parsed.replace(tzinfo=timezone.utc)
+
+
+def _coerce_exec_journal_entry(request_id, payload):
+    if not isinstance(payload, dict):
+        return None
+    if payload.get("schema_version") != EXEC_JOURNAL_SCHEMA_VERSION:
+        return None
+    if payload.get("request_id") != request_id:
+        return None
+    editor_pid = payload.get("editor_pid")
+    if isinstance(editor_pid, bool) or not isinstance(editor_pid, int) or editor_pid <= 0:
+        return None
+    process_start_utc = payload.get("process_start_utc")
+    if not isinstance(process_start_utc, str) or not process_start_utc:
+        return None
+    started_at = parse_exec_journal_utc(payload.get("started_at_utc"))
+    if started_at is None:
+        return None
+    editor_log_path = payload.get("editor_log_path")
+    if not isinstance(editor_log_path, str) or not editor_log_path:
+        editor_log_path = None
+    return {
+        "schema_version": EXEC_JOURNAL_SCHEMA_VERSION,
+        "request_id": request_id,
+        "editor_pid": editor_pid,
+        "process_start_utc": process_start_utc,
+        "started_at": started_at,
+        "editor_log_path": editor_log_path,
+    }
+
+
+def _is_exec_journal_entry_expired(entry, now_seconds):
+    started_at = entry.get("started_at")
+    if not isinstance(started_at, datetime):
+        return True
+    age_ms = (now_seconds - started_at.timestamp()) * 1000.0
+    return age_ms > EXEC_JOURNAL_RETENTION_MS
+
+
+def read_exec_journal_entry(project_path, request_id, time_ref=None):
+    """The journal entry for a request, or None.
+
+    A malformed or expired entry is removed and reported as absent: it is never
+    evidence of a crash.
+    """
+    path = exec_journal_entry_path(project_path, request_id)
+    if path is None or not path.exists():
+        return None
+    entry = _coerce_exec_journal_entry(request_id, _read_json_file(path))
+    now_seconds = (time_ref or time).time()
+    if entry is None or _is_exec_journal_entry_expired(entry, now_seconds):
+        _delete_file_if_present(path)
+        return None
+    return entry
+
+
+def sweep_exec_journal_entries(project_path, time_ref=None):
+    directory = exec_journal_dir_path(project_path)
+    if not directory.exists():
+        return []
+
+    try:
+        paths = list(directory.glob("*.json"))
+    except OSError:
+        return []
+
+    now_seconds = (time_ref or time).time()
+    removed = []
+    for path in paths:
+        payload = _read_json_file(path)
+        request_id = payload.get("request_id") if isinstance(payload, dict) else None
+        entry = _coerce_exec_journal_entry(request_id, payload)
+        # An entry is bound to its file name by the same key derivation used to read
+        # it, so a hashed key is recognised as itself rather than as a stray file.
+        if entry is not None and exec_journal_key(request_id) == path.stem:
+            if not _is_exec_journal_entry_expired(entry, now_seconds):
+                continue
+        _delete_file_if_present(path)
+        removed.append(str(path))
+    return removed
 
 
 def build_project_lock_details(project_path, time_ref):

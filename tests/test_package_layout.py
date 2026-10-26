@@ -301,6 +301,45 @@ class PackageLayoutTests(unittest.TestCase):
         self.assertLess(server_content.index('return "busy";'), server_content.index("staleModules = CheckModuleStaleness();"))
         self.assertLess(server_content.index('"request_id_conflict"'), server_content.index("staleModules = CheckModuleStaleness();"))
 
+    def test_exec_start_journal_is_written_before_execution_and_cleared_at_terminal(self):
+        # The journal is the only evidence that survives an Editor dying inside a
+        # script, so the two edges that make it meaningful are pinned here: it is on
+        # disk before the engine runs, and it is gone once the request is terminal.
+        journal_path = PACKAGE_ROOT / "Editor" / "UnityPuerExecExecJournal.cs"
+        journal_content = journal_path.read_text(encoding="utf-8")
+        server_content = (PACKAGE_ROOT / "Editor" / "UnityPuerExecServer.cs").read_text(encoding="utf-8")
+
+        self.assertTrue(journal_path.exists())
+        self.assertTrue((PACKAGE_ROOT / "Editor" / "UnityPuerExecExecJournal.cs.meta").exists())
+        self.assertIn("Temp/UnityPuerExec/exec_journal", journal_content)
+        self.assertIn("SHA256", journal_content)
+        self.assertIn("File.Replace", journal_content)
+
+        self.assertIn("UnityPuerExecExecJournal.TryWrite", server_content)
+        self.assertLess(
+            server_content.index("UnityPuerExecExecJournal.TryWrite"),
+            server_content.index("jsEnv.ExecuteModule(harnessSpecifier);"),
+        )
+        self.assertIn("UnityPuerExecExecJournal.Delete(requestId);", server_content)
+        self.assertIn("UnityPuerExecExecJournal.Sweep();", server_content)
+
+    def test_exec_crash_guard_precedes_busy_and_answers_wait_for_exec(self):
+        server_content = (PACKAGE_ROOT / "Editor" / "UnityPuerExecServer.cs").read_text(encoding="utf-8")
+        protocol_content = (PACKAGE_ROOT / "Editor" / "UnityPuerExecProtocol.cs").read_text(encoding="utf-8")
+
+        self.assertIn('return "editor_crashed";', server_content)
+        # Terminal, so it is decided before the retryable admission outcomes.
+        self.assertLess(server_content.index('return "editor_crashed";'), server_content.index('return "busy";'))
+        # Both selectors: the exec accept path and wait-for-exec before `missing`.
+        self.assertEqual(server_content.count("UnityPuerExecExecJournal.TryReadForeign"), 2)
+        self.assertLess(
+            server_content.index("UnityPuerExecExecJournal.TryReadForeign(request.request_id"),
+            server_content.index('"missing"'),
+        )
+        self.assertIn("BuildEditorCrashedResponseJson", protocol_content)
+        self.assertIn("editor_crashed_during_request", protocol_content)
+        self.assertIn('\\"resubmit_safe\\":false', protocol_content)
+
     def test_completion_log_reports_bounded_metadata_not_result_content(self):
         server_path = PACKAGE_ROOT / "Editor" / "UnityPuerExecServer.cs"
         content = server_path.read_text(encoding="utf-8")

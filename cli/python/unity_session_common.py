@@ -47,6 +47,10 @@ CLI_OWNED_UNITY_LAUNCH_SWITCHES = (
 ENDPOINT_RELATIVE_PATH = Path("Temp") / "UnityPuerExec" / "endpoint.json"
 LAUNCH_CLAIM_RELATIVE_PATH = Path("Temp") / "UnityPuerExec" / "launch_claim.json"
 PENDING_EXEC_DIR_RELATIVE_PATH = Path("Temp") / "UnityPuerExec" / "pending_exec"
+# Start journal written by the Editor right before a script runs, and read (never
+# written) by the CLI. Its only purpose is to survive the Editor process, so it is
+# the one piece of state that can say "this request already started" after a crash.
+EXEC_JOURNAL_DIR_RELATIVE_PATH = Path("Temp") / "UnityPuerExec" / "exec_journal"
 UNITY_LOCKFILE_RELATIVE_PATH = Path("Temp") / "UnityLockfile"
 PROJECT_RECOVERY_WINDOW_SECONDS = 30.0
 # How long a held lockfile with no answering published service is allowed to be a
@@ -56,6 +60,14 @@ PROJECT_RECOVERY_WINDOW_SECONDS = 30.0
 SERVICE_RESTART_GRACE_SECONDS = 2.0
 PENDING_EXEC_SCHEMA_VERSION = 2
 PENDING_EXEC_RETENTION_MS = 24 * 60 * 60 * 1000
+EXEC_JOURNAL_SCHEMA_VERSION = 1
+EXEC_JOURNAL_RETENTION_MS = 24 * 60 * 60 * 1000
+# Same rule the Editor applies when it names the journal file, so both sides derive
+# the same path from the same request id. Anything else is stored under its SHA-256.
+EXEC_JOURNAL_SAFE_KEY_MAX_LENGTH = 128
+EXEC_JOURNAL_SAFE_KEY_CHARS = frozenset(
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-"
+)
 
 
 class UnitySessionError(Exception):
