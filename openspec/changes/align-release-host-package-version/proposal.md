@@ -15,12 +15,14 @@ So the failure mode is structural, not environmental: the single step that can m
 
 ## What Changes
 
-- **Host package identity preflight.** Before `--real-host-validation` runs anything, the helper resolves the validation host, finds the package tree Unity will actually load (reusing `prepare_validation_host.detect_embedded_package_shadowing`), reads that tree's `package.json` version, and compares it with the release candidate version. A mismatch stops release preparation before any Editor launch or test execution, with one structured error naming the loaded package path, the expected version, the observed version, and the two remedies.
-- **Opt-in version alignment.** A new `--sync-host-version` option stamps the release candidate version into the loaded host copy's `package.json`, but only when that copy's package files match this repository's package tree. Parity is checked over the release-relevant tree (`Editor/`, `Tests/`, root files) while ignoring the version field itself and the host copy's published `CLI~/` binaries. Divergence refuses with `host_package_stale` naming the differing paths instead of stamping a version onto code that would validate old behavior.
-- **Rollback restores the host.** If release preparation fails after alignment (unit suite, real-host suite, commit, or tag), the helper restores the host copy's original `package.json` bytes, so the host stays consistent with the repository version that is left behind.
+- **Host package identity preflight.** When `--real-host-validation` is requested, a read-only preflight runs before the repository version is written and before the `--dry-run` return. It resolves the validation host exactly as the real-host suite does (no new `--project-path` option, so the checked host and the tested host cannot diverge), finds the package tree Unity will actually load (reusing `prepare_validation_host.detect_embedded_package_shadowing`), and establishes that it is the release candidate. A `file:` dependency resolving to this repository's package is the candidate by identity of path; any other loaded tree must declare the candidate version. A mismatch stops release preparation before anything is written or launched, with one structured error naming the loaded package path, the expected version, the observed version, and the two remedies.
+- **Missing host is a refusal, not a skip.** Today an unresolvable host makes the suite skip at class level, `unittest` exits 0, and the helper records the real-host suite as run. With `--real-host-validation` explicitly requested, the preflight refuses with `host_project_unavailable` instead.
+- **Opt-in version alignment.** A new `--sync-host-version` option stamps the release candidate version into the loaded host copy's `package.json`, but only when that copy's package files match this repository's package tree. Parity covers the whole package tree minus the host copy's published `CLI~/` binaries, ignores the version field itself, and ignores line-ending differences (the host is a separate git repository that rewrites LF to CRLF on checkout). Divergence refuses with `host_package_stale` naming the differing paths instead of stamping a version onto code that would validate old behavior.
+- **Rollback restores the host.** If release preparation fails or is interrupted (including `KeyboardInterrupt` during the half-hour real-host suite) after alignment and before the release commit, the helper restores the host copy's original `package.json` bytes along with the repository version, so the host stays consistent with the repository version that is left behind.
+- **No live-Editor gate.** The helper does not probe a running Editor's `bridge_version`: the real-host suite already closes any running Editor and launches a fresh one, so such a check would only refuse runs that would pass.
 - **Machine-readable surface.** The preflight outcome (loaded path, observed version, parity verdict, whether a write would happen or did) appears in the helper's JSON result, including under `--dry-run`, which reports it without touching the host.
 
-Not changed: `--real-host-validation` stays opt-in; the file-based wiring path (`prepare_validation_host.py`) keeps its contract; the remedy of removing an embedded copy entirely stays valid and documented; the helper still never pushes.
+Not changed: `--real-host-validation` stays opt-in (only its behaviour when no host is configured changes from silent skip to refusal); the file-based wiring path (`prepare_validation_host.py`) keeps its contract; the remedy of removing an embedded copy entirely stays valid and documented; the helper still never pushes.
 
 ## Why not simply delete the embedded copy
 
@@ -34,12 +36,12 @@ None.
 
 ### Modified Capabilities
 
-- `openupm-release-helper`: `--real-host-validation` gains a host package identity prerequisite, an opt-in alignment step, and rollback of that alignment.
+- `openupm-release-helper`: `--real-host-validation` gains a host availability and package identity prerequisite, an opt-in alignment step, and rollback of that alignment including on interruption.
 - `validation-host-integration`: the run instructions state that a host loading an embedded copy must carry the release candidate version, and how the helper reports or aligns it.
 
 ## Impact
 
 - Tooling: `tools/release_openupm.py` (preflight, new option, rollback restore, JSON surface); small new helpers for locating the host-loaded package tree and comparing package trees, kept importable by tests.
 - Docs: `openspec/specs/openupm-release-pipeline/how-to-run.md`, `openspec/specs/validation-host-integration/how-to-run.md`.
-- Tests: `tests/test_release_openupm_tool.py` gains fixtures that build a fake host in a temporary directory (embedded copy present / absent, matching / stale), plus dry-run, refusal, alignment, and rollback cases. No Editor is required for any of them.
-- Compatibility: hosts wired purely through the `file:` dependency are unaffected — the loaded tree *is* the repository package, so the preflight passes without any write. The new option is additive; default behaviour for a mismatched host changes from "run 43 tests and fail" to "stop with one diagnosis".
+- Tests: `tests/test_release_openupm_tool.py` gains fixtures that build a fake host in a temporary directory (embedded copy present / absent, matching / stale / CRLF-only drift, both `file:` forms, missing host), plus dry-run, refusal, alignment, and rollback (failure and interrupt) cases. No Editor is required for any of them.
+- Compatibility: hosts wired purely through a `file:` dependency on this repository are unaffected — the loaded tree *is* the repository package, so the preflight passes without any write. The new option is additive; default behaviour for a mismatched host changes from "run 43 tests and fail" to "stop with one diagnosis", and for a missing host from "report the suite as run" to "refuse".
