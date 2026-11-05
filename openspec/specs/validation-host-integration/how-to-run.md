@@ -96,8 +96,70 @@ Prerequisites:
   project-private `-logFile`. They cannot rebind those CLI-owned switches.
 - Validation host has been wired to the local package via `tools/prepare_validation_host.py`
 - The helper output reports `"embedded_package_shadowing": false`. If it reports `true`, an immediate child of `Project/Packages/` declares `com.txcombo.unity-puer-exec` in its `package.json`, which can cause Unity to load that embedded copy instead of the repository-local package path in `manifest.json`; resolve or intentionally account for that before treating the run as evidence for current repository code. `"embedded_package_path"` names the first such directory and `"embedded_package_paths"` names all of them.
+- Any embedded shadow has been cleared with the repository-owned operation described in
+  [Clearing and restoring an embedded shadow](#clearing-and-restoring-an-embedded-shadow), not by hand.
 
-  Unity identifies an embedded package by the `name` declared in its `package.json`, not by the directory name. **Renaming the directory does not clear the shadow** — a directory renamed to `com.txcombo.unity-puer-exec.bak` is still loaded as `com.txcombo.unity-puer-exec`. Clearing the shadow requires **moving or removing the directory out of `Project/Packages/`** entirely.
+### Clearing and restoring an embedded shadow
+
+Unity identifies an embedded package by the `name` declared in its `package.json`, not by the
+directory name. **Renaming the directory does not clear the shadow** — a directory renamed to
+`com.txcombo.unity-puer-exec.bak` is still loaded as `com.txcombo.unity-puer-exec`. Clearing the
+shadow requires **moving or removing the directory out of `Project/Packages/`** entirely.
+
+`tools/prepare_validation_host.py` performs that move, and its paired operation reverses it. Both
+read the same shadowing detection the preparation report uses, so they act on every shadowing
+directory, not only the first one named.
+
+1. Clear the shadow and confirm the result in one command:
+
+   ```
+   python tools/prepare_validation_host.py --clear-embedded-shadow
+   ```
+
+   Each shadowing child of `Project/Packages/` moves to
+   `Project/.unity-puer-exec-embedded-backup/<directory name>-<YYYYMMDD>/`. The report carries
+   `"status": "cleared"`, the `"backup_path"`, every path under `"moved"`, and
+   `"embedded_package_shadowing": false` for the state left behind. Re-running it on an
+   already-clear host reports `"status": "unchanged"` and writes nothing.
+
+2. Prepare and run the real-host validation as usual.
+
+3. Put the embedded copy back exactly as it was:
+
+   ```
+   python tools/prepare_validation_host.py --restore-embedded-shadow
+   ```
+
+   The backup's contents move back to their original `Packages/` paths and the report carries
+   `"status": "restored"` with the paths under `"moved"`. The pair moves files and nothing else,
+   and it deletes nothing, so a clear followed by a restore leaves the host's version-control
+   status as it was found.
+
+Both directions refuse — reporting `"status": "refused"` with a named `"reason"` and exit code
+`2` — rather than acting when the host project is not free. Freedom is decided from the host
+project's own state, the same evidence the real-host suite's clean-boundary check uses:
+
+- the project's `Temp/UnityLockfile` is **held**. A lockfile that merely exists on disk is not a
+  held lock, because Windows leaves the file behind after the Editor exits; only a lock that
+  cannot be taken counts.
+- an Editor serving this project is still reachable through its published
+  `Temp/UnityPuerExec/endpoint.json`, i.e. the record is complete and the process it names is
+  still running. A publication left behind by a crashed or closed Editor is residue, not a live
+  session, and the real-host suite itself leaves one behind, so mere presence does not refuse.
+
+The tool never stops an Editor process; close the Editor and re-run. A clear also refuses when its
+backup path already holds content from an earlier clear that was never restored (naming the
+occupied path), and a restore refuses when the target `Packages/` child already exists rather than
+merging or overwriting it.
+
+Add `--dry-run` to either direction to see the moves and the backup path without writing anything;
+the report then carries `"status": "dry-run"`. To inspect the effect before touching a host whose
+package directory the host project tracks:
+
+```
+python tools/prepare_validation_host.py --clear-embedded-shadow --dry-run
+python tools/prepare_validation_host.py --restore-embedded-shadow --dry-run
+```
 
 ### Release-time: the loaded copy must declare the version being released
 
