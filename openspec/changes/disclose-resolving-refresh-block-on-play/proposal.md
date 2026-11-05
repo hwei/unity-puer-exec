@@ -4,8 +4,12 @@
 
 `fix-unchanged-content-refresh-loop` added `paths_suppressed` to the refresh block so a decision that
 dropped a candidate is distinguishable from one that saw nothing. On `exec` that disclosure reaches
-the caller, because the terminal response carries the refresh block of the decision that resolved the
-request. On `play` it does not.
+the caller only when the request never dispatched: once an earlier poll dispatched a refresh, the
+exec loop stores that poll's block and `_inject_refresh_block_into_stdout` overwrites the terminal
+response's own block with it. So a dispatch-then-suppress `exec` reports the same misleading
+`triggered: true, paths_suppressed: []` as `play` (found while applying
+`settle-project-path-refresh-on-compile-edge`, reproduced with a mocked two-poll sequence). On `play`
+the resolving block is dropped outright.
 
 `_play_pre_settle` retains a refresh block only inside its `_is_refresh_pending_response` branch —
 `refresh_block = _extract_refresh_block(stdout_text) or refresh_block` — so it keeps the block from
@@ -22,9 +26,10 @@ requirement the refresh block exists to satisfy is met for `exec` and not for `p
 
 ## What Changes
 
-- The `play` pre-settle retains the refresh block from the decision that resolved the settle, not
-  only from the ones that dispatched, so the success payload discloses the suppressing decision and
-  its `paths_suppressed`.
+- Both `exec` and the `play` pre-settle retain the refresh block from the decision that resolved the
+  settle, not only from the one that dispatched, under one merge rule: the dispatch block keeps every
+  field it has today, `paths_suppressed` becomes the ordered union of the dispatch and resolving
+  lists, and the resolving block is attached verbatim under an additive `resolving` key.
 - A play that dispatched a refresh and then resolved on a suppressed decision discloses both facts:
   that a refresh ran, and that the resolving decision suppressed the paths named.
 - A play whose settle never dispatched a refresh and whose resolving decision suppressed nothing
@@ -41,14 +46,17 @@ None.
 
 ### Modified Capabilities
 
+- `import-change-refresh`: "Exec responses disclose the refresh decision" gains the property that an
+  exec which dispatched and then resolved on a later decision discloses both, with the resolving
+  decision's suppressed paths visible.
 - `play-mode-control`: "Play settles pending code before entering play mode" gains the property that
   the refresh disclosure in a play result is the resolving decision's, so a suppressed settle is
   distinguishable from a settle that saw nothing pending.
 
 ## Impact
 
-- **CLI**: `cli/python/unity_puer_exec_runtime.py` — `_play_pre_settle`'s refresh-block retention,
-  and the payload built by `_play_success_result`.
+- **CLI**: `cli/python/unity_puer_exec_runtime.py` — a shared merge helper used by the exec refresh
+  loop (before `_inject_refresh_block_into_stdout`) and by `_play_pre_settle`.
 - **Host**: none.
 - **Tests**: mocked coverage for which block survives a dispatch-then-suppress settle; a real-host
   case that a `play` after a content-identical rewrite names the probe in `paths_suppressed`.
@@ -56,7 +64,6 @@ None.
   only its values change for the dispatch-then-suppress case, which today reports an empty
   `paths_suppressed` that was never accurate.
 - **Upstream**: inherits `fix-unchanged-content-refresh-loop`'s `paths_suppressed` disclosure and its
-  finding that the resolving decision is the one worth reading. Deliberately does not revisit the
-  exec-side retention rules or the refresh-block retention covered by
+  finding that the resolving decision is the one worth reading. Does not revisit the refresh-block retention covered by
   `package-editmode-test-harness`, which is about play-mode suppression of an exec refresh and is
   unaffected.

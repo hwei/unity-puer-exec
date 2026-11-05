@@ -2,6 +2,14 @@
 
 ## 1. Retain the resolving block
 
+- [ ] 1.0 Add one merge helper used by both exec and play: given the stored dispatch block (or
+      `None`) and the resolving response's block, return the dispatch block with every existing
+      field kept, `paths_suppressed` set to the ordered, de-duplicated union of both lists, and the
+      resolving block attached verbatim under `resolving`. With no dispatch block it returns the
+      resolving block unchanged. Use it in the exec refresh loop so the value passed to
+      `_inject_refresh_block_into_stdout` is the merged block. Verify: the mocked cases from 2.0
+      pass.
+
 - [ ] 1.1 In `_play_pre_settle`, retain the refresh block from a resolving poll as well as from a
       dispatching one, so the block the settle ended on is the block the play result carries. Keep
       the existing retention for the dispatching polls so a play that never resolves still discloses
@@ -16,6 +24,11 @@
       suppression on the first poll is disclosed. Verify: the mocked cases from 2.2 pass.
 
 ## 2. Mocked coverage
+
+- [ ] 2.0 Add mocked exec cases in `tests/test_unity_session_cli.py`: a dispatch-then-suppress
+      exec returns `refresh.triggered: true`, the suppressed path in `refresh.paths_suppressed`, and
+      `refresh.resolving.triggered: false`; an exec that never dispatched returns the server's block
+      unchanged (no `resolving` key). Verify: `python -m unittest tests.test_unity_session_cli` passes.
 
 - [ ] 2.1 Add a mocked case in `tests/test_unity_session_cli.py` driving `run_play` through a
       dispatch-then-suppress settle — a first `/refresh` answer that triggered, and a later one that
@@ -43,6 +56,11 @@
 - [ ] 3.2 Confirm the neighbouring play cases are unaffected, in particular the one that aborts on a
       failing pre-settle build and the one that settles a genuine pending change before playing.
       Verify: the same command as 3.1 passes with no new failure.
+
+- [ ] 3.3 Update `test_identical_rewrite_completes_in_one_project_path_invocation` (added by
+      `settle-project-path-refresh-on-compile-edge`) to the merged shape: the resolving decision is
+      `refresh.resolving` with `triggered: false`, and the probe is in `refresh.paths_suppressed`.
+      Verify: the same real-host command as 3.1, with `RefreshOnChangeRealHostTests`.
 
 ## Workflow follow-up
 
