@@ -1480,7 +1480,7 @@ The `--button` value SHALL be matched against the dialog's enumerated clickable 
 
 ### Requirement: Automatic refresh is a non-terminal phase of the accepted exec request
 
-When the server reports that it triggered an automatic refresh, the CLI SHALL treat the refresh and the resulting compilation as non-terminal phases of the same accepted exec request. The CLI SHALL NOT present a refresh confirmation as the caller's script result, and SHALL make the continuation path explicit so a caller does not mistake an intermediate phase for completion.
+When the server reports that it triggered an automatic refresh, the CLI SHALL treat the refresh and the resulting compilation as non-terminal phases of the same accepted exec request. The CLI SHALL NOT present a refresh confirmation as the caller's script result, and SHALL make the continuation path explicit so that a caller does not mistake an intermediate phase for completion. The settle that precedes the one permitted resubmit SHALL be edge-aware in every selector mode, waiting within a bounded appear window for a compilation to appear rather than only for an already-visible compilation to finish, so a refresh the service resolves without compiling converges inside the same invocation whichever selector the caller used.
 
 #### Scenario: Automatic refresh runs the script after settling
 
@@ -1522,6 +1522,41 @@ When the server reports that it triggered an automatic refresh, the CLI SHALL tr
 - **WHEN** an exec request is still refreshing or compiling when a response is returned
 - **THEN** the response represents a non-terminal accepted state rather than a terminal result
 - **AND** the response makes the continuation path explicit so the caller can wait for the eventual script result
+
+#### Scenario: A project-path settle waits for the compile edge, not only for readiness
+
+- **WHEN** the server triggers an automatic refresh for a project-path `exec`
+- **AND** the Editor is already reachable and reports `ready` because no compilation has started yet
+- **THEN** the CLI waits within its bounded appear window for a compilation to appear before it re-submits
+- **AND** it does not re-submit on the first `ready` observation alone
+
+#### Scenario: Both selectors spend the same budgets on the same cycle
+
+- **WHEN** an automatic refresh is settled in project-path mode and in base-url mode
+- **THEN** both spends use the same bounded appear window and the same compile-scale settle budget
+- **AND** neither is bounded by `--wait-timeout-ms`
+
+#### Scenario: A refresh the service resolves without compiling converges in one project-path invocation
+
+- **WHEN** a project-path `exec` triggers an automatic refresh for content the service then
+  suppresses as already handed to a dispatched refresh
+- **AND** Unity starts no compilation
+- **THEN** the single permitted resubmit reaches a terminal response carrying the script result
+- **AND** the invocation does not report the non-terminal refreshing phase
+
+#### Scenario: A compile that finished during readiness does not spend the appear window again
+
+- **WHEN** a project-path `exec` triggers an automatic refresh that compiles and reloads
+- **AND** the compilation finished while the CLI was waiting for the Editor to become ready
+- **THEN** the CLI recognises the finished compile from the advanced compile generation
+- **AND** it re-submits without waiting out the appear window a second time
+
+#### Scenario: An unfinished cycle is still non-terminal, not settled
+
+- **WHEN** the project-path settle's compile cycle does not finish before the compile-scale budget
+  expires
+- **THEN** the CLI reports the same non-terminal outcome it reports today
+- **AND** it does not treat the exhausted budget as a settled compile
 
 ### Requirement: Help states that only code changes trigger automatic refresh
 

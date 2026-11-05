@@ -183,7 +183,7 @@ When the skip leaves a compile-triggering change pending, the exec response SHAL
 
 ### Requirement: Exec responses disclose the refresh decision
 
-When a refresh decision is made, the exec response SHALL disclose whether a refresh was triggered, why, and which paths were involved. When no refresh occurred, the response SHALL disclose why it was skipped. The response SHALL include the settle outcome and the elapsed time of the refresh step. The response SHALL also name the paths the scan flagged as candidates and the service then suppressed as content it had already dispatched a refresh for, so a suppressed decision is distinguishable from a decision that saw no candidate at all.
+When a refresh decision is made, the exec response SHALL disclose whether a refresh was triggered, why, and which paths were involved. When no refresh occurred, the response SHALL disclose why it was skipped. The response SHALL include the settle outcome and the elapsed time of the refresh step. The response SHALL also name the paths the scan flagged as candidates and the service then suppressed as content it had already dispatched a refresh for, so a suppressed decision is distinguishable from a decision that saw no candidate at all. When one exec invocation dispatched a refresh on an earlier poll and resolved on a later decision, the terminal response SHALL disclose both: the dispatch as it is reported today, and the resolving decision including the paths it suppressed.
 
 #### Scenario: Response reports a triggered refresh
 
@@ -214,6 +214,14 @@ When a refresh decision is made, the exec response SHALL disclose whether a refr
 
 - **WHEN** the scan flagged no compile-triggering candidate
 - **THEN** the response reports an empty suppressed-path list
+
+#### Scenario: A dispatch followed by a suppressing resolution discloses both decisions
+
+- **WHEN** an exec invocation dispatched a refresh on an earlier poll
+- **AND** the poll that resolved the request suppressed one or more paths
+- **THEN** the response still reports the refresh as triggered, with every field it reports today
+- **AND** the response names the resolving decision's suppressed paths
+- **AND** the resolving decision is available verbatim alongside the dispatch
 
 ### Requirement: Refresh decision diagnostics remain available for precision measurement
 
