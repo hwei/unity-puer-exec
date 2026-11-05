@@ -9,6 +9,7 @@ import prepare_validation_host
 DECLARED_VALIDATION_TEMP_ROOTS = (
     Path("Assets") / "__AgentValidation",
     Path("Assets") / "__codex_validation_temp",
+    Path("Assets") / "__codex_host_reset",
     Path("Assets") / "CodexValidation",
 )
 

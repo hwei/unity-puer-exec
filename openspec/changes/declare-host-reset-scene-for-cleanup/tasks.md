@@ -2,18 +2,18 @@
 
 ## 1. Declare the root
 
-- [ ] 1.1 Add `Assets/__codex_host_reset` to `DECLARED_VALIDATION_TEMP_ROOTS` in
+- [x] 1.1 Add `Assets/__codex_host_reset` to `DECLARED_VALIDATION_TEMP_ROOTS` in
       `tools/cleanup_validation_host.py`, alongside the existing declared roots and following the same
       `Path("Assets") / ...` form. Verify: `python -m unittest tests.test_cleanup_validation_host_tool`
       passes and the tool's inventory report names the new root.
-- [ ] 1.2 Confirm the refusal path is untouched: a requested path outside the inventory still refuses
+- [x] 1.2 Confirm the refusal path is untouched: a requested path outside the inventory still refuses
       and names the inventory, so declaring a root changed only what the harness itself cleans.
       Verify: the existing refusal cases in `tests.test_cleanup_validation_host_tool` still pass
       unmodified.
 
 ## 2. Inventory-versus-suite guard
 
-- [ ] 2.1 Add a guard to `tests/test_cleanup_validation_host_tool.py` that reads the
+- [x] 2.1 Add a guard to `tests/test_cleanup_validation_host_tool.py` that reads the
       repository-owned asset roots the real-host suite creates — including
       `HOST_RESET_SCENE_RELATIVE` and the probe directory the suite writes compile-triggering and
       never-imported probes into — and fails naming any root the declared inventory does not cover.
@@ -22,10 +22,10 @@
       `Assets/...` path literals, not from a second hand-maintained list, so the guard cannot drift
       the same way the inventory did. Importing the module must not require a Unity Editor.
       Verify: `python -m unittest tests.test_cleanup_validation_host_tool` passes.
-- [ ] 2.2 Prove the guard has teeth: temporarily point it at an undeclared root and confirm it fails
+- [x] 2.2 Prove the guard has teeth: temporarily point it at an undeclared root and confirm it fails
       with the root named, then restore it. Verify: the deliberate failure and its message are
       recorded in the closeout summary.
-- [ ] 2.3 Run the default mocked suite as documented in
+- [x] 2.3 Run the default mocked suite as documented in
       `openspec/specs/validation-host-integration/how-to-run.md`. Verify: every listed module passes
       with no new failure or skip, and the guard runs without a Unity Editor or a validation host.
 
