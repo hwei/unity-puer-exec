@@ -39,18 +39,18 @@
 
 ## 3. Real-host validation
 
-- [ ] 3.1 Add a real-host case that a compile-triggering file rewritten byte-identically reaches
+- [x] 3.1 Add a real-host case that a compile-triggering file rewritten byte-identically reaches
       `status: "completed"` in a **single** `exec --project-path` invocation, with
       `refresh.triggered: false` on the resolving decision and the probe named in
       `paths_suppressed`. Verify:
       `UNITY_PUER_EXEC_RUN_REAL_HOST_TESTS=1 python -m unittest tests.test_real_host_integration.RefreshOnChangeRealHostTests`
       passes against the host in `.env`.
-- [ ] 3.2 Confirm the genuine-change path is unchanged: an ordinary `.cs` edit still compiles, still
+- [x] 3.2 Confirm the genuine-change path is unchanged: an ordinary `.cs` edit still compiles, still
       crosses the domain reload, and still reaches `completed` in one project-path invocation.
       Verify: the same command as 3.1 passes, including the pre-existing
       `test_code_change_refreshes_once_then_does_not_refresh_again` and
       `test_identical_content_rewrite_does_not_loop_the_refresh`.
-- [ ] 3.3 Record the wall-clock cost, before and after, of two project-path `exec` runs: one whose
+- [x] 3.3 Record the wall-clock cost, before and after, of two project-path `exec` runs: one whose
       refresh compiles nothing, and one for a genuine `.cs` change that compiles and reloads. The
       first should grow by at most the appear window; the second should not grow by the appear
       window (the baseline settles it). Verify: the four timings are captured in the closeout

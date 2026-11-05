@@ -47,17 +47,17 @@
 
 ## 3. Real-host validation
 
-- [ ] 3.1 Add a real-host case that a `play` following a byte-identical rewrite of a compile-triggering
+- [x] 3.1 Add a real-host case that a `play` following a byte-identical rewrite of a compile-triggering
       probe reaches `play_state: "playing"` and names the probe in the play result's
       `paths_suppressed`, reusing the identical-rewrite helper the refresh cases already have.
       Verify:
       `UNITY_PUER_EXEC_RUN_REAL_HOST_TESTS=1 python -m unittest tests.test_real_host_integration.PlayModeCompileBlockRealHostTests`
       passes against the host in `.env`.
-- [ ] 3.2 Confirm the neighbouring play cases are unaffected, in particular the one that aborts on a
+- [x] 3.2 Confirm the neighbouring play cases are unaffected, in particular the one that aborts on a
       failing pre-settle build and the one that settles a genuine pending change before playing.
       Verify: the same command as 3.1 passes with no new failure.
 
-- [ ] 3.3 Update `test_identical_rewrite_completes_in_one_project_path_invocation` (added by
+- [x] 3.3 Update `test_identical_rewrite_completes_in_one_project_path_invocation` (added by
       `settle-project-path-refresh-on-compile-edge`) to the merged shape: the resolving decision is
       `refresh.resolving` with `triggered: false`, and the probe is in `refresh.paths_suppressed`.
       Verify: the same real-host command as 3.1, with `RefreshOnChangeRealHostTests`.

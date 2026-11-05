@@ -62,7 +62,7 @@
 
 ## 4. Real-host round trip
 
-- [ ] 4.1 Perform a clear → prepare → real-host smoke → restore round trip against the host in
+- [x] 4.1 Perform a clear → prepare → real-host smoke → restore round trip against the host in
       `.env`, and confirm the host's version-control status is empty afterwards and its embedded
       package content is unchanged. Verify: the transcript, including the preparation reports at each
       step and the final empty status, is captured in the closeout summary.

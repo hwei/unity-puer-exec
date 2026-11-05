@@ -31,13 +31,13 @@
 
 ## 3. Real-host residue check
 
-- [ ] 3.1 Run a real-host class against the host in `.env` and confirm that after its teardown the
+- [x] 3.1 Run a real-host class against the host in `.env` and confirm that after its teardown the
       host project's version-control status reports no repository-owned residue, including no
       `__codex_host_reset` directory or metadata. Verify:
       `UNITY_PUER_EXEC_RUN_REAL_HOST_TESTS=1 python -m unittest tests.test_real_host_integration.RefreshOnChangeRealHostTests`
       passes and the host status afterwards is empty, with the transcript captured in the closeout
       summary.
-- [ ] 3.2 Clean the residue a previous run already left, if any, so the host starts from the state
+- [x] 3.2 Clean the residue a previous run already left, if any, so the host starts from the state
       this change assumes. Verify: the host project's version-control status is empty before the 3.1
       run and the removal is recorded in the closeout summary.
 
