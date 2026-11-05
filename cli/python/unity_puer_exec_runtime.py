@@ -1576,6 +1576,34 @@ def _extract_refresh_block(stdout_text):
     return block if isinstance(block, dict) else None
 
 
+def _merge_refresh_blocks(dispatch_block, resolving_block):
+    """Merge the dispatching poll's refresh block with the resolving poll's.
+
+    A settle can span two decisions: the poll that dispatched the refresh and the
+    later poll whose decision resolved the request. The dispatch block is the base
+    (every field it reports today is kept), ``paths_suppressed`` becomes the
+    ordered, de-duplicated union of both lists, and the resolving block is attached
+    verbatim under ``resolving`` so both decisions stay readable.
+
+    Either side may be absent. With no dispatch block the resolving block is
+    returned unchanged; with no resolving block the dispatch block is returned
+    unchanged. Neither input is mutated.
+    """
+    if dispatch_block is None:
+        return resolving_block
+    if resolving_block is None:
+        return dispatch_block
+    merged = dict(dispatch_block)
+    suppressed = []
+    for block in (dispatch_block, resolving_block):
+        for path in block.get("paths_suppressed") or []:
+            if path not in suppressed:
+                suppressed.append(path)
+    merged["paths_suppressed"] = suppressed
+    merged["resolving"] = resolving_block
+    return merged
+
+
 def _inject_refresh_block_into_stdout(stdout_text, refresh_block):
     if not stdout_text or refresh_block is None:
         return stdout_text
@@ -2038,7 +2066,10 @@ def _run_exec_impl(args, recovery):
         request_id=request_id,
         default_phase=default_phase,
     )
-    stdout_text = _inject_refresh_block_into_stdout(stdout_text, refresh_block)
+    stdout_text = _inject_refresh_block_into_stdout(
+        stdout_text,
+        _merge_refresh_blocks(refresh_block, _extract_refresh_block(stdout_text)),
+    )
     if _is_editor_crashed_response(stdout_text):
         return _editor_crashed_result("exec", request_id, args, stdout_text, session, log_path, log_start)
     stdout_text = _inject_log_range_into_stdout(stdout_text, log_path, log_start, _capture_log_offset(log_path))
@@ -2964,6 +2995,16 @@ def _play_pre_settle(args, selector, session, base_url, recovery):
                 stdout_text, stderr_text, "play", args
             )
             return session, base_url, (exit_code, stdout_text, stderr_text), refresh_block
+        # The settle ended on this decision, so disclose it too: the dispatch block
+        # stays the base and the resolving block is attached under ``resolving``.
+        # When this invocation never dispatched, keep the no-refresh shape unless
+        # the resolving decision actually suppressed paths (an earlier exec may have
+        # handed that content to a dispatched refresh).
+        resolving_block = _extract_refresh_block(stdout_text)
+        if settle_attempted:
+            return session, base_url, None, _merge_refresh_blocks(refresh_block, resolving_block)
+        if isinstance(resolving_block, dict) and resolving_block.get("paths_suppressed"):
+            return session, base_url, None, resolving_block
         return session, base_url, None, refresh_block
 
 

@@ -3272,7 +3272,65 @@ def _js_string_literal(value):
     return "'" + str(value).replace("\\", "/").replace("'", "\\'") + "'"
 
 
-class RefreshOnChangeRealHostTests(_SharedRealHostDevice, unittest.TestCase):
+class _IdenticalRewriteProbeMixin:
+    """The content-identical rewrite (issue #3) helper, shared by host cases.
+
+    Lives in a mixin so both the refresh cases (which own the reproduction) and the
+    play pre-settle case (which needs the same starting condition) use one helper.
+    It expects ``_SharedRealHostDevice`` to supply the probe writer, exec helper and
+    endpoint/health helpers.
+    """
+
+    # --- content-identical rewrite (issue #3) ---------------------------------
+
+    def _rewrite_probe_identically(self, probe):
+        """Move a probe's mtime past the settled import without changing a byte.
+
+        This is the condition GitHub issue #3 reports: a rebase, a reset, or a branch
+        round-trip rewrites a tracked ``.cs`` identically, so its mtime moves past the
+        settled-import timestamp while Unity sees an identical content hash and starts no
+        compilation. No completion signal then advances the timestamp, and an mtime-only
+        signal re-dispatches a no-op refresh until the caller's budget runs out.
+        """
+        before = probe.stat().st_mtime_ns
+        probe.write_bytes(probe.read_bytes())
+        if probe.stat().st_mtime_ns <= before:
+            # A filesystem that declines to move the mtime for an identical write would
+            # test nothing here, so move it explicitly -- what `touch` does in the report.
+            os.utime(probe, ns=(time.time_ns(), time.time_ns()))
+        self.assertGreater(
+            probe.stat().st_mtime_ns,
+            before,
+            "the identical rewrite did not move the probe's mtime",
+        )
+        return before
+
+    def _settle_identical_rewrite_probe(self, base_url, name):
+        """Write a probe, settle its real compile, then rewrite it identically.
+
+        Returns ``(base_url, probe)`` with the Editor settled and not pending, the probe's
+        content on disk unchanged since the compile that settled it, and its mtime newer
+        than the settled-import timestamp.
+        """
+        probe = self._write_compile_triggering_probe(name)
+
+        # The probe's first write is a genuine change: let it compile and settle, so the
+        # case under test starts from a settled Editor with an empty content ledger.
+        exit_code, payload = self._exec_script(
+            base_url, "export default function run(ctx) { return { settled: true }; }"
+        )
+        self.assertEqual(exit_code, 0, payload)
+        self.assertEqual(payload["status"], "completed", payload)
+
+        base_url = self._base_url()
+        health = self._health(base_url)
+        self.assertEqual(health["refresh"]["pending"], "not_pending", health["refresh"])
+
+        self._rewrite_probe_identically(probe)
+        return base_url, probe
+
+
+class RefreshOnChangeRealHostTests(_IdenticalRewriteProbeMixin, _SharedRealHostDevice, unittest.TestCase):
     """Real-host coverage for import-change-refresh (see the change's design).
 
     The C# decision logic has no unit-test host in this repository, so its observable
@@ -3449,54 +3507,6 @@ class RefreshOnChangeRealHostTests(_SharedRealHostDevice, unittest.TestCase):
         self.assertIsInstance(second_refresh, dict, second_payload)
         self.assertFalse(second_refresh["triggered"], second_refresh)
 
-    # --- content-identical rewrite (issue #3) ---------------------------------
-
-    def _rewrite_probe_identically(self, probe):
-        """Move a probe's mtime past the settled import without changing a byte.
-
-        This is the condition GitHub issue #3 reports: a rebase, a reset, or a branch
-        round-trip rewrites a tracked ``.cs`` identically, so its mtime moves past the
-        settled-import timestamp while Unity sees an identical content hash and starts no
-        compilation. No completion signal then advances the timestamp, and an mtime-only
-        signal re-dispatches a no-op refresh until the caller's budget runs out.
-        """
-        before = probe.stat().st_mtime_ns
-        probe.write_bytes(probe.read_bytes())
-        if probe.stat().st_mtime_ns <= before:
-            # A filesystem that declines to move the mtime for an identical write would
-            # test nothing here, so move it explicitly -- what `touch` does in the report.
-            os.utime(probe, ns=(time.time_ns(), time.time_ns()))
-        self.assertGreater(
-            probe.stat().st_mtime_ns,
-            before,
-            "the identical rewrite did not move the probe's mtime",
-        )
-        return before
-
-    def _settle_identical_rewrite_probe(self, base_url, name):
-        """Write a probe, settle its real compile, then rewrite it identically.
-
-        Returns ``(base_url, probe)`` with the Editor settled and not pending, the probe's
-        content on disk unchanged since the compile that settled it, and its mtime newer
-        than the settled-import timestamp.
-        """
-        probe = self._write_compile_triggering_probe(name)
-
-        # The probe's first write is a genuine change: let it compile and settle, so the
-        # case under test starts from a settled Editor with an empty content ledger.
-        exit_code, payload = self._exec_script(
-            base_url, "export default function run(ctx) { return { settled: true }; }"
-        )
-        self.assertEqual(exit_code, 0, payload)
-        self.assertEqual(payload["status"], "completed", payload)
-
-        base_url = self._base_url()
-        health = self._health(base_url)
-        self.assertEqual(health["refresh"]["pending"], "not_pending", health["refresh"])
-
-        self._rewrite_probe_identically(probe)
-        return base_url, probe
-
     def test_identical_content_rewrite_does_not_loop_the_refresh(self):
         base_url = self._base_url()
         base_url, probe = self._settle_identical_rewrite_probe(
@@ -3551,8 +3561,10 @@ class RefreshOnChangeRealHostTests(_SharedRealHostDevice, unittest.TestCase):
         `refreshing` phase. This case drives exactly one CLI invocation and
         deliberately does not fall back to `wait-for-exec`, so a second invocation
         cannot hide the regression: the terminal response the single invocation
-        returns must already carry the script result, the resolving decision
-        (`refresh.triggered: false`) and the probe it suppressed.
+        returns must already carry the script result and the merged refresh block:
+        the dispatch stays the base (`refresh.triggered: true`) and the decision that
+        resolved it is attached verbatim under `refresh.resolving`, with the probe it
+        suppressed named in `refresh.paths_suppressed`.
         """
         base_url = self._base_url()
         base_url, probe = self._settle_identical_rewrite_probe(
@@ -3585,17 +3597,19 @@ class RefreshOnChangeRealHostTests(_SharedRealHostDevice, unittest.TestCase):
         self.assertEqual(payload["status"], "completed", payload)
         self.assertIsInstance(payload.get("result"), dict, payload)
 
-        # The block asserted here is the resolving decision's: the one permitted
-        # resubmit was answered without dispatching a refresh. If this fails with
-        # `triggered: true` and an empty `paths_suppressed`, the call did settle and
-        # the CLI kept the dispatching poll's block rather than the resolving one --
-        # the same retention gap the sibling change
-        # `disclose-resolving-refresh-block-on-play` fixes for `play`.
+        # The merged shape after `disclose-resolving-refresh-block-on-play`: the first
+        # poll dispatched, so `refresh.triggered` stays True with the dispatch fields,
+        # while the resolving decision is attached under `refresh.resolving` and the
+        # probe it suppressed is named in the merged `paths_suppressed`.
         refresh = payload.get("refresh")
         self.assertIsInstance(refresh, dict, payload)
-        self.assertFalse(refresh["triggered"], refresh)
+        self.assertTrue(refresh["triggered"], refresh)
         self.assertIn(expected_path, refresh.get("paths_suppressed") or [], refresh)
-        self.assertEqual(refresh.get("paths_changed"), [], refresh)
+        self.assertIsInstance(refresh.get("paths_changed"), list, refresh)
+        resolving = refresh.get("resolving")
+        self.assertIsInstance(resolving, dict, refresh)
+        self.assertFalse(resolving["triggered"], resolving)
+        self.assertIn(expected_path, resolving.get("paths_suppressed") or [], resolving)
 
     def test_suppressed_identical_rewrite_is_disclosed_and_not_pending(self):
         base_url = self._base_url()
@@ -3849,7 +3863,7 @@ class RefreshOnChangeRealHostTests(_SharedRealHostDevice, unittest.TestCase):
         self.assertEqual(payload["refresh"]["reason"], "compile_triggering_change")
 
 
-class PlayModeCompileBlockRealHostTests(_SharedRealHostDevice, unittest.TestCase):
+class PlayModeCompileBlockRealHostTests(_IdenticalRewriteProbeMixin, _SharedRealHostDevice, unittest.TestCase):
     """Real-host coverage for a compile blocked by play mode.
 
     Kept in its own class because the case forces the Editor's "Script Changes While
@@ -4155,6 +4169,43 @@ class PlayModeCompileBlockRealHostTests(_SharedRealHostDevice, unittest.TestCase
         self.assertEqual(
             payload["result"]["run_in_background"]["option"], "--no-run-in-background"
         )
+
+    def test_play_after_identical_rewrite_discloses_the_suppressed_probe(self):
+        """A play that settles a content-identical rewrite names the probe it suppressed.
+
+        The first `/refresh` poll dispatches a refresh, the compile edge settles, and a
+        later poll resolves the pre-settle by suppressing the probe as content already
+        handed to a dispatched refresh. The play result must disclose the dispatch *and*
+        the probe in `refresh.paths_suppressed` (the merged shape), and still reach play
+        mode. The same content-identical rewrite helper the refresh cases use produces
+        the starting condition; play is stopped afterwards like its neighbours.
+        """
+        base_url = self._base_url()
+        base_url, probe = self._settle_identical_rewrite_probe(
+            base_url, "PlayIdenticalRewriteProbe.cs"
+        )
+        expected_path = str(probe).replace("\\", "/")
+
+        try:
+            exit_code, payload, _, _ = _run_cli(
+                ["play"] + self._project_cli_args() + ["--timeout-seconds", "180"]
+            )
+            self.assertEqual(exit_code, 0, payload)
+            self.assertEqual(payload["status"], "completed", payload)
+            self.assertEqual(payload["result"]["play_state"], "playing", payload)
+
+            refresh = payload.get("refresh")
+            self.assertIsInstance(refresh, dict, payload)
+            self.assertIn(expected_path, refresh.get("paths_suppressed") or [], refresh)
+            # When the first poll dispatched and a later one resolved, the resolving
+            # decision is also available verbatim alongside the dispatch.
+            resolving = refresh.get("resolving")
+            if resolving is not None:
+                self.assertIsInstance(resolving, dict, refresh)
+                self.assertFalse(resolving["triggered"], resolving)
+                self.assertIn(expected_path, resolving.get("paths_suppressed") or [], resolving)
+        finally:
+            _run_cli(["stop"] + self._project_cli_args() + ["--timeout-seconds", "180"])
 
     def test_play_pause_play_resumes_against_real_host(self):
         """`play` enters, `pause` pauses, and `play` again resumes."""

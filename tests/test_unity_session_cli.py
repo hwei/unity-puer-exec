@@ -3502,6 +3502,58 @@ def _play_mode_health(**refresh_overrides):
     return {"ok": True, "status": "ready", "refresh": refresh}
 
 
+class MergeRefreshBlocksTests(unittest.TestCase):
+    """Unit coverage for the one merge rule exec and play share."""
+
+    def test_no_dispatch_block_returns_the_resolving_block_unchanged(self):
+        resolving = {"triggered": False, "paths_suppressed": ["B.cs"]}
+        self.assertIs(unity_puer_exec_runtime._merge_refresh_blocks(None, resolving), resolving)
+        self.assertIsNone(unity_puer_exec_runtime._merge_refresh_blocks(None, None))
+
+    def test_no_resolving_block_returns_the_dispatch_block_unchanged(self):
+        dispatch = {"triggered": True, "paths_changed": ["A.cs"], "paths_suppressed": []}
+        self.assertIs(unity_puer_exec_runtime._merge_refresh_blocks(dispatch, None), dispatch)
+
+    def test_merge_keeps_dispatch_fields_and_unions_suppressed_in_order(self):
+        dispatch = {
+            "triggered": True,
+            "reason": "compile_triggering_change",
+            "paths_changed": ["A.cs"],
+            "paths_suppressed": ["B.cs", "A.cs"],
+            "settle_outcome": "dispatched",
+            "elapsed_ms": 4,
+        }
+        resolving = {
+            "triggered": False,
+            "reason": "",
+            "paths_suppressed": ["A.cs", "C.cs", "B.cs"],
+        }
+        merged = unity_puer_exec_runtime._merge_refresh_blocks(dispatch, resolving)
+
+        self.assertTrue(merged["triggered"])
+        self.assertEqual(merged["reason"], "compile_triggering_change")
+        self.assertEqual(merged["paths_changed"], ["A.cs"])
+        self.assertEqual(merged["settle_outcome"], "dispatched")
+        self.assertEqual(merged["elapsed_ms"], 4)
+        # Dispatch order first, then only the resolving paths not already named.
+        self.assertEqual(merged["paths_suppressed"], ["B.cs", "A.cs", "C.cs"])
+        self.assertIs(merged["resolving"], resolving)
+
+    def test_merge_does_not_mutate_either_input(self):
+        dispatch = {"triggered": True, "paths_suppressed": ["A.cs"]}
+        resolving = {"triggered": False, "paths_suppressed": ["B.cs"]}
+        unity_puer_exec_runtime._merge_refresh_blocks(dispatch, resolving)
+        self.assertEqual(dispatch, {"triggered": True, "paths_suppressed": ["A.cs"]})
+        self.assertEqual(resolving, {"triggered": False, "paths_suppressed": ["B.cs"]})
+
+    def test_merge_treats_missing_or_null_suppressed_lists_as_empty(self):
+        merged = unity_puer_exec_runtime._merge_refresh_blocks(
+            {"triggered": True}, {"triggered": False, "paths_suppressed": None}
+        )
+        self.assertEqual(merged["paths_suppressed"], [])
+        self.assertEqual(merged["resolving"], {"triggered": False, "paths_suppressed": None})
+
+
 class WaitForCompileCycleTests(unittest.TestCase):
     def _run(self, statuses, appear=10.0, settle=10.0):
         return unity_puer_exec_runtime.wait_for_compile_cycle(
@@ -4596,6 +4648,117 @@ class AutomaticRefreshBaseUrlTests(unittest.TestCase):
         self.assertEqual(body["result"]["value"], 7)
         self.assertTrue(body["refresh"]["triggered"])
 
+    def test_base_url_exec_dispatch_then_suppress_discloses_both_decisions(self):
+        """The terminal response keeps the dispatch and names the resolving suppression.
+
+        The first submit dispatches the refresh; the post-settle resubmit is answered by
+        a decision that triggered nothing but suppressed the path as content already
+        handed to a dispatched refresh. Before the merge, the resolving block was
+        overwritten by the dispatch block, so the response read ``triggered: true`` with
+        an empty ``paths_suppressed`` -- the exact misleading shape issue #3 reported.
+        """
+        with tempfile.TemporaryDirectory() as temp_dir:
+            script_path = Path(temp_dir) / "script.js"
+            script_path.write_text("export default function run(ctx) { return 7; }", encoding="utf-8")
+            dispatch_body = {
+                "ok": True,
+                "status": "running",
+                "phase": "refreshing",
+                "request_id": "req-merge",
+                "refresh": {
+                    "triggered": True,
+                    "reason": "compile_triggering_change",
+                    "paths_changed": ["C:/Project/Assets/A.cs"],
+                    "paths_suppressed": [],
+                    "skipped_reason": "",
+                    "settle_outcome": "dispatched",
+                    "elapsed_ms": 4,
+                },
+            }
+            resolved_body = {
+                "ok": True,
+                "status": "completed",
+                "request_id": "req-merge",
+                "result": {"value": 7},
+                "refresh": {
+                    "triggered": False,
+                    "reason": "",
+                    "paths_changed": [],
+                    "paths_suppressed": ["C:/Project/Assets/A.cs"],
+                    "skipped_reason": "no_pending_change",
+                    "settle_outcome": "not_attempted",
+                    "elapsed_ms": 5,
+                },
+            }
+            with mock.patch.object(
+                unity_puer_exec_runtime,
+                "_settle_base_url_after_refresh",
+                return_value={"outcome": "ready", "observed_health": ["compiling", "ready"]},
+            ), mock.patch.object(
+                unity_puer_exec.direct_exec_client,
+                "invoke_command",
+                side_effect=[
+                    (unity_puer_exec.EXIT_RUNNING, json.dumps(dispatch_body), ""),
+                    (0, json.dumps(resolved_body), ""),
+                ],
+            ):
+                exit_code, stdout, stderr = unity_puer_exec.run_cli(
+                    ["exec", "--base-url", "http://127.0.0.1:55231", "--file", str(script_path), "--request-id", "req-merge"]
+                )
+
+        self.assertEqual(exit_code, 0, stderr)
+        self.assertEqual(stderr, "")
+        body = json.loads(stdout)
+        self.assertEqual(body["status"], "completed")
+        refresh = body["refresh"]
+        # The dispatch stays the base: every field it reported is still there.
+        self.assertTrue(refresh["triggered"])
+        self.assertEqual(refresh["reason"], "compile_triggering_change")
+        self.assertEqual(refresh["paths_changed"], ["C:/Project/Assets/A.cs"])
+        self.assertEqual(refresh["settle_outcome"], "dispatched")
+        self.assertEqual(refresh["elapsed_ms"], 4)
+        # And the resolving suppression is disclosed alongside it, verbatim.
+        self.assertEqual(refresh["paths_suppressed"], ["C:/Project/Assets/A.cs"])
+        self.assertIsInstance(refresh.get("resolving"), dict, refresh)
+        self.assertFalse(refresh["resolving"]["triggered"])
+        self.assertEqual(refresh["resolving"]["paths_suppressed"], ["C:/Project/Assets/A.cs"])
+
+    def test_base_url_exec_without_dispatch_keeps_the_server_block_unchanged(self):
+        """An exec that never dispatched has nothing to merge, so no ``resolving`` key."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            script_path = Path(temp_dir) / "script.js"
+            script_path.write_text("export default function run(ctx) { return 7; }", encoding="utf-8")
+            server_block = {
+                "triggered": False,
+                "reason": "",
+                "paths_changed": [],
+                "paths_suppressed": [],
+                "skipped_reason": "no_pending_change",
+                "settle_outcome": "not_attempted",
+                "elapsed_ms": 1,
+            }
+            completed_body = {
+                "ok": True,
+                "status": "completed",
+                "request_id": "req-plain",
+                "result": {"value": 7},
+                "refresh": server_block,
+            }
+            with mock.patch.object(
+                unity_puer_exec.direct_exec_client,
+                "invoke_command",
+                return_value=(0, json.dumps(completed_body), ""),
+            ) as invoke_command:
+                exit_code, stdout, stderr = unity_puer_exec.run_cli(
+                    ["exec", "--base-url", "http://127.0.0.1:55231", "--file", str(script_path), "--request-id", "req-plain"]
+                )
+
+        self.assertEqual(exit_code, 0, stderr)
+        self.assertEqual(invoke_command.call_count, 1)
+        body = json.loads(stdout)
+        self.assertEqual(body["refresh"], server_block)
+        self.assertNotIn("resolving", body["refresh"])
+
     def test_base_url_automatic_refresh_settle_timeout_reports_refresh_unsettled(self):
         """An unsettleable base-url refresh must not promise a `missing` continuation.
 
@@ -5412,6 +5575,143 @@ class PlayModeCommandTests(unittest.TestCase):
         }
 
     # --- play ---
+
+    def test_play_dispatch_then_suppress_discloses_the_resolving_paths(self):
+        """A settle that dispatched and then suppressed discloses both decisions.
+
+        The first `/refresh` poll dispatches; the poll after the settle resolves on a
+        decision that triggered nothing but named the path as content already handed to
+        a dispatched refresh. The play result must carry the dispatch (``triggered``)
+        *and* the resolving suppression.
+        """
+        dispatch_block = {
+            "triggered": True,
+            "reason": "compile_triggering_change",
+            "paths_changed": ["C:/Project/Assets/A.cs"],
+            "paths_suppressed": [],
+            "skipped_reason": "",
+            "settle_outcome": "dispatched",
+            "elapsed_ms": 4,
+        }
+        resolving_block = {
+            "triggered": False,
+            "reason": "",
+            "paths_changed": [],
+            "paths_suppressed": ["C:/Project/Assets/A.cs"],
+            "skipped_reason": "no_pending_change",
+            "settle_outcome": "not_attempted",
+            "elapsed_ms": 6,
+        }
+        polls = [
+            (unity_puer_exec.EXIT_RUNNING, {"ok": True, "status": "running", "phase": "refreshing", "refresh": dispatch_block}),
+            (0, {"ok": True, "status": "completed", "refresh": resolving_block}),
+        ]
+        invoke_map, _calls, _holder = self._default_invoke_map(
+            refresh=lambda _p: polls.pop(0) if len(polls) > 1 else polls[0]
+        )
+        code, stdout, stderr = self._run(
+            unity_puer_exec_runtime.run_play,
+            self._args("play"),
+            [self._health("edit"), self._health("entering"), self._health("playing")],
+            invoke_map,
+            extra_patches=[
+                mock.patch.object(
+                    unity_puer_exec_runtime,
+                    "_settle_base_url_after_refresh",
+                    return_value={"outcome": "ready", "observed_health": ["compiling", "ready"]},
+                )
+            ],
+        )
+
+        self.assertEqual(code, 0, stderr)
+        body = json.loads(stdout)
+        self.assertEqual(body["result"]["play_state"], "playing")
+        refresh = body["refresh"]
+        self.assertTrue(refresh["triggered"], refresh)
+        self.assertEqual(refresh["paths_suppressed"], ["C:/Project/Assets/A.cs"], refresh)
+        self.assertFalse(refresh["resolving"]["triggered"], refresh)
+        self.assertEqual(refresh["resolving"]["paths_suppressed"], ["C:/Project/Assets/A.cs"], refresh)
+        self.assertEqual(refresh["paths_changed"], ["C:/Project/Assets/A.cs"], refresh)
+
+    def test_play_settle_without_dispatch_and_without_suppression_attaches_no_refresh(self):
+        """The no-refresh shape is unchanged for a settle that saw nothing pending."""
+        invoke_map, _calls, _holder = self._default_invoke_map()
+        code, stdout, stderr = self._run(
+            unity_puer_exec_runtime.run_play,
+            self._args("play"),
+            [self._health("edit"), self._health("entering"), self._health("playing")],
+            invoke_map,
+        )
+        self.assertEqual(code, 0, stderr)
+        body = json.loads(stdout)
+        self.assertEqual(body["result"]["play_state"], "playing")
+        self.assertNotIn("refresh", body, body)
+
+    def test_play_dispatch_then_genuine_compile_discloses_the_refresh_that_ran(self):
+        """A dispatched refresh stays disclosed even when the resolving poll carries none."""
+        dispatch_block = {
+            "triggered": True,
+            "reason": "compile_triggering_change",
+            "paths_changed": ["C:/Project/Assets/A.cs"],
+            "paths_suppressed": [],
+            "skipped_reason": "",
+            "settle_outcome": "dispatched",
+            "elapsed_ms": 5,
+        }
+        polls = [
+            (unity_puer_exec.EXIT_RUNNING, {"ok": True, "status": "running", "phase": "refreshing", "refresh": dispatch_block}),
+            (0, {"ok": True, "status": "completed"}),
+        ]
+        invoke_map, _calls, _holder = self._default_invoke_map(
+            refresh=lambda _p: polls.pop(0) if len(polls) > 1 else polls[0]
+        )
+        code, stdout, stderr = self._run(
+            unity_puer_exec_runtime.run_play,
+            self._args("play"),
+            [self._health("edit"), self._health("entering"), self._health("playing")],
+            invoke_map,
+            extra_patches=[
+                mock.patch.object(
+                    unity_puer_exec_runtime,
+                    "_settle_base_url_after_refresh",
+                    return_value={"outcome": "ready", "observed_health": ["compiling", "ready"]},
+                )
+            ],
+        )
+        self.assertEqual(code, 0, stderr)
+        body = json.loads(stdout)
+        refresh = body["refresh"]
+        self.assertTrue(refresh["triggered"], refresh)
+        self.assertEqual(refresh["paths_changed"], ["C:/Project/Assets/A.cs"], refresh)
+        self.assertEqual(refresh["settle_outcome"], "dispatched", refresh)
+        self.assertNotIn("resolving", refresh, refresh)
+
+    def test_play_first_poll_suppression_is_disclosed_without_a_dispatch(self):
+        """A first poll that resolved by suppression names its paths, triggered false."""
+        resolving_block = {
+            "triggered": False,
+            "reason": "",
+            "paths_changed": [],
+            "paths_suppressed": ["C:/Project/Assets/A.cs"],
+            "skipped_reason": "no_pending_change",
+            "settle_outcome": "not_attempted",
+            "elapsed_ms": 2,
+        }
+        invoke_map, _calls, _holder = self._default_invoke_map(
+            refresh=lambda _p: (0, {"ok": True, "status": "completed", "refresh": resolving_block})
+        )
+        code, stdout, stderr = self._run(
+            unity_puer_exec_runtime.run_play,
+            self._args("play"),
+            [self._health("edit"), self._health("entering"), self._health("playing")],
+            invoke_map,
+        )
+        self.assertEqual(code, 0, stderr)
+        body = json.loads(stdout)
+        refresh = body["refresh"]
+        self.assertFalse(refresh["triggered"], refresh)
+        self.assertEqual(refresh["paths_suppressed"], ["C:/Project/Assets/A.cs"], refresh)
+        self.assertNotIn("resolving", refresh, refresh)
 
     def test_play_settles_cleanly_then_reaches_playing(self):
         invoke_map, calls, holder = self._default_invoke_map()
