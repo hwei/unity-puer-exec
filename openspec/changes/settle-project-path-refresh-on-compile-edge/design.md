@@ -84,6 +84,22 @@ caller, which is the relationship the existing invariant test asserts. Widening 
 weaken the D7 gates that keep a failing build from being suppressed; narrowing it would re-open
 the race those gates close. Neither is needed once the caller waits.
 
+### D5. Capture a compile-generation baseline before readiness
+
+The host advances `compile_generation` on `compilationFinished` and persists it across the domain
+reload through `SessionState`. The project-path settle therefore probes `/health` on the pre-settle
+`base_url` **before** calling `ensure_session_ready`, and passes the generation it read as
+`compile_generation_baseline` to `wait_for_compile_cycle`. A compile that finished while readiness
+was being awaited then shows as `generation > baseline` and settles immediately as
+`generation_advance`; a refresh that compiled nothing leaves the generation unchanged, so the wait
+spends the appear window exactly as base-url mode does.
+
+If that pre-readiness probe fails (endpoint already down for a reload) or the payload carries no
+generation, the baseline is `None` and the wait falls back to the plain appear window. That
+fallback costs at most the appear window and never settles early, so it is the safe direction.
+The base-url branch is deliberately left without a baseline: it does not ride out readiness first,
+so it sees `compiling` directly.
+
 ## Risks / Trade-offs
 
 - **[A project-path `exec` with no compile now takes ~10 s longer]** → It also stops returning a
@@ -91,9 +107,10 @@ the race those gates close. Neither is needed once the caller waits.
   not higher. A caller that genuinely wants the old behaviour can use `--base-url`, which already
   waits.
 - **[Double-waiting when `ensure_session_ready` already rode out the compile]** →
-  `wait_for_compile_cycle` is edge-aware: an endpoint already `ready` with an advanced compile
-  generation settles from the baseline rather than spending the appear window. The cost is one
-  health probe, not a second window.
+  `wait_for_compile_cycle` only short-circuits an already-`ready` endpoint when it is given a
+  `compile_generation_baseline` (see D5); without one, a genuine `.cs` change whose compile and
+  reload finished inside `ensure_session_ready` would spend the full appear window and end as
+  `no_compile_observed`. With the baseline, the cost is one health probe, not a second window.
 - **[A reload between readiness and the compile wait drops the endpoint]** →
   `wait_for_compile_cycle` already treats a previously-ready endpoint dropping as a reload edge and
   keeps waiting; the resubmit re-resolves through the normal project-path path.

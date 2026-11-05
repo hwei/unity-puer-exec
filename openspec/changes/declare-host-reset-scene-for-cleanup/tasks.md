@@ -17,6 +17,10 @@
       repository-owned asset roots the real-host suite creates — including
       `HOST_RESET_SCENE_RELATIVE` and the probe directory the suite writes compile-triggering and
       never-imported probes into — and fails naming any root the declared inventory does not cover.
+      Derive the roots by importing the suite's own path constants (for example
+      `tests.test_real_host_integration.HOST_RESET_SCENE_RELATIVE`) or by scanning that module for
+      `Assets/...` path literals, not from a second hand-maintained list, so the guard cannot drift
+      the same way the inventory did. Importing the module must not require a Unity Editor.
       Verify: `python -m unittest tests.test_cleanup_validation_host_tool` passes.
 - [ ] 2.2 Prove the guard has teeth: temporarily point it at an undeclared root and confirm it fails
       with the root named, then restore it. Verify: the deliberate failure and its message are

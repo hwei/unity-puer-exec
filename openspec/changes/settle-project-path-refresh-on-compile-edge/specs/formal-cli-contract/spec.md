@@ -68,6 +68,13 @@ When the server reports that it triggered an automatic refresh, the CLI SHALL tr
 - **THEN** the single permitted resubmit reaches a terminal response carrying the script result
 - **AND** the invocation does not report the non-terminal refreshing phase
 
+#### Scenario: A compile that finished during readiness does not spend the appear window again
+
+- **WHEN** a project-path `exec` triggers an automatic refresh that compiles and reloads
+- **AND** the compilation finished while the CLI was waiting for the Editor to become ready
+- **THEN** the CLI recognises the finished compile from the advanced compile generation
+- **AND** it re-submits without waiting out the appear window a second time
+
 #### Scenario: An unfinished cycle is still non-terminal, not settled
 
 - **WHEN** the project-path settle's compile cycle does not finish before the compile-scale budget

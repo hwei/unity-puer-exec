@@ -35,8 +35,17 @@ When a compile-triggering change is pending, `play` SHALL refresh and settle the
 #### Scenario: A settle that never dispatched discloses no refresh
 
 - **WHEN** a `play` pre-settle found no compile-triggering change pending
+- **AND** the resolving decision suppressed no paths
 - **THEN** the play result discloses no refresh, exactly as it does today
 - **AND** it reports no suppressed paths
+
+#### Scenario: A suppression on the first poll is disclosed even without a dispatch
+
+- **WHEN** a `play` pre-settle's first poll resolves on a decision that dispatched nothing in this
+  invocation but suppressed one or more paths (for example content an earlier `exec` already
+  handed to a dispatched refresh)
+- **THEN** the play result carries a refresh disclosure naming those suppressed paths
+- **AND** that disclosure reports that no refresh was triggered
 
 #### Scenario: The disclosure stays additive
 

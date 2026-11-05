@@ -10,8 +10,10 @@
       attach the block under the same `refresh` key with every field it carries today, so no caller
       changes. Verify: `python -m unittest tests.test_unity_session_cli` passes, including the
       existing `run_play` cases.
-- [ ] 1.3 Preserve the no-refresh case: a pre-settle that found nothing pending still attaches no
-      `refresh` key and reports no suppressed paths. Verify: the mocked case from 2.2 passes.
+- [ ] 1.3 Preserve the no-refresh case: a pre-settle that found nothing pending and whose resolving
+      decision suppressed nothing still attaches no `refresh` key. A resolving decision that carries
+      a non-empty `paths_suppressed` is retained even when this invocation never dispatched, so a
+      suppression on the first poll is disclosed. Verify: the mocked cases from 2.2 pass.
 
 ## 2. Mocked coverage
 
@@ -20,9 +22,11 @@
       reported `triggered: false` with a populated `paths_suppressed` — and asserting the play
       success payload's `refresh` names those suppressed paths. Verify:
       `python -m unittest tests.test_unity_session_cli` passes.
-- [ ] 2.2 Add mocked cases for the two disclosures that must not change: a settle that never
-      dispatched attaches no `refresh` key, and a settle that dispatched and resolved on a genuine
-      compile still discloses the refresh that ran. Verify:
+- [ ] 2.2 Add mocked cases for the two disclosures that must not change -- a settle that never
+      dispatched and suppressed nothing attaches no `refresh` key, and a settle that dispatched and
+      resolved on a genuine compile still discloses the refresh that ran -- plus one for the new
+      edge: a first poll that resolves with `triggered: false` and a non-empty `paths_suppressed`
+      attaches a `refresh` key naming those paths. Verify:
       `python -m unittest tests.test_unity_session_cli` passes.
 - [ ] 2.3 Run the default mocked suite as documented in
       `openspec/specs/validation-host-integration/how-to-run.md`. Verify: every listed module passes

@@ -27,7 +27,9 @@ requirement the refresh block exists to satisfy is met for `exec` and not for `p
   its `paths_suppressed`.
 - A play that dispatched a refresh and then resolved on a suppressed decision discloses both facts:
   that a refresh ran, and that the resolving decision suppressed the paths named.
-- A play whose settle never dispatched a refresh keeps disclosing no refresh, exactly as today.
+- A play whose settle never dispatched a refresh and whose resolving decision suppressed nothing
+  keeps disclosing no refresh, exactly as today. A resolving decision that suppressed paths is
+  disclosed even when this play dispatched nothing (an earlier `exec` may have dispatched it).
 - No protocol change and no host change. The block the server already returns on the resolving
   `/refresh` response is the block that gets kept.
 
