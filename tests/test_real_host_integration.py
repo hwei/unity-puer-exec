@@ -3541,6 +3541,62 @@ class RefreshOnChangeRealHostTests(_SharedRealHostDevice, unittest.TestCase):
         self.assertEqual(exit_code, 0, payload)
         self.assertEqual(payload["status"], "completed", payload)
 
+    def test_identical_rewrite_completes_in_one_project_path_invocation(self):
+        """One `exec --project-path` invocation resolves a suppressed rewrite.
+
+        Before the project-path settle waited for the compile edge, its settle
+        returned on the first `ready` observation (~2 s), inside the host's bounded
+        suppression age (8 s), so the single permitted resubmit landed on a
+        still-triggering decision and the invocation reported the non-terminal
+        `refreshing` phase. This case drives exactly one CLI invocation and
+        deliberately does not fall back to `wait-for-exec`, so a second invocation
+        cannot hide the regression: the terminal response the single invocation
+        returns must already carry the script result, the resolving decision
+        (`refresh.triggered: false`) and the probe it suppressed.
+        """
+        base_url = self._base_url()
+        base_url, probe = self._settle_identical_rewrite_probe(
+            base_url, "ProjectPathRewriteProbe.cs"
+        )
+        expected_path = str(probe).replace("\\", "/")
+
+        started = time.monotonic()
+        exit_code, payload, _stdout, stderr = _run_cli(
+            [
+                "exec",
+                "--project-path", str(self.project_path),
+                "--unity-exe-path", str(self.unity_exe_path),
+                "--wait-timeout-ms", str(self.REFRESH_WAIT_TIMEOUT_MS),
+                "--code", "export default function run(ctx) { return { pass: 1 }; }",
+            ]
+        )
+        elapsed_seconds = time.monotonic() - started
+        # Task 3.3 records the wall-clock cost of a project-path exec whose refresh
+        # compiles nothing; emit it as one machine-usable line rather than prose.
+        print(
+            "[refresh-settle-timing] case=identical_rewrite_project_path "
+            "exec_invocations=1 elapsed_seconds={:.3f}".format(elapsed_seconds)
+        )
+
+        # One invocation, one terminal result: no follow-up is attempted here, so a
+        # `running`/`refreshing` answer fails the case instead of being waited out.
+        self.assertEqual(stderr, "", payload)
+        self.assertEqual(exit_code, 0, payload)
+        self.assertEqual(payload["status"], "completed", payload)
+        self.assertIsInstance(payload.get("result"), dict, payload)
+
+        # The block asserted here is the resolving decision's: the one permitted
+        # resubmit was answered without dispatching a refresh. If this fails with
+        # `triggered: true` and an empty `paths_suppressed`, the call did settle and
+        # the CLI kept the dispatching poll's block rather than the resolving one --
+        # the same retention gap the sibling change
+        # `disclose-resolving-refresh-block-on-play` fixes for `play`.
+        refresh = payload.get("refresh")
+        self.assertIsInstance(refresh, dict, payload)
+        self.assertFalse(refresh["triggered"], refresh)
+        self.assertIn(expected_path, refresh.get("paths_suppressed") or [], refresh)
+        self.assertEqual(refresh.get("paths_changed"), [], refresh)
+
     def test_suppressed_identical_rewrite_is_disclosed_and_not_pending(self):
         base_url = self._base_url()
         base_url, probe = self._settle_identical_rewrite_probe(

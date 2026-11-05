@@ -4884,6 +4884,408 @@ class AutomaticRefreshBaseUrlTests(unittest.TestCase):
         self.assertEqual(exit_code, unity_puer_exec.EXIT_RUNNING)
 
 
+class _ProjectPathSettleArgs:
+    """Args object for `_settle_after_automatic_refresh` without the CLI parser.
+
+    `exec` exposes no compile-budget flags, so the configured-budget case for the
+    project-path settle calls the settle helper with explicit values instead.
+    """
+
+    appear_timeout_seconds = 3.5
+    health_timeout_seconds = 0.25
+
+
+class AutomaticRefreshProjectPathSettleTests(unittest.TestCase):
+    """The project-path settle waits for the compile edge (selector parity).
+
+    See `settle-project-path-refresh-on-compile-edge`: the project-path settle must
+    compose readiness with the same compile-wait primitive and budgets the base-url
+    settle already uses, carrying a pre-readiness compile-generation baseline so a
+    compile that finished during readiness does not spend the appear window twice.
+    """
+
+    PRE_SETTLE_BASE_URL = "http://127.0.0.1:55231"
+    RESOLVED_BASE_URL = "http://127.0.0.1:56001"
+
+    def _refresh_body(self):
+        return {
+            "ok": True,
+            "status": "running",
+            "phase": "refreshing",
+            "request_id": "req-proj",
+            "refresh": {
+                "triggered": True,
+                "reason": "compile_triggering_change",
+                "paths_changed": ["C:/Project/Assets/A.cs"],
+                "skipped_reason": "",
+                "settle_outcome": "dispatched",
+                "elapsed_ms": 4,
+            },
+        }
+
+    def _completed_body(self):
+        return {
+            "ok": True,
+            "status": "completed",
+            "request_id": "req-proj",
+            "result": {"value": 7},
+        }
+
+    def _sessions(self, project_path):
+        """Initial session and the one the settle's readiness step resolves."""
+        pre_settle = _make_session(project_path=str(project_path))
+        pre_settle.base_url = self.PRE_SETTLE_BASE_URL
+        resolved = _make_session(project_path=str(project_path))
+        resolved.base_url = self.RESOLVED_BASE_URL
+        return pre_settle, resolved
+
+    def _write_script(self, temp_dir):
+        script_path = Path(temp_dir) / "script.js"
+        script_path.write_text(
+            "export default function run(ctx) { return 7; }", encoding="utf-8"
+        )
+        return script_path
+
+    def _run_exec(self, project_path, script_path, *, pre_settle, resolved, cycle_result):
+        """Run one `exec --project-path` whose first submit triggers the refresh."""
+        with mock.patch.object(
+            unity_session, "ensure_session_ready", side_effect=[pre_settle, resolved]
+        ), mock.patch.object(
+            unity_puer_exec_runtime,
+            "_probe_compile_health",
+            return_value=({"ok": True, "status": "ready", "compile_generation": 7}, None),
+        ) as probe, mock.patch.object(
+            unity_puer_exec_runtime,
+            "wait_for_compile_cycle",
+            return_value=cycle_result,
+        ) as cycle, mock.patch.object(
+            unity_puer_exec.direct_exec_client,
+            "invoke_command",
+            side_effect=[
+                (unity_puer_exec.EXIT_RUNNING, json.dumps(self._refresh_body()), ""),
+                (0, json.dumps(self._completed_body()), ""),
+            ],
+        ) as invoke_command:
+            exit_code, stdout, stderr = unity_puer_exec.run_cli(
+                [
+                    "exec",
+                    "--project-path",
+                    str(project_path),
+                    "--file",
+                    str(script_path),
+                    "--request-id",
+                    "req-proj",
+                ]
+            )
+        self._last_probe = probe
+        return exit_code, stdout, stderr, cycle, invoke_command
+
+    def test_project_path_settle_polls_the_resolved_endpoint_with_the_base_url_budgets(self):
+        """2.1: same appear/settle/health budgets, and the endpoint readiness resolved.
+
+        The pre-settle endpoint is deliberately different from the resolved one: a
+        real compile ends with a domain reload that can rebind the control port, so
+        the compile wait must poll what `ensure_session_ready` returned rather than
+        the caller-supplied URL.
+        """
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_path = Path(temp_dir) / "Project"
+            project_path.mkdir()
+            script_path = self._write_script(temp_dir)
+            pre_settle, resolved = self._sessions(project_path)
+            exit_code, stdout, stderr, cycle, invoke_command = self._run_exec(
+                project_path,
+                script_path,
+                pre_settle=pre_settle,
+                resolved=resolved,
+                cycle_result={
+                    "outcome": unity_puer_exec_runtime.COMPILE_OUTCOME_READY,
+                    "observed_health": ["compiling", "ready"],
+                    "api_updater_declines": 0,
+                },
+            )
+
+        self.assertEqual(stderr, "")
+        self.assertEqual(exit_code, 0)
+        body = json.loads(stdout)
+        self.assertEqual(body["status"], "completed")
+        self.assertEqual(invoke_command.call_count, 2)
+        self.assertEqual(cycle.call_count, 1)
+        call = cycle.call_args
+        self.assertEqual(call.args[0], self.RESOLVED_BASE_URL)
+        self.assertNotEqual(call.args[0], self.PRE_SETTLE_BASE_URL)
+        # Same appear window and health budget the base-url settle uses, with no
+        # `--appear-timeout-seconds` flag on `exec` so the shared fallback applies.
+        self.assertEqual(
+            call.args[1], unity_session.DEFAULT_COMPILE_APPEAR_TIMEOUT_SECONDS
+        )
+        # Compile-scale settle budget, deliberately not the request-wait budget.
+        self.assertEqual(call.args[2], unity_session.DEFAULT_READY_TIMEOUT_SECONDS)
+        self.assertEqual(call.args[3], unity_session.DEFAULT_HEALTH_TIMEOUT_SECONDS)
+        # The baseline came from a probe of the pre-settle endpoint (design D5):
+        # readiness runs after that probe, so the probe must not reuse the resolved
+        # URL and read the already-advanced generation.
+        self.assertEqual(call.kwargs["compile_generation_baseline"], 7)
+        self.assertEqual(self._last_probe.call_args.args[0], self.PRE_SETTLE_BASE_URL)
+
+    def test_project_path_settle_uses_the_configured_appear_and_health_budgets(self):
+        """2.1: configured budgets reach the compile wait unchanged."""
+        pre_settle = _make_session()
+        pre_settle.base_url = self.PRE_SETTLE_BASE_URL
+        resolved = _make_session()
+        resolved.base_url = self.RESOLVED_BASE_URL
+        recovery = unity_puer_exec_runtime._ApiUpdaterRecovery()
+        with mock.patch.object(
+            unity_puer_exec_runtime,
+            "_ensure_project_session_ready_after_refresh",
+            return_value=resolved,
+        ), mock.patch.object(
+            unity_puer_exec_runtime,
+            "_probe_compile_health",
+            return_value=(None, "connection refused"),
+        ), mock.patch.object(
+            unity_puer_exec_runtime,
+            "wait_for_compile_cycle",
+            return_value={
+                "outcome": unity_puer_exec_runtime.COMPILE_OUTCOME_READY,
+                "observed_health": [],
+                "api_updater_declines": 0,
+            },
+        ) as cycle:
+            settled = unity_puer_exec_runtime._settle_after_automatic_refresh(
+                _ProjectPathSettleArgs(),
+                "project_path",
+                pre_settle,
+                self.PRE_SETTLE_BASE_URL,
+                recovery,
+            )
+
+        self.assertEqual(settled, (resolved, self.RESOLVED_BASE_URL))
+        cycle.assert_called_once_with(
+            self.RESOLVED_BASE_URL,
+            3.5,
+            unity_session.DEFAULT_READY_TIMEOUT_SECONDS,
+            0.25,
+            compile_generation_baseline=None,
+        )
+
+    def test_project_path_settle_timeout_returns_non_terminal_refreshing(self):
+        """2.2: an exhausted cycle is still non-terminal, not settled."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_path = Path(temp_dir) / "Project"
+            project_path.mkdir()
+            script_path = self._write_script(temp_dir)
+            pre_settle, resolved = self._sessions(project_path)
+            with mock.patch.object(
+                unity_session, "ensure_session_ready", side_effect=[pre_settle, resolved]
+            ), mock.patch.object(
+                unity_puer_exec_runtime,
+                "_probe_compile_health",
+                return_value=({"ok": True, "status": "ready", "compile_generation": 7}, None),
+            ), mock.patch.object(
+                unity_puer_exec_runtime,
+                "wait_for_compile_cycle",
+                return_value={
+                    "outcome": unity_puer_exec_runtime.COMPILE_OUTCOME_TIMEOUT,
+                    "observed_health": ["compiling"],
+                    "api_updater_declines": 0,
+                },
+            ), mock.patch.object(
+                unity_puer_exec.direct_exec_client,
+                "invoke_command",
+                return_value=(unity_puer_exec.EXIT_RUNNING, json.dumps(self._refresh_body()), ""),
+            ) as invoke_command:
+                exit_code, stdout, stderr = unity_puer_exec.run_cli(
+                    [
+                        "exec",
+                        "--project-path",
+                        str(project_path),
+                        "--file",
+                        str(script_path),
+                        "--request-id",
+                        "req-proj",
+                    ]
+                )
+
+            pending = unity_session.read_pending_exec_artifact(str(project_path), "req-proj")
+
+        self.assertEqual(stderr, "")
+        # No second submit: the cycle never settled.
+        self.assertEqual(invoke_command.call_count, 1)
+        self.assertEqual(exit_code, unity_puer_exec.EXIT_RUNNING)
+        body = json.loads(stdout)
+        self.assertEqual(body["status"], "running")
+        self.assertEqual(body["phase"], "refreshing")
+        self.assertTrue(body["refresh"]["triggered"])
+        self.assertEqual(pending["phase"], "refreshing")
+
+    def test_project_path_no_compile_observed_still_resubmits(self):
+        """2.2: a cycle that observed no compile proceeds to the one resubmit."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_path = Path(temp_dir) / "Project"
+            project_path.mkdir()
+            script_path = self._write_script(temp_dir)
+            pre_settle, resolved = self._sessions(project_path)
+            exit_code, stdout, stderr, cycle, invoke_command = self._run_exec(
+                project_path,
+                script_path,
+                pre_settle=pre_settle,
+                resolved=resolved,
+                cycle_result={
+                    "outcome": unity_puer_exec_runtime.COMPILE_OUTCOME_NONE,
+                    "observed_health": ["ready"],
+                    "api_updater_declines": 0,
+                },
+            )
+
+            pending = unity_session.read_pending_exec_artifact(str(project_path), "req-proj")
+
+        self.assertEqual(stderr, "")
+        self.assertEqual(cycle.call_count, 1)
+        self.assertEqual(invoke_command.call_count, 2)
+        self.assertEqual(exit_code, 0)
+        body = json.loads(stdout)
+        self.assertEqual(body["status"], "completed")
+        self.assertEqual(body["result"], {"value": 7})
+        self.assertIsNone(pending)
+
+    def test_project_path_settle_generation_advance_during_readiness_skips_the_appear_window(self):
+        """2.3(a): a compile finished during readiness settles without a second wait."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_path = Path(temp_dir) / "Project"
+            project_path.mkdir()
+            script_path = self._write_script(temp_dir)
+            pre_settle, resolved = self._sessions(project_path)
+            clock = _FakeClock()
+            with mock.patch.object(
+                unity_session, "ensure_session_ready", side_effect=[pre_settle, resolved]
+            ), mock.patch.object(
+                unity_puer_exec_runtime, "time", clock
+            ), mock.patch.object(
+                unity_puer_exec_runtime,
+                "_probe_compile_health",
+                _probe_payloads(
+                    [
+                        {"ok": True, "status": "ready", "compile_generation": 7},
+                        {"ok": True, "status": "ready", "compile_generation": 8},
+                    ]
+                ),
+            ), mock.patch.object(
+                unity_puer_exec.direct_exec_client,
+                "invoke_command",
+                side_effect=[
+                    (unity_puer_exec.EXIT_RUNNING, json.dumps(self._refresh_body()), ""),
+                    (0, json.dumps(self._completed_body()), ""),
+                ],
+            ) as invoke_command:
+                exit_code, stdout, stderr = unity_puer_exec.run_cli(
+                    [
+                        "exec",
+                        "--project-path",
+                        str(project_path),
+                        "--file",
+                        str(script_path),
+                        "--request-id",
+                        "req-proj",
+                    ]
+                )
+
+        self.assertEqual(stderr, "")
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(invoke_command.call_count, 2)
+        body = json.loads(stdout)
+        self.assertEqual(body["status"], "completed")
+        # The advanced generation settled the cycle on the first probe: no appear
+        # window was spent, which is the whole point of the baseline.
+        self.assertEqual(clock.now, 0.0)
+
+    def test_project_path_settle_falls_back_when_the_pre_readiness_probe_fails(self):
+        """2.3(b): a failed baseline probe yields `None` and the settle still completes."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_path = Path(temp_dir) / "Project"
+            project_path.mkdir()
+            script_path = self._write_script(temp_dir)
+            pre_settle, resolved = self._sessions(project_path)
+            with mock.patch.object(
+                unity_session, "ensure_session_ready", side_effect=[pre_settle, resolved]
+            ), mock.patch.object(
+                unity_puer_exec_runtime,
+                "_probe_compile_health",
+                _probe_payloads([None, {"ok": True, "status": "ready"}]),
+            ), mock.patch.object(
+                unity_puer_exec_runtime,
+                "wait_for_compile_cycle",
+                return_value={
+                    "outcome": unity_puer_exec_runtime.COMPILE_OUTCOME_NONE,
+                    "observed_health": ["ready"],
+                    "api_updater_declines": 0,
+                },
+            ) as cycle, mock.patch.object(
+                unity_puer_exec.direct_exec_client,
+                "invoke_command",
+                side_effect=[
+                    (unity_puer_exec.EXIT_RUNNING, json.dumps(self._refresh_body()), ""),
+                    (0, json.dumps(self._completed_body()), ""),
+                ],
+            ) as invoke_command:
+                exit_code, stdout, stderr = unity_puer_exec.run_cli(
+                    [
+                        "exec",
+                        "--project-path",
+                        str(project_path),
+                        "--file",
+                        str(script_path),
+                        "--request-id",
+                        "req-proj",
+                    ]
+                )
+
+        self.assertEqual(stderr, "")
+        self.assertEqual(exit_code, 0)
+        self.assertIsNone(cycle.call_args.kwargs["compile_generation_baseline"])
+        self.assertEqual(invoke_command.call_count, 2)
+        self.assertEqual(json.loads(stdout)["status"], "completed")
+
+    def test_project_path_settle_records_declines_from_readiness_and_compile_wait(self):
+        """1.3: a decline during either half of the settle is not lost."""
+        pre_settle = _make_session()
+        pre_settle.base_url = self.PRE_SETTLE_BASE_URL
+        resolved = _make_session()
+        resolved.base_url = self.RESOLVED_BASE_URL
+        resolved.api_updater_declines = 1
+        recovery = unity_puer_exec_runtime._ApiUpdaterRecovery()
+        with mock.patch.object(
+            unity_puer_exec_runtime,
+            "_ensure_project_session_ready_after_refresh",
+            return_value=resolved,
+        ), mock.patch.object(
+            unity_puer_exec_runtime,
+            "_probe_compile_health",
+            return_value=({"ok": True, "status": "ready", "compile_generation": 7}, None),
+        ), mock.patch.object(
+            unity_puer_exec_runtime,
+            "wait_for_compile_cycle",
+            return_value={
+                "outcome": unity_puer_exec_runtime.COMPILE_OUTCOME_READY,
+                "observed_health": ["compiling", "ready"],
+                "api_updater_declines": 2,
+            },
+        ):
+            settled = unity_puer_exec_runtime._settle_after_automatic_refresh(
+                _ProjectPathSettleArgs(),
+                "project_path",
+                pre_settle,
+                self.PRE_SETTLE_BASE_URL,
+                recovery,
+            )
+
+        self.assertEqual(settled, (resolved, self.RESOLVED_BASE_URL))
+        # One from the readiness step, two from the compile wait.
+        self.assertEqual(recovery.declines, 3)
+        # The readiness step's count is cleared so a later read cannot double-count it.
+        self.assertEqual(resolved.api_updater_declines, 0)
+
+
 class PlayModeCommandTests(unittest.TestCase):
     """Unit coverage for play / pause / stop (see the play-mode-control change)."""
 

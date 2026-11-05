@@ -1521,11 +1521,15 @@ def wait_for_compile_cycle(
         time_ref.sleep(settle_poll_interval)
 
 
-def _settle_base_url_after_refresh(base_url, args, recovery=None):
+def _settle_base_url_after_refresh(base_url, args, recovery=None, compile_generation_baseline=None):
     """Base-url analog of `_ensure_project_session_ready_after_refresh`.
 
     Re-probes the same caller-supplied endpoint, reusing the compile-wait primitive,
     so an automatic refresh settles on the compile cycle before running the script.
+
+    `compile_generation_baseline` is supplied only by the project-path settle (design
+    D5), which awaits readiness first and so can miss a compile that finished during
+    that wait. The base-url branch keeps it `None`: it observes the cycle directly.
     """
     settle_timeout_seconds = _post_refresh_ready_timeout_seconds(args)
     cycle = wait_for_compile_cycle(
@@ -1533,6 +1537,7 @@ def _settle_base_url_after_refresh(base_url, args, recovery=None):
         getattr(args, "appear_timeout_seconds", unity_session.DEFAULT_COMPILE_APPEAR_TIMEOUT_SECONDS),
         settle_timeout_seconds,
         getattr(args, "health_timeout_seconds", unity_session.DEFAULT_HEALTH_TIMEOUT_SECONDS),
+        compile_generation_baseline=compile_generation_baseline,
     )
     if recovery is not None:
         recovery.record(cycle.get("api_updater_declines", 0))
@@ -1652,17 +1657,52 @@ def _apply_play_mode_compile_block(stdout_text, stderr_text, base_url, args):
     return stdout_text, serialized
 
 
+def _pre_readiness_compile_generation(base_url, args):
+    """Read the compile generation before the project-path settle awaits readiness.
+
+    The host persists `compile_generation` across the domain reload, so a compile
+    that finishes while `ensure_session_ready` waits is visible afterwards as a
+    strictly greater generation -- but only if the pre-wait value was captured. A
+    missing endpoint (already down for the reload), a failed probe, or a payload
+    without the signal yields ``None``: the wait then falls back to the plain appear
+    window, which costs at most that window and never settles early.
+    """
+    if not base_url:
+        return None
+    try:
+        payload, _error = _probe_compile_health(
+            base_url,
+            getattr(args, "health_timeout_seconds", unity_session.DEFAULT_HEALTH_TIMEOUT_SECONDS),
+        )
+    except Exception:  # noqa: BLE001 - a missing baseline is the safe direction.
+        return None
+    return _compile_generation_from_health(payload)
+
+
 def _settle_after_automatic_refresh(args, selector, session, base_url, recovery):
     """Settle the compile cycle an automatic refresh started.
 
     Returns ``(session, base_url)`` once the cycle settled, or ``None`` while it is
-    still running, so the caller reports a non-terminal refreshing phase.
+    still running, so the caller reports a non-terminal refreshing phase. Both
+    selectors wait for the compile edge on the same appear/settle/health budgets;
+    project-path awaits readiness first (design D2) and carries a pre-readiness
+    compile-generation baseline (design D5) so a compile finished during that wait
+    settles immediately instead of spending the appear window again.
     """
     try:
         if selector == "project_path":
+            baseline = _pre_readiness_compile_generation(base_url, args)
             session = _ensure_project_session_ready_after_refresh(args)
             recovery.record(getattr(session, "api_updater_declines", 0))
             session.api_updater_declines = 0
+            cycle = _settle_base_url_after_refresh(
+                session.base_url,
+                args,
+                recovery=recovery,
+                compile_generation_baseline=baseline,
+            )
+            if cycle.get("outcome") == COMPILE_OUTCOME_TIMEOUT:
+                return None
             return session, session.base_url
         cycle = _settle_base_url_after_refresh(base_url, args, recovery=recovery)
         if cycle.get("outcome") == COMPILE_OUTCOME_TIMEOUT:
