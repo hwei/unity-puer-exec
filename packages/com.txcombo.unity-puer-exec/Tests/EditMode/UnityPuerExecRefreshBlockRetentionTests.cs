@@ -24,6 +24,7 @@ namespace UnityPuerExec.Tests
                 reason: "code_change",
                 skippedReason: "play_mode",
                 pathsChanged: new[] { "Assets/Scripts/Probe.cs" },
+                pathsSuppressed: null,
                 settleOutcome: "skipped",
                 elapsedMs: 0
             );
@@ -56,6 +57,9 @@ namespace UnityPuerExec.Tests
             var snapshot = job.Snapshot();
             Assert.AreEqual(block, snapshot.RefreshBlockJson);
             StringAssert.Contains("\"skipped_reason\":\"play_mode\"", snapshot.RefreshBlockJson);
+            // A play-mode skip suppressed nothing on content grounds, and the block says so
+            // rather than omitting the field.
+            StringAssert.Contains("\"paths_suppressed\":[]", snapshot.RefreshBlockJson);
         }
 
         [Test]

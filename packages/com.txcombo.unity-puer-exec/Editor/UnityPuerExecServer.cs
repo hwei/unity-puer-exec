@@ -1218,6 +1218,7 @@ namespace UnityPuerExec
                                 reason: "",
                                 skippedReason: decision.Reason,
                                 pathsChanged: decision.PathsChanged,
+                                pathsSuppressed: decision.PathsSuppressed,
                                 settleOutcome: "not_attempted",
                                 elapsedMs: 0),
                         });
@@ -1237,6 +1238,15 @@ namespace UnityPuerExec
                     }
                     stopwatch.Stop();
 
+                    // Record only what Unity was actually asked to import. A dispatch that
+                    // threw imported nothing, so recording it would suppress the retry that
+                    // still owes; and when Unity does compile, its completion signal
+                    // advances the settled-import timestamp and clears the record.
+                    if (applied)
+                    {
+                        UnityPuerExecImportChangeTracker.OnRefreshDispatched(decision);
+                    }
+
                     completion.TrySetResult(new RefreshOutcome
                     {
                         Triggered = true,
@@ -1245,6 +1255,7 @@ namespace UnityPuerExec
                             reason: decision.Reason,
                             skippedReason: "",
                             pathsChanged: decision.PathsChanged,
+                            pathsSuppressed: decision.PathsSuppressed,
                             settleOutcome: applied ? "dispatched" : "failed",
                             elapsedMs: (int)stopwatch.ElapsedMilliseconds),
                     });
@@ -1260,6 +1271,7 @@ namespace UnityPuerExec
                             reason: "",
                             skippedReason: "decision_failed",
                             pathsChanged: null,
+                            pathsSuppressed: null,
                             settleOutcome: "not_attempted",
                             elapsedMs: 0),
                     });
@@ -1703,6 +1715,11 @@ namespace UnityPuerExec
             SampleScriptChangesWhilePlaying();
             SampleStackTraceLogTypes();
             RefreshConsoleLogPathCache();
+
+            // Sampled before the queue drains so a refresh decision running in this same
+            // tick gates its content suppression on the activity observed microseconds ago
+            // rather than on a snapshot from the previous tick.
+            UnityPuerExecImportChangeTracker.OnEditorUpdate();
 
             while (MainThreadActions.TryDequeue(out var action))
             {

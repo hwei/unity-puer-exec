@@ -35,14 +35,17 @@ timestamp side.
 
 **Goals:**
 
-- A content-identical rewrite of a compile-triggering file resolves within one dispatched
-  refresh, so `play` and `exec` complete in a single CLI invocation.
+- A content-identical rewrite of a compile-triggering file stops being a triggering change
+  within a bounded window, so `play` completes in a single CLI invocation and `exec` stops
+  looping for the life of the Editor session.
 - The fix is host-side and caller-agnostic: an older CLI, a `--base-url` caller, and a
   `wait-for-compile` caller all benefit without changes.
 - The settled-import timestamp keeps its single writer and its "only on Unity completion
   signals" rule, so every existing invariant test and real-host case stays meaningful.
 - A suppressed decision stays observable: an operator reading the refresh block can tell
   "nothing was newer" from "newer, but already handed to Unity".
+- Suppression never hides a build Unity has not finished producing. A candidate stays
+  triggering while Unity may still compile it, so a failing build is still reported as one.
 
 **Non-Goals:**
 
@@ -60,21 +63,63 @@ timestamp side.
 Issue #3 offers two directions. The first — let the host advance the settled timestamp when a
 dispatched refresh is followed by no compilation — was rejected:
 
-- It needs a grace window, because immediately after `Refresh()` returns Unity has not
-  necessarily started the compilation it is about to start. Picking that window is a timing
-  guess, and `EditorApplication.update` can be starved by a long import, which is exactly when
-  the guess matters.
-- Advancing the timestamp is global. A too-early advance drops every candidate older than the
-  dispatch instant, including one the scan had not yet seen, whereas the failure being fixed
-  concerns one file's content.
-- It lands in the middle of the CLI's own loop: `exec` permits one resubmit, so an
-  acknowledgement that matures after the CLI's settle step still surfaces as a non-terminal
-  `refreshing` response and needs a second invocation.
+- Advancing the timestamp is global. It drops every candidate older than the dispatch
+  instant, including one the scan had not yet seen, whereas the failure being fixed concerns
+  one file's content.
+- It needs the same bounded observation window D7 ends up needing, but spends it on a state
+  change that cannot be narrowed afterwards.
+- It amends the requirement `tests/test_refresh_change_signal.py` and the real-host case
+  `test_exec_and_refresh_do_not_advance_settled_timestamp` exist to guard.
 
-A content filter is deterministic (it resolves on the very next decision), narrow (it can only
-drop a path whose exact content was already handed to a successful dispatch), and keeps the
-timestamp invariant that `tests/test_refresh_change_signal.py` and the real-host suite already
-guard.
+A content filter is narrow (it can only drop a path whose exact content was already handed to
+a successful dispatch) and keeps the timestamp invariant intact. It is not, as first drafted,
+free of timing: D7 records what the real-host suite found when it was.
+
+### D7. Suppression waits for Unity's chance to compile
+
+The first implementation suppressed on a content match alone, with no age and no activity
+gate. `RefreshOnChangeRealHostTests` passed; `PlayModeCompileBlockRealHostTests.
+test_play_aborts_on_a_compile_error_without_entering_play_mode` failed with exit `10`
+(`running`, `phase: play_mode`, `play_state: edit`) instead of `23` (`unity_compile_error`).
+
+The sequence: `play` wrote a deliberately broken `.cs`, `/refresh` dispatched and recorded
+its content, and the CLI's project-path settle returned before Unity had started the
+compilation. The next `/refresh` matched the record, suppressed the only candidate, found no
+compile-error snapshot yet — `compilationStarted` clears it — and answered `completed`. The
+pre-settle concluded the build was clean and posted the play-mode request into a compile that
+had not started, so the Editor stayed in `edit` and the case saw a non-terminal `running`.
+
+The mtime-only signal handled this by accident: with nothing to suppress, every re-ask
+re-dispatched and reported the non-terminal refreshing phase until the compile finished and
+produced its error snapshot. Suppressing removes that accidental wait, so the wait has to be
+stated. Two gates restore it:
+
+- **Bounded age.** A record suppresses only once it is at least `PostRefreshSettleGraceTicks`
+  past its dispatch. The value is tied to the caller rather than guessed: it must stay under
+  `DEFAULT_COMPILE_APPEAR_TIMEOUT_SECONDS` (10s), the budget a caller spends waiting for a
+  compile to appear before concluding `no_compile_observed`. A caller that waits out its own
+  appear window and re-asks once therefore always re-asks after the host has acknowledged,
+  which is what keeps base-url `exec` and `play` single-invocation.
+  `tests/test_refresh_change_signal.py` reads both constants and asserts the ordering, so the
+  tie cannot drift silently.
+- **Editor activity.** A record suppresses only while the Editor is neither compiling nor
+  importing. `EditorApplication`'s flags are main-thread-only and the pending view is
+  answered on the listener thread, so the tracker keeps one volatile snapshot sampled by the
+  server's update tick before that tick drains the action queue carrying `Decide()`. A
+  decision therefore never reads a snapshot older than the tick it runs in.
+
+**First dispatch wins.** A caller that re-asks before the bounded age elapses gets a
+triggering decision and re-dispatches the same content. Re-stamping the record on that
+re-dispatch would push the age out again and restore the exact loop the ledger exists to end
+— `play` polls `/refresh` once a second for up to six minutes. `OnRefreshDispatched` keeps the
+existing record when the content hash is unchanged.
+
+Known cost: `exec --project-path` settles through `ensure_session_ready`, which does not wait
+for a compile to appear and can return inside the bounded age. Its single permitted resubmit
+then lands on a still-triggering decision, so an identical-content rewrite needs a second
+invocation — reported as the replayable non-terminal `refreshing` phase, which
+`wait-for-exec --request-id` continues. That is a CLI-side settle-budget gap, recorded as a
+follow-up candidate rather than absorbed here.
 
 ### D2. Key the ledger on content, not on mtime
 
@@ -131,6 +176,13 @@ transcript.
 
 ## Risks / Trade-offs
 
+- **[Suppression hides a build Unity has not finished producing]** → Found, not hypothetical:
+  it failed `test_play_aborts_on_a_compile_error_without_entering_play_mode` during apply. D7's
+  bounded age and editor-activity gates close it, and that case is the regression proof.
+- **[The bounded age is a chosen constant]** → It is bounded by the caller's own compile-appear
+  budget rather than picked in isolation, and `tests/test_refresh_change_signal.py` reads both
+  constants and asserts the ordering. Too long only costs latency in the identical-content
+  case; too short is what D7's gates now prevent.
 - **[Unity silently ignored a dispatched refresh, so the recorded content was never imported]**
   → The record is written only after a successful dispatch, is cleared on every settle, and is
   keyed on exact content: the next write to that file, whatever it contains, re-triggers. The
@@ -139,13 +191,9 @@ transcript.
 - **[A content read per flagged path per decision adds I/O to the hot poll path]** → Only
   flagged paths are read, and only when at least one exists; a settled tree reads nothing. The
   real-host case for "no candidate costs no content read" pins that.
-- **[The ledger suppresses a path the scan flagged but Unity would have compiled]** → Cannot
-  happen for a content state Unity has not seen: the record only exists for content already
-  handed to a dispatch. If Unity did compile it, `OnCompilationCompleted` cleared the record
-  and advanced the timestamp before the next decision.
-- **[Concurrent decisions on the listener thread and the main thread]** → The scan already runs
-  outside the lock; the ledger is read and written under the existing `Gate`, and the hash pass
-  runs outside it.
+- **[Concurrent decisions on the listener thread and the main thread]** → The scan and the
+  content read run outside the lock; the ledger and the activity snapshot are read under the
+  existing `Gate` or as a volatile.
 - **[A caller depends on a no-compile refresh looping]** → No such contract exists. The loop is
   the bug; the CLI's own budgets treat it as exhaustion.
 

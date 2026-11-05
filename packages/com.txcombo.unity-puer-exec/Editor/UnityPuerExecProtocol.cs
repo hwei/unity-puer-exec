@@ -193,23 +193,34 @@ namespace UnityPuerExec
             string reason,
             string skippedReason,
             System.Collections.Generic.IEnumerable<string> pathsChanged,
+            System.Collections.Generic.IEnumerable<string> pathsSuppressed,
             string settleOutcome,
             int elapsedMs
         )
         {
-            var paths = (pathsChanged ?? Enumerable.Empty<string>())
-                .Where(path => !string.IsNullOrEmpty(path))
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .OrderBy(path => path, StringComparer.OrdinalIgnoreCase);
-            var pathsJson = string.Join(",", paths.Select(path => "\"" + JsonEscape(path) + "\""));
             return "\"refresh\":{" +
                    "\"triggered\":" + (triggered ? "true" : "false") + "," +
                    "\"reason\":\"" + JsonEscape(reason ?? "") + "\"," +
-                   "\"paths_changed\":[" + pathsJson + "]," +
+                   "\"paths_changed\":[" + BuildPathListJson(pathsChanged) + "]," +
+                   "\"paths_suppressed\":[" + BuildPathListJson(pathsSuppressed) + "]," +
                    "\"skipped_reason\":\"" + JsonEscape(skippedReason ?? "") + "\"," +
                    "\"settle_outcome\":\"" + JsonEscape(settleOutcome ?? "") + "\"," +
                    "\"elapsed_ms\":" + elapsedMs +
                    "}";
+        }
+
+        // `paths_suppressed` names the candidates the mtime scan flagged and the service then
+        // dropped as content it had already handed to a dispatched refresh. Without it a
+        // suppressed decision is indistinguishable from a decision that saw no candidate at
+        // all, which is exactly the ambiguity an operator debugging a stuck refresh needs
+        // resolved (see openspec/specs/import-change-refresh).
+        private static string BuildPathListJson(System.Collections.Generic.IEnumerable<string> paths)
+        {
+            var normalized = (paths ?? Enumerable.Empty<string>())
+                .Where(path => !string.IsNullOrEmpty(path))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(path => path, StringComparer.OrdinalIgnoreCase);
+            return string.Join(",", normalized.Select(path => "\"" + JsonEscape(path) + "\""));
         }
 
         // The automatic refresh is a non-terminal phase of the accepted exec request:

@@ -8,25 +8,23 @@ A modification time newer than the settled-import timestamp SHALL make a compile
 file a refresh candidate, not a verdict. The service SHALL remember, per path, the content it
 handed to a refresh it successfully dispatched since the settled-import timestamp last
 advanced, and SHALL drop a candidate whose current content matches that record. The record
-SHALL be written only after a dispatch succeeded, and SHALL be dropped whenever the
-settled-import timestamp advances.
+SHALL be dropped whenever the settled-import timestamp advances.
 
 #### Scenario: A content-identical rewrite stops the refresh loop
 
 - **WHEN** a compile-triggering file is rewritten with unchanged content, so its modification
   time is newer than the settled-import timestamp
 - **AND** a refresh was dispatched for that content and Unity started no compilation
-- **AND** a further exec request arrives with no further change to that file
-- **THEN** the service does not refresh again
+- **AND** further exec requests arrive with no further change to that file
+- **THEN** the service stops reporting the file as a triggering change
 - **AND** the exec proceeds to its normal job creation and execution path
 
 #### Scenario: A play transition completes after a content-identical rewrite
 
 - **WHEN** a compile-triggering file was rewritten with unchanged content
 - **AND** a `play` request arrives
-- **THEN** the pre-play settle dispatches at most one refresh for that content
-- **AND** the request reaches the play-mode transition instead of reporting the refreshing
-  phase until its budget elapses
+- **THEN** the pre-play settle reaches the play-mode transition within its own budget
+- **AND** it does not report the refreshing phase until that budget elapses
 
 #### Scenario: A genuine content change after a suppressed decision refreshes again
 
@@ -53,6 +51,49 @@ settled-import timestamp advances.
 - **WHEN** a candidate's content cannot be read at decision time
 - **THEN** the candidate is not dropped
 - **AND** the decision treats it as a compile-triggering change
+
+### Requirement: Suppression waits for Unity's chance to compile
+
+The service SHALL drop a candidate on a matching content record only once Unity has had its
+chance to compile that content: the record SHALL be at least a bounded age past its dispatch,
+that age SHALL stay inside a caller's compile-appear budget, and the Editor SHALL be neither
+compiling nor importing at the decision. Dispatching the same content again SHALL NOT restart
+the age.
+
+#### Scenario: Suppression waits for Unity's chance to compile
+
+- **WHEN** a refresh was dispatched for a candidate's content
+- **AND** a further decision arrives before that dispatch is a bounded age old
+- **THEN** the candidate is not dropped
+- **AND** the decision still treats it as a compile-triggering change
+
+#### Scenario: The bounded age stays inside the caller's compile-appear budget
+
+- **WHEN** a caller waits out its own compile-appear budget after a dispatched refresh and
+  then re-asks once
+- **THEN** the service has already stopped treating the unchanged content as triggering
+- **AND** the caller reaches a terminal outcome on that re-ask instead of looping
+
+#### Scenario: A candidate is not suppressed while the Editor is compiling or importing
+
+- **WHEN** a candidate's content matches a record old enough to suppress
+- **AND** the Editor is compiling or importing at the decision
+- **THEN** the candidate is not dropped
+
+#### Scenario: A failing build is reported instead of suppressed
+
+- **WHEN** a compile-triggering file was written with content that does not compile
+- **AND** a refresh was dispatched for it
+- **AND** a further decision arrives before that compilation finished
+- **THEN** the candidate is not dropped
+- **AND** the service reports the failed compilation rather than a settled build
+
+#### Scenario: A re-dispatch does not extend the bounded age
+
+- **WHEN** a caller re-asks before the bounded age elapsed and the service dispatches the
+  same content again
+- **THEN** the record keeps the age of the first dispatch for that content
+- **AND** the bounded age still elapses
 
 ### Requirement: The pending-change view and the refresh decision agree
 
@@ -178,5 +219,8 @@ Because importing a file does not alter its modification time, the settled-impor
 - **AND** the refresh dispatched for it starts no compilation, so no completion signal
   advances the timestamp
 - **AND** further exec requests arrive with no further change
-- **THEN** the server refreshes at most once for that content
+- **THEN** the server stops reporting that content as a triggering change once Unity has had
+  its chance to compile it
 - **AND** later decisions report the change as suppressed rather than triggering
+- **AND** a caller that re-asks after its own compile-appear budget reaches a terminal
+  outcome instead of exhausting its refresh budget

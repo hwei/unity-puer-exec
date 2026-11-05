@@ -18,6 +18,11 @@ so the only operator workaround is hand-editing file mtimes.
   The tracker keeps a ledger of the content it has already handed to a successfully dispatched
   `AssetDatabase.Refresh()` during the current unsettled epoch, and drops a scanned path whose
   current content matches that ledger.
+- Suppression waits for Unity's chance to compile: a ledger entry drops a candidate only once
+  it is a bounded age past its dispatch — an age kept inside the CLI's compile-appear budget —
+  and only while the Editor is neither compiling nor importing. Re-dispatching the same content
+  does not restart that age. Without these gates a caller that re-asks faster than Unity starts
+  the compile reads a settled build that does not exist yet, a failing one included.
 - The ledger is written only after a dispatch succeeded, is keyed by path, and is cleared
   whenever the settled-import timestamp advances, so it can never suppress a content state
   Unity has not been asked to import.
@@ -41,19 +46,21 @@ None.
 
 ### Modified Capabilities
 
-- `import-change-refresh`: "Change detection is the incremental filesystem scan alone" gains
-  the content-ledger filter and its diagnostics; "Exec responses disclose the refresh decision"
-  gains `paths_suppressed`; "Repeated execs after a single change do not refresh repeatedly"
-  gains the content-identical-rewrite case that issue #3 exposed. "Settled-import timestamp
-  advances only on Unity completion signals" is deliberately **not** amended — the loop is fixed
-  on the detection side, so that invariant stays intact.
+- `import-change-refresh`: two added requirements cover the content ledger and the bounded
+  age plus editor-activity gates on suppression, and a third requires the health-side pending
+  view to agree with the refresh decision. "Change detection is the incremental filesystem scan
+  alone" gains the candidate-versus-verdict distinction, "Exec responses disclose the refresh
+  decision" gains `paths_suppressed`, and "Repeated execs after a single change do not refresh
+  repeatedly" gains the content-identical-rewrite case that issue #3 exposed. "Settled-import
+  timestamp advances only on Unity completion signals" is deliberately **not** amended — the loop
+  is fixed on the detection side, so that invariant stays intact.
 
 ## Impact
 
 - **Host**: `packages/com.txcombo.unity-puer-exec/Editor/UnityPuerExecImportChangeTracker.cs`
-  (ledger, filter, `OnRefreshDispatched`), `UnityPuerExecServer.cs` (record after a successful
-  dispatch, pass suppressed paths into the block), `UnityPuerExecProtocol.cs`
-  (`BuildRefreshBlockJson`).
+  (ledger, filter, `OnRefreshDispatched`, `OnEditorUpdate`), `UnityPuerExecServer.cs` (record
+  after a successful dispatch, sample editor activity per update tick, pass suppressed paths
+  into the block), `UnityPuerExecProtocol.cs` (`BuildRefreshBlockJson`).
 - **CLI**: none. The refresh block is passed through verbatim by
   `cli/python/unity_puer_exec_runtime.py`.
 - **Tests**: `tests/test_refresh_change_signal.py` source invariants; a package EditMode case

@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Security.Cryptography;
+using System.Text;
 using UnityEditor;
 using UnityEngine;
 
@@ -21,10 +23,30 @@ namespace UnityPuerExec
     /// a refresh or an exec. Importing a file does not change its modification time, so
     /// a timestamp that moved on the exec path would either refresh forever or never
     /// refresh at all.
+    ///
+    /// The scan's mtime comparison is a candidate test, not a verdict. A file whose mtime
+    /// moved without its content changing -- a rebase, a reset, a branch round-trip that
+    /// rewrites it identically -- starts no compilation, so no completion signal ever
+    /// advances the timestamp and the candidate would stay pending for the life of the
+    /// Editor session. <see cref="RefreshedContentLedger"/> closes that: it remembers the
+    /// content already handed to a successfully dispatched refresh, and a candidate whose
+    /// content matches an aged entry -- recorded while the Editor is neither compiling nor
+    /// importing -- is dropped.
     /// </summary>
     internal static class UnityPuerExecImportChangeTracker
     {
         internal const string SettledImportSessionStateKey = "UnityPuerExec.SettledImportUtcTicks";
+
+        // How long a dispatched refresh must age before its recorded content may suppress a
+        // candidate. `AssetDatabase.Refresh()` returns before Unity has necessarily started
+        // the compilation it is about to start, so a caller that re-asks faster than that
+        // start -- the project-path settle can -- would otherwise read a suppressed decision
+        // for a build that is still to come. Deliberately shorter than the CLI's compile
+        // appear window (10s): a caller that waits out that window before re-asking always
+        // re-asks after this grace has elapsed, so an unchanged-content refresh resolves on
+        // that re-ask instead of looping. See openspec design D7 for the real-host failure
+        // that made the gate necessary.
+        internal const long PostRefreshSettleGraceTicks = 8 * TimeSpan.TicksPerSecond;
 
         // Only files that can start a compilation are scanned. Non-code assets
         // (.unity, .prefab, .meta, textures, audio, ...) never compile, so refreshing
@@ -40,6 +62,34 @@ namespace UnityPuerExec
         private static readonly object Gate = new object();
 
         private static long settledImportUtcTicks;
+
+        // Content this Editor session already handed to a successfully dispatched refresh,
+        // keyed by normalized path, covering the epoch since the settled-import timestamp
+        // last advanced. A scan candidate whose content matches an entry is not a pending
+        // change: Unity has been asked to import exactly that content. The match alone is not
+        // enough -- Unity may still be about to compile it -- so an entry suppresses only once
+        // it is past PostRefreshSettleGraceTicks and the Editor is idle, and any completion
+        // signal clears the whole ledger.
+        //
+        // Deliberately in-memory. Every domain reload fires afterAssemblyReload, which
+        // advances the settled-import timestamp past anything the scan could flag, so a
+        // discarded ledger only makes detection more eager -- never less.
+        private static readonly Dictionary<string, RefreshedContentEntry> RefreshedContentLedger =
+            new Dictionary<string, RefreshedContentEntry>(StringComparer.OrdinalIgnoreCase);
+
+        // Sampled on the main thread from the server's update tick. EditorApplication's
+        // compiling and updating flags are main-thread-only, and the pending view is
+        // answered on the listener thread, so both decision paths gate suppression on this
+        // snapshot instead of calling the Editor API. A decision only ever runs right after
+        // a tick sampled it: the main-thread action queue that carries Decide() drains in
+        // the same tick.
+        private static volatile bool editorCompilingOrUpdating;
+
+        private sealed class RefreshedContentEntry
+        {
+            internal string ContentHash;
+            internal long DispatchedUtcTicks;
+        }
 
         // Normalized watched roots (Assets/, Packages/), published by reference
         // replacement from Install and read by the pure exclusion helper so the
@@ -60,6 +110,25 @@ namespace UnityPuerExec
             internal bool SuppressedByPlayMode;
             internal string Reason = "";
             internal List<string> PathsChanged = new List<string>();
+
+            // Scan candidates dropped because their content was already handed to a
+            // dispatched refresh. Diagnostics: this is what separates "nothing was newer"
+            // from "newer, but Unity has already seen this exact content".
+            internal List<string> PathsSuppressed = new List<string>();
+
+            // Path/content pairs behind PathsChanged, captured before the dispatch so the
+            // ledger records what Unity was actually asked to import rather than whatever
+            // landed on disk during the refresh.
+            internal List<RefreshCandidate> TriggeringContent = new List<RefreshCandidate>();
+        }
+
+        internal sealed class RefreshCandidate
+        {
+            internal string Path;
+
+            // Null when the content could not be read. A candidate with no readable content
+            // is never suppressed and never recorded, so the next decision retries it.
+            internal string ContentHash;
         }
 
         /// <summary>
@@ -124,22 +193,98 @@ namespace UnityPuerExec
             lock (Gate)
             {
                 settledImportUtcTicks = DateTime.UtcNow.Ticks;
+
+                // The advanced timestamp already covers everything on disk, so a retained
+                // entry could only outlive its own epoch and suppress a later identical
+                // write that Unity has not seen.
+                RefreshedContentLedger.Clear();
             }
 
             PersistTicks();
         }
 
         /// <summary>
+        /// Sample the Editor's compile and import activity for the suppression gate. Called
+        /// on the main thread once per update tick, before the tick drains the action queue
+        /// that carries <see cref="Decide"/>.
+        /// </summary>
+        internal static void OnEditorUpdate()
+        {
+            try
+            {
+                editorCompilingOrUpdating = EditorApplication.isCompiling || EditorApplication.isUpdating;
+            }
+            catch
+            {
+            }
+        }
+
+        /// <summary>
+        /// Record the content a dispatched refresh handed to Unity. Main thread only, and
+        /// only after <c>AssetDatabase.Refresh()</c> returned without throwing: a failed
+        /// dispatch imported nothing, so recording it would suppress the retry that still
+        /// owes.
+        /// </summary>
+        internal static void OnRefreshDispatched(RefreshDecision decision)
+        {
+            if (decision == null || decision.TriggeringContent.Count == 0)
+            {
+                return;
+            }
+
+            var dispatchedTicks = DateTime.UtcNow.Ticks;
+            lock (Gate)
+            {
+                foreach (var candidate in decision.TriggeringContent)
+                {
+                    if (candidate == null
+                        || string.IsNullOrEmpty(candidate.Path)
+                        || string.IsNullOrEmpty(candidate.ContentHash))
+                    {
+                        continue;
+                    }
+
+                    RefreshedContentEntry existing;
+                    if (RefreshedContentLedger.TryGetValue(candidate.Path, out existing)
+                        && string.Equals(existing.ContentHash, candidate.ContentHash, StringComparison.Ordinal))
+                    {
+                        // First dispatch wins. A caller that re-asks before the grace elapses
+                        // re-dispatches the same content, and stamping that re-dispatch would
+                        // push the grace out again -- the very loop this ledger exists to end.
+                        continue;
+                    }
+
+                    RefreshedContentLedger[candidate.Path] = new RefreshedContentEntry
+                    {
+                        ContentHash = candidate.ContentHash,
+                        DispatchedUtcTicks = dispatchedTicks,
+                    };
+                }
+            }
+        }
+
+        /// <summary>
         /// Health-side view of the pending state. The scan walks the watched roots and
         /// reports pending when a compile-triggering file is newer than the settled
-        /// import; there is no in-memory event state and nothing that can fail, so the
-        /// answer is always a definite not-pending or pending.
+        /// import and its content has not already been handed to a dispatched refresh. It
+        /// applies the same filter <see cref="Decide"/> does, so a caller never observes a
+        /// pending change that the next exec or refresh request would not act on. There is
+        /// no in-memory event state and nothing that can fail, so the answer is always a
+        /// definite not-pending or pending.
         /// </summary>
         internal static PendingState GetPendingState()
         {
             var found = ScanWatchedRoots();
+            if (found.Count == 0)
+            {
+                return PendingState.NotPending;
+            }
 
-            return found.Count > 0 ? PendingState.Pending : PendingState.NotPending;
+            var triggering = new List<RefreshCandidate>();
+            var suppressed = new List<string>();
+            FilterAlreadyRefreshedContent(found, triggering, suppressed);
+
+            return triggering.Count > 0 ? PendingState.Pending : PendingState.NotPending;
         }
 
         /// <summary>
@@ -156,9 +301,13 @@ namespace UnityPuerExec
 
             var changed = ScanWatchedRoots();
             changed.Sort(StringComparer.OrdinalIgnoreCase);
-            decision.PathsChanged = changed;
+            FilterAlreadyRefreshedContent(changed, decision.TriggeringContent, decision.PathsSuppressed);
+            foreach (var candidate in decision.TriggeringContent)
+            {
+                decision.PathsChanged.Add(candidate.Path);
+            }
 
-            if (changed.Count == 0)
+            if (decision.PathsChanged.Count == 0)
             {
                 decision.Triggered = false;
                 decision.Reason = "no_pending_change";
@@ -379,6 +528,91 @@ namespace UnityPuerExec
                     CodeFiles = codeFiles,
                     SubDirs = subDirs,
                 };
+            }
+        }
+
+        /// <summary>
+        /// Partition the scan's mtime candidates into the ones that still owe a refresh and
+        /// the ones whose content an aged dispatched refresh already handed to Unity.
+        ///
+        /// The content read and hash run outside the lock -- a candidate set is normally
+        /// empty and otherwise a handful of files -- and only the ledger comparison is
+        /// guarded. An unreadable candidate hashes to null, which never matches a recorded
+        /// entry, so a file that cannot be read is treated as a change rather than silently
+        /// suppressed.
+        ///
+        /// A matching entry suppresses only once it has aged past
+        /// <see cref="PostRefreshSettleGraceTicks"/> and the Editor is neither compiling nor
+        /// importing. Until then Unity may still be about to compile that content, and a
+        /// suppressed decision would report a settled build the Editor has not finished
+        /// producing -- a failing one included.
+        /// </summary>
+        private static void FilterAlreadyRefreshedContent(
+            List<string> scanned,
+            List<RefreshCandidate> triggering,
+            List<string> suppressed)
+        {
+            if (scanned.Count == 0)
+            {
+                return;
+            }
+
+            var hashes = new string[scanned.Count];
+            for (var i = 0; i < scanned.Count; i++)
+            {
+                hashes[i] = SafeContentHash(scanned[i]);
+            }
+
+            var busy = editorCompilingOrUpdating;
+            var nowTicks = DateTime.UtcNow.Ticks;
+
+            lock (Gate)
+            {
+                for (var i = 0; i < scanned.Count; i++)
+                {
+                    var hash = hashes[i];
+                    RefreshedContentEntry entry;
+                    if (hash != null
+                        && !busy
+                        && RefreshedContentLedger.TryGetValue(scanned[i], out entry)
+                        && string.Equals(entry.ContentHash, hash, StringComparison.Ordinal)
+                        && nowTicks - entry.DispatchedUtcTicks >= PostRefreshSettleGraceTicks)
+                    {
+                        suppressed.Add(scanned[i]);
+                        continue;
+                    }
+
+                    triggering.Add(new RefreshCandidate { Path = scanned[i], ContentHash = hash });
+                }
+            }
+        }
+
+        private static string SafeContentHash(string path)
+        {
+            try
+            {
+                // Share read and delete: Unity's importer and any concurrent tool may hold
+                // the file, and a locked-out read must not become a suppressed change.
+                using (var stream = new FileStream(
+                    path,
+                    FileMode.Open,
+                    FileAccess.Read,
+                    FileShare.ReadWrite | FileShare.Delete))
+                using (var algorithm = SHA256.Create())
+                {
+                    var hash = algorithm.ComputeHash(stream);
+                    var builder = new StringBuilder(hash.Length * 2);
+                    foreach (var value in hash)
+                    {
+                        builder.Append(value.ToString("x2"));
+                    }
+
+                    return builder.ToString();
+                }
+            }
+            catch
+            {
+                return null;
             }
         }
 

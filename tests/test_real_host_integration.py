@@ -3449,6 +3449,131 @@ class RefreshOnChangeRealHostTests(_SharedRealHostDevice, unittest.TestCase):
         self.assertIsInstance(second_refresh, dict, second_payload)
         self.assertFalse(second_refresh["triggered"], second_refresh)
 
+    # --- content-identical rewrite (issue #3) ---------------------------------
+
+    def _rewrite_probe_identically(self, probe):
+        """Move a probe's mtime past the settled import without changing a byte.
+
+        This is the condition GitHub issue #3 reports: a rebase, a reset, or a branch
+        round-trip rewrites a tracked ``.cs`` identically, so its mtime moves past the
+        settled-import timestamp while Unity sees an identical content hash and starts no
+        compilation. No completion signal then advances the timestamp, and an mtime-only
+        signal re-dispatches a no-op refresh until the caller's budget runs out.
+        """
+        before = probe.stat().st_mtime_ns
+        probe.write_bytes(probe.read_bytes())
+        if probe.stat().st_mtime_ns <= before:
+            # A filesystem that declines to move the mtime for an identical write would
+            # test nothing here, so move it explicitly -- what `touch` does in the report.
+            os.utime(probe, ns=(time.time_ns(), time.time_ns()))
+        self.assertGreater(
+            probe.stat().st_mtime_ns,
+            before,
+            "the identical rewrite did not move the probe's mtime",
+        )
+        return before
+
+    def _settle_identical_rewrite_probe(self, base_url, name):
+        """Write a probe, settle its real compile, then rewrite it identically.
+
+        Returns ``(base_url, probe)`` with the Editor settled and not pending, the probe's
+        content on disk unchanged since the compile that settled it, and its mtime newer
+        than the settled-import timestamp.
+        """
+        probe = self._write_compile_triggering_probe(name)
+
+        # The probe's first write is a genuine change: let it compile and settle, so the
+        # case under test starts from a settled Editor with an empty content ledger.
+        exit_code, payload = self._exec_script(
+            base_url, "export default function run(ctx) { return { settled: true }; }"
+        )
+        self.assertEqual(exit_code, 0, payload)
+        self.assertEqual(payload["status"], "completed", payload)
+
+        base_url = self._base_url()
+        health = self._health(base_url)
+        self.assertEqual(health["refresh"]["pending"], "not_pending", health["refresh"])
+
+        self._rewrite_probe_identically(probe)
+        return base_url, probe
+
+    def test_identical_content_rewrite_does_not_loop_the_refresh(self):
+        base_url = self._base_url()
+        base_url, probe = self._settle_identical_rewrite_probe(
+            base_url, "IdenticalRewriteProbe.cs"
+        )
+
+        # One CLI invocation must reach a terminal result. Before the content ledger this
+        # re-dispatched a no-op refresh until the caller's whole budget elapsed, and the
+        # Editor log filled with ~10 ms refreshes that compiled nothing.
+        exit_code, payload = self._exec_script(
+            base_url, "export default function run(ctx) { return { pass: 1 }; }"
+        )
+        self.assertEqual(exit_code, 0, payload)
+        self.assertEqual(payload["status"], "completed", payload)
+        first_refresh = payload.get("refresh")
+        self.assertIsInstance(first_refresh, dict, payload)
+
+        # And the loop-breaking property holds: a further exec does not refresh again for
+        # content Unity has already been handed.
+        exit_code, payload = self._exec_script(
+            base_url, "export default function run(ctx) { return { pass: 2 }; }"
+        )
+        self.assertEqual(exit_code, 0, payload)
+        self.assertEqual(payload["status"], "completed", payload)
+        second_refresh = payload.get("refresh")
+        self.assertIsInstance(second_refresh, dict, payload)
+        self.assertFalse(second_refresh["triggered"], second_refresh)
+        self.assertEqual(second_refresh["skipped_reason"], "no_pending_change", second_refresh)
+
+        # A genuine content change to the same file still refreshes: the ledger suppresses
+        # a content state, not a path.
+        probe.write_text(
+            "// Auto-generated compile-triggering probe.\n"
+            "internal static class IdenticalRewriteProbe {{ internal const long Stamp = {0}L; }}\n".format(
+                time.time_ns()
+            ),
+            encoding="utf-8",
+        )
+        exit_code, payload = self._exec_script(
+            base_url, "export default function run(ctx) { return { pass: 3 }; }"
+        )
+        self.assertEqual(exit_code, 0, payload)
+        self.assertEqual(payload["status"], "completed", payload)
+
+    def test_suppressed_identical_rewrite_is_disclosed_and_not_pending(self):
+        base_url = self._base_url()
+        base_url, probe = self._settle_identical_rewrite_probe(
+            base_url, "SuppressedRewriteProbe.cs"
+        )
+        expected_path = str(probe).replace("\\", "/")
+
+        # Drive the decision past its one dispatch so the rewrite is suppressed.
+        exit_code, payload = self._exec_script(
+            base_url, "export default function run(ctx) { return { pass: 1 }; }"
+        )
+        self.assertEqual(exit_code, 0, payload)
+        exit_code, payload = self._exec_script(
+            base_url, "export default function run(ctx) { return { pass: 2 }; }"
+        )
+        self.assertEqual(exit_code, 0, payload)
+        self.assertEqual(payload["status"], "completed", payload)
+
+        # A suppressed decision is distinguishable from a decision that saw no candidate:
+        # the block names the path the mtime scan flagged and the ledger then dropped.
+        refresh = payload.get("refresh")
+        self.assertIsInstance(refresh, dict, payload)
+        self.assertFalse(refresh["triggered"], refresh)
+        suppressed = refresh.get("paths_suppressed")
+        self.assertIsInstance(suppressed, list, refresh)
+        self.assertIn(expected_path, suppressed, refresh)
+        self.assertEqual(refresh["paths_changed"], [], refresh)
+
+        # /health applies the same filter, so no caller is left watching a pending change
+        # that nothing will ever act on.
+        health_refresh = self._health(base_url)["refresh"]
+        self.assertEqual(health_refresh["pending"], "not_pending", health_refresh)
+
     # --- settled-import timestamp (tasks 2.1, 2.2) ----------------------------
 
     def test_exec_and_refresh_do_not_advance_settled_timestamp(self):
