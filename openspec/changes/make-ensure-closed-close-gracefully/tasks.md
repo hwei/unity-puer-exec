@@ -11,8 +11,8 @@
 
 ## 3. exec guard and help
 
-- [ ] 3.1 Add the lexical `EditorApplication.Exit` pre-submit refusal to `exec` (design D4): status `editor_exit_in_script`, exit code 27, registered in the exec status tables. Verify with mocked tests for `--code` and `--file`, spacing variants, an unrelated script still submitted, and no session or launch call on refusal
-- [ ] 3.2 Rewrite the `ensure-closed` help (quick start, statuses, `closed_via`), the top-level command-list line, and the exec help: make ensure-closed the recommended close, add the `EditorApplication.Exit` crash warning, and remove the `exit.js` recommendation. Verify with help tests asserting the new wording and that `exit.js` no longer appears
+- [x] 3.1 Add the lexical `EditorApplication.Exit` pre-submit refusal to `exec` (design D4): status `editor_exit_in_script`, exit code 27, registered in the exec status tables. Verify with mocked tests for `--code` and `--file`, spacing variants, an unrelated script still submitted, and no session or launch call on refusal
+- [x] 3.2 Rewrite the `ensure-closed` help (quick start, statuses, `closed_via`), the top-level command-list line, and the exec help: make ensure-closed the recommended close, add the `EditorApplication.Exit` crash warning, and remove the `exit.js` recommendation. Verify with help tests asserting the new wording and that `exit.js` no longer appears
 
 ## 4. Real-host evidence
 

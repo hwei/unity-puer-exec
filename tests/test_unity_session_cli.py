@@ -729,15 +729,116 @@ class UnityPuerExecCliTests(unittest.TestCase):
         self.assertIn("--reset-jsenv-before-exec", _project_path_template(entry["next_steps"][0]))
         self.assertIn("--stale-module-policy", _project_path_template(entry["next_steps"][1]))
 
-    def test_exit_help_example_renders_inline_request_exit_script(self):
+    def test_request_editor_exit_example_is_gone_because_it_crashed_the_editor(self):
+        """make-ensure-closed-close-gracefully removed the example that steered here.
+
+        It told agents to call EditorApplication.Exit from an exec script, which
+        tears down V8 mid-call and crashed the Editor twice on 2026-11-06.
+        """
         exit_code, stdout, stderr = unity_puer_exec.run_cli(["--help-example", "request-editor-exit-via-exec"])
 
-        self.assertEqual(exit_code, 0)
+        self.assertEqual(exit_code, 2)
+        self.assertEqual(stdout, "")
+        self.assertIn("unknown example id: request-editor-exit-via-exec", stderr)
+
+    def test_ensure_closed_help_recommends_it_and_warns_about_exit_scripts(self):
+        import help_surface
+
+        command_help = help_surface.render_command_help("ensure-closed")
+        self.assertIn("recommended way to close a project's Editor", command_help)
+        self.assertIn("closed_via", command_help)
+        self.assertIn("EditorApplication.Exit", command_help)
+        self.assertNotIn("exit.js", command_help)
+
+        top_level = help_surface.render_top_level_help()
+        self.assertNotIn("exit.js", top_level)
+        self.assertNotIn("not the recommended graceful-exit path", top_level)
+
+    def test_exec_help_warns_about_exit_scripts_and_never_recommends_one(self):
+        import help_surface
+
+        exec_help = help_surface.render_command_help("exec")
+        self.assertIn("Never call `EditorApplication.Exit` from an exec script", exec_help)
+        self.assertIn("ensure-closed", exec_help)
+        self.assertNotIn("exit.js", exec_help)
+
+    def test_exec_refuses_code_that_calls_editor_application_exit(self):
+        with mock.patch.object(unity_session, "ensure_session_ready") as ensure_ready:
+            exit_code, stdout, stderr = unity_puer_exec.run_cli(
+                [
+                    "exec",
+                    "--project-path",
+                    SAMPLE_PROJECT_PATH,
+                    "--code",
+                    "export default function run(ctx) { "
+                    "const EditorApplication = puer.loadType('UnityEditor.EditorApplication'); "
+                    "EditorApplication.Exit(0); return {}; }",
+                ]
+            )
+
+        self.assertEqual(exit_code, unity_puer_exec.EXIT_EDITOR_EXIT_IN_SCRIPT)
         self.assertEqual(stderr, "")
-        self.assertIn("Example script body:", stdout)
-        self.assertIn("const EditorApplication = puer.loadType('UnityEditor.EditorApplication');", stdout)
-        self.assertIn("EditorApplication.Exit(0);", stdout)
-        self.assertIn("Expected observation:", stdout)
+        payload = json.loads(stdout)
+        self.assertEqual(payload["status"], "editor_exit_in_script")
+        ensure_ready.assert_not_called()
+        commands = [step.get("command") for step in payload["next_steps"]]
+        self.assertIn("ensure-closed", commands)
+
+    def test_exec_refuses_a_file_that_calls_editor_application_exit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            script = Path(directory) / "exit.js"
+            script.write_text(
+                "export default function run(ctx) {\n"
+                "  CS.UnityEditor.EditorApplication.Exit(0);\n"
+                "}\n",
+                encoding="utf-8",
+            )
+            with mock.patch.object(unity_session, "ensure_session_ready") as ensure_ready:
+                exit_code, stdout, _stderr = unity_puer_exec.run_cli(
+                    ["exec", "--project-path", SAMPLE_PROJECT_PATH, "--file", str(script)]
+                )
+
+        self.assertEqual(exit_code, unity_puer_exec.EXIT_EDITOR_EXIT_IN_SCRIPT)
+        self.assertEqual(json.loads(stdout)["status"], "editor_exit_in_script")
+        ensure_ready.assert_not_called()
+
+    def test_exec_exit_guard_tolerates_whitespace_variants(self):
+        import unity_puer_exec_runtime as runtime
+
+        for code in (
+            "EditorApplication.Exit(0)",
+            "EditorApplication . Exit(0)",
+            "EditorApplication\n  .Exit (\n 0 )",
+        ):
+            self.assertIsNotNone(runtime.detect_editor_exit_in_script(code), code)
+
+    def test_exec_exit_guard_leaves_unrelated_scripts_alone(self):
+        import unity_puer_exec_runtime as runtime
+
+        for code in (
+            "export default function run(ctx) { return { ok: true }; }",
+            "const EditorApplication = puer.loadType('UnityEditor.EditorApplication');",
+            "EditorApplication.isPlaying = false;",
+            "EditorApplication.ExitCode",
+            "const Exit = 1; EditorApplication.isPaused = false;",
+        ):
+            self.assertEqual(
+                runtime.detect_editor_exit_in_script(code), None, code
+            )
+
+    def test_exec_exit_guard_refuses_a_comment_mention_and_says_so(self):
+        """Design D4: the check is lexical, so a comment is refused too.
+
+        That over-refusal is deliberate: a false refusal only costs a reworded
+        comment, while a missed call crashes the Editor.
+        """
+        import unity_puer_exec_runtime as runtime
+
+        self.assertIsNotNone(
+            runtime.detect_editor_exit_in_script(
+                "// EditorApplication.Exit(0) would crash this Editor"
+            )
+        )
 
     def test_help_example_unknown_id_is_usage_error_on_stderr(self):
         exit_code, stdout, stderr = unity_puer_exec.run_cli(["--help-example", "missing-example"])
@@ -2322,7 +2423,7 @@ class UnityPuerExecCliTests(unittest.TestCase):
 
         top_level = help_surface.render_top_level_help()
         self.assertIn("ensure-closed", top_level)
-        self.assertIn("close the Editor process", top_level)
+        self.assertIn("the recommended way to close a project's Editor", top_level)
         self.assertNotIn("ensure-stopped: ", top_level)
         alias_help = help_surface.render_command_help("ensure-stopped")
         self.assertIn("Deprecated alias of `ensure-closed`", alias_help)

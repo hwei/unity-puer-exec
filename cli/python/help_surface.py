@@ -30,7 +30,6 @@ WORKFLOW_IDS = (
     "recover-exec-by-request-id",
     "load-and-call-csharp-type",
     "derive-project-path-from-unity-api",
-    "request-editor-exit-via-exec",
     "component-detection",
 )
 
@@ -56,7 +55,7 @@ TOP_LEVEL_COMMANDS = {
     "play": "enter play mode and wait until the Editor reports `playing`; settles pending code first and forces `Application.runInBackground`. See `play --help`.",
     "pause": "pause a playing Editor and wait until it reports `paused`. See `pause --help`.",
     "stop": "leave play mode (or pause) and wait until the Editor reports `edit`; settles the compile the exit defers. Does not close the Editor. See `stop --help`.",
-    "ensure-closed": "close the Editor process (force a stopped state); not the recommended graceful-exit path, and distinct from play-mode `stop`. See `ensure-closed --help`.",
+    "ensure-closed": "the recommended way to close a project's Editor: ask it to quit gracefully, escalate to a kill only on timeout, and report `closed_via`. Distinct from play-mode `stop`. See `ensure-closed --help`.",
     "get-compile-errors": "retrieve structured C# compile errors from the control service; use after wait-for-compile when freshness matters. See `get-compile-errors --help`.",
     "get-compile-warnings": "retrieve structured C# compile warnings from the control service; use after wait-for-compile when freshness matters. See `get-compile-warnings --help`.",
 }
@@ -69,7 +68,7 @@ RECOMMENDED_PATH = (
     "If you need log-based verification, continue with `wait-for-log-pattern`.",
     "Use `get-blocker-state` when an exec-side timeout or stall might be caused by a supported Unity modal dialog.",
     "Use `resolve-blocker` only when you intentionally want the CLI to dismiss a supported modal blocker; then continue with the original `request_id` if needed.",
-    "`get-log-source` and `ensure-closed` are secondary commands, not the normal first step.",
+    "`get-log-source` is a secondary command, not the normal first step. `ensure-closed` is the recommended way to close a project's Editor.",
     "Use `play` / `pause` / `stop` to change the Editor play state; they return after the transition completes.",
 )
 
@@ -79,7 +78,6 @@ TOP_LEVEL_WORKFLOWS = {
     "recover-exec-by-request-id": "recover an accepted exec request by reusing or waiting on the same `request_id` after `running` or ambiguity.",
     "load-and-call-csharp-type": "learn the normal PuerTS-style bridge path for loading and calling Unity or C# types from JavaScript.",
     "derive-project-path-from-unity-api": "derive project-local paths through Unity APIs instead of assuming undocumented `ctx` fields.",
-    "request-editor-exit-via-exec": "request a normal Unity Editor exit through `exec` instead of using `ensure-closed`.",
     "component-detection": "use the standard PuerTS pattern for scene-inspection: puer.$typeof + puer.$ref + TryGetComponent + get_Item.",
 }
 
@@ -353,6 +351,7 @@ COMMAND_HELP = {
             "With `--project-path`, `exec` owns Unity launch or recovery for the project as part of the main work lifecycle.",
             "Changed local modules are recovered by a same-invocation server-owned JsEnv reset by default; use `--stale-module-policy error` when `ctx.globals` or module singleton continuity must be preserved.",
             "Scripts use a PuerTS-style JavaScript-to-C# bridge; `puer.loadType(...)` is the normal way to load Unity or C# types inside `exec` scripts.",
+            "Never call `EditorApplication.Exit` from an exec script. It tears down the JS runtime while the script frame is still on the stack and crashes the Editor, losing the request and its log context. `exec` refuses such a script before submitting it (`editor_exit_in_script`, exit 27); use `ensure-closed --project-path <path>` to close the Editor instead.",
             "If an earlier step wrote C# or assembly-definition files, no action is needed: the next project-scoped `exec` refreshes automatically for those code changes. Scenes, prefabs, metadata, textures, audio, and other non-code assets are not watched and do not trigger a refresh; a caller that needs one of those imported calls `AssetDatabase.Refresh()` through the bridge. Continue with `wait-for-exec` if the request stays non-terminal.",
             "Unity's ScriptUpdater consent dialog (`Some of this project's source files refer to API that has changed`) is auto-declined (`No`) while this command waits, so an unattended run does not hang on it. When that happens the command keeps its normal status and also carries `warning = \"api_updater_declined\"` plus `warning_detail`; `get-compile-errors` / `get-compile-warnings` remain the compile surface.",
         ],
@@ -361,7 +360,6 @@ COMMAND_HELP = {
             "exec-and-wait-for-result-marker",
             "load-and-call-csharp-type",
             "derive-project-path-from-unity-api",
-            "request-editor-exit-via-exec",
             "component-detection",
         ),
         "args": {
@@ -446,6 +444,7 @@ COMMAND_HELP = {
                 ("unity_compile_error", direct_exec_client.EXIT_UNITY_COMPILE_ERROR, "C# compilation has errors; the script was not executed. Fix the C# errors and re-run `exec` -- saving the fix is itself enough to trigger recompilation on the next exec."),
                 ("refresh_unsettled", EXIT_REFRESH_UNSETTLED, "an automatic refresh this CLI started did not settle its compile cycle within that compile-scale budget, so the script has not run and the addressed service holds no record to continue. Distinct from `missing`: nothing is lost, and re-running the same `exec` runs the script for the first time. `next_steps` carries the resubmit path."),
                 ("editor_crashed_during_request", direct_exec_client.EXIT_EDITOR_CRASHED_DURING_REQUEST, "the Editor process died while this request's script was running, so the request was not re-run and will not be. Terminal: fix the script and submit it as a new request with a new `request_id`. `editor_log_path` and `crash_report_dir` carry the evidence; `next_steps` never offers a continuation of the same `request_id`."),
+                ("editor_exit_in_script", direct_exec_client.EXIT_EDITOR_EXIT_IN_SCRIPT, "the script source calls `EditorApplication.Exit`, which crashes the Editor because V8 is torn down while the script frame is still on the stack. Nothing was submitted. Use `ensure-closed --project-path <path>` to close the Editor. The check is lexical, so a call inside a comment is refused too."),
             ],
         },
     },
@@ -672,9 +671,11 @@ COMMAND_HELP = {
     },
     "ensure-closed": {
         "quick_start": [
-            "Secondary cleanup or enforcement command that closes the Editor process.",
-            "`unity-puer-exec ensure-closed --project-path X:/project --inspect-only`",
-            "This is not part of the normal execution or verification workflow; graceful exits should prefer a script request such as `unity-puer-exec exec --project-path X:/project --file X:/exit.js`.",
+            "The recommended way to close a project's Editor.",
+            "`unity-puer-exec ensure-closed --project-path X:/project`",
+            "By default it asks the Editor to quit through Unity's normal quit path -- the same path as a user clicking the window's close button -- so project settings are saved and an unsaved-scene prompt is shown. Only if the Editor is still running when `--timeout-seconds` ends does it escalate to a kill, and the result then says `closed_via: killed`.",
+            "A supported modal dialog holding the quit is reported as `modal_blocked` and the Editor is left running, because the dialog may be protecting unsaved work.",
+            "Do not call `EditorApplication.Exit` from an `exec` script: it tears down the JS runtime mid-call and crashes the Editor. `exec` refuses such a script with `editor_exit_in_script`.",
             "This is distinct from the play-mode `stop` command, which leaves the Editor running in edit mode.",
         ],
         "related_workflows": (),
@@ -695,7 +696,7 @@ COMMAND_HELP = {
             ],
             "Timeout Rules": [
                 "`--timeout-seconds` must be a positive number.",
-                "Without `--inspect-only` or `--immediate-kill`, the command waits up to the timeout before escalating to a kill in project mode.",
+                "Without `--inspect-only` or `--immediate-kill`, the command first asks the Editor to quit gracefully, then waits up to the timeout before escalating to a kill in project mode.",
             ],
         },
         "status": {
@@ -872,27 +873,6 @@ WORKFLOW_EXAMPLES = {
             "Reusing the same `request_id` with equivalent execution content and equivalent canonical `--script-args` is recovery. Using a fresh `request_id` starts a new execution attempt.",
             "For side-effecting scripts, do not blindly retry with a fresh `request_id` after an ambiguous timeout.",
             "`request_id` tracks the exec request itself. `correlation_id` remains script-defined metadata for log or marker observation.",
-        ],
-    },
-    "request-editor-exit-via-exec": {
-        "goal": "Request a normal Unity Editor exit through a script instead of using stopped-state control.",
-        "steps": [
-            {
-                "command": "`unity-puer-exec exec --project-path X:/project --file X:/scripts/request-exit.js --wait-timeout-ms 1000`",
-                "script_body": [
-                    "export default function run(ctx) {",
-                    "  const EditorApplication = puer.loadType('UnityEditor.EditorApplication');",
-                    "  EditorApplication.Exit(0);",
-                    "  return { requested: true, request_id: ctx.request_id };",
-                    "}",
-                ],
-                "observation": "Expected observation: stdout reports the execution result for the exit-request script or returns `running` if the request is still in progress.",
-            },
-        ],
-        "notice": [
-            "This example assumes Unity is already available for the selected project.",
-            "A script such as `EditorApplication.Exit` is a normal exit request, not a guarantee of immediate stopped-state enforcement.",
-            "`ensure-closed` is for stopped-state inspection or enforcement, not the recommended graceful-exit path.",
         ],
     },
     "load-and-call-csharp-type": {
@@ -1393,6 +1373,18 @@ GUIDANCE_MATRIX = {
     },
     ("wait-for-exec", "not_available"): {
         "situation": "The execution target could not be reached.",
+    },
+    # The script never ran, so re-submitting is safe -- but only after removing the
+    # exit call, which is what this guidance says to do instead of retrying as-is.
+    ("exec", "editor_exit_in_script"): {
+        "situation": "The script calls `EditorApplication.Exit`, which crashes the Editor. Nothing was submitted.",
+        "next_steps": [
+            {
+                "command": "ensure-closed",
+                "when": "you actually wanted to close the project's Editor",
+                "argv_template": ["unity-puer-exec", "ensure-closed", "--project-path", "{project_path}"],
+            },
+        ],
     },
     ("wait-for-exec", "launch_conflict"): {
         "situation": "Project-scoped launch ownership could not be established safely. Another process may be launching Unity for this project.",

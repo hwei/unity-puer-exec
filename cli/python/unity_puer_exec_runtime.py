@@ -47,6 +47,10 @@ EXIT_REFRESH_UNSETTLED = 25
 # may be what killed the Editor. Defined with the other status->exit mappings so the
 # server-returned status maps without a special case.
 EXIT_EDITOR_CRASHED_DURING_REQUEST = direct_exec_client.EXIT_EDITOR_CRASHED_DURING_REQUEST
+# `exec` refused a script whose source calls EditorApplication.Exit (design D4 of
+# make-ensure-closed-close-gracefully). Distinct from the crash code above: the
+# script never ran, so re-submitting a rewritten script is safe.
+EXIT_EDITOR_EXIT_IN_SCRIPT = direct_exec_client.EXIT_EDITOR_EXIT_IN_SCRIPT
 # How long `exec` keeps watching the crashed Editor's pid after its submit loses the
 # connection. Unity's crash handler stays alive while it writes the dump, so the
 # process is not necessarily gone the moment the socket drops. Patchable in tests.
@@ -687,6 +691,29 @@ def read_exec_code(args):
     if args.stdin:
         return sys.stdin.read()
     return args.code
+
+
+# Design D4 of make-ensure-closed-close-gracefully: a lexical pre-submit guard.
+#
+# `EditorApplication.Exit` called from inside an exec script tears down V8 while
+# the script frame is still on the stack, which crashes the Editor. The crash is
+# deterministic and loses the caller's in-flight request and log context, so this
+# refuses rather than warns. The match is lexical and deliberately over-eager: it
+# also catches the call inside a comment, and the refusal message says so.
+EDITOR_EXIT_SCRIPT_PATTERN = re.compile(
+    r"EditorApplication"
+    r"\s*\.\s*"
+    r"Exit\b"
+)
+EDITOR_EXIT_SCRIPT_STATUS = "editor_exit_in_script"
+
+
+def detect_editor_exit_in_script(code):
+    """Return the matched call text when ``code`` calls EditorApplication.Exit."""
+    if not code:
+        return None
+    match = EDITOR_EXIT_SCRIPT_PATTERN.search(code)
+    return match.group(0) if match else None
 
 
 def _project_path_arg(args):
@@ -2004,6 +2031,26 @@ def _run_exec_impl(args, recovery):
         )
     request_id = args.request_id or uuid.uuid4().hex
     code = read_exec_code(args)
+
+    # Refuse before any session, launch or submit work: the crash this prevents is
+    # deterministic, so there is nothing to learn from letting it happen.
+    editor_exit_call = detect_editor_exit_in_script(code)
+    if editor_exit_call is not None:
+        payload = {
+            "ok": False,
+            "status": EDITOR_EXIT_SCRIPT_STATUS,
+            "command": "exec",
+            "request_id": request_id,
+            "error": (
+                "the script calls {call}; exiting the Editor from an exec script tears "
+                "down the JS runtime mid-call and crashes the Editor. Use "
+                "`ensure-closed --project-path <path>` to close the Editor instead. "
+                "The check is lexical, so a call in a comment is refused too."
+            ).format(call=editor_exit_call),
+            "editor_exit_call": editor_exit_call,
+        }
+        _attach_guidance(payload, "exec", EDITOR_EXIT_SCRIPT_STATUS, args)
+        return EXIT_EDITOR_EXIT_IN_SCRIPT, emit_payload(payload), ""
     script_args, script_args_json = _canonicalize_script_args(getattr(args, "script_args", None))
     source_path = _resolve_source_path(args)
     import_base_url = _exec_import_base_url(args)

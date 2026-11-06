@@ -20,6 +20,10 @@ EXIT_VERSION_MISMATCH = 24
 # The Editor process died while the accepted request's script was running. Terminal,
 # and deliberately distinct from `not_available`: the request must not be re-run.
 EXIT_EDITOR_CRASHED_DURING_REQUEST = 26
+# `exec` refused a script whose source calls EditorApplication.Exit. That call
+# crashes the Editor (V8 is torn down mid-call), so the CLI refuses it before
+# submitting rather than letting a deterministic crash happen.
+EXIT_EDITOR_EXIT_IN_SCRIPT = 27
 
 # Named non-success state for a control-endpoint response whose body is empty or
 # cannot be parsed as JSON. `json.loads("")` is the common case (the endpoint
