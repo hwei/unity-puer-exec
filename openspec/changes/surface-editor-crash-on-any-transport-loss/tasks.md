@@ -13,8 +13,8 @@
 
 ## 3. Real-host evidence
 
-- [ ] 3.1 Add two pristine-process real-host cases (design D5): a `play` that crashes on entering play mode through a temp-asset `ForceCrash` script, and an `exec` that calls `ForceCrash`. Both assert exit 26, `editor_pid`, `crash_report_dir`, and a `play` duration well under `--timeout-seconds`. Clean up the temp script. Verify that the cases fail on the pre-change CLI (where `play` exhausts its budget and reports a transport status) and pass after
-- [ ] 3.2 Run the new cases plus `PlayModeCompileBlockRealHostTests` on the real host. Record the summary in a `validation-transcript.md` in this change, and confirm the host is clean afterwards (`cleanup_validation_host.py`, `--restore-manifest`, `--restore-embedded-shadow`, empty host `git status`)
+- [x] 3.1 Add two pristine-process real-host cases (design D5): a `play` that crashes on entering play mode through a temp-asset `ForceCrash` script, and an `exec` that calls `ForceCrash`. Both assert exit 26, `editor_pid`, `crash_report_dir`, and a `play` duration well under `--timeout-seconds`. Clean up the temp script. Verify that the cases fail on the pre-change CLI (where `play` exhausts its budget and reports a transport status) and pass after
+- [x] 3.2 Run the new cases plus `PlayModeCompileBlockRealHostTests` on the real host. Record the summary in a `validation-transcript.md` in this change, and confirm the host is clean afterwards (`cleanup_validation_host.py`, `--restore-manifest`, `--restore-embedded-shadow`, empty host `git status`)
 
 ## 4. Integration check
 
