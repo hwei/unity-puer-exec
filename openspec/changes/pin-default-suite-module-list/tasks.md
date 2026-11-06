@@ -43,10 +43,10 @@
 ## 4. Closeout readiness
 
 - [x] 4.1 Run `openspec validate pin-default-suite-module-list --strict` and verify it passes.
-- [ ] 4.2 Verify the CI workflow actually executes the corrected selection: trigger it on a
+- [x] 4.2 Verify the CI workflow actually executes the corrected selection: trigger it on a
       branch or read the run log for the added module, so the fix is evidenced by a real CI run
       rather than only by a local invocation. Record the run in the change directory.
-- [ ] 4.3 Write the closeout finding summary stating either `No new follow-up work identified`
+- [x] 4.3 Write the closeout finding summary stating either `No new follow-up work identified`
       or `New follow-up candidates identified`.
 
 ## Workflow follow-up

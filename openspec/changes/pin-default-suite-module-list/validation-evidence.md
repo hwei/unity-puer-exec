@@ -165,8 +165,70 @@ Change 'pin-default-suite-module-list' is valid
 
 ## 4.2 Real CI run
 
-PENDING-4.2
+The workflow only triggers on `pull_request` and on pushes to `main`, so a plain branch push
+would not have run it. A draft PR (#5) was opened from this branch purely to trigger the
+`pull_request` workflow; it is left open and unmerged.
+
+- Run: <https://github.com/hwei/unity-puer-exec/actions/runs/42204254667>
+- Event: `pull_request`, head branch `change/pin-default-suite-module-list`, head sha `431bcbd`
+- Conclusion: **success** (job `unit-tests`, 1m44s)
+
+The run log's expanded command shows the corrected selection as executed, including both the
+previously drifted module and the new guard:
+
+```
+2026-11-06T10:39:03Z ##[group]Run python -m unittest `
+2026-11-06T10:39:03Z   tests.test_cli_version `
+2026-11-06T10:39:03Z   tests.test_default_suite_selection `
+2026-11-06T10:39:03Z   tests.test_direct_exec_client `
+...
+2026-11-06T10:39:03Z   tests.test_puerts_version_compat `
+2026-11-06T10:39:03Z   tests.test_real_host_reset `
+2026-11-06T10:39:03Z   tests.test_refresh_change_signal `
+...
+2026-11-06T10:40:29Z Ran 855 tests in 82.875s
+2026-11-06T10:40:29Z OK (skipped=1)
+```
+
+855 matches the local documented-suite run exactly, which is the expected effect of the two lists
+being the same set: the same modules were selected, and `tests.test_real_host_reset` (22 tests)
+is now among them.
+
+### CI observations worth recording
+
+- `skipped=1`: CI installs no dependencies, so PyYAML is absent and
+  `tests.test_package_layout` skips its workflow-YAML-parse test
+  (`self.skipTest("PyYAML not installed")`). Locally PyYAML 6.0.3 is present and the test runs.
+  So the only YAML-parse guard in CI is the one this change adds to
+  `tests/test_default_suite_selection.py`, which deliberately parses the run block as text and
+  needs no YAML library.
+- The single stderr line `unity-puer-session: error: argument command: invalid choice:
+  'ensure-ready'` is a passing assertion that the CLI rejects a removed subcommand, not a failure.
 
 ## 4.3 Closeout finding summary
 
-PENDING-4.3
+**New follow-up candidates identified**
+
+1. `validation-gap` — five mocked-layer modules exist in `tests/` but are selected by neither list:
+   `tests.test_fake_user32`, `tests.test_real_host_retry`, `tests.test_release_openupm_tool`,
+   `tests.test_response_file_output`, `tests.test_unity_modal_blockers`. They pass with
+   `UNITY_PROJECT_PATH` unset (`Ran 114 tests ... OK`), so they are not excluded for needing a
+   host. This is the next instance of the class of drift this change addressed, and the new
+   comparison test cannot catch it: it compares the two lists against each other, not against the
+   set of test modules on disk. Deciding whether they belong in the default suite — and, if so,
+   widening the guard to assert coverage of every mocked module — is a separate change.
+2. `workflow-improvement` — CI does not install PyYAML, so the YAML-parse guard in
+   `tests.test_package_layout` silently skips there while passing locally. A `pip install pyyaml`
+   step (or dropping the skip) would make the CI signal match the local one.
+
+Neither is actioned here; both are left for human disposition.
+
+## Commit map
+
+- `431bcbd` — the code change (workflow, doc command line, new test) and this file's first
+  revision. Run `42204254667` above is the run for this sha.
+- A follow-up commit on the same branch marks tasks 4.2/4.3 done and adds the sections above. It is
+  documentation-only inside `openspec/changes/pin-default-suite-module-list/` and changes neither
+  the workflow nor the documented command line, so it does not alter the executed selection.
+  `git diff 431bcbd -- .github/workflows/unit-tests.yml openspec/specs/validation-host-integration/how-to-run.md tests/`
+  is empty.
