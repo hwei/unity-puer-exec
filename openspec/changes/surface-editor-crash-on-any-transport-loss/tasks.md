@@ -18,7 +18,7 @@
 
 ## 4. Integration check
 
-- [ ] 4.1 Run the full mocked suite listed in how-to-run.md and confirm it is green. Run `openspec validate surface-editor-crash-on-any-transport-loss --strict` and confirm it passes
+- [x] 4.1 Run the full mocked suite listed in how-to-run.md and confirm it is green. Run `openspec validate surface-editor-crash-on-any-transport-loss --strict` and confirm it passes
 
 ## Workflow follow-up
 
