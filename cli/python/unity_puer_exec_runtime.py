@@ -1514,6 +1514,7 @@ def wait_for_compile_cycle(
     unity_pid=None,
     dismiss_fn=None,
     compile_generation_baseline=None,
+    editor_exited_fn=None,
 ):
     """Edge-aware wait for a single Unity compilation cycle over `/health`.
 
@@ -1536,6 +1537,12 @@ def wait_for_compile_cycle(
     While waiting, a visible ScriptUpdater consent dialog for the Editor process is
     auto-declined (No) and never treated as a settled compile. The pid comes from
     the caller's session or a ``unity_pid`` on a compiling health payload.
+
+    ``editor_exited_fn`` is an optional callback armed by project-mode callers. Every
+    probe that returns no payload is a candidate transport loss, so the callback runs
+    before the loop decides what the drop means; it raises
+    ``_EditorExitedDuringCommand`` when the Editor process is gone. ``None`` leaves the
+    base-url callers and the existing tests unchanged.
 
     Returns a dict with ``outcome`` in {``ready``, ``no_compile_observed``,
     ``compile_blocked``, ``generation_advance``, ``settle_timeout``}, the
@@ -1564,6 +1571,10 @@ def wait_for_compile_cycle(
         payload, _error = probe_health_fn(base_url, health_timeout_seconds)
         status = payload.get("status") if isinstance(payload, dict) else None
         _record_observed_status(observed, status)
+        # A missing payload is the only way a crashed Editor shows up here, so the
+        # project-mode crash check runs on it before the drop is read as a reload.
+        if payload is None and editor_exited_fn is not None:
+            editor_exited_fn()
         # A caller-supplied baseline that has advanced is a direct observation that a
         # compilation completed, so it settles even when the endpoint was already
         # ready. Its outcome is distinct from `ready`: no `compiling` was seen, and the
@@ -1622,6 +1633,8 @@ def wait_for_compile_cycle(
         payload, _error = probe_health_fn(base_url, health_timeout_seconds)
         status = payload.get("status") if isinstance(payload, dict) else None
         _record_observed_status(observed, status)
+        if payload is None and editor_exited_fn is not None:
+            editor_exited_fn()
         if status == HEALTH_STATUS_READY:
             return {
                 "outcome": COMPILE_OUTCOME_READY,
@@ -2354,6 +2367,9 @@ def run_wait_for_compile(args):
 
 
 def _run_wait_for_compile_impl(args, recovery):
+    # The command start time, not the process start: a crash report found during this
+    # command must postdate it. Same journal-style form as the play-mode commands.
+    started_at = _format_journal_started_at(datetime.datetime.now(datetime.timezone.utc))
     selector = resolve_selector(args)
     validate_positive(args.appear_timeout_seconds, "appear-timeout-seconds")
     validate_positive(args.settle_timeout_seconds, "settle-timeout-seconds")
@@ -2363,6 +2379,8 @@ def _run_wait_for_compile_impl(args, recovery):
     validate_project_mode_only(selector, "unity-log-path", getattr(args, "unity_log_path", None))
     validate_project_mode_only(selector, "unity-launch-arg", getattr(args, "unity_launch_args", None))
 
+    editor_pid = None
+    editor_exited_fn = None
     if selector == "project_path":
         session = unity_session.ensure_session_ready(
             project_path=args.project_path,
@@ -2374,18 +2392,33 @@ def _run_wait_for_compile_impl(args, recovery):
         recovery.record(getattr(session, "api_updater_declines", 0))
         session.api_updater_declines = 0
         base_url = session.base_url
+        # The pid this command watches. Read once the session is ready, so a launch
+        # fills it. Base-url mode has no process handle, hence no callback there.
+        editor_pid = _command_editor_pid(args, session)
+        if editor_pid is not None:
+            def editor_exited_fn():
+                if _editor_pid_state(editor_pid) == EDITOR_PID_EXITED:
+                    raise _EditorExitedDuringCommand(editor_pid)
     else:
         session = None
         base_url = args.base_url
 
-    cycle = wait_for_compile_cycle(
-        base_url,
-        args.appear_timeout_seconds,
-        args.settle_timeout_seconds,
-        args.health_timeout_seconds,
-        unity_pid=session.unity_pid if session is not None else None,
-        compile_generation_baseline=getattr(args, "compile_generation_baseline", None),
-    )
+    try:
+        cycle = wait_for_compile_cycle(
+            base_url,
+            args.appear_timeout_seconds,
+            args.settle_timeout_seconds,
+            args.health_timeout_seconds,
+            unity_pid=session.unity_pid if session is not None else None,
+            compile_generation_baseline=getattr(args, "compile_generation_baseline", None),
+            editor_exited_fn=editor_exited_fn,
+        )
+    except _EditorExitedDuringCommand as exc:
+        crash_pid = exc.editor_pid if exc.editor_pid is not None else editor_pid
+        payload = _emit_command_crash_payload(
+            "wait-for-compile", args, crash_pid, started_at, session
+        )
+        return EXIT_EDITOR_CRASHED_DURING_REQUEST, emit_payload(payload), ""
     recovery.record(cycle.get("api_updater_declines", 0))
     outcome = cycle["outcome"]
     diagnostics = {"observed_health": cycle["observed_health"]}
@@ -2811,6 +2844,9 @@ def run_get_log_briefs(args):
 
 def _run_get_compile_messages(args, command_name):
     """Shared implementation for get-compile-errors / get-compile-warnings."""
+    # The command start time, used to look for a crash report written during this
+    # command only. Same journal-style form as the play-mode commands.
+    started_at = _format_journal_started_at(datetime.datetime.now(datetime.timezone.utc))
     selector = resolve_selector(args)
     validate_non_negative(args.start, "start")
     if args.count < 1 or args.count > 100:
@@ -2819,6 +2855,7 @@ def _run_get_compile_messages(args, command_name):
     validate_project_mode_only(selector, "unity-log-path", getattr(args, "unity_log_path", None))
     validate_project_mode_only(selector, "unity-launch-arg", getattr(args, "unity_launch_args", None))
 
+    editor_pid = None
     if selector == "project_path":
         session = unity_session.ensure_session_ready(
             project_path=args.project_path,
@@ -2828,6 +2865,7 @@ def _run_get_compile_messages(args, command_name):
             argv0=getattr(args, "argv0", None),
         )
         base_url = session.base_url
+        editor_pid = _command_editor_pid(args, session)
     else:
         session = None
         base_url = args.base_url
@@ -2840,6 +2878,16 @@ def _run_get_compile_messages(args, command_name):
         5000,
     )
     if exit_code != 0:
+        body = _parse_response_body(stdout_text, stderr_text)
+        if editor_pid is not None and _is_transport_loss_body(body):
+            # The drop could be a reload or a dead Editor. Only a pid that is gone
+            # (after the crash-handler grace window) turns this into a crash; a live
+            # pid keeps the transport status the endpoint reported.
+            if _wait_for_editor_exit(editor_pid):
+                crash_payload = _emit_command_crash_payload(
+                    command_name, args, editor_pid, started_at, session
+                )
+                return EXIT_EDITOR_CRASHED_DURING_REQUEST, emit_payload(crash_payload), ""
         stdout_text, stderr_text = _inject_guidance_into_response(
             stdout_text, stderr_text, command_name, args
         )
@@ -3267,13 +3315,17 @@ def _read_compile_error_total(base_url, args):
     return None
 
 
-def _stop_wait_for_compile(selector, args, session, base_url, baseline, recovery, endpoint_resolver=None):
+def _stop_wait_for_compile(selector, args, session, base_url, baseline, recovery, endpoint_resolver=None, editor_pid=None):
     """Wait for the compile cycle deferred by a play-mode exit.
 
     Returns ``(compile_info, base_url)`` or ``(None, base_url)`` when the cycle did
     not settle in time. The generation baseline is checked first so a compile hidden
     behind the exit's domain reload is inferred even though ``compiling`` was never
     observable.
+
+    ``editor_pid`` arms the crash check the play-mode loops already use: a probe that
+    returns nothing is checked against the pid, and a raising callback is caught by
+    ``_run_play_mode_command``.
     """
     settle_timeout = _post_refresh_ready_timeout_seconds(args)
     holder = {"base_url": base_url}
@@ -3286,6 +3338,12 @@ def _stop_wait_for_compile(selector, args, session, base_url, baseline, recovery
             holder["base_url"] = new_base
         return payload, None
 
+    editor_exited_fn = None
+    if editor_pid is not None:
+        def editor_exited_fn():
+            if _editor_pid_state(editor_pid) == EDITOR_PID_EXITED:
+                raise _EditorExitedDuringCommand(editor_pid)
+
     cycle = wait_for_compile_cycle(
         holder["base_url"],
         getattr(args, "appear_timeout_seconds", unity_session.DEFAULT_COMPILE_APPEAR_TIMEOUT_SECONDS),
@@ -3294,6 +3352,7 @@ def _stop_wait_for_compile(selector, args, session, base_url, baseline, recovery
         probe_health_fn=probe,
         unity_pid=session.unity_pid if session is not None else None,
         compile_generation_baseline=baseline,
+        editor_exited_fn=editor_exited_fn,
     )
     recovery.record(cycle.get("api_updater_declines", 0))
     outcome = cycle["outcome"]
@@ -3308,7 +3367,7 @@ def _stop_wait_for_compile(selector, args, session, base_url, baseline, recovery
     return info, holder["base_url"]
 
 
-def _stop_success_result(operation, selector, args, session, base_url, transition, baseline, pending, recovery, endpoint_resolver=None):
+def _stop_success_result(operation, selector, args, session, base_url, transition, baseline, pending, recovery, endpoint_resolver=None, editor_pid=None):
     _state, payload, base_url, _reached = _play_probe_endpoint(
         selector,
         args,
@@ -3322,7 +3381,7 @@ def _stop_success_result(operation, selector, args, session, base_url, transitio
         compile_info = {"outcome": "compile_settled", "edge": COMPILE_EDGE_GENERATION_ADVANCE}
     elif pending == "pending":
         compile_info, base_url = _stop_wait_for_compile(
-            selector, args, session, base_url, baseline, recovery, endpoint_resolver
+            selector, args, session, base_url, baseline, recovery, endpoint_resolver, editor_pid=editor_pid
         )
     else:
         compile_info = {"outcome": "no_compile_observed"}
@@ -3547,6 +3606,7 @@ def _play_mode_command_body(
             pending,
             recovery,
             endpoint_resolver,
+            editor_pid=editor_pid,
         )
     return _play_success_result(
         operation,

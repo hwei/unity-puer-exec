@@ -8,7 +8,7 @@
 ## 2. Play-mode and compile-query commands
 
 - [x] 2.1 In `_post_play_mode` and the play-mode probe loop, check the pid on every transport-drop iteration, and run one grace watch at the budget edge (design D2). Return the command-level crash payload (design D3, spec "The command-level crash response carries evidence"). Verify with mocked tests for `play`, `pause` and `stop`: a dead pid returns exit 26 without consuming the budget and without calling `ensure_session_ready` again; a live pid keeps the existing re-resolve and retry tests green
-- [ ] 2.2 Apply the same check to `wait-for-compile`, `get-compile-errors` and `get-compile-warnings` in project mode. Verify with one mocked crash test per command, plus the existing tests for those commands
+- [x] 2.2 Apply the same check to `wait-for-compile`, `get-compile-errors` and `get-compile-warnings` in project mode. Verify with one mocked crash test per command, plus the existing tests for those commands
 - [ ] 2.3 Add `editor_crashed_during_request` (exit 26) to the `--help-status` tables of all six commands, and the base-url clause from design D4. Verify with help tests asserting that the status appears for each command
 
 ## 3. Real-host evidence

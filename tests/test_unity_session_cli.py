@@ -3773,6 +3773,75 @@ class WaitForCompileCycleTests(unittest.TestCase):
 
         self.assertEqual(result["outcome"], unity_puer_exec_runtime.COMPILE_OUTCOME_NONE)
 
+    # --- the project-mode crash check on a missing payload (brief B2) ---
+
+    def test_editor_exited_fn_runs_on_a_missing_payload_in_the_appear_phase(self):
+        calls = []
+
+        result = unity_puer_exec_runtime.wait_for_compile_cycle(
+            "http://127.0.0.1:55231",
+            10.0,
+            10.0,
+            unity_session.DEFAULT_HEALTH_TIMEOUT_SECONDS,
+            probe_health_fn=_probe_from(["ready", None, "ready"]),
+            time_ref=_FakeClock(),
+            editor_exited_fn=lambda: calls.append("check"),
+        )
+
+        self.assertEqual(result["outcome"], unity_puer_exec_runtime.COMPILE_OUTCOME_READY)
+        # One healthy probe, then the drop that is the reload edge: the crash check
+        # ran exactly for the payload-less probe.
+        self.assertEqual(calls, ["check"])
+
+    def test_editor_exited_fn_runs_on_a_missing_payload_in_the_settle_phase(self):
+        calls = []
+
+        result = unity_puer_exec_runtime.wait_for_compile_cycle(
+            "http://127.0.0.1:55231",
+            10.0,
+            10.0,
+            unity_session.DEFAULT_HEALTH_TIMEOUT_SECONDS,
+            probe_health_fn=_probe_from(["compiling", None, None, "ready"]),
+            time_ref=_FakeClock(),
+            editor_exited_fn=lambda: calls.append("check"),
+        )
+
+        self.assertEqual(result["outcome"], unity_puer_exec_runtime.COMPILE_OUTCOME_READY)
+        self.assertEqual(calls, ["check", "check"])
+
+    def test_editor_exited_fn_is_not_invoked_when_payloads_arrive(self):
+        calls = []
+
+        result = unity_puer_exec_runtime.wait_for_compile_cycle(
+            "http://127.0.0.1:55231",
+            10.0,
+            10.0,
+            unity_session.DEFAULT_HEALTH_TIMEOUT_SECONDS,
+            probe_health_fn=_probe_from(["ready", "compiling", "ready"]),
+            time_ref=_FakeClock(),
+            editor_exited_fn=lambda: calls.append("check"),
+        )
+
+        self.assertEqual(result["outcome"], unity_puer_exec_runtime.COMPILE_OUTCOME_READY)
+        self.assertEqual(calls, [])
+
+    def test_a_raising_editor_exited_fn_propagates_and_names_the_pid(self):
+        def exit_now():
+            raise unity_puer_exec_runtime._EditorExitedDuringCommand(4242)
+
+        with self.assertRaises(unity_puer_exec_runtime._EditorExitedDuringCommand) as caught:
+            unity_puer_exec_runtime.wait_for_compile_cycle(
+                "http://127.0.0.1:55231",
+                10.0,
+                10.0,
+                unity_session.DEFAULT_HEALTH_TIMEOUT_SECONDS,
+                probe_health_fn=_probe_from(["compiling", None, "ready"]),
+                time_ref=_FakeClock(),
+                editor_exited_fn=exit_now,
+            )
+
+        self.assertEqual(caught.exception.editor_pid, 4242)
+
 
 class WaitForCompileCommandTests(unittest.TestCase):
     def test_base_url_no_compile_observed_returns_distinct_outcome(self):
@@ -7663,6 +7732,186 @@ class ExecCrashReplayLoopTests(unittest.TestCase):
         self.assertEqual(body["status"], "editor_crashed_during_request")
         self.assertEqual(body["started_at"], started_at.strftime("%Y-%m-%dT%H:%M:%S.000Z"))
         self.assertEqual(body["crash_report_dir"], str(report_dir))
+
+
+class CompileQueryEditorCrashTests(unittest.TestCase):
+    """Project-mode compile queries report an Editor that exits mid-command.
+
+    `wait-for-compile` sees the exit through its health probe, the compile-message
+    queries through a transport-loss body plus the pid grace watch.
+    """
+
+    def _empty_response_body(self, operation):
+        return {
+            "ok": False,
+            "status": "empty_response",
+            "operation": operation,
+            "error": (
+                "The control endpoint returned an empty or unparseable response body; "
+                "the response could not be decoded as JSON."
+            ),
+            "exit_code": 12,
+            "exit_code_meaning": "the control endpoint answered without a usable response body",
+        }
+
+    def _not_available_body(self, operation):
+        return {
+            "ok": False,
+            "status": "not_available",
+            "operation": operation,
+            "error": "[Errno 10054] remote host forcibly closed an existing connection",
+            "transport_detail": {"reason": "RemoteDisconnected"},
+        }
+
+    def _assert_command_crash_payload(self, exit_code, stdout, stderr, command, editor_pid=1234):
+        self.assertEqual(exit_code, 26, (exit_code, stdout, stderr))
+        self.assertEqual(exit_code, unity_puer_exec.EXIT_EDITOR_CRASHED_DURING_REQUEST)
+        self.assertEqual(stderr, "")
+        body = json.loads(stdout)
+        self.assertFalse(body["ok"])
+        self.assertEqual(body["status"], "editor_crashed_during_request")
+        self.assertEqual(body["operation"], command)
+        self.assertEqual(body["editor_pid"], editor_pid)
+        self.assertFalse(body["recoverable"])
+        # No script behind a compile query, so no replay metadata may appear.
+        self.assertNotIn("request_id", body)
+        self.assertNotIn("resubmit_safe", body)
+        started_at = body.get("started_at")
+        self.assertIsInstance(started_at, str)
+        self.assertIsNotNone(unity_session_logs.parse_exec_journal_utc(started_at))
+        self.assertIn("situation", body)
+        self.assertIn("next_steps", body)
+        return body
+
+    def test_wait_for_compile_reports_a_dead_editor_on_a_dropped_health_probe(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_path = Path(temp_dir) / "Project"
+            project_path.mkdir()
+            session = _make_session(project_path=str(project_path))
+            with mock.patch.object(
+                unity_session, "ensure_session_ready", return_value=session
+            ), mock.patch.object(
+                unity_puer_exec_runtime, "time", _FakeClock()
+            ), mock.patch.object(
+                unity_puer_exec_runtime,
+                "_probe_compile_health",
+                _probe_payloads([{"ok": True, "status": "ready"}, None]),
+            ), mock.patch.object(
+                unity_session, "is_pid_running", return_value=False
+            ):
+                exit_code, stdout, stderr = unity_puer_exec.run_cli(
+                    ["wait-for-compile", "--project-path", str(project_path)]
+                )
+
+        self._assert_command_crash_payload(exit_code, stdout, stderr, "wait-for-compile")
+
+    def test_get_compile_errors_reports_a_dead_editor_on_a_transport_body(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_path = Path(temp_dir) / "Project"
+            project_path.mkdir()
+            session = _make_session(project_path=str(project_path))
+            with mock.patch.object(
+                unity_session, "ensure_session_ready", return_value=session
+            ), mock.patch.object(
+                unity_puer_exec.direct_exec_client,
+                "invoke_command",
+                return_value=(
+                    unity_puer_exec.EXIT_NOT_AVAILABLE,
+                    json.dumps(self._empty_response_body("get-compile-errors")),
+                    "",
+                ),
+            ), mock.patch.object(
+                unity_session, "is_pid_running", return_value=False
+            ):
+                exit_code, stdout, stderr = unity_puer_exec.run_cli(
+                    ["get-compile-errors", "--project-path", str(project_path)]
+                )
+
+        self._assert_command_crash_payload(exit_code, stdout, stderr, "get-compile-errors")
+
+    def test_get_compile_warnings_reports_a_dead_editor_on_a_transport_body(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_path = Path(temp_dir) / "Project"
+            project_path.mkdir()
+            session = _make_session(project_path=str(project_path))
+            with mock.patch.object(
+                unity_session, "ensure_session_ready", return_value=session
+            ), mock.patch.object(
+                unity_puer_exec.direct_exec_client,
+                "invoke_command",
+                return_value=(
+                    unity_puer_exec.EXIT_NOT_AVAILABLE,
+                    json.dumps(self._not_available_body("get-compile-warnings")),
+                    "",
+                ),
+            ), mock.patch.object(
+                unity_session, "is_pid_running", return_value=False
+            ):
+                exit_code, stdout, stderr = unity_puer_exec.run_cli(
+                    ["get-compile-warnings", "--project-path", str(project_path)]
+                )
+
+        self._assert_command_crash_payload(exit_code, stdout, stderr, "get-compile-warnings")
+
+    def test_get_compile_errors_keeps_the_transport_status_when_the_editor_is_alive(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_path = Path(temp_dir) / "Project"
+            project_path.mkdir()
+            session = _make_session(project_path=str(project_path))
+            with mock.patch.object(
+                unity_session, "ensure_session_ready", return_value=session
+            ), mock.patch.object(
+                unity_puer_exec.direct_exec_client,
+                "invoke_command",
+                return_value=(
+                    unity_puer_exec.EXIT_NOT_AVAILABLE,
+                    json.dumps(self._not_available_body("get-compile-errors")),
+                    "",
+                ),
+            ), mock.patch.object(
+                unity_session, "is_pid_running", return_value=True
+            ), mock.patch.object(
+                unity_puer_exec_runtime, "EDITOR_CRASH_GRACE_SECONDS", 0.0
+            ):
+                exit_code, stdout, stderr = unity_puer_exec.run_cli(
+                    ["get-compile-errors", "--project-path", str(project_path)]
+                )
+
+        # A reload keeps the process: the command keeps the transport outcome.
+        self.assertEqual(exit_code, unity_puer_exec.EXIT_NOT_AVAILABLE)
+        self.assertEqual(stderr, "")
+        body = json.loads(stdout)
+        self.assertEqual(body["status"], "not_available")
+        self.assertIn("10054", body["error"])
+        self.assertEqual(body["transport_detail"]["reason"], "RemoteDisconnected")
+
+    def test_stop_deferred_compile_wait_arms_the_same_crash_check(self):
+        """`stop`'s deferred compile wait raises too; `_run_play_mode_command` catches it."""
+        parser = unity_puer_exec.surface.build_parser()
+        args = parser.parse_args(["stop", "--project-path", "X:/p", "--timeout-seconds", "5"])
+        session = _make_session(project_path="X:/p")
+
+        with mock.patch.object(
+            unity_puer_exec_runtime,
+            "_play_probe_endpoint",
+            return_value=(None, None, "http://127.0.0.1:55231", True),
+        ), mock.patch.object(
+            unity_session, "is_pid_running", return_value=False
+        ), mock.patch.object(
+            unity_puer_exec_runtime, "_post_refresh_ready_timeout_seconds", return_value=5.0
+        ):
+            with self.assertRaises(unity_puer_exec_runtime._EditorExitedDuringCommand) as caught:
+                unity_puer_exec_runtime._stop_wait_for_compile(
+                    "project_path",
+                    args,
+                    session,
+                    "http://127.0.0.1:55231",
+                    None,
+                    unity_puer_exec_runtime._ApiUpdaterRecovery(),
+                    editor_pid=session.unity_pid,
+                )
+
+        self.assertEqual(caught.exception.editor_pid, session.unity_pid)
 
 
 if __name__ == "__main__":
