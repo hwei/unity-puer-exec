@@ -2,7 +2,7 @@
 
 ## 1. Decide the quit mechanism on the real host
 
-- [ ] 1.1 With a `.tmp/` probe on the prepared host, compare design D1 mechanism A (`CloseMainWindow` on the published pid) with mechanism B (a temporary local package edit adding a delayCall `EditorApplication.Exit(0)` endpoint action, reverted afterwards). Check three things for each: (a) a clean exit with no crash report; (b) a dirty in-memory project setting is saved; (c) an unsaved scene shows the save prompt. Record the results in a `validation-transcript.md` in this change, and set `assumption_state` to `valid` with the chosen mechanism named in design D1. Verify by checking the transcript and confirming no new crash report in `%TEMP%/Unity/Editor/Crashes`
+- [x] 1.1 With a `.tmp/` probe on the prepared host, compare design D1 mechanism A (`CloseMainWindow` on the published pid) with mechanism B (a temporary local package edit adding a delayCall `EditorApplication.Exit(0)` endpoint action, reverted afterwards). Check three things for each: (a) a clean exit with no crash report; (b) a dirty in-memory project setting is saved; (c) an unsaved scene shows the save prompt. Record the results in a `validation-transcript.md` in this change, and set `assumption_state` to `valid` with the chosen mechanism named in design D1. Verify by checking the transcript and confirming no new crash report in `%TEMP%/Unity/Editor/Crashes`
 
 ## 2. Graceful ensure-closed
 

@@ -40,28 +40,28 @@ Evidence from the 2026-11-06 probes (`archive/2026-11-06-stop-play-persisting-ru
 
 ## Decisions
 
-### D1: Quit mechanism — decided by probe, `CloseMainWindow` is the default candidate
+### D1: Quit mechanism — `CloseMainWindow` (decided by task 1.1 probe)
 
-There are two candidates.
+Decided: **A. CLI-side `CloseMainWindow`.** The task 1.1 probe
+(`validation-transcript.md`) found it is the only candidate that satisfies all
+three criteria — clean exit with no crash report, a dirty in-memory project
+setting saved, and an unsaved-scene save prompt shown. It needs no package
+change, so it also works against older package versions on disk. It is
+Windows-only, which the process-control code already is.
 
-- **A. CLI-side `CloseMainWindow`.** The CLI sends `CloseMainWindow()` to the
-  published pid's main window.
-  - Proven on the host, and identical to a user close: it shows the save prompt
-    and saves settings.
-  - Needs no package change, so it works against older package versions.
-  - It is Windows-only, which the process-control code already is.
-- **B. A server-side quit action.** A new control-endpoint action replies first,
-  then calls `EditorApplication.Exit(0)` from `EditorApplication.delayCall`, so
-  no script frame is on the stack.
-  - Works without a window handle, for example in batch mode.
-  - It is unproven whether it saves project settings and whether it shows the
-    save prompt. `Exit` is documented as an immediate exit.
+The rejected alternatives, and why:
 
-Task 1.1 probes B against A on the real host. Use A unless B is shown to save
-settings and to surface unsaved-change prompts. Expected outcome: A, with B
-possibly added later as a fallback for an Editor with no main window. The
-design does not depend on the outcome, because `closed_via` and the
-modal-blocker handling are the same for both.
+- **B. A server-side quit action** that replies first, then calls
+  `EditorApplication.Exit(0)` from `EditorApplication.delayCall`, so no script
+  frame is on the stack. On this host the `delayCall` callback never ran at all,
+  whether registered from the HTTP listener thread or via `MainThreadActions`.
+  Calling `Exit(0)` directly on the main thread instead did exit cleanly and did
+  save project settings, but it showed no save prompt and silently discarded a
+  dirty scene — the exact loss of unsaved work D2 exists to prevent. B also
+  needs a package change.
+  Kept as a possible future fallback only for an Editor with no main window; the
+  design does not depend on it, because `closed_via` and the modal-blocker
+  handling are the same for both.
 
 ### D2: Modal blockers stop the wait
 
