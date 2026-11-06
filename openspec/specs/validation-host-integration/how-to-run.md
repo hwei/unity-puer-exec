@@ -267,6 +267,25 @@ file, line, and error code — never the Safe Mode dialog. A non-zero exit with 
 `error CS` reports the exit code and log path instead, so a launch failure is
 distinguishable from a compile failure.
 
+It also parses `warning CS` lines, because a package that compiles against an API
+its dependency has retired still exits `0`. A warning is attributed to this
+package by its **source location** — the normalized path must carry
+`com.txcombo.unity-puer-exec` as a component directly under a `Packages`/`packages`
+directory — so the host's own thousands of warnings and other packages'
+(`com.unity.render-pipelines.core`, `Library/PackageCache/...`) can neither
+satisfy nor trip the gate. A diagnostic with no source location is never claimed.
+Both host wirings attribute correctly: a `file:` manifest entry logs the
+repository path, an embedded copy logs a path under the host's own `Packages/`.
+
+Deprecation warnings attributable to the package — `CS0618` and `CS0619`, and
+only those two — **fail** the run with `kind=package_deprecation`. That is the
+narrow class which proved both silent and meaningful: it is what "you compiled the
+wrong conditional branch and landed on a retired API" looks like in a log. Any
+other package-attributable warning is **reported but does not fail** the run, so
+the gate is not hostage to whatever a future Unity version warns about in code
+that compiles fine; `--strict-package-warnings` escalates all of them to a failure
+with `kind=package_warning`.
+
 The result is cached for the process, so several classes still cost one batch
 launch, and it runs only when the real-host gate is enabled. It is skipped —
 never turned into a failure — when the gate is off, or the host project,
@@ -274,9 +293,30 @@ manifest, or Editor executable is unavailable. To compile-check by hand:
 
 ```
 python tools/preflight_compile_check.py
+python tools/preflight_compile_check.py --strict-package-warnings
 ```
 
-It prints a JSON result (`status`, `exit_code`, `log_path`, `diagnostics`).
+It prints a JSON result. Every path — passed, failed, and skipped — emits the
+same nine keys:
+
+| Key | Meaning |
+|---|---|
+| `status` | `passed`, `failed`, or `skipped` |
+| `kind` | `compile_failure`, `package_deprecation`, `package_warning`, `launch_failure`, `timeout`, or `null` |
+| `reason` | Human-readable cause when not passed |
+| `exit_code` | The batch Editor's exit code, or `null` when it never completed |
+| `log_path` | The project-private batch log |
+| `diagnostics` | Parsed `error CS` entries — **errors only**, never warnings |
+| `package_warnings` | Every package-attributable `warning CS` entry, whether or not it failed the run |
+| `project_path` | The resolved host project |
+| `unity_exe_path` | The resolved Editor executable |
+
+Each `diagnostics` and `package_warnings` entry carries `code`, `message`, `file`,
+`line`, and `column` (`file`/`line`/`column` are `null` when the compiler reported
+no source location). `package_warnings` is **additive**: a caller reading only
+`status` / `exit_code` / `diagnostics` sees exactly what it saw before, and
+`kind` lets a caller tell a deprecation failure from a compile failure without
+parsing messages.
 
 ### One Editor per suite (host reuse)
 
