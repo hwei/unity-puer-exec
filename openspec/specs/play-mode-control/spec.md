@@ -210,6 +210,8 @@ command SHALL report the structured non-success state that names the condition, 
 formal exit code, instead of collapsing it into a generic failure. When the drop was a
 connection reset, the underlying transport detail (for example the reset errno) SHALL remain
 visible in the reported payload so the condition is recognizable when it recurs.
+A drop caused by the Editor process exiting is not a reload edge: in project mode the
+command SHALL report it as an Editor crash, per `editor-crash-surface`, instead of retrying.
 
 #### Scenario: Endpoint drops mid-transition and recovers
 
@@ -240,6 +242,13 @@ visible in the reported payload so the condition is recognizable when it recurs.
 - **THEN** the process exits with the formal exit code for the not-available condition rather than a generic failure code
 - **AND** the reported payload names the endpoint as unreachable or not answering
 - **AND** the payload still carries the underlying reset detail for diagnosis
+
+#### Scenario: The Editor process exits instead of reloading
+
+- **WHEN** a project-scoped play-mode request loses the control endpoint
+- **AND** the Editor process named by the project's endpoint publication exits within the crash grace window
+- **THEN** the command does not re-resolve or retry for the rest of its budget
+- **AND** it returns `editor_crashed_during_request` with exit code 26
 
 ### Requirement: Play-mode commands preserve formal exit codes for non-success answers
 
