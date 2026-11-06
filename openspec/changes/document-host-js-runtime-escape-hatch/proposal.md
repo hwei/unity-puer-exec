@@ -30,12 +30,12 @@ that the bridge can reach the thing it reaches.
 - Help-text pinning tests are updated so the corrected wording cannot silently regress to the
   absolute denial.
 
-**Decision this proposal makes, and the alternative.** The recommendation is to document the
-route as *observed but outside the CLI contract*. The alternative is to adopt it as a
-supported capability, which would make this repository the owner of a PuerTS internal whose
-name has already changed once between majors and which no test in this repository currently
-exercises. Adopting it means committing to tracking it across PuerTS releases. If that is
-wanted, this proposal's spec delta should be widened before apply rather than after.
+**Decision, settled by the maintainer on 2026-11-06.** The route is documented as *observed but
+outside the CLI contract*, not adopted as a supported capability. The rejected alternative would
+have made this repository the owner of a PuerTS internal whose entry-point name has already
+changed once between majors (`JsEnv.jsEnvs` → `ScriptEnv.scriptEnvs`) and which no test in this
+repository exercises; adopting it means committing to tracking it across PuerTS releases. The
+spec delta below is written to that decision and needs no widening.
 
 ## Capabilities
 
@@ -52,7 +52,11 @@ _None._
 
 ## Impact
 
-- Code: `cli/python/help_surface.py` (the exec script-authoring guidance block).
+- Code: `cli/python/help_surface.py` — **two** guidance entries, not one. The `exec` Quick Start
+  entry carried the absolute denial ("no supported way…") and the `--help-args` Bridge Model
+  entry carried a softer form of the same claim ("do not expect to call into…"). The existing
+  contract's scenario covers `exec --help` *or* `exec --help-args`, so both are in scope; the
+  second was found during apply.
 - Tests: the help-surface pinning tests that assert the current wording. No test currently
   pins the exact sentence, so the risk is a *missing* pin rather than a broken one; adding it
   is part of this change.

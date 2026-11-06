@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import sys
 import tempfile
 import unittest
@@ -706,6 +707,86 @@ class EditorNotUnderControlStatusTests(unittest.TestCase):
         body = json.loads(stdout)
         self.assertEqual(body["status"], "version_mismatch")
         self.assertNotEqual(body["status"], "editor_not_under_cli_control")
+
+
+class HostJsRuntimeEscapeHatchHelpTests(unittest.TestCase):
+    """Pin the corrected host-JavaScript-runtime wording on both exec help surfaces.
+
+    `exec --help` and `exec --help-args` each carried a denial -- "no supported way" and
+    "do not expect to call into" -- that was false on both PuerTS majors: the bridge can
+    enumerate the host application's own environments and `Eval` into one. What replaces it
+    is deliberately bounded, and the bounds are what these tests hold: the route is named as
+    outside this CLI's contract, both majors' entry points are named so neither reads as
+    universal, and the environment-separation boundary survives, because the escape hatch is
+    an exception to a real boundary rather than the normal path.
+    """
+
+    DENIALS = (
+        "no supported way",
+        "do not expect to call into",
+    )
+    # Spelled differently on the two surfaces on purpose: the Quick Start shows the bridge
+    # call a script would actually write, while Bridge Model names the member. Assert the
+    # type and the field rather than one exact spelling of both.
+    ENTRY_POINTS = {
+        "2.x": ("Puerts.JsEnv", "jsEnvs"),
+        "3.x": ("Puerts.ScriptEnv", "scriptEnvs"),
+    }
+    OUTSIDE_CONTRACT = "outside this CLI's contract"
+    # exec --help says "an environment separate from the host application's own JavaScript
+    # runtime"; --help-args says "The script environment is separate from the host
+    # application's JavaScript runtime". Both state the boundary.
+    SEPARATION = re.compile(r"separate from the host application's (?:own )?JavaScript runtime")
+
+    def surfaces(self):
+        return {
+            "exec --help": help_surface.render_command_help("exec"),
+            "exec --help-args": help_surface.render_command_args_help("exec"),
+        }
+
+    def test_neither_surface_denies_a_route_to_the_host_runtime(self):
+        for label, text in self.surfaces().items():
+            for denial in self.DENIALS:
+                self.assertNotIn(denial, text, "{} still denies the route: {!r}".format(label, denial))
+
+    def test_both_surfaces_present_the_route_as_outside_the_contract(self):
+        for label, text in self.surfaces().items():
+            self.assertIn(self.OUTSIDE_CONTRACT, text, label)
+
+    def test_both_surfaces_keep_the_environment_separation_boundary(self):
+        # The escape hatch only makes sense against a boundary that is still stated; without
+        # this, naming the route reads as an invitation rather than an exception.
+        for label, text in self.surfaces().items():
+            self.assertIsNotNone(self.SEPARATION.search(text), label)
+            self.assertIn("shared C#/Unity", text, label)
+
+    def test_both_majors_entry_points_are_named(self):
+        for label, text in self.surfaces().items():
+            for major, (type_name, field) in self.ENTRY_POINTS.items():
+                self.assertIn(type_name, text, "{} omits {} ({})".format(label, type_name, major))
+                self.assertIn(field, text, "{} omits {} ({})".format(label, field, major))
+
+    def test_no_entry_point_is_presented_as_valid_across_majors(self):
+        # Each field name must appear on a line that also names its own major, so a reader
+        # cannot lift one name and assume it works on the other.
+        for label, text in self.surfaces().items():
+            for line in text.splitlines():
+                for major, (_type_name, field) in self.ENTRY_POINTS.items():
+                    if field in line:
+                        self.assertIn(
+                            major,
+                            line,
+                            "{} names {} without its PuerTS major: {}".format(label, field, line.strip()),
+                        )
+
+    def test_help_still_scopes_framework_technique_to_project_local_skills(self):
+        # Naming the escape hatch must not become the wedge for framework-specific UI
+        # instructions, which the contract keeps out of this help on purpose.
+        for label, text in self.surfaces().items():
+            self.assertIn("project-local skill", text, label)
+            for term in ("widget-tree", "widget tree", "event invocation convention"):
+                if term in text:
+                    self.assertIn("belongs in a project-local skill", text, label)
 
 
 if __name__ == "__main__":
