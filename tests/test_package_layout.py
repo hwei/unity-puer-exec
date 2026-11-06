@@ -493,7 +493,7 @@ class PackageLayoutTests(unittest.TestCase):
         # Pause is rejected in edit mode with a machine-readable status.
         self.assertIn('rejectedStatus = "invalid_play_state";', handler_body)
 
-    def test_run_in_background_uses_session_state_hook_not_player_settings(self):
+    def test_run_in_background_override_is_applied_only_by_the_play_mode_hook(self):
         hook_path = PACKAGE_ROOT / "Editor" / "UnityPuerExecPlayMode.cs"
         self.assertTrue(hook_path.exists())
         hook_content = hook_path.read_text(encoding="utf-8")
@@ -505,12 +505,30 @@ class PackageLayoutTests(unittest.TestCase):
         self.assertIn("SessionState.GetBool(ForceRunInBackgroundKey", hook_content)
         self.assertIn("SessionState.EraseBool(ForceRunInBackgroundKey);", hook_content)
         self.assertIn("Application.runInBackground = true;", hook_content)
-        # The override must never be persisted to Player Settings. The server reads
-        # the project's setting for disclosure only; the hook never touches it.
+        # The hook is the only writer: it runs after play mode is entered, and Unity
+        # reverts play-mode changes to project settings on exit, so nothing persists.
+        # A PlayerSettings write here would be persisted and is forbidden.
         self.assertNotIn("PlayerSettings", hook_content)
         self.assertIn("projectRunInBackground = PlayerSettings.runInBackground;", server_content)
         self.assertNotIn("PlayerSettings.runInBackground =", server_content)
         self.assertIn("UnityPuerExecPlayMode.RequestRunInBackground();", server_content)
+
+        # The edit-mode assignment must stay gone. In edit mode it mutates the
+        # in-memory PlayerSettings value, which survives `stop` and is written to
+        # ProjectSettings.asset by the next settings save or ordinary Editor close
+        # (measured in the change's validation transcript).
+        handler_body = self._method_body(
+            server_content, "private static async Task HandlePlayModeAsync(HttpListenerContext context)"
+        )
+        self.assertNotIn(
+            "Application.runInBackground = true;",
+            handler_body,
+            "HandlePlayModeAsync must not assign Application.runInBackground: in edit "
+            "mode that write survives stop and is persisted to ProjectSettings.asset",
+        )
+        # Broader guard: the handler must not assign the value at all, in either
+        # direction. The hook applies the override once play mode is entered.
+        self.assertNotIn("Application.runInBackground =", handler_body)
 
 
 if __name__ == "__main__":

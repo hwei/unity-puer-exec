@@ -4326,6 +4326,362 @@ class PlayModeCompileBlockRealHostTests(_IdenticalRewriteProbeMixin, _SharedReal
         self.fail("preference did not become {}: {}".format(value, last))
 
 
+# --- forced play session vs. ProjectSettings.asset ---------------------------
+#
+# Design D4 of stop-play-persisting-run-in-background: a forced `play` must leave
+# the project's Player Settings asset byte-identical. The value has to start at 0,
+# because a host that already holds 1 hides the bug (that is how the
+# add-play-mode-commands validation missed it). The two sequences are the probe's
+# cases B and C: stop-then-close, and close while still playing.
+#
+# The Editor is closed the way a user closes it (CloseMainWindow on the window of
+# the pid the project published), never through `EditorApplication.Exit` inside an
+# exec script -- that tore down V8 mid-call and crashed the Editor twice (crash
+# reports in the change's validation transcript). `ensure-closed` is also wrong
+# here: it taskkills, which skips the settings save this case is about.
+
+PROJECT_SETTINGS_ASSET_RELATIVE = Path("ProjectSettings") / "ProjectSettings.asset"
+_RUN_IN_BACKGROUND_ZERO_PATTERN = re.compile(r"^\s*runInBackground:\s*0\s*$", re.MULTILINE)
+
+_SET_RUN_IN_BACKGROUND_FALSE_JS = (
+    "export default function run(ctx) {"
+    " const PlayerSettings = puer.loadType('UnityEditor.PlayerSettings');"
+    " const AssetDatabase = puer.loadType('UnityEditor.AssetDatabase');"
+    " PlayerSettings.runInBackground = false;"
+    " AssetDatabase.SaveAssets();"
+    " return { runInBackground: PlayerSettings.runInBackground }; }"
+)
+
+_SAVE_ASSETS_JS = (
+    "export default function run(ctx) {"
+    " const AssetDatabase = puer.loadType('UnityEditor.AssetDatabase');"
+    " AssetDatabase.SaveAssets();"
+    " return { saved: true }; }"
+)
+
+_READ_RUN_IN_BACKGROUND_JS = (
+    "export default function run(ctx) {"
+    " const Application = puer.loadType('UnityEngine.Application');"
+    " return { runInBackground: Application.runInBackground }; }"
+)
+
+
+class PlayModeRunInBackgroundPersistenceRealHostTests(_SharedRealHostDevice, unittest.TestCase):
+    """Real-host regression: a forced play session does not persist a settings change.
+
+    Both cases own a pristine process (``OWN_HOST_BOUNDARY_TESTS`` mode ``stop``):
+    the shared Editor is stopped first and the case launches its own, so no earlier
+    case's play session or settings write can leak into the measured bytes.
+    """
+
+    OWN_HOST_BOUNDARY_TESTS = {
+        "test_stop_then_close_leaves_project_settings_byte_identical": "stop",
+        "test_close_while_playing_leaves_project_settings_byte_identical": "stop",
+    }
+
+    # Bound the graceful close. A healthy Editor exits in a few seconds; a longer
+    # window only matters when Unity is finishing a long shutdown (asset import,
+    # script compile).
+    GRACEFUL_CLOSE_TIMEOUT_SECONDS = 120
+
+    # -- asset bytes ---------------------------------------------------------
+
+    def _settings_asset_path(self):
+        return self.project_path / PROJECT_SETTINGS_ASSET_RELATIVE
+
+    def _read_asset_bytes(self):
+        path = self._settings_asset_path()
+        self.assertTrue(
+            path.exists(), "the host has no ProjectSettings.asset: {}".format(path)
+        )
+        return path.read_bytes()
+
+    def _asset_reports_zero(self):
+        text = self._read_asset_bytes().decode("utf-8", "replace")
+        return _RUN_IN_BACKGROUND_ZERO_PATTERN.search(text) is not None
+
+    def _settings_diff(self, before, after, limit=8):
+        """Return the first differing lines, so a failure names the settings write."""
+        before_lines = before.decode("utf-8", "replace").splitlines()
+        after_lines = after.decode("utf-8", "replace").splitlines()
+        diffs = []
+        for index in range(max(len(before_lines), len(after_lines))):
+            left = before_lines[index] if index < len(before_lines) else "<missing>"
+            right = after_lines[index] if index < len(after_lines) else "<missing>"
+            if left != right:
+                diffs.append({"line": index + 1, "before": left, "after": right})
+                if len(diffs) >= limit:
+                    break
+        return diffs
+
+    # -- host / endpoint helpers --------------------------------------------
+
+    def _project_cli_args(self):
+        return [
+            "--project-path", str(self.project_path),
+            "--unity-exe-path", str(self.unity_exe_path),
+        ]
+
+    def _launch_pristine_host(self):
+        """Launch this case's own Editor and return its ready control endpoint."""
+        exit_code, payload, _, _ = _warm_up_project_exec(
+            self.project_path, self.unity_exe_path
+        )
+        self.assertEqual(exit_code, 0, payload)
+        base_url, _health = _scan_ready_control_endpoint(self.project_path)
+        if base_url is None:
+            base_url, _health = _await_ready_endpoint(self.project_path)
+        self.assertIsNotNone(
+            base_url,
+            "no ready control endpoint after the pristine launch: {}".format(payload),
+        )
+        return base_url
+
+    def _resolve_live_endpoint(self, base_url=None):
+        """Return a live endpoint, riding out the reload entering/leaving play triggers."""
+        if base_url:
+            resolved, _health = self._probe_once_resolving(base_url)
+            if resolved is not None:
+                return resolved
+        resolved, _health = _scan_ready_control_endpoint(self.project_path)
+        if resolved is None:
+            resolved, _health = _await_ready_endpoint(self.project_path)
+        self.assertIsNotNone(
+            resolved, "the host control endpoint did not return after the play-state change"
+        )
+        return resolved
+
+    # -- the measured steps -------------------------------------------------
+
+    def _ensure_host_value_is_zero(self, base_url):
+        """Start from ``runInBackground: 0``; a host already holding 1 hides the bug."""
+        if self._asset_reports_zero():
+            return base_url, False
+        base_url = self._resolve_live_endpoint(base_url)
+        exit_code, payload = self._exec_settled(
+            base_url, _SET_RUN_IN_BACKGROUND_FALSE_JS, wait_ms=self.REFRESH_WAIT_TIMEOUT_MS
+        )
+        self.assertEqual(exit_code, 0, payload)
+        deadline = time.monotonic() + 60
+        while time.monotonic() < deadline:
+            if self._asset_reports_zero():
+                return base_url, True
+            time.sleep(0.5)
+        self.fail(
+            "the host's ProjectSettings.asset never reported runInBackground: 0 after "
+            "the edit-mode write; the setting line reads: {!r}".format(
+                [
+                    line
+                    for line in self._read_asset_bytes()
+                    .decode("utf-8", "replace")
+                    .splitlines()
+                    if "runInBackground" in line
+                ]
+            )
+        )
+
+    def _save_assets(self, base_url):
+        exit_code, payload = self._exec_settled(
+            base_url, _SAVE_ASSETS_JS, wait_ms=self.REFRESH_WAIT_TIMEOUT_MS
+        )
+        self.assertEqual(exit_code, 0, payload)
+
+    def _assert_override_applied(self, base_url):
+        exit_code, payload = self._exec_settled(
+            base_url, _READ_RUN_IN_BACKGROUND_JS, wait_ms=self.REFRESH_WAIT_TIMEOUT_MS
+        )
+        self.assertEqual(exit_code, 0, payload)
+        result = payload.get("result") if isinstance(payload, dict) else None
+        self.assertIsInstance(result, dict, payload)
+        self.assertTrue(
+            result.get("runInBackground"),
+            "the forced play session did not apply the run-in-background override: {}".format(
+                payload
+            ),
+        )
+
+    def _play_forced(self):
+        exit_code, payload, _, _ = _run_cli(
+            ["play"] + self._project_cli_args() + ["--timeout-seconds", "180"]
+        )
+        self.assertEqual(exit_code, 0, payload)
+        self.assertEqual(payload["status"], "completed", payload)
+        self.assertEqual(payload["result"]["play_state"], "playing", payload)
+        self.assertTrue(payload["result"]["run_in_background"]["forced"], payload)
+
+    def _stop_forced(self):
+        exit_code, payload, _, _ = _run_cli(
+            ["stop"] + self._project_cli_args() + ["--timeout-seconds", "180"]
+        )
+        self.assertEqual(exit_code, 0, payload)
+        self.assertEqual(payload["result"]["play_state"], "edit", payload)
+
+    # -- graceful close -----------------------------------------------------
+
+    def _published_unity_pid(self):
+        publication = unity_session.read_endpoint_publication(self.project_path) or {}
+        pid = publication.get("unity_pid")
+        self.assertIsNotNone(
+            pid, "the host publication carries no unity_pid: {}".format(publication)
+        )
+        return int(pid)
+
+    def _request_graceful_close(self, pid):
+        """Close the Editor like a user clicking the window's close button.
+
+        ``EditorApplication.Exit`` from inside an exec script crashes this host
+        (V8 is torn down mid-call), and ``ensure-closed`` taskkills, which skips the
+        settings save under test. This is the path the probe used successfully.
+        """
+        command = "(Get-Process -Id {}).CloseMainWindow()".format(int(pid))
+        completed = subprocess.run(
+            ["pwsh", "-NoProfile", "-Command", command],
+            capture_output=True,
+            text=True,
+            timeout=self.GRACEFUL_CLOSE_TIMEOUT_SECONDS,
+        )
+        return {
+            "pid": int(pid),
+            "command": command,
+            "returncode": completed.returncode,
+            "stdout": (completed.stdout or "").strip(),
+            "stderr": (completed.stderr or "").strip(),
+        }
+
+    def _wait_for_editor_exit(self, pid, timeout_seconds=None):
+        """Wait until the project lock is free and the published pid is gone."""
+        if timeout_seconds is None:
+            timeout_seconds = self.GRACEFUL_CLOSE_TIMEOUT_SECONDS
+        deadline = time.monotonic() + timeout_seconds
+        last = None
+        while time.monotonic() < deadline:
+            held = unity_session._project_lockfile_is_held(self.project_path)
+            running = unity_session.is_pid_running(pid) if pid is not None else False
+            last = {"lockfile_held": held, "pid_running": running}
+            if not held and not running:
+                # The lock can be released just before the process finishes its
+                # last writes; give the shutdown a moment to settle before reading.
+                time.sleep(1.0)
+                return last
+            time.sleep(0.5)
+        self.fail(
+            "the host Editor did not exit within {}s of the graceful close: {}".format(
+                timeout_seconds, last
+            )
+        )
+
+    def _close_editor_gracefully(self):
+        pid = self._published_unity_pid()
+        close = self._request_graceful_close(pid)
+        self._wait_for_editor_exit(pid)
+        return close
+
+    # -- cleanup ------------------------------------------------------------
+
+    def _restore_project_settings_bytes(self, original_bytes):
+        """Always put the host's original asset bytes back, with no Editor running."""
+        if unity_session._project_lockfile_is_held(self.project_path):
+            # A failed case can leave the Editor alive. Try the graceful path first
+            # (so its own shutdown save completes), then fall back to the kill the
+            # suite uses elsewhere: the restore below must not race a live Editor.
+            try:
+                pid = self._published_unity_pid()
+                print("[real-host-settings-restore] " + json.dumps(self._request_graceful_close(pid)))
+                self._wait_for_editor_exit(pid, timeout_seconds=60)
+            except Exception:  # noqa: BLE001 - cleanup only.
+                pass
+        if unity_session._project_lockfile_is_held(self.project_path):
+            try:
+                _ensure_clean_test_boundary(self.project_path)
+            except Exception as exc:  # noqa: BLE001 - cleanup only.
+                print("[real-host-settings-restore] ensure-closed failed: {}".format(exc))
+        path = self._settings_asset_path()
+        try:
+            current = path.read_bytes()
+        except OSError:
+            current = None
+        if current != original_bytes:
+            path.write_bytes(original_bytes)
+            print(
+                "[real-host-settings-restore] "
+                + json.dumps({"path": str(path), "restored": True, "bytes": len(original_bytes)})
+            )
+        self.assertEqual(
+            self._read_asset_bytes(),
+            original_bytes,
+            "the host's ProjectSettings.asset was not restored to its pre-case bytes",
+        )
+
+    # -- cases --------------------------------------------------------------
+
+    def _run_persistence_case(self, close_while_playing):
+        """Shared body: start at 0, force play, save, then let the Editor go."""
+        original_bytes = self._read_asset_bytes()
+        self.addCleanup(self._restore_project_settings_bytes, original_bytes)
+
+        base_url = self._launch_pristine_host()
+        base_url, value_reset = self._ensure_host_value_is_zero(base_url)
+        baseline_bytes = self._read_asset_bytes()
+        self.assertTrue(
+            self._asset_reports_zero(),
+            "the case must start from runInBackground: 0, otherwise the bug is invisible",
+        )
+
+        self._play_forced()
+        base_url = self._resolve_live_endpoint(base_url)
+        self._assert_override_applied(base_url)
+        # Saving project settings while in play mode must not reach the asset.
+        self._save_assets(base_url)
+
+        close = None
+        if close_while_playing:
+            close = self._close_editor_gracefully()
+        else:
+            self._stop_forced()
+            base_url = self._resolve_live_endpoint(base_url)
+            self._save_assets(base_url)
+            close = self._close_editor_gracefully()
+
+        after_bytes = self._read_asset_bytes()
+        diffs = self._settings_diff(baseline_bytes, after_bytes)
+        self._record_own_boundary(
+            "play_run_in_background_persistence",
+            sequence="close_while_playing" if close_while_playing else "stop_then_close",
+            value_reset=value_reset,
+            settings_unchanged=not diffs,
+            close=close,
+            settings_diffs=diffs,
+        )
+        self.assertEqual(
+            after_bytes,
+            baseline_bytes,
+            "the forced play session persisted a ProjectSettings.asset change "
+            "({}): {}".format(
+                "close while playing" if close_while_playing else "stop then close",
+                json.dumps(diffs),
+            ),
+        )
+        # The setting reads back as the value the result reported for the project.
+        self.assertTrue(self._asset_reports_zero())
+
+    def test_stop_then_close_leaves_project_settings_byte_identical(self):
+        """Probe case B: play, save in play, stop, save in edit mode, close.
+
+        This is the sequence that reproduced the bug before the edit-mode
+        assignment was removed: the value survived `stop`, and the post-stop
+        ``AssetDatabase.SaveAssets`` wrote it to the asset.
+        """
+        self._run_persistence_case(close_while_playing=False)
+
+    def test_close_while_playing_leaves_project_settings_byte_identical(self):
+        """Probe case C: play, save in play, then close the Editor while playing.
+
+        Unity reverts play-mode changes when play mode exits, including the exit a
+        window close performs, so the asset must be untouched.
+        """
+        self._run_persistence_case(close_while_playing=True)
+
+
 if __name__ == "__main__":
     unittest.main()
 

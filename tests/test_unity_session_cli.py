@@ -6312,7 +6312,14 @@ class PlayModeCommandTests(unittest.TestCase):
     def test_play_help_discloses_run_in_background_override_and_option(self):
         _code, stdout, _stderr = unity_puer_exec.run_cli(["play", "--help"])
         self.assertIn("runInBackground", stdout)
+        # The help must state the real guarantee, not the old "never touches Player
+        # Settings" claim: the override lands after play mode is entered, and Unity
+        # reverts play-mode changes on exit, so the asset is left as it was.
+        self.assertIn("applied only once play mode is entered", stdout)
         self.assertIn("Player Settings", stdout)
+        self.assertIn("ProjectSettings.asset", stdout)
+        self.assertIn("unmodified", stdout)
+        self.assertNotIn("without touching Player Settings", stdout)
         _code, args_stdout, _stderr = unity_puer_exec.run_cli(["play", "--help-args"])
         self.assertIn("--no-run-in-background", args_stdout)
 

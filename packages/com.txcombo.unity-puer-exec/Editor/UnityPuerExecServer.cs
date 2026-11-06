@@ -926,14 +926,20 @@ namespace UnityPuerExec
             {
                 try
                 {
-                    // The project's own setting is read for disclosure only; the
-                    // override is never written back to Player Settings.
+                    // Read the project's own setting for disclosure only. This handler
+                    // must not assign Application.runInBackground: in edit mode that
+                    // mutates the in-memory PlayerSettings value before play mode
+                    // starts. Unity snapshots project settings on entering play mode,
+                    // so the write survives `stop`, and the next settings save
+                    // (AssetDatabase.SaveAssets or an ordinary Editor close) persists it
+                    // into ProjectSettings.asset.
                     projectRunInBackground = PlayerSettings.runInBackground;
 
                     // The override is stored in SessionState so it survives the
                     // domain reload on entering play mode; the [InitializeOnLoad]
-                    // hook applies it on EnteredPlayMode and clears the key. The
-                    // project's Player Settings are never written.
+                    // hook applies it on EnteredPlayMode, after play mode is entered,
+                    // and clears the key. Unity reverts play-mode changes to project
+                    // settings when play mode exits, so nothing is persisted.
                     if (request.force_run_in_background)
                     {
                         UnityPuerExecPlayMode.RequestRunInBackground();
@@ -952,11 +958,6 @@ namespace UnityPuerExec
                             }
                             else if (!EditorApplication.isPlaying)
                             {
-                                if (request.force_run_in_background)
-                                {
-                                    Application.runInBackground = true;
-                                }
-
                                 EditorApplication.isPlaying = true;
                             }
                             break;

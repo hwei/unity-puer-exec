@@ -553,7 +553,7 @@ COMMAND_HELP = {
             "Primary play-mode command: enters play mode and returns only once the Editor reports `playing`.",
             "`unity-puer-exec play --project-path X:/project`",
             "Pending code is settled first: if a compile-triggering change is pending, the command refreshes, waits for the compile cycle, and aborts with `unity_compile_error` instead of entering play on stale code.",
-            "By default the play session forces `Application.runInBackground = true` without touching Player Settings. Pass `--no-run-in-background` to keep the project's setting. The result discloses the override.",
+            "By default the play session forces `Application.runInBackground = true`. The override is applied only once play mode is entered, and Unity reverts play-mode changes to project settings when play mode exits, so the project's Player Settings (`ProjectSettings.asset`) are left unmodified. Pass `--no-run-in-background` to keep the project's setting. The result discloses the override.",
             "Idempotent: already `playing` reports `transition: already_in_state`; `paused` resumes and reports `transition: resumed`.",
         ],
         "related_workflows": (),
