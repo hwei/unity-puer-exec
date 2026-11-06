@@ -1,5 +1,6 @@
 import argparse
 import datetime
+import hashlib
 import json
 import os
 import re
@@ -18,6 +19,14 @@ FORMAL_PACKAGE_ROOT = REPO_ROOT / "packages" / FORMAL_PACKAGE_NAME
 # competed with. The dated child keeps a same-day repeat from colliding.
 EMBEDDED_SHADOW_BACKUP_DIR_NAME = ".unity-puer-exec-embedded-backup"
 BACKUP_ENTRY_NAME_PATTERN = re.compile(r"^(?P<directory_name>.+)-\d{8}$")
+# The manifest backup is a sibling of the shadow backup on purpose: the shadow
+# operations treat every child of their root as a moved package directory, so a
+# shared root would make two independent undo records compete for one namespace.
+MANIFEST_BACKUP_DIR_NAME = ".unity-puer-exec-manifest-backup"
+MANIFEST_BACKUP_MANIFEST_NAME = "manifest.json"
+MANIFEST_BACKUP_LOCKFILE_NAME = "packages-lock.json"
+WRITTEN_MANIFEST_HASH_NAME = "written-manifest.sha256"
+PACKAGES_LOCKFILE_NAME = "packages-lock.json"
 # The project-local state the real-host suite decides host freedom from.
 UNITY_LOCKFILE_RELATIVE_PATH = Path("Temp") / "UnityLockfile"
 ENDPOINT_PUBLICATION_RELATIVE_PATH = Path("Temp") / "UnityPuerExec" / "endpoint.json"
@@ -131,6 +140,10 @@ def project_path_for_manifest(manifest_path):
 
 def embedded_shadow_backup_root(project_path):
     return Path(project_path) / EMBEDDED_SHADOW_BACKUP_DIR_NAME
+
+
+def manifest_backup_root(project_path):
+    return Path(project_path) / MANIFEST_BACKUP_DIR_NAME
 
 
 def project_lockfile_is_held(project_path):
@@ -309,13 +322,16 @@ def _move_all_with_rollback(planned_moves):
     return completed, None
 
 
-def _outcome(status, backup_path=None, reason=None, moved=None):
-    return {
+def _outcome(status, backup_path=None, reason=None, moved=None, left_in_place=None):
+    outcome = {
         "status": status,
         "backup_path": None if backup_path is None else str(backup_path),
         "reason": reason,
         "moved": list(moved or []),
     }
+    if left_in_place is not None:
+        outcome["left_in_place"] = list(left_in_place)
+    return outcome
 
 
 def clear_embedded_shadow(
@@ -514,6 +530,211 @@ def restore_embedded_shadow(
     return _outcome(STATUS_RESTORED, backup_path=backup_root, moved=moved)
 
 
+def _sha256_of_file(path):
+    digest = hashlib.sha256()
+    digest.update(Path(path).read_bytes())
+    return digest.hexdigest()
+
+
+def save_manifest_backup(manifest_path, project_path=None):
+    """Record the pre-preparation originals before the first manifest rewrite.
+
+    The originals are saved exactly once: a later rewrite (say one that only adds
+    ``testables``) must leave the saved files alone, because those still describe
+    the host as it was before preparation touched it. ``packages-lock.json`` is
+    saved only when the host had one; its absence is what tells the restore to
+    leave Unity's regenerated lock file in place rather than deleting it.
+
+    Returns ``(backup_root, reason)``; ``reason`` names why nothing could be saved.
+    """
+    manifest_path = Path(manifest_path)
+    project_path = (
+        project_path_for_manifest(manifest_path) if project_path is None else Path(project_path)
+    )
+    backup_root = manifest_backup_root(project_path)
+
+    try:
+        if backup_root.exists() and not backup_root.is_dir():
+            return backup_root, "manifest_backup_unusable: {} is not a directory".format(
+                backup_root
+            )
+        backup_root.mkdir(parents=True, exist_ok=True)
+        saved_manifest = backup_root / MANIFEST_BACKUP_MANIFEST_NAME
+        if not saved_manifest.exists():
+            # Write beside the destination and rename, so an interrupted copy can
+            # never leave a truncated "original" that a later restore would trust.
+            staging_path = backup_root / (MANIFEST_BACKUP_MANIFEST_NAME + ".partial")
+            staging_path.write_bytes(manifest_path.read_bytes())
+            os.replace(str(staging_path), str(saved_manifest))
+            lockfile_source = manifest_path.parent / PACKAGES_LOCKFILE_NAME
+            if lockfile_source.is_file():
+                lockfile_staging = backup_root / (MANIFEST_BACKUP_LOCKFILE_NAME + ".partial")
+                lockfile_staging.write_bytes(lockfile_source.read_bytes())
+                os.replace(
+                    str(lockfile_staging), str(backup_root / MANIFEST_BACKUP_LOCKFILE_NAME)
+                )
+    except OSError as exc:
+        return backup_root, "manifest_backup_unwritable: {} ({})".format(backup_root, exc)
+    return backup_root, None
+
+
+def record_written_manifest_hash(backup_root, manifest_path):
+    """Record the hash of the content preparation just wrote.
+
+    The restore compares the current manifest against this value to notice an edit
+    made after preparation. It is rewritten on every real write, because the point
+    of comparison is the latest content this tool produced.
+
+    Returns ``None`` on success, else a named refusal reason.
+    """
+    hash_path = Path(backup_root) / WRITTEN_MANIFEST_HASH_NAME
+    try:
+        hash_path.write_text(_sha256_of_file(manifest_path) + "\n", encoding="utf-8")
+    except OSError as exc:
+        return "written_manifest_hash_unwritable: {} ({})".format(hash_path, exc)
+    return None
+
+
+def _restore_backup_files(planned_moves):
+    """Replace each target with its saved original, rolling back on failure.
+
+    A filesystem move is not transactional, so a failure part-way puts back the
+    backups this call already moved. Nothing else is touched: the content a
+    successful move replaced is exactly what the restore was asked to discard.
+    """
+    completed = []
+    try:
+        for source, target in planned_moves:
+            os.replace(str(source), str(target))
+            completed.append({"source": str(source), "target": str(target)})
+    except OSError as exc:
+        rolled_back = 0
+        for move in reversed(completed):
+            try:
+                os.replace(move["target"], move["source"])
+                rolled_back += 1
+            except OSError:
+                pass
+        return None, "move_failed: {} ({} of {} files rolled back)".format(
+            exc, rolled_back, len(planned_moves)
+        )
+    return completed, None
+
+
+def restore_manifest(
+    project_path,
+    manifest_path=None,
+    dry_run=False,
+    lockfile_held_fn=None,
+    endpoint_live_fn=None,
+):
+    """Move the host's pre-preparation manifest and lock file back into ``Packages/``.
+
+    Follows the shadow restore's safety rules (host freedom, preview, machine
+    readable outcome) plus one guard of its own: the current ``manifest.json`` must
+    still hash to what preparation last wrote, so an edit made after preparation is
+    never silently discarded. The lock file is deliberately unguarded -- Unity
+    rewrites it on every resolve, so guarding it would block every real restore.
+    """
+    project_path = Path(project_path)
+    manifest_path = (
+        project_path_to_manifest_path(project_path)
+        if manifest_path is None
+        else Path(manifest_path)
+    )
+    packages_path = Path(manifest_path).parent
+    backup_root = manifest_backup_root(project_path)
+    saved_manifest = backup_root / MANIFEST_BACKUP_MANIFEST_NAME
+
+    if not backup_root.is_dir():
+        return _outcome(STATUS_UNCHANGED)
+    if not saved_manifest.is_file():
+        return _outcome(
+            STATUS_REFUSED,
+            backup_path=backup_root,
+            reason="manifest_backup_unrecognized: {} holds no saved manifest".format(
+                backup_root
+            ),
+        )
+
+    refusal = host_freedom_refusal(
+        project_path,
+        lockfile_held_fn=lockfile_held_fn,
+        endpoint_live_fn=endpoint_live_fn,
+    )
+    if refusal:
+        return _outcome(STATUS_REFUSED, backup_path=backup_root, reason=refusal)
+
+    recorded_hash_path = backup_root / WRITTEN_MANIFEST_HASH_NAME
+    try:
+        recorded_hash = recorded_hash_path.read_text(encoding="utf-8").strip()
+    except OSError as exc:
+        return _outcome(
+            STATUS_REFUSED,
+            backup_path=backup_root,
+            reason="written_manifest_hash_unreadable: {} ({})".format(
+                recorded_hash_path, exc
+            ),
+        )
+    try:
+        current_hash = _sha256_of_file(manifest_path)
+    except OSError as exc:
+        return _outcome(
+            STATUS_REFUSED,
+            backup_path=backup_root,
+            reason="manifest_unreadable: {} ({})".format(manifest_path, exc),
+        )
+    if current_hash != recorded_hash:
+        return _outcome(
+            STATUS_REFUSED,
+            backup_path=backup_root,
+            reason=(
+                "manifest_modified_since_prepare: {} no longer matches the content "
+                "preparation wrote (recorded in {})"
+            ).format(manifest_path, recorded_hash_path),
+        )
+
+    planned_moves = [(saved_manifest, manifest_path)]
+    saved_lockfile = backup_root / MANIFEST_BACKUP_LOCKFILE_NAME
+    if saved_lockfile.is_file():
+        planned_moves.append((saved_lockfile, packages_path / PACKAGES_LOCKFILE_NAME))
+    current_lockfile = packages_path / PACKAGES_LOCKFILE_NAME
+    # A lock file the host did not have before preparation cannot be removed -- the
+    # tool never deletes host files -- so the regenerated one stays and is reported.
+    left_in_place = (
+        [str(current_lockfile)]
+        if not saved_lockfile.is_file() and current_lockfile.exists()
+        else []
+    )
+
+    if dry_run:
+        return _outcome(
+            STATUS_DRY_RUN,
+            backup_path=backup_root,
+            moved=[{"source": str(s), "target": str(t)} for s, t in planned_moves],
+            left_in_place=left_in_place,
+        )
+
+    moved, failure = _restore_backup_files(planned_moves)
+    if failure is not None:
+        return _outcome(STATUS_REFUSED, backup_path=backup_root, reason=failure)
+    # Only tool-owned metadata goes: the recorded hash and then the empty root. The
+    # host's restored files are in place, so its version-control status matches the
+    # pre-preparation state for those paths.
+    try:
+        if recorded_hash_path.exists():
+            os.unlink(str(recorded_hash_path))
+    except OSError:
+        pass
+    _remove_empty_directory(backup_root)
+    return _outcome(
+        STATUS_RESTORED,
+        backup_path=backup_root,
+        moved=moved,
+        left_in_place=left_in_place,
+    )
+
+
 def _normalized_anchor(path):
     return str(path.anchor).rstrip("\\/").lower()
 
@@ -631,6 +852,9 @@ def build_preparation_report(manifest_path, manifest_data):
             "embedded_package_path": embedded_package_path,
             "embedded_package_paths": embedded_package_paths,
             "backup_path": None,
+            "manifest_backup_path": str(
+                manifest_backup_root(project_path_for_manifest(manifest_path))
+            ),
             "reason": None,
             "moved": [],
         },
@@ -643,8 +867,9 @@ def build_parser():
     parser = argparse.ArgumentParser(
         description=(
             "Rewrite a validation host manifest to consume the formal local Unity package, "
-            "including the testables declaration its EditMode harness needs, and clear or "
-            "restore an embedded package that shadows it."
+            "including the testables declaration its EditMode harness needs, clear or "
+            "restore an embedded package that shadows it, and restore the manifest wiring "
+            "from the backup the first rewrite saved."
         )
     )
     parser.add_argument(
@@ -681,6 +906,18 @@ def build_parser():
             "serving the host, or when a target path is already occupied.".format(EXIT_REFUSED)
         ),
     )
+    shadow_group.add_argument(
+        "--restore-manifest",
+        action="store_true",
+        help=(
+            "Move the manifest.json and packages-lock.json saved by the first preparation "
+            "rewrite back into Packages/, and remove the tool-owned backup. Never deletes "
+            "host files. Refuses (exit {}) while an Editor is serving the host, or when "
+            "manifest.json changed after preparation (manifest_modified_since_prepare).".format(
+                EXIT_REFUSED
+            )
+        ),
+    )
     return parser
 
 
@@ -702,8 +939,13 @@ def main(argv=None):
 
     manifest_data = json.loads(manifest_path.read_text(encoding="utf-8"))
 
-    if args.clear_embedded_shadow or args.restore_embedded_shadow:
-        operation = clear_embedded_shadow if args.clear_embedded_shadow else restore_embedded_shadow
+    if args.clear_embedded_shadow or args.restore_embedded_shadow or args.restore_manifest:
+        if args.clear_embedded_shadow:
+            operation = clear_embedded_shadow
+        elif args.restore_embedded_shadow:
+            operation = restore_embedded_shadow
+        else:
+            operation = restore_manifest
         if manifest_path.parent.name != "Packages":
             # The backup lives next to Packages/, so a manifest that is not
             # <host>/Packages/manifest.json gives no host root to act inside.
@@ -757,7 +999,26 @@ def main(argv=None):
     payload, rewritten_manifest, changed = build_preparation_report(manifest_path, manifest_data)
 
     if not args.dry_run and changed:
+        # The originals are recorded before the first real write: after it, the
+        # pre-preparation content is gone and there is nothing left to save.
+        backup_root, backup_failure = save_manifest_backup(
+            manifest_path, project_path=project_path
+        )
+        payload["manifest_backup_path"] = str(backup_root)
+        if backup_failure is not None:
+            payload["status"] = STATUS_REFUSED
+            payload["reason"] = backup_failure
+            print(json.dumps(payload, ensure_ascii=False))
+            return EXIT_REFUSED
         write_manifest(manifest_path, rewritten_manifest)
+        # The hash describes what preparation just wrote, so a restore can tell an
+        # untouched host from one somebody edited afterwards.
+        hash_failure = record_written_manifest_hash(backup_root, manifest_path)
+        if hash_failure is not None:
+            payload["status"] = STATUS_REFUSED
+            payload["reason"] = hash_failure
+            print(json.dumps(payload, ensure_ascii=False))
+            return EXIT_REFUSED
 
     payload["status"] = (
         STATUS_UNCHANGED if not changed else (STATUS_DRY_RUN if args.dry_run else STATUS_UPDATED)

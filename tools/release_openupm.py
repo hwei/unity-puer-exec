@@ -323,8 +323,9 @@ def evaluate_host_package(candidate_version, sync_requested=False):
     if not version_matches and not sync_requested:
         raise ReleaseError(
             "host_package_version_mismatch: the validation host would load {} declaring version {}; "
-            "the release candidate is {}. Align the host copy with --sync-host-version, or remove the "
-            "embedded copy so the file: dependency wins.".format(
+            "the release candidate is {}. Align the host copy with --sync-host-version, or clear it "
+            "with `python tools/prepare_validation_host.py --clear-embedded-shadow` so the file: "
+            "dependency wins (restore later with `--restore-embedded-shadow`).".format(
                 loaded_root, observed_version, candidate_version
             )
         )
@@ -340,8 +341,9 @@ def evaluate_host_package(candidate_version, sync_requested=False):
         if differing_paths:
             raise ReleaseError(
                 "host_package_stale: host package content at {} differs from the repository package at {}: {}. "
-                "Sync the host copy from this repository, or remove the embedded copy so the file: dependency "
-                "wins.".format(
+                "Sync the host copy from this repository, or clear it with "
+                "`python tools/prepare_validation_host.py --clear-embedded-shadow` so the file: "
+                "dependency wins (restore later with `--restore-embedded-shadow`).".format(
                     loaded_root, package_root, _describe_differences(differing_paths)
                 )
             )

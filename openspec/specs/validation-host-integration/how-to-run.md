@@ -124,7 +124,9 @@ directory, not only the first one named.
 
 2. Prepare and run the real-host validation as usual.
 
-3. Put the embedded copy back exactly as it was:
+3. Teardown, after the Editor is closed: put the embedded copy back exactly as it was,
+   and return the host's manifest to its pre-preparation content — see
+   [Restoring the host manifest](#restoring-the-host-manifest).
 
    ```
    python tools/prepare_validation_host.py --restore-embedded-shadow
@@ -160,6 +162,56 @@ package directory the host project tracks:
 python tools/prepare_validation_host.py --clear-embedded-shadow --dry-run
 python tools/prepare_validation_host.py --restore-embedded-shadow --dry-run
 ```
+
+### Restoring the host manifest
+
+Preparation rewrites `Project/Packages/manifest.json` and Unity then regenerates
+`Project/Packages/packages-lock.json`, so a real-host session leaves two tracked files dirty. The
+paired operation puts both back:
+
+```
+python tools/prepare_validation_host.py --restore-manifest
+```
+
+Run it as part of teardown, after the Editor is closed and alongside
+`--restore-embedded-shadow`.
+
+The originals are saved automatically by the first preparation that actually writes the manifest:
+`Project/.unity-puer-exec-manifest-backup/` receives `manifest.json`, `packages-lock.json` when the
+host had one, and `written-manifest.sha256` (a hash of the content preparation last wrote). The
+preparation report names that directory as `"manifest_backup_path"`. A later preparation run that
+changes the manifest again refreshes only the hash, so the saved files keep describing the host as
+it was before the first preparation. A `--dry-run` preparation writes nothing, including no backup.
+
+The restore moves the saved files back over the current ones and then removes only its own
+metadata (the sidecar hash and the then-empty backup directory), so it deletes no host file and runs
+no version-control command. The report carries `"status": "restored"`, the `"backup_path"` and the
+`"moved"` paths. Without a backup it reports `"status": "unchanged"` and writes nothing, so
+re-running it is safe.
+
+- If the host had no `packages-lock.json` before preparation, the regenerated one cannot be removed
+  (the tool never deletes host files), so it stays and the report lists it under
+  `"left_in_place"`.
+- The lock file is not hash-guarded, because Unity rewrites it on every resolve. Only
+  `manifest.json` is: the restore compares it with `written-manifest.sha256` and refuses with
+  `"reason": "manifest_modified_since_prepare: ..."` when it no longer matches, naming the backup
+  path so an operator can compare the two by hand. It moves nothing in that case.
+- It refuses for the same host-freedom evidence as the shadow operations
+  (`"reason": "host_not_free: ..."`: the project lockfile is held, or a published endpoint names a
+  running Editor), and refuses when the manifest is not under a `Packages/` directory
+  (`manifest_not_in_packages`, because the backup lives next to `Packages/`).
+- Every refusal reports `"status": "refused"` and exits `2`, so a shell `&&` chain does not continue
+  against a host that was not restored.
+
+Preview the moves and the backup path with:
+
+```
+python tools/prepare_validation_host.py --restore-manifest --dry-run
+```
+
+The report then carries `"status": "dry-run"` and writes nothing. `--restore-manifest` is mutually
+exclusive with `--clear-embedded-shadow` and `--restore-embedded-shadow`: each restore owns
+separate state and can refuse on its own.
 
 ### Release-time: the loaded copy must declare the version being released
 

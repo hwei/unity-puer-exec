@@ -429,7 +429,14 @@ class HostPackagePreflightTests(unittest.TestCase):
                     "host_package_version_mismatch",
                     project_path,
                     lambda: release_openupm.evaluate_host_package(self.CANDIDATE),
-                    expected_fragments=("0.1.0", self.CANDIDATE, _resolved_path_text(project_path)),
+                    expected_fragments=(
+                        "0.1.0",
+                        self.CANDIDATE,
+                        _resolved_path_text(project_path),
+                        "--sync-host-version",
+                        "python tools/prepare_validation_host.py --clear-embedded-shadow",
+                        "--restore-embedded-shadow",
+                    ),
                 )
 
     def test_embedded_copy_with_code_drift_refuses_as_stale(self):
@@ -450,7 +457,11 @@ class HostPackagePreflightTests(unittest.TestCase):
                     lambda: release_openupm.evaluate_host_package(
                         self.CANDIDATE, sync_requested=True
                     ),
-                    expected_fragments=("Editor/NewBehaviour.cs",),
+                    expected_fragments=(
+                        "Editor/NewBehaviour.cs",
+                        "python tools/prepare_validation_host.py --clear-embedded-shadow",
+                        "--restore-embedded-shadow",
+                    ),
                 )
 
     def test_embedded_copy_file_in_new_top_level_directory_refuses_as_stale(self):
@@ -471,7 +482,11 @@ class HostPackagePreflightTests(unittest.TestCase):
                     lambda: release_openupm.evaluate_host_package(
                         self.CANDIDATE, sync_requested=True
                     ),
-                    expected_fragments=("Runtime/UnityPuerExecRuntime.cs",),
+                    expected_fragments=(
+                        "Runtime/UnityPuerExecRuntime.cs",
+                        "python tools/prepare_validation_host.py --clear-embedded-shadow",
+                        "--restore-embedded-shadow",
+                    ),
                 )
 
     def test_crlf_only_drift_passes_parity(self):
@@ -548,7 +563,13 @@ class HostPackagePreflightTests(unittest.TestCase):
                     "host_package_version_mismatch",
                     project_path,
                     lambda: release_openupm.evaluate_host_package(self.CANDIDATE),
-                    expected_fragments=("0.1.0", _resolved_path_text(other_copy)),
+                    expected_fragments=(
+                        "0.1.0",
+                        _resolved_path_text(other_copy),
+                        "--sync-host-version",
+                        "python tools/prepare_validation_host.py --clear-embedded-shadow",
+                        "--restore-embedded-shadow",
+                    ),
                 )
 
     def test_host_without_wiring_refuses(self):

@@ -4,7 +4,7 @@ import os
 import sys
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
 from pathlib import Path
 from unittest import mock
@@ -1073,6 +1073,303 @@ class EmbeddedShadowSwitchTests(unittest.TestCase):
         help_text = prepare_validation_host.build_parser().format_help()
         self.assertIn("--clear-embedded-shadow", help_text)
         self.assertIn("--restore-embedded-shadow", help_text)
+
+
+class ManifestBackupRestoreTests(unittest.TestCase):
+    """Backup on first write and the paired manifest restore (proposal: reversible prepare)."""
+
+    def _make_host(self, temp_dir, lockfile_content=None):
+        project_path = Path(temp_dir) / "Project"
+        packages_path = project_path / "Packages"
+        packages_path.mkdir(parents=True)
+        manifest_path = packages_path / "manifest.json"
+        manifest_path.write_text(
+            json.dumps({"dependencies": {"com.example.other": "file:com.example.other"}}),
+            encoding="utf-8",
+        )
+        if lockfile_content is not None:
+            (packages_path / "packages-lock.json").write_text(lockfile_content, encoding="utf-8")
+        package_root = Path(temp_dir) / "repo" / "packages" / "com.txcombo.unity-puer-exec"
+        package_root.mkdir(parents=True)
+        return project_path, manifest_path, package_root
+
+    def _backup_root(self, project_path):
+        return Path(project_path) / ".unity-puer-exec-manifest-backup"
+
+    def _free_host(self, project_path):
+        self.assertFalse(prepare_validation_host.project_lockfile_is_held(project_path))
+        self.assertFalse(prepare_validation_host.editor_endpoint_is_live(project_path))
+        return project_path
+
+    def _run_main(self, argv):
+        stdout = StringIO()
+        with redirect_stdout(stdout):
+            exit_code = prepare_validation_host.main(argv)
+        return exit_code, json.loads(stdout.getvalue())
+
+    def _prepare(self, project_path, package_root, *extra_argv):
+        with mock.patch.object(prepare_validation_host, "FORMAL_PACKAGE_ROOT", package_root):
+            return self._run_main(["--project-path", str(project_path), *extra_argv])
+
+    # -- 1.1 backup on first write ----------------------------------------
+
+    def test_first_write_saves_the_originals_and_names_the_backup_path(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_path, manifest_path, package_root = self._make_host(
+                temp_dir, lockfile_content='{"saved": true}\n'
+            )
+            original_manifest = manifest_path.read_bytes()
+            original_lock = (manifest_path.parent / "packages-lock.json").read_bytes()
+
+            code, payload = self._prepare(project_path, package_root)
+
+            self.assertEqual(code, 0)
+            self.assertEqual(payload["status"], "updated")
+            backup_root = self._backup_root(project_path)
+            self.assertEqual(Path(payload["manifest_backup_path"]).resolve(), backup_root.resolve())
+            self.assertEqual((backup_root / "manifest.json").read_bytes(), original_manifest)
+            self.assertEqual(
+                (backup_root / "packages-lock.json").read_bytes(), original_lock
+            )
+            self.assertNotIn(
+                "com.txcombo.unity-puer-exec",
+                json.loads(original_manifest)["dependencies"],
+            )
+            self.assertIn(
+                "com.txcombo.unity-puer-exec",
+                json.loads(manifest_path.read_text(encoding="utf-8"))["dependencies"],
+            )
+
+    def test_a_repeated_write_keeps_the_originals_and_refreshes_the_hash(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_path, manifest_path, package_root = self._make_host(temp_dir)
+            backup_root = self._backup_root(project_path)
+            self._prepare(project_path, package_root)
+            saved_manifest = (backup_root / "manifest.json").read_bytes()
+            first_hash = (backup_root / "written-manifest.sha256").read_text(encoding="utf-8")
+
+            # A hand edit that leaves the wiring valid but drops testables forces a
+            # real second rewrite.
+            second_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            second_manifest.pop("testables")
+            second_manifest["dependencies"]["com.example.other"] = "file:com.example.other.v2"
+            manifest_path.write_text(
+                json.dumps(second_manifest, indent=2, ensure_ascii=False) + "\n",
+                encoding="utf-8",
+            )
+            code, payload = self._prepare(project_path, package_root)
+
+            self.assertEqual(code, 0)
+            self.assertEqual(payload["status"], "updated")
+            self.assertEqual((backup_root / "manifest.json").read_bytes(), saved_manifest)
+            second_hash = (backup_root / "written-manifest.sha256").read_text(encoding="utf-8")
+            self.assertNotEqual(first_hash, second_hash)
+            self.assertIn("com.txcombo.unity-puer-exec", json.loads(
+                manifest_path.read_text(encoding="utf-8")
+            )["testables"])
+
+    def test_dry_run_creates_no_manifest_backup(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_path, manifest_path, package_root = self._make_host(temp_dir)
+            before = _snapshot_tree(project_path)
+
+            code, payload = self._prepare(project_path, package_root, "--dry-run")
+
+            self.assertEqual(code, 0)
+            self.assertEqual(payload["status"], "dry-run")
+            self.assertFalse(self._backup_root(project_path).exists())
+            self.assertEqual(_snapshot_tree(project_path), before)
+
+    # -- 2.1 restore ------------------------------------------------------
+
+    def test_restore_returns_both_files_to_their_pre_preparation_content(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_path, manifest_path, package_root = self._make_host(
+                temp_dir, lockfile_content='{"saved": true}\n'
+            )
+            original_manifest = manifest_path.read_bytes()
+            original_lock = (manifest_path.parent / "packages-lock.json").read_bytes()
+            self._prepare(project_path, package_root)
+            # Unity regenerates the lock file after preparation; that must not block.
+            (manifest_path.parent / "packages-lock.json").write_text(
+                '{"regenerated": true}\n', encoding="utf-8"
+            )
+
+            outcome = prepare_validation_host.restore_manifest(
+                project_path, manifest_path=manifest_path
+            )
+
+            self.assertEqual(outcome["status"], "restored")
+            self.assertEqual(manifest_path.read_bytes(), original_manifest)
+            self.assertEqual(
+                (manifest_path.parent / "packages-lock.json").read_bytes(), original_lock
+            )
+            self.assertEqual(len(outcome["moved"]), 2)
+            self.assertEqual(outcome["left_in_place"], [])
+            self.assertFalse(self._backup_root(project_path).exists())
+
+    def test_restore_without_a_backup_is_unchanged_and_writes_nothing(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_path, manifest_path, _package_root = self._make_host(temp_dir)
+            self._free_host(project_path)
+            before = _snapshot_tree(project_path)
+
+            outcome = prepare_validation_host.restore_manifest(
+                project_path, manifest_path=manifest_path
+            )
+
+            self.assertEqual(outcome["status"], "unchanged")
+            self.assertIsNone(outcome["backup_path"])
+            self.assertEqual(_snapshot_tree(project_path), before)
+
+    def test_restore_refuses_when_manifest_changed_after_preparation(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_path, manifest_path, package_root = self._make_host(temp_dir)
+            self._prepare(project_path, package_root)
+            edited = json.loads(manifest_path.read_text(encoding="utf-8"))
+            edited["dependencies"]["com.example.extra"] = "1.0.0"
+            manifest_path.write_text(json.dumps(edited, indent=2) + "\n", encoding="utf-8")
+            before = _snapshot_tree(project_path)
+
+            outcome = prepare_validation_host.restore_manifest(
+                project_path, manifest_path=manifest_path
+            )
+
+            self.assertEqual(outcome["status"], "refused")
+            self.assertIn("manifest_modified_since_prepare", outcome["reason"])
+            self.assertEqual(outcome["moved"], [])
+            self.assertEqual(_snapshot_tree(project_path), before)
+
+    def test_restore_leaves_a_regenerated_lockfile_in_place_when_none_was_saved(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_path, manifest_path, package_root = self._make_host(temp_dir)
+            original_manifest = manifest_path.read_bytes()
+            self._prepare(project_path, package_root)
+            self.assertFalse(
+                (self._backup_root(project_path) / "packages-lock.json").exists()
+            )
+            regenerated = manifest_path.parent / "packages-lock.json"
+            regenerated.write_text('{"regenerated": true}\n', encoding="utf-8")
+
+            outcome = prepare_validation_host.restore_manifest(
+                project_path, manifest_path=manifest_path
+            )
+
+            self.assertEqual(outcome["status"], "restored")
+            self.assertEqual(manifest_path.read_bytes(), original_manifest)
+            self.assertEqual(outcome["left_in_place"], [str(regenerated)])
+            self.assertTrue(regenerated.is_file())
+            self.assertEqual(regenerated.read_text(encoding="utf-8"), '{"regenerated": true}\n')
+            self.assertFalse(self._backup_root(project_path).exists())
+
+    def test_restore_refuses_while_the_lockfile_is_held(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_path, manifest_path, package_root = self._make_host(temp_dir)
+            self._prepare(project_path, package_root)
+            before = _snapshot_tree(project_path)
+
+            outcome = prepare_validation_host.restore_manifest(
+                project_path, manifest_path=manifest_path, lockfile_held_fn=lambda _p: True
+            )
+
+            self.assertEqual(outcome["status"], "refused")
+            self.assertIn("host_not_free", outcome["reason"])
+            self.assertIn("lockfile", outcome["reason"])
+            self.assertEqual(_snapshot_tree(project_path), before)
+
+    def test_restore_refuses_while_a_published_endpoint_names_a_running_editor(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_path, manifest_path, package_root = self._make_host(temp_dir)
+            self._prepare(project_path, package_root)
+            before = _snapshot_tree(project_path)
+
+            outcome = prepare_validation_host.restore_manifest(
+                project_path, manifest_path=manifest_path, endpoint_live_fn=lambda _p: True
+            )
+
+            self.assertEqual(outcome["status"], "refused")
+            self.assertIn("host_not_free", outcome["reason"])
+            self.assertEqual(_snapshot_tree(project_path), before)
+
+    def test_restore_dry_run_reports_the_intended_moves_and_writes_nothing(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_path, manifest_path, package_root = self._make_host(
+                temp_dir, lockfile_content='{"saved": true}\n'
+            )
+            self._prepare(project_path, package_root)
+            before = _snapshot_tree(project_path)
+
+            outcome = prepare_validation_host.restore_manifest(
+                project_path, manifest_path=manifest_path, dry_run=True
+            )
+
+            self.assertEqual(outcome["status"], "dry-run")
+            self.assertEqual(
+                Path(outcome["backup_path"]).resolve(), self._backup_root(project_path).resolve()
+            )
+            self.assertEqual(
+                sorted(Path(move["target"]).name for move in outcome["moved"]),
+                ["manifest.json", "packages-lock.json"],
+            )
+            self.assertEqual(_snapshot_tree(project_path), before)
+
+    def test_restore_flag_reports_restored_and_exits_zero(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_path, manifest_path, package_root = self._make_host(
+                temp_dir, lockfile_content='{"saved": true}\n'
+            )
+            original_manifest = manifest_path.read_bytes()
+            self._prepare(project_path, package_root)
+
+            code, payload = self._run_main(
+                ["--project-path", str(project_path), "--restore-manifest"]
+            )
+
+            self.assertEqual(code, 0)
+            self.assertEqual(payload["status"], "restored")
+            self.assertEqual(
+                Path(payload["backup_path"]).resolve(), self._backup_root(project_path).resolve()
+            )
+            self.assertEqual(manifest_path.read_bytes(), original_manifest)
+
+    def test_restore_flag_refusal_exits_two(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_path, manifest_path, package_root = self._make_host(temp_dir)
+            self._prepare(project_path, package_root)
+            _write_endpoint_publication(project_path)
+            before = _snapshot_tree(project_path)
+
+            with mock.patch.object(prepare_validation_host, "_pid_is_running", return_value=True):
+                code, payload = self._run_main(
+                    ["--project-path", str(project_path), "--restore-manifest"]
+                )
+
+            self.assertEqual(code, 2)
+            self.assertEqual(payload["status"], "refused")
+            self.assertIn("host_not_free", payload["reason"])
+            # A refusal moves nothing: the backup is still complete.
+            self.assertEqual(_snapshot_tree(project_path), before)
+            self.assertTrue((self._backup_root(project_path) / "manifest.json").is_file())
+
+    def test_restore_manifest_cannot_be_combined_with_shadow_flags(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_path, _manifest_path, _package_root = self._make_host(temp_dir)
+            with redirect_stdout(StringIO()), redirect_stderr(StringIO()):
+                with self.assertRaises(SystemExit) as raised:
+                    prepare_validation_host.main(
+                        [
+                            "--project-path",
+                            str(project_path),
+                            "--restore-manifest",
+                            "--clear-embedded-shadow",
+                        ]
+                    )
+            self.assertEqual(raised.exception.code, 2)
+
+    def test_help_lists_the_restore_manifest_flag(self):
+        help_text = prepare_validation_host.build_parser().format_help()
+        self.assertIn("--restore-manifest", help_text)
+        self.assertIn("manifest_modified_since_prepare", help_text)
 
 
 if __name__ == "__main__":
