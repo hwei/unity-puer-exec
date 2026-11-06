@@ -2385,7 +2385,9 @@ class UnityPuerExecCliTests(unittest.TestCase):
         session = _make_session()
         session.modal_blocker = blocker
         with mock.patch.object(unity_session, "ensure_closed", return_value=(False, session)):
-            exit_code, stdout, stderr = unity_puer_exec.run_cli(["ensure-closed"])
+            exit_code, stdout, stderr = unity_puer_exec.run_cli(
+                ["ensure-closed", "--project-path", SAMPLE_PROJECT_PATH]
+            )
 
         self.assertEqual(exit_code, unity_puer_exec.EXIT_MODAL_BLOCKED)
         self.assertEqual(stderr, "")
@@ -2395,6 +2397,12 @@ class UnityPuerExecCliTests(unittest.TestCase):
         commands = [step.get("command") for step in payload["next_steps"]]
         self.assertIn("resolve-blocker", commands)
         self.assertIn("ensure-closed", commands)
+        # The force path must actually be offered: a caller that accepts losing
+        # unsaved work should not have to discover --immediate-kill itself.
+        ensure_closed_step = next(
+            step for step in payload["next_steps"] if step.get("command") == "ensure-closed"
+        )
+        self.assertIn("--immediate-kill", ensure_closed_step["argv"])
 
     def test_ensure_closed_modal_blocked_status_is_in_the_help_table(self):
         import help_surface
