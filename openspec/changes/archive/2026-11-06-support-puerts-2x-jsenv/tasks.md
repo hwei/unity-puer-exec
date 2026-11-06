@@ -77,7 +77,7 @@
       `New follow-up candidates identified`, listing the issue #4 side-note documentation change as a named
       follow-up candidate under `product-improvement`, and record the evidence table (mocked suite, 2.x
       preflight/EditMode/exec, 3.x preflight/EditMode/exec) in the change directory.
-- [ ] 5.4 Post the resolution to GitHub issue #4 — the version-detection mechanism, the corrected finding that
+- [x] 5.4 Post the resolution to GitHub issue #4 — the version-detection mechanism, the corrected finding that
       2.2.2 does contain `Backend*` and lacks only `ScriptEnv`, the evidence table, and the release that will
       carry it — and verify the comment renders the table. Leave the issue open until that release exists, as
       issue #3 does.
