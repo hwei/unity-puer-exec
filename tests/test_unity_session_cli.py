@@ -7567,6 +7567,63 @@ class ExecCrashReplayLoopTests(unittest.TestCase):
                 self.assertNotIn("rid-crash", argv)
                 self.assertNotIn("--request-id", argv)
 
+    EDITOR_EXIT_COMMANDS = (
+        "play",
+        "pause",
+        "stop",
+        "wait-for-compile",
+        "get-compile-errors",
+        "get-compile-warnings",
+    )
+
+    def test_control_command_help_status_lists_the_crash_status_with_exit_26(self):
+        for command in self.EDITOR_EXIT_COMMANDS:
+            with self.subTest(command=command):
+                exit_code, stdout, stderr = unity_puer_exec.run_cli([command, "--help-status"])
+
+                self.assertEqual(exit_code, 0)
+                self.assertEqual(stderr, "")
+                self.assertIn("`editor_crashed_during_request` -> exit 26", stdout)
+
+                failure_rows = help_surface.COMMAND_HELP[command]["status"]["failure"]
+                statuses = [row[0] for row in failure_rows]
+                self.assertEqual(statuses.count("editor_crashed_during_request"), 1)
+                crash_row = failure_rows[statuses.index("editor_crashed_during_request")]
+                self.assertEqual(crash_row[1], 26)
+                self.assertIn("not a domain reload", crash_row[2])
+                # Listed with the specific outcomes, ahead of the generic `failed` row.
+                self.assertLess(
+                    statuses.index("editor_crashed_during_request"), statuses.index("failed")
+                )
+
+    def test_control_command_crash_guidance_names_the_log_and_the_relaunch(self):
+        context = {"project_path": "X:/p", "base_url": "http://127.0.0.1:55231"}
+        for command in self.EDITOR_EXIT_COMMANDS:
+            with self.subTest(command=command):
+                entry = help_surface.GUIDANCE_MATRIX[(command, "editor_crashed_during_request")]
+                self.assertEqual(entry["situation"], help_surface.EDITOR_EXIT_SITUATION)
+                self.assertNotIn("script", entry["situation"])
+                self.assertIn("relaunches the Editor", entry["situation"])
+
+                steps = help_surface.build_next_steps(command, "editor_crashed_during_request", context)
+                self.assertEqual([step["command"] for step in steps], ["get-log-source", command])
+                for step in steps:
+                    self.assertNotIn("--request-id", step.get("argv") or [])
+
+    def test_transport_rows_carry_the_base_url_crash_clause_for_control_commands_only(self):
+        clause = help_surface._BASE_URL_CRASH_CLAUSE
+        for command in self.EDITOR_EXIT_COMMANDS:
+            rows = help_surface.COMMAND_HELP[command]["status"]["failure"]
+            for row in rows:
+                if row[0] in ("not_available", "empty_response"):
+                    with self.subTest(command=command, status=row[0]):
+                        self.assertEqual(row[2].count(clause), 1)
+        for command in ("exec", "wait-for-exec"):
+            rows = help_surface.COMMAND_HELP[command]["status"]["failure"]
+            for row in rows:
+                with self.subTest(command=command, status=row[0]):
+                    self.assertNotIn(clause, row[2])
+
     def _empty_response_body(self, request_id):
         # The exact body `direct_exec_client.invoke_command` produces for a
         # truncated or empty body: exit 12, status `empty_response`.
