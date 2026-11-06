@@ -4359,6 +4359,19 @@ _SAVE_ASSETS_JS = (
     " return { saved: true }; }"
 )
 
+# Marks the active scene dirty in memory only. Nothing is written to disk, so the
+# only residue is the Editor's own unsaved-changes prompt on quit (design D2).
+_DIRTY_ACTIVE_SCENE_JS = (
+    "export default function run(ctx) {"
+    " const GameObject = puer.loadType('UnityEngine.GameObject');"
+    " const SceneManager = puer.loadType('UnityEngine.SceneManagement.SceneManager');"
+    " const EditorSceneManager = puer.loadType('UnityEditor.SceneManagement.EditorSceneManager');"
+    " const scene = SceneManager.GetActiveScene();"
+    " const marker = new GameObject('PuerExecDirtySceneMarker');"
+    " EditorSceneManager.MarkSceneDirty(scene);"
+    " return { dirty: !!scene.isDirty, scene_path: String(scene.path),"
+    " created: String(marker.name) }; }"
+)
 _READ_RUN_IN_BACKGROUND_JS = (
     "export default function run(ctx) {"
     " const Application = puer.loadType('UnityEngine.Application');"
@@ -4377,6 +4390,7 @@ class PlayModeRunInBackgroundPersistenceRealHostTests(_SharedRealHostDevice, uni
     OWN_HOST_BOUNDARY_TESTS = {
         "test_stop_then_close_leaves_project_settings_byte_identical": "stop",
         "test_close_while_playing_leaves_project_settings_byte_identical": "stop",
+        "test_ensure_closed_reports_a_modal_blocker_instead_of_killing": "stop",
     }
 
     # Bound the graceful close. A healthy Editor exits in a few seconds; a longer
@@ -4571,10 +4585,33 @@ class PlayModeRunInBackgroundPersistenceRealHostTests(_SharedRealHostDevice, uni
         )
 
     def _close_editor_gracefully(self):
+        """Close the Editor through the product path, not a test-only helper.
+
+        Design D5 of make-ensure-closed-close-gracefully: this used to call
+        ``CloseMainWindow`` directly, which meant the suite verified the closure
+        mechanism rather than the command agents actually run. ``ensure-closed``
+        now uses that same mechanism, so the suite drives the product path and
+        asserts the result says ``closed_via: graceful``.
+        """
         pid = self._published_unity_pid()
-        close = self._request_graceful_close(pid)
+        exit_code, payload, _, _ = _run_cli(
+            [
+                "ensure-closed",
+                "--project-path", str(self.project_path),
+                "--timeout-seconds", "120",
+                "--include-diagnostics",
+            ]
+        )
+        self.assertEqual(exit_code, 0, payload)
+        result = payload.get("result") or {}
+        self.assertEqual(result.get("status"), "stopped", payload)
+        self.assertEqual(
+            result.get("closed_via"),
+            "graceful",
+            "the suite must exercise the graceful product path, not a kill: {}".format(payload),
+        )
         self._wait_for_editor_exit(pid)
-        return close
+        return {"closed_via": result.get("closed_via"), "payload": payload}
 
     # -- cleanup ------------------------------------------------------------
 
@@ -4680,6 +4717,80 @@ class PlayModeRunInBackgroundPersistenceRealHostTests(_SharedRealHostDevice, uni
         window close performs, so the asset must be untouched.
         """
         self._run_persistence_case(close_while_playing=True)
+
+    def test_ensure_closed_reports_a_modal_blocker_instead_of_killing(self):
+        """Design D2: an unsaved-scene prompt holds the quit; the Editor survives.
+
+        The dialog may be the only thing protecting unsaved work, so the command
+        must report it and leave the Editor alive. The case then resolves the
+        dialog with an explicit discard click and closes for real, so the host is
+        left clean either way.
+        """
+        self._launch_pristine_host()
+        base_url = self._resolve_live_endpoint()
+        exit_code, payload = self._exec_settled(
+            base_url, _DIRTY_ACTIVE_SCENE_JS, wait_ms=self.REFRESH_WAIT_TIMEOUT_MS
+        )
+        self.assertEqual(exit_code, 0, payload)
+        result = payload.get("result") if isinstance(payload, dict) else None
+        self.assertIsInstance(result, dict, payload)
+        self.assertTrue(result.get("dirty"), "the case did not dirty the active scene: {}".format(payload))
+        dirty_scene_path = result.get("scene_path")
+
+        pid = self._published_unity_pid()
+        exit_code, payload, _, _ = _run_cli(
+            [
+                "ensure-closed",
+                "--project-path", str(self.project_path),
+                "--timeout-seconds", "60",
+                "--include-diagnostics",
+            ]
+        )
+        self._record_own_boundary(
+            "ensure_closed_modal_blocker",
+            exit_code=exit_code,
+            status=payload.get("status"),
+            dirty_scene_path=dirty_scene_path,
+        )
+        self.assertEqual(exit_code, unity_puer_exec.EXIT_MODAL_BLOCKED, payload)
+        self.assertEqual(payload.get("status"), "modal_blocked", payload)
+        blocker = payload.get("blocker") or {}
+        self.assertEqual(
+            blocker.get("type"),
+            "save_modified_scenes_prompt",
+            "unexpected blocker for an unsaved scene: {}".format(payload),
+        )
+        commands = [step.get("command") for step in payload.get("next_steps") or []]
+        self.assertIn("resolve-blocker", commands)
+        self.assertIn("ensure-closed", commands)
+        # The Editor must still be alive: the whole point is not to discard work.
+        self.assertTrue(
+            unity_session._project_lockfile_is_held(self.project_path),
+            "ensure-closed killed the Editor while a blocker was holding the quit",
+        )
+        self.assertTrue(unity_session.is_pid_running(pid), "the Editor process is gone")
+
+        # Resolve the dialog with an explicit discard, then close through the product path.
+        discard = next(
+            (button for button in blocker.get("buttons") or []
+             if "Don" in (button.get("label") or "") and "Save" in (button.get("label") or "")),
+            None,
+        )
+        self.assertIsNotNone(discard, "no discard button on the save prompt: {}".format(payload))
+        exit_code, payload, _, _ = _run_cli(
+            [
+                "resolve-blocker",
+                "--project-path", str(self.project_path),
+                "--action", "click",
+                "--hwnd", str(blocker["hwnd"]),
+                "--button", str(discard["label"]),
+            ]
+        )
+        self.assertEqual(exit_code, 0, payload)
+
+        close = self._close_editor_gracefully()
+        self.assertEqual(close["closed_via"], "graceful", close)
+        _ensure_clean_test_boundary(self.project_path)
 
 
 _EDITOR_CRASH_ON_PLAY_PROBE_NAME = "EditorCrashOnPlayProbe.cs"

@@ -16,7 +16,7 @@
 
 ## 4. Real-host evidence
 
-- [ ] 4.1 Switch `PlayModeRunInBackgroundPersistenceRealHostTests`' close helper to `ensure-closed` and assert `closed_via: graceful`. Add a real-host case that dirties the active scene and asserts that `ensure-closed` returns `modal_blocked` with the Editor still alive, then resolves the dialog and closes. Verify by running these cases plus `PlayModeCompileBlockRealHostTests` on the real host, recording the summary in `validation-transcript.md`, and confirming no new crash report and a clean host `git status` after teardown
+- [x] 4.1 Switch `PlayModeRunInBackgroundPersistenceRealHostTests`' close helper to `ensure-closed` and assert `closed_via: graceful`. Add a real-host case that dirties the active scene and asserts that `ensure-closed` returns `modal_blocked` with the Editor still alive, then resolves the dialog and closes. Verify by running these cases plus `PlayModeCompileBlockRealHostTests` on the real host, recording the summary in `validation-transcript.md`, and confirming no new crash report and a clean host `git status` after teardown
 
 ## 5. Integration check
 

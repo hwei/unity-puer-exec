@@ -79,3 +79,48 @@ listing after each case added nothing.
 
 `prepare_validation_host.py --restore-manifest`, `--restore-embedded-shadow`,
 `cleanup_validation_host.py`; host `git status --short` empty afterwards.
+
+## Task 4.1 real-host run (2026-11-06)
+
+Host `c3-client-tree2/Project`, Unity 2022.3.62f2, prepared with
+`prepare_validation_host.py --clear-embedded-shadow` then
+`prepare_validation_host.py`.
+
+`UNITY_PUER_EXEC_RUN_REAL_HOST_TESTS=1 python -m unittest -v   tests.test_real_host_integration.PlayModeRunInBackgroundPersistenceRealHostTests`
+-> `Ran 3 tests in 573.968s`, `OK`.
+
+The two persistence cases now close through the product path: their helper calls
+`ensure-closed` and asserts `result.closed_via == "graceful"`, instead of
+calling `CloseMainWindow` directly (design D5). Both reported
+`settings_unchanged: true` and `assets byte-identical`, with
+`graceful_quit_request: {"requested": true, "reason": "quit_requested"}` in the
+diagnostics.
+
+The new case `test_ensure_closed_reports_a_modal_blocker_instead_of_killing`
+dirtied the active scene in memory (nothing written to disk), then ran
+`ensure-closed`. Result, from the recorded own-boundary report:
+
+```
+"exit_code": 19, "status": "modal_blocked",
+"blocker_type": "save_modified_scenes_prompt"
+```
+
+The case asserted, before resolving the dialog, that the project lockfile was
+still held and the published pid was still running -- so the Editor survived and
+no unsaved work was discarded. It then clicked `&Don't Save` explicitly, closed
+through `ensure-closed` again (which reported `closed_via: graceful`), and
+returned the host to a clean boundary.
+
+`UNITY_PUER_EXEC_RUN_REAL_HOST_TESTS=1 python -m unittest -v   tests.test_real_host_integration.PlayModeCompileBlockRealHostTests`
+-> `Ran 7 tests in 598.121s`, `OK`. The domain-reload retry paths are unaffected.
+
+No new Unity crash report appeared in `%TEMP%/Unity/Editor/Crashes` during
+either run; the newest entry is still `Crash_2026-11-06_061903285` from the
+earlier change's evidence.
+
+## Host teardown
+
+`cleanup_validation_host.py` (`already_clean`), `--restore-manifest`
+(`restored`), `--restore-embedded-shadow` (`restored`); host
+`git status --short` empty, `runInBackground: 0` intact, and the tree3 Editor
+(pid 80124) untouched.
