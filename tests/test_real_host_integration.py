@@ -1032,6 +1032,15 @@ class _SharedRealHostDevice:
         # is not a function on this host's puer.loadType wrapper. The Scene argument has to
         # be boxed in a real object[]. The two-argument Invoke drops that array; the
         # five-argument Invoke keeps it.
+        #
+        # The System.Type is resolved by scanning the loaded assemblies' GetTypes() for a
+        # matching FullName, NOT by Assembly.GetType(string). PuerTS 2.2.2's binder strips
+        # that overload -- ``Assembly.GetType(name)`` raises "invalid arguments to GetType
+        # or the overload is striped by unity" -- so the previous lookup never found the
+        # type, ``method`` stayed null, and this reset failed in setUp for every shared
+        # case on a 2.2.2 host. GetTypes(), get_Item, and FullName are plain reflection
+        # and bind on both PuerTS majors. Verified on 2.2.2 by probing the full chain:
+        # 72 assemblies scanned, type found, GetMethod found, Invoke ok.
         code = (
             "export default function run(ctx) {"
             " const SceneManager = puer.loadType('UnityEngine.SceneManagement.SceneManager');"
@@ -1041,13 +1050,20 @@ class _SharedRealHostDevice:
             " const OpenSceneMode = puer.loadType('UnityEditor.SceneManagement.OpenSceneMode');"
             " const scene = SceneManager.GetActiveScene();"
             " const flags = 56;"
-            " let method = null;"
+            " const target = 'UnityEditor.SceneManagement.EditorSceneManager';"
+            " let type = null;"
             " const AppDomain = puer.loadType('System.AppDomain');"
             " const asms = AppDomain.CurrentDomain.GetAssemblies();"
-            " for (let i = 0; i < asms.Length && method == null; i++) {"
-            "   const type = asms.get_Item(i).GetType('UnityEditor.SceneManagement.EditorSceneManager');"
-            "   if (type) method = type.GetMethod('ClearSceneDirtiness', flags);"
+            " for (let i = 0; i < asms.Length && type == null; i++) {"
+            "   let types = null;"
+            "   try { types = asms.get_Item(i).GetTypes(); } catch (e) { continue; }"
+            "   for (let j = 0; j < types.Length; j++) {"
+            "     const candidate = types.get_Item(j);"
+            "     if (candidate.FullName === target) { type = candidate; break; }"
+            "   }"
             " }"
+            " let method = null;"
+            " if (type != null) method = type.GetMethod('ClearSceneDirtiness', flags);"
             " let invokeError = null;"
             " if (method != null) {"
             "   try {"
@@ -1699,6 +1715,202 @@ class RealHostIntegrationTests(_SharedRealHostDevice, unittest.TestCase):
         self.assertEqual(second_exit_code, 0, second_payload)
         self.assertEqual(second_payload["status"], "completed")
         self.assertEqual(second_payload["result"]["counter"], 2)
+
+    # -- import context: --import-base-url and --reset-jsenv-before-exec --------
+
+    def _import_fixture_dir(self):
+        """A module directory Unity ignores but the JS loader reads from disk.
+
+        Unity skips any folder whose name ends with ``~``, so nothing placed here
+        is imported, given a ``.meta``, or counted as a refresh-triggering change,
+        while ``PuerExecLoader`` still resolves it as an ordinary filesystem path.
+        That matters twice over: the server writes its own per-request entry module
+        into the base directory (``BuildEntrySpecifier`` +
+        ``StartJobEvaluation``), so a base directory Unity watched would import a
+        new ``.js`` on every exec.
+
+        It sits under a declared validation-temp root, so the suite's existing
+        per-case reset (``_cleanup_temp_assets``) removes the fixture and the swept
+        entry modules together and the cases need no teardown of their own.
+        """
+        return (
+            self.project_path
+            / "Assets"
+            / "__codex_validation_temp"
+            / "import_fixture~"
+        )
+
+    def _exec_with_import_context(self, code, import_base_url=None, reset_jsenv=False):
+        """One exec carrying the import-context flags, against the shared host.
+
+        Uses the ``--project-path`` form the rest of this class uses, so the CLI's
+        own endpoint discovery stays on the path under test.
+        """
+        argv = [
+            "exec",
+            "--project-path",
+            str(self.project_path),
+            "--unity-exe-path",
+            str(self.unity_exe_path),
+            "--wait-timeout-ms",
+            str(WAIT_TIMEOUT_MS),
+            "--code",
+            code,
+        ]
+        if import_base_url is not None:
+            argv += ["--import-base-url", str(import_base_url)]
+        if reset_jsenv:
+            argv.append("--reset-jsenv-before-exec")
+        exit_code, payload, _, _ = _run_cli(argv)
+        return exit_code, payload
+
+    def test_exec_resolves_relative_import_through_import_base_url_against_real_host(self):
+        """``--import-base-url`` resolves a relative import, and the value crosses back.
+
+        `exec-import-support` specifies filesystem base-URL resolution and the suite
+        had no case for it, so a regression could only report as "did not throw".
+        Asserting the imported exported value arrives in ``result`` makes this a
+        resolution test: a base URL the loader ignored, or a specifier it failed to
+        map onto this directory, cannot produce the value -- and the value is a
+        literal that exists nowhere but in the fixture module.
+
+        This is the surface `support-puerts-2x-jsenv` had to hand-drive, because
+        PuerTS 2.2.2 gates ESM detection on ``loader is IModuleChecker`` while
+        ``PuerExecLoader`` implements only ``ILoader``.
+        """
+        ready_exit_code, ready_payload, _, _ = _warm_up_project_exec(
+            self.project_path, self.unity_exe_path
+        )
+        self.assertEqual(ready_exit_code, 0, ready_payload)
+
+        fixture_dir = self._import_fixture_dir()
+        fixture_dir.mkdir(parents=True, exist_ok=True)
+        (fixture_dir / "greeting.js").write_text(
+            "export default 'resolved-through-import-base-url';\n", encoding="utf-8"
+        )
+
+        exit_code, payload = self._exec_with_import_context(
+            "import greeting from './greeting.js';\n"
+            "export default function run(ctx) { return { greeting: greeting }; }",
+            import_base_url=fixture_dir,
+        )
+        self.assertEqual(exit_code, 0, payload)
+        self.assertIsInstance(payload, dict, payload)
+        self.assertEqual(payload["status"], "completed", payload)
+        result = payload.get("result")
+        self.assertIsInstance(result, dict, payload)
+        self.assertEqual(
+            result.get("greeting"),
+            "resolved-through-import-base-url",
+            "the imported value did not cross the bridge; resolution failed: {}".format(payload),
+        )
+
+    def test_reset_jsenv_before_exec_clears_globals_with_an_unchanged_module_against_real_host(
+        self,
+    ):
+        """``--reset-jsenv-before-exec`` resets on its own, not via staleness recovery.
+
+        The default ``auto-reset`` policy already resets a JsEnv when a *changed*
+        local module is detected, so a case that rewrote its module and then asked
+        for a reset would pass with the flag ignored. The discriminator is
+        ``ctx.globals`` continuity across an **unchanged** module:
+
+        - no flag  -> ``CheckModuleStaleness`` is empty, ``recoveryReason`` is "",
+          ``RecoveryPerformed`` is false, no ``ResetJsEnv``, and the marker survives;
+        - flag set -> ``recoveryReason`` is ``explicit_request``, the JsEnv is
+          disposed and rebuilt, so ``globalThis.__unityPuerExecGlobals`` is a fresh
+          object and the marker is gone.
+
+        ``recovery.reason == "explicit_request"`` is asserted too, because that value
+        is producible *only* by the flag -- staleness yields ``module_cache_stale`` --
+        so the cleared marker cannot be a coincidental staleness reset.
+
+        The execs are **inline**: no ``--import-base-url`` and no fixture module.
+        That is deliberate, and it was learned by running the case. With a
+        filesystem ``--import-base-url`` the server writes a fresh per-request entry
+        module into the base directory (``BuildEntrySpecifier`` names it after the
+        request id) and sweeps the previous one, so ``CheckModuleStaleness`` reports
+        that entry file as a changed local module on *every* exec. The default
+        ``auto-reset`` policy then resets the JsEnv every time, ``ctx.globals``
+        never survives, and the continuity baseline this case depends on cannot be
+        observed at all -- the run reported ``reason: module_cache_stale`` with
+        ``affected_modules`` naming ``__puer_exec_entry_<request-id>.js``. Inline
+        code registers no local module, so the ledger stays empty and "no module
+        changed" holds in the strongest sense: there is no module to change.
+
+        Mirrors ``test_exec_globals_are_visible_across_requests_against_real_host``,
+        which asserts the survival half of the same continuity.
+        """
+        ready_exit_code, ready_payload, _, _ = _warm_up_project_exec(
+            self.project_path, self.unity_exe_path
+        )
+        self.assertEqual(ready_exit_code, 0, ready_payload)
+
+        marker = "reset-marker-{}".format(time.time_ns())
+        seed_code = (
+            "export default function run(ctx) {"
+            " ctx.globals.resetMarker = " + _js_string_literal(marker) + ";"
+            " return { marker: ctx.globals.resetMarker }; }"
+        )
+        read_code = (
+            "export default function run(ctx) {"
+            " return { marker: (ctx.globals.resetMarker === undefined"
+            " ? null : ctx.globals.resetMarker) }; }"
+        )
+
+        # 1. Seed the marker with no flag.
+        seed_exit_code, seed_payload = self._exec_with_import_context(seed_code)
+        self.assertEqual(seed_exit_code, 0, seed_payload)
+        self.assertIsInstance(seed_payload, dict, seed_payload)
+        self.assertEqual(seed_payload["status"], "completed", seed_payload)
+        self.assertEqual(seed_payload["result"]["marker"], marker, seed_payload)
+
+        # 2. No flag, nothing changed: the marker must survive. This is the
+        #    baseline that makes step 3 meaningful -- without it, a JsEnv that reset
+        #    on every exec would also clear the marker and the case would prove
+        #    nothing about the flag.
+        keep_exit_code, keep_payload = self._exec_with_import_context(read_code)
+        self.assertEqual(keep_exit_code, 0, keep_payload)
+        self.assertIsInstance(keep_payload, dict, keep_payload)
+        self.assertEqual(keep_payload["status"], "completed", keep_payload)
+        self.assertEqual(
+            keep_payload["result"]["marker"],
+            marker,
+            "ctx.globals did not survive an exec without the flag, so this case "
+            "cannot discriminate the explicit reset: {}".format(keep_payload),
+        )
+        keep_recovery = keep_payload.get("recovery") or {}
+        self.assertNotEqual(
+            keep_recovery.get("reason"),
+            "explicit_request",
+            "an exec without the flag reported an explicit reset: {}".format(keep_payload),
+        )
+
+        # 3. The flag, with no module changed anywhere.
+        reset_exit_code, reset_payload = self._exec_with_import_context(
+            read_code, reset_jsenv=True
+        )
+        self.assertEqual(reset_exit_code, 0, reset_payload)
+        self.assertIsInstance(reset_payload, dict, reset_payload)
+        self.assertEqual(reset_payload["status"], "completed", reset_payload)
+        self.assertIsNone(
+            reset_payload["result"]["marker"],
+            "--reset-jsenv-before-exec did not clear ctx.globals: {}".format(reset_payload),
+        )
+        recovery = reset_payload.get("recovery")
+        self.assertIsInstance(
+            recovery,
+            dict,
+            "the explicit reset reported no recovery block: {}".format(reset_payload),
+        )
+        self.assertTrue(recovery.get("performed"), reset_payload)
+        self.assertEqual(recovery.get("type"), "jsenv_reset", reset_payload)
+        self.assertEqual(
+            recovery.get("reason"),
+            "explicit_request",
+            "the reset was not attributed to the flag, so a staleness recovery could "
+            "explain it: {}".format(reset_payload),
+        )
 
     def test_exec_script_args_are_visible_against_real_host(self):
         ready_exit_code, ready_payload, _, _ = _warm_up_project_exec(self.project_path, self.unity_exe_path)
