@@ -2,8 +2,8 @@
 
 ## 1. Shared Editor-exit check and exec widening
 
-- [ ] 1.1 Add the shared pid-based "published Editor exited" helper (design D1), and re-express `_wait_for_journaled_editor_exit` on top of it. Verify that the existing exec crash tests in `tests/test_unity_session_cli.py` still pass unchanged
-- [ ] 1.2 Widen the in-flight exec crash branch so that `empty_response` also runs the journal grace check (design D2, exec bullet). Verify with new mocked tests: an empty body plus a dead journalled pid gives `editor_crashed_during_request` / exit 26; an empty body plus a live pid keeps `empty_response`
+- [x] 1.1 Add the shared pid-based "published Editor exited" helper (design D1), and re-express `_wait_for_journaled_editor_exit` on top of it. Verify that the existing exec crash tests in `tests/test_unity_session_cli.py` still pass unchanged
+- [x] 1.2 Widen the in-flight exec crash branch so that `empty_response` also runs the journal grace check (design D2, exec bullet). Verify with new mocked tests: an empty body plus a dead journalled pid gives `editor_crashed_during_request` / exit 26; an empty body plus a live pid keeps `empty_response`
 
 ## 2. Play-mode and compile-query commands
 

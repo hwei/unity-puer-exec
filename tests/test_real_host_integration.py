@@ -4682,6 +4682,162 @@ class PlayModeRunInBackgroundPersistenceRealHostTests(_SharedRealHostDevice, uni
         self._run_persistence_case(close_while_playing=True)
 
 
+_EDITOR_CRASH_ON_PLAY_PROBE_NAME = "EditorCrashOnPlayProbe.cs"
+_EDITOR_CRASH_ON_PLAY_PROBE_SOURCE = (
+    "// Auto-generated real-host crash probe. Crashes the Editor on entering play mode.\n"
+    "using UnityEngine;\n"
+    "using UnityEngine.Diagnostics;\n"
+    "\n"
+    "internal static class EditorCrashOnPlayProbe\n"
+    "{\n"
+    "    [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.BeforeSceneLoad)]\n"
+    "    private static void CrashOnPlay()\n"
+    "    {\n"
+    "        Debug.Log(\"[EditorCrashOnPlayProbe] forcing a crash on entering play mode\");\n"
+    "        Utils.ForceCrash(ForcedCrashCategory.AccessViolation);\n"
+    "    }\n"
+    "}\n"
+)
+_EDITOR_CRASH_EXEC_JS = (
+    "export default function run(ctx) {"
+    " const Utils = puer.loadType('UnityEngine.Diagnostics.Utils');"
+    " const Category = puer.loadType('UnityEngine.Diagnostics.ForcedCrashCategory');"
+    " Utils.ForceCrash(Category.AccessViolation);"
+    " return { crashed: false }; }"
+)
+
+
+class EditorCrashSurfaceRealHostTests(_SharedRealHostDevice, unittest.TestCase):
+    """Real-host evidence: a deliberately crashed Editor is reported as a crash.
+
+    Both cases own a pristine process (mode ``stop``) because they end with the
+    Editor dead. The crash is forced with ``Utils.ForceCrash``, never with
+    ``EditorApplication.Exit`` (design D5). The play probe script is removed before
+    any relaunch, so the next Editor cannot crash on play again.
+    """
+
+    OWN_HOST_BOUNDARY_TESTS = {
+        "test_play_reports_an_editor_crash_on_entering_play_mode": "stop",
+        "test_exec_reports_an_editor_crash_from_force_crash": "stop",
+    }
+
+    PLAY_TIMEOUT_SECONDS = 180
+    # Crash handler tail plus the crash grace window, with room for the play-mode
+    # transition itself. Pre-change, `play` spends the whole budget instead.
+    PLAY_CRASH_ELAPSED_LIMIT_SECONDS = 90
+
+    def _project_cli_args(self):
+        return [
+            "--project-path", str(self.project_path),
+            "--unity-exe-path", str(self.unity_exe_path),
+        ]
+
+    def _launch_pristine_host(self):
+        exit_code, payload, _, _ = _warm_up_project_exec(
+            self.project_path, self.unity_exe_path
+        )
+        self.assertEqual(exit_code, 0, payload)
+        base_url, _health = _scan_ready_control_endpoint(self.project_path)
+        if base_url is None:
+            base_url, _health = _await_ready_endpoint(self.project_path)
+        self.assertIsNotNone(
+            base_url,
+            "no ready control endpoint after the pristine launch: {}".format(payload),
+        )
+        return base_url
+
+    def _published_unity_pid(self):
+        publication = unity_session.read_endpoint_publication(self.project_path) or {}
+        pid = publication.get("unity_pid")
+        self.assertIsNotNone(
+            pid, "the host publication carries no unity_pid: {}".format(publication)
+        )
+        return int(pid)
+
+    def _remove_crash_probe(self):
+        """Delete the play probe (and its .meta) before anything relaunches Unity."""
+        probe = self.project_path / "Assets" / "__codex_validation_temp" / _EDITOR_CRASH_ON_PLAY_PROBE_NAME
+        for path in (probe, probe.with_name(probe.name + ".meta")):
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                pass
+        self._cleanup_temp_assets()
+
+    def _assert_crash_payload(self, exit_code, payload, operation, editor_pid):
+        self.assertEqual(exit_code, 26, payload)
+        self.assertIsInstance(payload, dict, payload)
+        self.assertEqual(payload.get("status"), "editor_crashed_during_request", payload)
+        self.assertEqual(payload.get("operation"), operation, payload)
+        self.assertFalse(payload.get("ok"), payload)
+        self.assertEqual(payload.get("editor_pid"), editor_pid, payload)
+        crash_report_dir = payload.get("crash_report_dir")
+        self.assertTrue(crash_report_dir, payload)
+        self.assertTrue(Path(crash_report_dir).is_dir(), payload)
+        # The command must not have relaunched Unity for the project.
+        self.assertFalse(unity_session.is_pid_running(editor_pid), payload)
+        self.assertFalse(unity_session._project_lockfile_is_held(self.project_path), payload)
+
+    def test_play_reports_an_editor_crash_on_entering_play_mode(self):
+        base_url = self._launch_pristine_host()
+        editor_pid = self._published_unity_pid()
+        temp_dir = self.project_path / "Assets" / "__codex_validation_temp"
+        temp_dir.mkdir(parents=True, exist_ok=True)
+        self.addCleanup(self._remove_crash_probe)
+        (temp_dir / _EDITOR_CRASH_ON_PLAY_PROBE_NAME).write_text(
+            _EDITOR_CRASH_ON_PLAY_PROBE_SOURCE, encoding="utf-8"
+        )
+        # Settle the probe's compile first, so `play` measures only the transition
+        # and the crash rather than a refresh-driven compile.
+        exit_code, payload = self._exec_settled(
+            base_url,
+            "export default function run(ctx) { return { settled: true }; }",
+            wait_ms=self.REFRESH_WAIT_TIMEOUT_MS,
+        )
+        self.assertEqual(exit_code, 0, payload)
+        self.assertEqual(self._published_unity_pid(), editor_pid)
+
+        started = time.monotonic()
+        exit_code, payload, _, _ = _run_cli(
+            ["play"] + self._project_cli_args()
+            + ["--timeout-seconds", str(self.PLAY_TIMEOUT_SECONDS)]
+        )
+        elapsed = time.monotonic() - started
+        self._record_own_boundary(
+            "editor_crash_on_play",
+            exit_code=exit_code,
+            status=(payload or {}).get("status"),
+            elapsed_seconds=round(elapsed, 1),
+            editor_pid=editor_pid,
+            crash_report_dir=(payload or {}).get("crash_report_dir"),
+        )
+        self._assert_crash_payload(exit_code, payload, "play", editor_pid)
+        self.assertLess(elapsed, self.PLAY_CRASH_ELAPSED_LIMIT_SECONDS, payload)
+        self.assertNotIn("request_id", payload)
+        self.assertNotIn("resubmit_safe", payload)
+
+    def test_exec_reports_an_editor_crash_from_force_crash(self):
+        self._launch_pristine_host()
+        editor_pid = self._published_unity_pid()
+        started = time.monotonic()
+        exit_code, payload, _, _ = _run_cli(
+            ["exec"] + self._project_cli_args()
+            + ["--wait-timeout-ms", "30000", "--code", _EDITOR_CRASH_EXEC_JS]
+        )
+        elapsed = time.monotonic() - started
+        self._record_own_boundary(
+            "editor_crash_on_exec",
+            exit_code=exit_code,
+            status=(payload or {}).get("status"),
+            elapsed_seconds=round(elapsed, 1),
+            editor_pid=editor_pid,
+            crash_report_dir=(payload or {}).get("crash_report_dir"),
+        )
+        self._assert_crash_payload(exit_code, payload, "exec", editor_pid)
+        self.assertTrue(payload.get("request_id"), payload)
+        self.assertFalse(payload.get("resubmit_safe"), payload)
+
+
 if __name__ == "__main__":
     unittest.main()
 

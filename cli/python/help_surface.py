@@ -2174,6 +2174,81 @@ for _empty_response_command in (
             )
 
 
+# A project-scoped control command whose Editor process exited while it waited on the
+# control endpoint. Same status and exit code as the exec crash, but there is no
+# script to blame or replay, so the situation and continuation differ.
+EDITOR_EXIT_SITUATION = (
+    "The Unity Editor process exited while this command was waiting on it, so the lost "
+    "control endpoint is a crash, not a domain reload. The command did not retry and did "
+    "not relaunch Unity. The Editor log and any Unity crash report in the payload are the "
+    "evidence; the next project-scoped command relaunches the Editor."
+)
+_EDITOR_EXIT_HELP_LINE = (
+    "the Editor process exited while this command was waiting on it (a crash, not a "
+    "domain reload); the command did not retry or relaunch Unity. `editor_pid`, "
+    "`editor_log_path` and `crash_report_dir` carry the evidence, and the next "
+    "project-scoped command relaunches the Editor. Project mode only: `--base-url` "
+    "cannot see the process."
+)
+# Base-url mode cannot see the Editor process, so a crash there still surfaces as a
+# transport status (design D4).
+_BASE_URL_CRASH_CLAUSE = (
+    " With `--base-url` the CLI cannot see the Editor process: if it is gone, treat this "
+    "as a crash rather than a domain reload."
+)
+_EDITOR_EXIT_COMMANDS = (
+    "play",
+    "pause",
+    "stop",
+    "wait-for-compile",
+    "get-compile-errors",
+    "get-compile-warnings",
+)
+
+
+def _editor_exit_next_steps(command):
+    return [
+        {
+            "command": "get-log-source",
+            "when": "inspect the Editor log (and the `crash_report_dir` in this payload) to see why the Editor exited",
+            "argv_template": [
+                "unity-puer-exec", "get-log-source",
+                "--project-path", "{project_path}",
+            ],
+        },
+        {
+            "command": command,
+            "when": "the cause is understood; the next project-scoped command relaunches the Editor",
+            "argv_template": [
+                "unity-puer-exec", command,
+                "--project-path", "{project_path}",
+            ],
+        },
+    ]
+
+
+for _editor_exit_command in _EDITOR_EXIT_COMMANDS:
+    GUIDANCE_MATRIX[(_editor_exit_command, "editor_crashed_during_request")] = {
+        "situation": EDITOR_EXIT_SITUATION,
+        "next_steps": _editor_exit_next_steps(_editor_exit_command),
+    }
+    _editor_exit_failure = COMMAND_HELP[_editor_exit_command]["status"]["failure"]
+    for _index, _row in enumerate(_editor_exit_failure):
+        if _row[0] in ("not_available", direct_exec_client.STATUS_EMPTY_RESPONSE) and _BASE_URL_CRASH_CLAUSE not in _row[2]:
+            _editor_exit_failure[_index] = (_row[0], _row[1], _row[2] + _BASE_URL_CRASH_CLAUSE)
+    if not any(row[0] == "editor_crashed_during_request" for row in _editor_exit_failure):
+        _editor_exit_row = (
+            "editor_crashed_during_request",
+            direct_exec_client.EXIT_EDITOR_CRASHED_DURING_REQUEST,
+            _EDITOR_EXIT_HELP_LINE,
+        )
+        _failed_index = next(
+            (i for i, row in enumerate(_editor_exit_failure) if row[0] == "failed"),
+            len(_editor_exit_failure),
+        )
+        _editor_exit_failure.insert(_failed_index, _editor_exit_row)
+
+
 _derive_alias_surface()
 
 GUIDANCE_MATRIX[("get-log-briefs", "full_text_requires_include")] = {

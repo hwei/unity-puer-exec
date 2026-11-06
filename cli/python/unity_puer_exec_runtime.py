@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import datetime
 import difflib
 import hashlib
 import json
@@ -934,6 +935,65 @@ def _journaled_editor_is_gone(entry):
     return not unity_session.is_pid_running(editor_pid)
 
 
+EDITOR_PID_ALIVE = "alive"
+EDITOR_PID_EXITED = "exited"
+EDITOR_PID_UNKNOWN = "unknown"
+
+
+def _editor_pid_state(pid):
+    """Non-blocking liveness of the Editor a command talks to (design D1).
+
+    ``unknown`` when there is no pid to watch (base-url mode), else ``alive`` or
+    ``exited``. A reloading Editor keeps its pid, so ``alive`` never adds latency to
+    a domain-reload retry.
+    """
+    if isinstance(pid, bool) or not isinstance(pid, int) or pid <= 0:
+        return EDITOR_PID_UNKNOWN
+    return EDITOR_PID_ALIVE if unity_session.is_pid_running(pid) else EDITOR_PID_EXITED
+
+
+def _wait_for_editor_exit(pid):
+    """Watch a pid for the crash grace window.
+
+    Unity's crash handler keeps the process alive while it writes the dump, so a
+    dropped connection can precede the exit by seconds. True when the process exits
+    inside the window; False when it is still alive at the end or the pid is unknown.
+    """
+    if isinstance(pid, bool) or not isinstance(pid, int) or pid <= 0:
+        return False
+    deadline = time.time() + max(float(EDITOR_CRASH_GRACE_SECONDS), 0.0)
+    while True:
+        if not unity_session.is_pid_running(pid):
+            return True
+        if time.time() >= deadline:
+            return False
+        time.sleep(max(float(EDITOR_CRASH_GRACE_POLL_SECONDS), 0.0))
+
+
+def _command_editor_pid(args, session):
+    """pid of the Editor a project-scoped command talks to, or None.
+
+    The ready session's pid wins; otherwise the endpoint publication's. The
+    publication survives a crash, so its pid stays readable after the drop.
+    """
+    session_pid = getattr(session, "unity_pid", None)
+    if isinstance(session_pid, int) and not isinstance(session_pid, bool) and session_pid > 0:
+        return session_pid
+    project_path = _project_path_arg(args)
+    if not project_path:
+        return None
+    try:
+        publication = unity_session.read_endpoint_publication(project_path)
+    except (OSError, ValueError, unity_session.UnitySessionError):
+        return None
+    if not isinstance(publication, dict):
+        return None
+    publication_pid = publication.get("unity_pid")
+    if isinstance(publication_pid, int) and not isinstance(publication_pid, bool) and publication_pid > 0:
+        return publication_pid
+    return None
+
+
 def _wait_for_journaled_editor_exit(entry):
     """Watch a crashed Editor's pid for the post-submit grace window.
 
@@ -947,13 +1007,7 @@ def _wait_for_journaled_editor_exit(entry):
     editor_pid = entry.get("editor_pid")
     if not isinstance(editor_pid, int) or editor_pid <= 0:
         return False
-    deadline = time.time() + max(float(EDITOR_CRASH_GRACE_SECONDS), 0.0)
-    while True:
-        if not unity_session.is_pid_running(editor_pid):
-            return True
-        if time.time() >= deadline:
-            return False
-        time.sleep(max(float(EDITOR_CRASH_GRACE_POLL_SECONDS), 0.0))
+    return _wait_for_editor_exit(editor_pid)
 
 
 def _find_editor_crash_report_dir(started_at):
@@ -1035,6 +1089,35 @@ def _emit_editor_crash_payload(
     return attach_diagnostics(payload, include_diagnostics=args.include_diagnostics, session=session)
 
 
+def _format_journal_started_at(value):
+    """A datetime as the journal's string form, so the payload stays JSON-serializable."""
+    if value.tzinfo is None:
+        utc = value.replace(tzinfo=datetime.timezone.utc)
+    else:
+        utc = value.astimezone(datetime.timezone.utc)
+    return utc.strftime("%Y-%m-%dT%H:%M:%S.") + "{:03d}Z".format(utc.microsecond // 1000)
+
+
+def _journal_started_at(entry):
+    """The journal start time as the string `_find_editor_crash_report_dir` parses.
+
+    `read_exec_journal_entry` coerces the raw `started_at_utc` into a tz-aware
+    `started_at` datetime, so reading the raw key here silently lost the evidence.
+    The raw key is still accepted for callers that hold the uncoerced file shape.
+    """
+    if not isinstance(entry, dict):
+        return None
+    started_at = entry.get("started_at")
+    if isinstance(started_at, datetime.datetime):
+        return _format_journal_started_at(started_at)
+    if isinstance(started_at, str) and started_at:
+        return started_at
+    raw_started_at = entry.get("started_at_utc")
+    if isinstance(raw_started_at, str) and raw_started_at:
+        return raw_started_at
+    return None
+
+
 def _emit_journaled_crash(operation, request_id, entry, args, session=None, log_path=None, log_start=None, log_end=None, offsets_invalidated=None):
     """Crash payload for a request the journal says already ran in a dead Editor.
 
@@ -1047,7 +1130,7 @@ def _emit_journaled_crash(operation, request_id, entry, args, session=None, log_
         request_id,
         args,
         editor_pid=entry.get("editor_pid"),
-        started_at=entry.get("started_at_utc"),
+        started_at=_journal_started_at(entry),
         editor_log_path=entry.get("editor_log_path"),
         session=session,
         log_path=log_path,
@@ -1121,16 +1204,6 @@ def _editor_crashed_result(
         offsets_invalidated=offsets_invalidated,
     )
     return EXIT_EDITOR_CRASHED_DURING_REQUEST, emit_payload(payload), ""
-
-
-def _is_not_available_response(exit_code, stdout_text):
-    if exit_code != EXIT_NOT_AVAILABLE or not stdout_text:
-        return False
-    try:
-        body = json.loads(stdout_text)
-    except ValueError:
-        return False
-    return isinstance(body, dict) and body.get("status") == "not_available"
 
 
 def _refresh_pending_exec(args, request_id, pending, phase=None):
@@ -2037,8 +2110,9 @@ def _run_exec_impl(args, recovery):
         _inject_log_range_into_payload(payload, log_path, log_start, _capture_log_offset(log_path))
         return EXIT_REFRESH_UNSETTLED, emit_payload(payload), ""
 
-    if selector == "project_path" and _is_not_available_response(exit_code, stdout_text):
-        # The connection dropped, which is also what a crash looks like. If the server
+    if selector == "project_path" and _is_exec_transport_loss_response(exit_code, stdout_text, stderr_text):
+        # The transport dropped, which is also what a crash looks like. `not_available`
+        # and `empty_response` are the two shapes a mid-request drop takes. If the server
         # journalled a start for this request, the Editor did run the script; watch the
         # pid for the crash handler's tail and report the crash once it exits.
         journal_entry = _read_exec_journal(args, request_id)
@@ -2816,6 +2890,31 @@ def _play_probe_endpoint(selector, args, base_url, health_timeout_seconds, endpo
     return _health_play_state(payload), payload, base_url, True
 
 
+def _is_transport_loss_body(body):
+    """True when a parsed body names a transport loss rather than a command result.
+
+    ``empty_response`` and ``not_available`` are transport conditions (the endpoint
+    dropped mid-reload); an absent route (``http_status == 404``) is also
+    ``not_available`` but must stay terminal so the caller can report a version
+    mismatch. A body carrying ``failure_origin`` is likewise terminal: the service
+    answered and reported its own internal failure.
+    """
+    if not isinstance(body, dict):
+        return False
+    if body.get("http_status") == 404:
+        return False
+    if body.get("failure_origin"):
+        # A body that names the tool as the failure origin is a command result, not a
+        # reload edge: the service answered and threw. Retrying cannot change it.
+        return False
+    return body.get("status") in (direct_exec_client.STATUS_EMPTY_RESPONSE, "not_available")
+
+
+def _is_exec_transport_loss_response(exit_code, stdout_text, stderr_text):
+    """Whether an exec response lost the transport, whatever shape the drop took."""
+    return _is_transport_loss_body(_parse_response_body(stdout_text, stderr_text))
+
+
 def _is_play_mode_transport_drop(body):
     """True when a play-mode body names a reload edge rather than a command result.
 
@@ -2828,13 +2927,7 @@ def _is_play_mode_transport_drop(body):
     """
     if body is None:
         return True
-    if body.get("http_status") == 404:
-        return False
-    if body.get("failure_origin"):
-        # A body that names the tool as the failure origin is a command result, not a
-        # reload edge: the service answered and threw. Retrying cannot change it.
-        return False
-    return body.get("status") in (direct_exec_client.STATUS_EMPTY_RESPONSE, "not_available")
+    return _is_transport_loss_body(body)
 
 
 def _post_play_mode(selector, args, session, base_url, action, force_run_in_background, endpoint_resolver=None):

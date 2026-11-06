@@ -6926,6 +6926,47 @@ class AgentIssueFeedbackTests(unittest.TestCase):
         self.assertNotIn("--help-feedback", payload.get("situation") or "")
 
 
+class CommandEditorPidTests(unittest.TestCase):
+    """The pid a project-scoped command watches for a mid-command crash."""
+
+    def _args(self, project_path="X:/p"):
+        return mock.Mock(project_path=project_path)
+
+    def test_the_session_pid_wins_over_the_publication(self):
+        session = _make_session()
+        with mock.patch.object(
+            unity_session, "read_endpoint_publication", return_value={"unity_pid": 777}
+        ) as read_publication:
+            editor_pid = unity_puer_exec_runtime._command_editor_pid(self._args(), session)
+
+        self.assertEqual(editor_pid, 1234)
+        read_publication.assert_not_called()
+
+    def test_falls_back_to_the_endpoint_publication_pid(self):
+        session = _make_session()
+        session.unity_pid = None
+        with mock.patch.object(
+            unity_session, "read_endpoint_publication", return_value={"unity_pid": 777}
+        ):
+            editor_pid = unity_puer_exec_runtime._command_editor_pid(self._args(), session)
+
+        self.assertEqual(editor_pid, 777)
+
+    def test_returns_none_when_neither_source_names_a_pid(self):
+        session = _make_session()
+        session.unity_pid = None
+        with mock.patch.object(unity_session, "read_endpoint_publication", return_value=None):
+            self.assertIsNone(unity_puer_exec_runtime._command_editor_pid(self._args(), session))
+        with mock.patch.object(
+            unity_session, "read_endpoint_publication", return_value={"unity_pid": None}
+        ):
+            self.assertIsNone(unity_puer_exec_runtime._command_editor_pid(self._args(), session))
+        with mock.patch.object(
+            unity_session, "read_endpoint_publication", side_effect=OSError("denied")
+        ):
+            self.assertIsNone(unity_puer_exec_runtime._command_editor_pid(self._args(), session))
+
+
 class ExecCrashReplayLoopTests(unittest.TestCase):
     """The CLI half of `editor_crashed_during_request`.
 
@@ -7231,6 +7272,172 @@ class ExecCrashReplayLoopTests(unittest.TestCase):
                 argv = step.get("argv") or []
                 self.assertNotIn("rid-crash", argv)
                 self.assertNotIn("--request-id", argv)
+
+    def _empty_response_body(self, request_id):
+        # The exact body `direct_exec_client.invoke_command` produces for a
+        # truncated or empty body: exit 12, status `empty_response`.
+        return unity_puer_exec.direct_exec_client._empty_response_payload(
+            "exec",
+            ValueError("Expecting value: line 1 column 1 (char 0)"),
+            request_id=request_id,
+        )
+
+    def test_exec_reports_the_crash_when_the_empty_response_body_hides_it(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_path = Path(temp_dir) / "Project"
+            project_path.mkdir()
+            self._write_journal(project_path, "rid-empty-crash")
+            unity_session.write_pending_exec_artifact(
+                str(project_path),
+                "rid-empty-crash",
+                {"request_id": "rid-empty-crash", "code": self.CODE, "script_args": {}, "script_args_json": "{}"},
+            )
+
+            with mock.patch.object(
+                unity_session,
+                "ensure_session_ready",
+                return_value=_make_session(project_path=str(project_path)),
+            ), mock.patch.object(
+                unity_puer_exec.direct_exec_client,
+                "invoke_command",
+                return_value=(
+                    unity_puer_exec.EXIT_NOT_AVAILABLE,
+                    json.dumps(self._empty_response_body("rid-empty-crash")),
+                    "",
+                ),
+            ) as invoke_command, mock.patch.object(
+                unity_session, "is_pid_running", side_effect=[True, False]
+            ), mock.patch.object(
+                unity_puer_exec_runtime, "EDITOR_CRASH_GRACE_POLL_SECONDS", 0.0
+            ):
+                exit_code, stdout, stderr = unity_puer_exec.run_cli(
+                    ["exec", "--project-path", str(project_path), "--code", self.CODE, "--request-id", "rid-empty-crash"]
+                )
+
+            self.assertEqual(invoke_command.call_count, 1)
+            self.assertIsNone(unity_session.read_pending_exec_artifact(str(project_path), "rid-empty-crash"))
+
+        self.assertEqual(exit_code, 26)
+        self.assertEqual(stderr, "")
+        body = json.loads(stdout)
+        self.assertEqual(body["status"], "editor_crashed_during_request")
+        self.assertFalse(body["resubmit_safe"])
+        self.assertEqual(body["editor_pid"], 4242)
+
+    def test_exec_keeps_empty_response_when_the_editor_survives_the_grace_window(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_path = Path(temp_dir) / "Project"
+            project_path.mkdir()
+            self._write_journal(project_path, "rid-empty-live")
+
+            with mock.patch.object(
+                unity_session,
+                "ensure_session_ready",
+                return_value=_make_session(project_path=str(project_path)),
+            ), mock.patch.object(
+                unity_puer_exec.direct_exec_client,
+                "invoke_command",
+                return_value=(
+                    unity_puer_exec.EXIT_NOT_AVAILABLE,
+                    json.dumps(self._empty_response_body("rid-empty-live")),
+                    "",
+                ),
+            ), mock.patch.object(
+                unity_session, "is_pid_running", return_value=True
+            ), mock.patch.object(
+                unity_puer_exec_runtime, "EDITOR_CRASH_GRACE_SECONDS", 0.0
+            ):
+                exit_code, stdout, stderr = unity_puer_exec.run_cli(
+                    ["exec", "--project-path", str(project_path), "--code", self.CODE, "--request-id", "rid-empty-live"]
+                )
+
+        self.assertEqual(exit_code, unity_puer_exec.EXIT_NOT_AVAILABLE)
+        self.assertEqual(stderr, "")
+        body = json.loads(stdout)
+        self.assertEqual(body["status"], "empty_response")
+        self.assertNotIn("editor_pid", body)
+
+    def test_exec_body_with_failure_origin_is_never_a_transport_loss(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_path = Path(temp_dir) / "Project"
+            project_path.mkdir()
+            # The service answered and threw: HTTP 500 with its own internal-error
+            # body. That is a command result, so no pid is ever watched.
+            body = {
+                "ok": False,
+                "status": "not_available",
+                "error": "internal_error",
+                "http_status": 500,
+                "failure_origin": "service_internal",
+            }
+
+            with mock.patch.object(
+                unity_session,
+                "ensure_session_ready",
+                return_value=_make_session(project_path=str(project_path)),
+            ), mock.patch.object(
+                unity_puer_exec.direct_exec_client,
+                "invoke_command",
+                return_value=(unity_puer_exec.EXIT_NOT_AVAILABLE, json.dumps(body), ""),
+            ), mock.patch.object(unity_session, "is_pid_running") as is_pid_running:
+                exit_code, stdout, stderr = unity_puer_exec.run_cli(
+                    ["exec", "--project-path", str(project_path), "--code", self.CODE, "--request-id", "rid-internal"]
+                )
+
+            is_pid_running.assert_not_called()
+
+        self.assertEqual(exit_code, unity_puer_exec.EXIT_NOT_AVAILABLE)
+        self.assertEqual(stderr, "")
+        reported = json.loads(stdout)
+        self.assertEqual(reported["status"], "not_available")
+        self.assertEqual(reported["failure_origin"], "service_internal")
+
+    def test_journaled_crash_keeps_the_coerced_start_time_and_the_crash_report(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_path = Path(temp_dir) / "Project"
+            project_path.mkdir()
+            started_at = datetime.datetime.utcnow()
+            self._write_journal(project_path, "rid-coerced", started_at=started_at)
+            crashes_root = Path(temp_dir) / "Unity" / "Editor" / "Crashes"
+            report_dir = crashes_root / "Crash_2026-11-06_050458023"
+            report_dir.mkdir(parents=True)
+
+            with mock.patch.object(
+                unity_puer_exec_runtime.tempfile, "gettempdir", return_value=temp_dir
+            ), mock.patch.object(
+                unity_session,
+                "ensure_session_ready",
+                return_value=_make_session(project_path=str(project_path)),
+            ), mock.patch.object(
+                unity_puer_exec.direct_exec_client,
+                "invoke_command",
+                return_value=(
+                    unity_puer_exec.EXIT_NOT_AVAILABLE,
+                    json.dumps(self._empty_response_body("rid-coerced")),
+                    "",
+                ),
+            ), mock.patch.object(
+                unity_session, "is_pid_running", side_effect=[True, False]
+            ), mock.patch.object(
+                unity_puer_exec_runtime, "EDITOR_CRASH_GRACE_POLL_SECONDS", 0.0
+            ):
+                exit_code, stdout, stderr = unity_puer_exec.run_cli(
+                    ["exec", "--project-path", str(project_path), "--code", self.CODE, "--request-id", "rid-coerced"]
+                )
+
+            # The command must read the journal through the real reader, whose
+            # coerced entry names the start time `started_at`, not `started_at_utc`.
+            entry = unity_session.read_exec_journal_entry(str(project_path), "rid-coerced")
+
+        self.assertIsNotNone(entry)
+        self.assertIsInstance(entry["started_at"], datetime.datetime)
+        self.assertNotIn("started_at_utc", entry)
+        self.assertEqual(exit_code, 26)
+        self.assertEqual(stderr, "")
+        body = json.loads(stdout)
+        self.assertEqual(body["status"], "editor_crashed_during_request")
+        self.assertEqual(body["started_at"], started_at.strftime("%Y-%m-%dT%H:%M:%S.000Z"))
+        self.assertEqual(body["crash_report_dir"], str(report_dir))
 
 
 if __name__ == "__main__":
