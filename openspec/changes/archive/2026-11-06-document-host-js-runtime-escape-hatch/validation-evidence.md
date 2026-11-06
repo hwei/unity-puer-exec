@@ -95,3 +95,19 @@ header matches `openspec/specs/formal-cli-contract/spec.md:1353` exactly, so arc
 requirement that currently forbids help from describing the mechanism (its scenario at line 1361).
 Until archive, the live main spec still carries that sentence; the post-archive grep is a workflow
 follow-up, not a task here.
+
+## Closeout disposition
+
+**New follow-up candidates identified: 1.** Disposed by the maintainer on 2026-11-06.
+
+| category | candidate | disposition |
+|---|---|---|
+| `validation-gap` | The escape hatch is now published in help but no test in this repository has ever executed it. The entry-point names are evidenced by reading `com.tencent.puerts.core` sources on two hosts, not by a run. | **Accepted as-is — no smoke case.** The technique is deliberately outside this CLI's contract, so a real-host case per major would commit the repository to tracking a PuerTS internal across releases, which is exactly the obligation the proposal declined. The evidence stays `manual-check`, as recorded above. |
+
+No other candidate was raised. A repository-wide grep over `*.md`, `*.py` and `*.cs` finds the
+denial nowhere else: the three READMEs (`README.md`, `README.zh-CN.md`,
+`packages/com.txcombo.unity-puer-exec/README.md`), `--help-status`, and the `runtime-guidance`
+spec are all clean. The only remaining hits are the corrected `help_surface.py` entries
+themselves, the live `formal-cli-contract` spec that archive replaces, and the new test's
+`DENIALS` constants, which exist in order to fail if either phrasing returns. So the two
+corrected sites are the whole surface.
