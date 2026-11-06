@@ -6,7 +6,7 @@
 
 ## 2. Graceful ensure-closed
 
-- [ ] 2.1 Implement the chosen quit request in `unity_session_process.ensure_closed`'s default mode: request quit, poll lockfile and blocker state, and escalate to a kill at the timeout. Add `result.closed_via` in `run_ensure_closed`. Verify with mocked tests for already_stopped, graceful, killed after timeout, quit request failed then killed, and `--immediate-kill` unchanged
+- [x] 2.1 Implement the chosen quit request in `unity_session_process.ensure_closed`'s default mode: request quit, poll lockfile and blocker state, and escalate to a kill at the timeout. Add `result.closed_via` in `run_ensure_closed`. Verify with mocked tests for already_stopped, graceful, killed after timeout, quit request failed then killed, and `--immediate-kill` unchanged
 - [ ] 2.2 Report a supported modal blocker during the wait as `modal_blocked` (exit 19) without killing, with next steps `resolve-blocker` and `ensure-closed --immediate-kill`. Verify with a mocked test where the blocker appears mid-wait and the kill function is never called
 
 ## 3. exec guard and help

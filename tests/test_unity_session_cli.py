@@ -2263,6 +2263,45 @@ class UnityPuerExecCliTests(unittest.TestCase):
         self.assertEqual(payload["status"], "not_stopped")
         self.assertNotIn("deprecated", payload)
 
+    def test_ensure_closed_reports_closed_via_in_the_success_payload(self):
+        session = _make_session()
+        session.closed_via = "graceful"
+        with mock.patch.object(unity_session, "ensure_closed", return_value=(True, session)):
+            exit_code, stdout, stderr = unity_puer_exec.run_cli(["ensure-closed"])
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(stderr, "")
+        payload = json.loads(stdout)
+        self.assertEqual(payload["result"]["status"], "stopped")
+        self.assertEqual(payload["result"]["closed_via"], "graceful")
+
+    def test_ensure_closed_modal_blocker_maps_to_exit_code_19_and_names_resolve_blocker(self):
+        blocker = {
+            "type": "save_modified_scenes_prompt",
+            "hwnd": 4321,
+            "buttons": [{"hwnd": 1, "label": "&Don't Save", "ctrl_id": 3}],
+        }
+        session = _make_session()
+        session.modal_blocker = blocker
+        with mock.patch.object(unity_session, "ensure_closed", return_value=(False, session)):
+            exit_code, stdout, stderr = unity_puer_exec.run_cli(["ensure-closed"])
+
+        self.assertEqual(exit_code, unity_puer_exec.EXIT_MODAL_BLOCKED)
+        self.assertEqual(stderr, "")
+        payload = json.loads(stdout)
+        self.assertEqual(payload["status"], "modal_blocked")
+        self.assertEqual(payload["blocker"], blocker)
+        commands = [step.get("command") for step in payload["next_steps"]]
+        self.assertIn("resolve-blocker", commands)
+        self.assertIn("ensure-closed", commands)
+
+    def test_ensure_closed_modal_blocked_status_is_in_the_help_table(self):
+        import help_surface
+
+        table = help_surface.render_command_status_help("ensure-closed")
+        self.assertIn("modal_blocked", table)
+        self.assertIn("closed_via", table)
+
     def test_ensure_stopped_alias_matches_ensure_closed_apart_from_deprecation(self):
         """The deprecated alias answers the same result with a `deprecated` field."""
         session = _make_session()

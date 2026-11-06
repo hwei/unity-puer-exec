@@ -13,6 +13,7 @@ EXIT_NO_OBSERVATION_TARGET = 15
 # means the addressed service holds no recoverable record for the request_id.
 EXIT_REFRESH_UNSETTLED = 25
 EXIT_NOT_STOPPED = 16
+EXIT_MODAL_BLOCKED = 19
 EXIT_EDITOR_NOT_UNDER_CLI_CONTROL = 17
 EXIT_UNITY_START_FAILED = 20
 EXIT_UNITY_NOT_READY = 21
@@ -700,10 +701,12 @@ COMMAND_HELP = {
         "status": {
             "success": [
                 "`completed`: the target is stopped and `result.status` is `stopped`.",
+                "`result.closed_via` is `already_stopped`, `graceful` or `killed`: how the stop was reached, so a disclosed kill is never mistaken for a graceful close.",
             ],
             "failure": [
                 ("address_conflict", 2, "both selectors were provided; choose exactly one."),
                 ("not_stopped", EXIT_NOT_STOPPED, "the target is still not stopped under the selected stop mode."),
+                ("modal_blocked", EXIT_MODAL_BLOCKED, "a supported Unity modal dialog is holding the Editor's quit; the Editor was not killed."),
                 ("failed", 1, "an unexpected command failure occurred while checking or enforcing the stopped state."),
             ],
         },
@@ -1586,6 +1589,21 @@ GUIDANCE_MATRIX = {
             {
                 "command": "ensure-closed",
                 "when": "you want to force-stop with --immediate-kill",
+            },
+        ],
+    },
+    ("ensure-closed", "modal_blocked"): {
+        "situation": "A supported modal dialog is holding the Editor's quit. The Editor was not killed, because the dialog may be protecting unsaved work.",
+        "next_steps": [
+            {
+                "command": "resolve-blocker",
+                "when": "you have decided what to do with the dialog, for example saving or discarding the scene",
+                "argv_template": ["unity-puer-exec", "resolve-blocker", "--project-path", "{project_path}"],
+            },
+            {
+                "command": "ensure-closed",
+                "when": "you accept discarding unsaved work and want to force the Editor down",
+                "argv_template": ["unity-puer-exec", "ensure-closed", "--project-path", "{project_path}", "--immediate-kill"],
             },
         ],
     },

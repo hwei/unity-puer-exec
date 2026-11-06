@@ -3,6 +3,7 @@ import csv
 import io
 import os
 import subprocess
+import sys
 import time as time_module
 from pathlib import Path
 
@@ -282,6 +283,67 @@ def _is_disable_assembly_updater_token(token):
     return str(token).strip().split("=", 1)[0].lower() == DISABLE_ASSEMBLY_UPDATER_SWITCH.lower()
 
 
+def _request_graceful_quit(unity_pid):
+    """Ask an Editor to take Unity's normal quit path, like a user closing the window.
+
+    This is design D1 mechanism A, chosen by the task 1.1 probe: it is the only
+    candidate that exits cleanly, saves a dirty in-memory project setting, and
+    surfaces the unsaved-scene prompt. `EditorApplication.Exit(0)` from a script
+    crashed the Editor, and calling it from the main thread exited without
+    showing the prompt.
+
+    The return value distinguishes "the quit was requested" from "there was no
+    window to ask", because the caller must disclose the escalation to a kill
+    instead of claiming a graceful close.
+    """
+    if not unity_pid:
+        return {"requested": False, "reason": "no_published_process"}
+    if sys.platform != "win32":
+        return {"requested": False, "reason": "unsupported_platform"}
+    # `CloseMainWindow` needs the window of the process itself, so it is issued
+    # from the same host tool path as taskkill rather than through a shell.
+    script = (
+        "$ErrorActionPreference = 'Stop'; "
+        "$p = Get-Process -Id {pid} -ErrorAction Stop; "
+        "if ($p.MainWindowHandle -eq 0) {{ 'no_main_window' }} "
+        "elseif ($p.CloseMainWindow()) {{ 'requested' }} else {{ 'refused' }}"
+    ).format(pid=int(unity_pid))
+    result = _run_host_tool(["powershell", "-NoProfile", "-NonInteractive", "-Command", script])
+    answer = (result.stdout or "").strip().splitlines()
+    token = answer[-1].strip() if answer else ""
+    if token == "requested":
+        return {"requested": True, "reason": "quit_requested"}
+    if token == "no_main_window":
+        return {"requested": False, "reason": "no_main_window"}
+    if token == "refused":
+        return {"requested": False, "reason": "quit_request_refused"}
+    return {
+        "requested": False,
+        "reason": "quit_request_failed",
+        "exit_code": result.returncode,
+        "stdout": (result.stdout or "").strip(),
+        "stderr": (result.stderr or "").strip(),
+    }
+
+
+def _kill_published_process(session, project_path, timeout_seconds, lockfile_held_fn, time_ref, target_pid):
+    """Escalate to a kill and poll for the project lock to be released."""
+    result = _run_host_tool(["taskkill", "/PID", str(target_pid), "/T", "/F"])
+    session.diagnostics["taskkill_target_pid"] = target_pid
+    session.diagnostics["taskkill_stdout"] = (result.stdout or "").strip()
+    session.diagnostics["taskkill_stderr"] = (result.stderr or "").strip()
+    session.diagnostics["taskkill_exit_code"] = result.returncode
+    settle_deadline = time_ref.time() + max(POLL_INTERVAL_SECONDS, min(timeout_seconds, 2.0))
+    while time_ref.time() < settle_deadline:
+        if not lockfile_held_fn(project_path):
+            session.diagnostics["project_lockfile_held"] = False
+            return True
+        time_ref.sleep(POLL_INTERVAL_SECONDS)
+    still_held = lockfile_held_fn(project_path)
+    session.diagnostics["project_lockfile_held"] = still_held
+    return not still_held
+
+
 def ensure_closed(
     project_path=None,
     mode="inspect",
@@ -293,6 +355,8 @@ def ensure_closed(
     is_pid_running_fn=None,
     default_base_url=None,
     time_ref=None,
+    request_graceful_quit_fn=None,
+    detect_modal_blocker_fn=None,
 ):
     """Decide whether a project is stopped, from that project's own state.
 
@@ -313,6 +377,9 @@ def ensure_closed(
     """
     is_pid_running_fn = is_pid_running if is_pid_running_fn is None else is_pid_running_fn
     lockfile_held_fn = _project_lockfile_is_held if lockfile_held_fn is None else lockfile_held_fn
+    request_graceful_quit_fn = (
+        _request_graceful_quit if request_graceful_quit_fn is None else request_graceful_quit_fn
+    )
     time_ref = time_module if time_ref is None else time_ref
 
     resolved_project_path = resolve_project_path_fn(project_path)
@@ -332,6 +399,7 @@ def ensure_closed(
     }
 
     if not session.diagnostics["project_lockfile_held"]:
+        session.closed_via = "already_stopped"
         return True, session
 
     if mode == "inspect":
@@ -339,12 +407,53 @@ def ensure_closed(
 
     if mode == "timeout_then_kill":
         deadline = time_ref.time() + timeout_seconds
+        target_pid = session.unity_pid
+        if not lockfile_held_fn(resolved_project_path):
+            session.closed_via = "already_stopped"
+            return True, session
+
+        # Graceful first, per the editor-graceful-close contract. The quit is
+        # requested once; the loop below then waits for the lockfile and watches
+        # for a modal blocker that is holding the quit.
+        if target_pid is None:
+            # Nothing was published, so there is no process to ask or to kill.
+            # Report the running Editor instead of guessing.
+            session.diagnostics["kill_skipped_reason"] = "no_published_process_to_target"
+            return False, session
+        quit_request = request_graceful_quit_fn(target_pid)
+        session.diagnostics["graceful_quit_request"] = quit_request
+        session.diagnostics["graceful_quit_requested"] = bool(quit_request.get("requested"))
+
+        poll_interval = max(POLL_INTERVAL_SECONDS, 0.01)
         while time_ref.time() < deadline:
             if not lockfile_held_fn(resolved_project_path):
                 session.diagnostics["project_lockfile_held"] = False
+                session.closed_via = (
+                    "graceful" if session.diagnostics["graceful_quit_requested"] else "already_stopped"
+                )
                 return True, session
-            time_ref.sleep(POLL_INTERVAL_SECONDS)
-        mode = "immediate_kill"
+            if detect_modal_blocker_fn is not None:
+                blocker = detect_modal_blocker_fn(target_pid)
+                if blocker is not None:
+                    # A supported dialog is holding the quit. Do not kill: the
+                    # dialog may be the only thing protecting unsaved work.
+                    session.diagnostics["project_lockfile_held"] = True
+                    session.modal_blocker = blocker
+                    return False, session
+            time_ref.sleep(poll_interval)
+
+        # The wait ran out. Escalate, and say so in the result.
+        if not lockfile_held_fn(resolved_project_path):
+            session.diagnostics["project_lockfile_held"] = False
+            session.closed_via = (
+                "graceful" if session.diagnostics["graceful_quit_requested"] else "already_stopped"
+            )
+            return True, session
+        session.closed_via = "killed"
+        stopped = _kill_published_process(
+            session, resolved_project_path, timeout_seconds, lockfile_held_fn, time_ref, target_pid
+        )
+        return stopped, session
 
     if mode == "immediate_kill":
         target_pid = session.unity_pid
@@ -356,20 +465,11 @@ def ensure_closed(
             session.diagnostics["kill_skipped_reason"] = "no_published_process_to_target"
             return False, session
 
-        result = _run_host_tool(["taskkill", "/PID", str(target_pid), "/T", "/F"])
-        session.diagnostics["taskkill_target_pid"] = target_pid
-        session.diagnostics["taskkill_stdout"] = (result.stdout or "").strip()
-        session.diagnostics["taskkill_stderr"] = (result.stderr or "").strip()
-        session.diagnostics["taskkill_exit_code"] = result.returncode
-        settle_deadline = time_ref.time() + max(POLL_INTERVAL_SECONDS, min(timeout_seconds, 2.0))
-        while time_ref.time() < settle_deadline:
-            if not lockfile_held_fn(resolved_project_path):
-                session.diagnostics["project_lockfile_held"] = False
-                return True, session
-            time_ref.sleep(POLL_INTERVAL_SECONDS)
-        still_held = lockfile_held_fn(resolved_project_path)
-        session.diagnostics["project_lockfile_held"] = still_held
-        return not still_held, session
+        session.closed_via = "killed"
+        stopped = _kill_published_process(
+            session, resolved_project_path, timeout_seconds, lockfile_held_fn, time_ref, target_pid
+        )
+        return stopped, session
 
     return False, session
 

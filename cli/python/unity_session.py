@@ -1389,6 +1389,7 @@ def ensure_closed(project_path=None, base_url=None, mode="inspect", timeout_seco
         is_pid_running_fn=_is_pid_running,
         default_base_url=direct_exec_client.DEFAULT_BASE_URL,
         time_ref=time,
+        detect_modal_blocker_fn=lambda pid: unity_modal_blockers.detect_modal_blocker(pid, scope="stop"),
     )
 
 

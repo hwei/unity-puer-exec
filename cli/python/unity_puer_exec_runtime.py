@@ -3656,6 +3656,22 @@ def run_ensure_closed(args):
     else:
         stopped, session = unity_session.ensure_closed(base_url=args.base_url, mode="inspect", timeout_seconds=args.timeout_seconds)
 
+    # A supported dialog holding the quit is reported instead of killed: killing
+    # could discard the very unsaved work the dialog is asking about.
+    blocker = getattr(session, "modal_blocker", None)
+    if blocker is not None and not stopped:
+        payload = expected_failure_payload(
+            "ensure-closed",
+            "modal_blocked",
+            "a modal dialog is holding the Editor's quit",
+            session=session,
+            include_diagnostics=args.include_diagnostics,
+        )
+        payload["blocker"] = blocker
+        _attach_guidance(payload, args.command, "modal_blocked", args)
+        _mark_deprecated(payload, args.command)
+        return EXIT_MODAL_BLOCKED, emit_payload(payload), ""
+
     if not stopped:
         payload = expected_failure_payload(
             "ensure-closed",
@@ -3668,10 +3684,14 @@ def run_ensure_closed(args):
         _mark_deprecated(payload, args.command)
         return EXIT_NOT_STOPPED, emit_payload(payload), ""
 
+    result = {"status": "stopped"}
+    closed_via = getattr(session, "closed_via", None)
+    if closed_via is not None:
+        result["closed_via"] = closed_via
     payload = success_payload(
         "ensure-closed",
         session=session,
-        result={"status": "stopped"},
+        result=result,
         include_diagnostics=args.include_diagnostics,
     )
     _mark_deprecated(payload, args.command)

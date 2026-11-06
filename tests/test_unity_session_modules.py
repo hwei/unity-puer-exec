@@ -1440,5 +1440,205 @@ class HostToolOutputDecodingTests(unittest.TestCase):
             self.assertEqual(unity_session_process.list_unity_pids(), [42, 43])
 
 
+    def test_listing_does_not_depend_on_decoded_text(self):
+        with self._run_patch(returncode=0, stdout=None, stderr=""):
+            self.assertEqual(unity_session_process.list_unity_pids(), [])
+
+        with self._run_patch(
+            returncode=0,
+            stdout='"Unity.exe","42","Console","1","1 K"\r\n"Unity.exe","43","Console","1","1 K"\r\n',
+            stderr="",
+        ):
+            self.assertEqual(unity_session_process.list_unity_pids(), [42, 43])
+
+
+class EnsureClosedGracefulTests(unittest.TestCase):
+    """make-ensure-closed-close-gracefully: graceful quit first, kill disclosed.
+
+    These drive ``unity_session_process.ensure_closed`` with injected
+    dependencies only, so no Editor and no host tool runs.
+    """
+
+    def _call(
+        self,
+        lockfile_held_values,
+        mode="timeout_then_kill",
+        quit_result=None,
+        blockers=None,
+        timeout_seconds=10.0,
+        published_pid=1234,
+    ):
+        # The first read is the diagnostics snapshot taken on entry; the rest
+        # are the wait loop. Once the supplied values run out, the last one
+        # repeats, so a short list still describes a stable state.
+        held_values = list(lockfile_held_values)
+
+        kill_state = {"killed": False}
+
+        def lockfile_held_value():
+            # A kill releases the project lock in reality; model that so the
+            # post-kill settle wait can observe it.
+            if kill_state["killed"]:
+                return False
+            if len(held_values) > 1:
+                return held_values.pop(0)
+            return held_values[0]
+
+        # A clock that advances on each read, so the deadline loop terminates.
+        counter = {"t": 0.0}
+
+        def clock():
+            counter["t"] += 1.0
+            return counter["t"]
+
+        quit_calls = []
+
+        def request_quit(pid):
+            quit_calls.append(pid)
+            if quit_result is not None:
+                return quit_result
+            return {"requested": True, "reason": "quit_requested"}
+
+        blocker_values = iter(blockers or [])
+
+        def detect_blocker(_pid):
+            try:
+                return next(blocker_values)
+            except StopIteration:
+                return None
+
+        with mock.patch.object(unity_session_process, "_run_host_tool") as host_tool:
+            def host_tool_side_effect(*_args, **_kwargs):
+                kill_state["killed"] = True
+                return subprocess.CompletedProcess(
+                    args=["taskkill"], returncode=0, stdout="SUCCESS", stderr=""
+                )
+
+            host_tool.side_effect = host_tool_side_effect
+            outcome = unity_session_process.ensure_closed(
+                project_path="X:/project",
+                mode=mode,
+                timeout_seconds=timeout_seconds,
+                resolve_project_path_fn=lambda value: Path(value),
+                read_endpoint_publication_fn=lambda _path: (
+                    {"base_url": "http://127.0.0.1:55231", "unity_pid": published_pid}
+                    if published_pid is not None
+                    else None
+                ),
+                endpoint_publication_path_fn=lambda _path: Path(
+                    "X:/project/Temp/UnityPuerExec/endpoint.json"
+                ),
+                lockfile_held_fn=lambda _path: lockfile_held_value(),
+                is_pid_running_fn=lambda _pid: True,
+                default_base_url="http://127.0.0.1:55231",
+                time_ref=SimpleNamespace(time=clock, sleep=lambda _seconds: None),
+                request_graceful_quit_fn=request_quit,
+                detect_modal_blocker_fn=detect_blocker,
+            )
+        return outcome, quit_calls, host_tool
+
+    def test_request_graceful_quit_reports_each_host_answer(self):
+        cases = [
+            ("requested\r\n", 0, {"requested": True, "reason": "quit_requested"}),
+            ("no_main_window\r\n", 0, {"requested": False, "reason": "no_main_window"}),
+            ("refused\r\n", 0, {"requested": False, "reason": "quit_request_refused"}),
+        ]
+        for stdout, returncode, expected in cases:
+            with mock.patch.object(
+                unity_session_process,
+                "_run_host_tool",
+                return_value=subprocess.CompletedProcess(
+                    args=["powershell"], returncode=returncode, stdout=stdout, stderr=""
+                ),
+            ) as host_tool:
+                actual = unity_session_process._request_graceful_quit(1234)
+
+            self.assertEqual(actual, expected, stdout)
+            self.assertEqual(host_tool.call_args.args[0][0], "powershell")
+            self.assertIn("CloseMainWindow", host_tool.call_args.args[0][-1])
+
+    def test_request_graceful_quit_reports_an_unexpected_answer_with_diagnostics(self):
+        with mock.patch.object(
+            unity_session_process,
+            "_run_host_tool",
+            return_value=subprocess.CompletedProcess(
+                args=["powershell"], returncode=1, stdout="", stderr="boom"
+            ),
+        ):
+            actual = unity_session_process._request_graceful_quit(1234)
+
+        self.assertFalse(actual["requested"])
+        self.assertEqual(actual["reason"], "quit_request_failed")
+        self.assertEqual(actual["exit_code"], 1)
+        self.assertEqual(actual["stderr"], "boom")
+
+    def test_request_graceful_quit_without_a_published_pid_asks_nothing(self):
+        with mock.patch.object(unity_session_process, "_run_host_tool") as host_tool:
+            actual = unity_session_process._request_graceful_quit(None)
+
+        self.assertEqual(actual, {"requested": False, "reason": "no_published_process"})
+        host_tool.assert_not_called()
+
+    def test_already_stopped_reports_already_stopped_and_never_requests_quit(self):
+        (stopped, session), quit_calls, host_tool = self._call([False])
+
+        self.assertTrue(stopped)
+        self.assertEqual(session.closed_via, "already_stopped")
+        self.assertEqual(quit_calls, [])
+        host_tool.assert_not_called()
+
+    def test_idle_editor_closes_gracefully_without_killing(self):
+        (stopped, session), quit_calls, host_tool = self._call([True, True, False])
+
+        self.assertTrue(stopped)
+        self.assertEqual(session.closed_via, "graceful")
+        self.assertEqual(quit_calls, [1234])
+        host_tool.assert_not_called()
+        self.assertTrue(session.diagnostics["graceful_quit_requested"])
+
+    def test_editor_that_does_not_quit_is_killed_and_says_so(self):
+        (stopped, session), _quit_calls, host_tool = self._call(
+            [True] * 6, quit_result={"requested": True, "reason": "quit_requested"}
+        )
+
+        self.assertTrue(stopped)
+        self.assertEqual(session.closed_via, "killed")
+        self.assertEqual(session.diagnostics["taskkill_target_pid"], 1234)
+        host_tool.assert_called_once()
+        self.assertEqual(host_tool.call_args.args[0][0], "taskkill")
+
+    def test_failed_quit_request_still_escalates_and_reports_killed(self):
+        (stopped, session), _quit_calls, host_tool = self._call(
+            [True] * 6, quit_result={"requested": False, "reason": "no_main_window"}
+        )
+
+        self.assertTrue(stopped)
+        self.assertEqual(session.closed_via, "killed")
+        self.assertEqual(session.diagnostics["graceful_quit_request"]["reason"], "no_main_window")
+        self.assertFalse(session.diagnostics["graceful_quit_requested"])
+        host_tool.assert_called_once()
+
+    def test_modal_blocker_during_the_wait_is_reported_and_never_killed(self):
+        blocker = {"type": "save_modified_scenes_prompt", "hwnd": 99}
+        (stopped, session), _quit_calls, host_tool = self._call(
+            [True] * 6, blockers=[None, blocker]
+        )
+
+        self.assertFalse(stopped)
+        self.assertEqual(session.modal_blocker, blocker)
+        self.assertIsNone(session.closed_via)
+        host_tool.assert_not_called()
+
+    def test_immediate_kill_is_unchanged_and_reports_killed(self):
+        (stopped, session), quit_calls, host_tool = self._call(
+            [True, False], mode="immediate_kill"
+        )
+
+        self.assertTrue(stopped)
+        self.assertEqual(session.closed_via, "killed")
+        self.assertEqual(quit_calls, [])
+        host_tool.assert_called_once()
+
+
 if __name__ == "__main__":
     unittest.main()
