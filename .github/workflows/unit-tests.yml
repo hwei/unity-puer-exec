@@ -33,6 +33,7 @@ jobs:
             tests.test_package_layout `
             tests.test_preflight_compile_check `
             tests.test_prepare_validation_host_tool `
+            tests.test_puerts_version_compat `
             tests.test_refresh_change_signal `
             tests.test_unity_log_brief `
             tests.test_unity_puer_session `

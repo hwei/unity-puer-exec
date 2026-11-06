@@ -13,6 +13,12 @@
     "precompiledReferences": [],
     "autoReferenced": true,
     "defineConstraints": [],
-    "versionDefines": [],
+    "versionDefines": [
+        {
+            "name": "com.tencent.puerts.core",
+            "expression": "3.0.0",
+            "define": "PUERTS_3"
+        }
+    ],
     "noEngineReferences": false
 }

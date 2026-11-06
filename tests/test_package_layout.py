@@ -45,7 +45,7 @@ class PackageLayoutTests(unittest.TestCase):
         self.assertEqual(package_json["author"]["name"], "Will Huang")
         self.assertEqual(
             package_json["dependencies"]["com.tencent.puerts.core"],
-            "3.0.0",
+            "2.2.2",
         )
         self.assertIn("MIT License", license_text)
         self.assertIn("Will Huang", license_text)

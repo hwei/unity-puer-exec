@@ -14,7 +14,7 @@ and in active use (the reporter's project, and this repository's own validation 
 - The Editor assembly compiles against both `com.tencent.puerts.core` 2.x and 3.x. The PuerTS major version is
   resolved by the assembly definition, not by hand-editing source.
 - `Editor/UnityPuerExec.Editor.asmdef` gains a `versionDefines` entry mapping `com.tencent.puerts.core`
-  `[3.0.0` to the symbol `PUERTS_3`.
+  `3.0.0` (meaning "3.0.0 or higher") to the symbol `PUERTS_3`.
 - `Editor/UnityPuerExecServer.cs` splits JavaScript-environment construction on `#if PUERTS_3`: 3.x keeps the
   existing reflected-`Backend` + `ScriptEnv` path; 2.x constructs `new JsEnv(loader)`.
 - The declared dependency drops from `3.0.0` to `2.2.2`, the lowest version this package supports. UPM reads

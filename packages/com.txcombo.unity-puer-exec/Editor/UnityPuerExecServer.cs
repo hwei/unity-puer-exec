@@ -169,7 +169,24 @@ namespace UnityPuerExec
 
         private static HttpListener listener;
         private static CancellationTokenSource listenerCancellation;
+        // The JavaScript environment's type differs by PuerTS major: 3.x exposes ScriptEnv
+        // and marks JsEnv [Obsolete], while 2.x has no ScriptEnv at all. PUERTS_3 comes from
+        // this assembly's versionDefines entry on com.tencent.puerts.core, so the version the
+        // host actually has installed picks the branch -- an operator never edits source or
+        // sets a define. Both types are classes exposing ExecuteModule(string), Tick() and
+        // Dispose(), so every call site below is version-agnostic.
+        //
+        // The versionDefines expression is the bare floor "3.0.0", which Unity reads as
+        // "3.0.0 or higher". Do not "fix" it into the one-sided bracket form "[3.0.0": that
+        // parses to nothing, Unity sets no define and silently compiles the 2.x branch even
+        // on a 3.x host, surfacing only as a CS0618 that no gate here fails on. Bracketed
+        // expressions need both bounds. tests/test_puerts_version_compat.py rejects the
+        // one-sided form.
+#if PUERTS_3
         private static ScriptEnv jsEnv;
+#else
+        private static JsEnv jsEnv;
+#endif
         private static PuerExecLoader execLoader;
         private static string envInitError = "";
         private static string sessionMarker = Guid.NewGuid().ToString("N");
@@ -1578,6 +1595,7 @@ namespace UnityPuerExec
             }
         }
 
+#if PUERTS_3
         // Puerts 3.0 deprecated JsEnv in favor of ScriptEnv, but ScriptEnv requires an
         // explicit Backend whose concrete type (e.g. Puerts.BackendV8) lives in a separate,
         // backend-specific assembly such as com.tencent.puerts.v8. This package intentionally
@@ -1586,6 +1604,9 @@ namespace UnityPuerExec
         // instead of taking a hard assembly reference. If the host only has a non-JavaScript
         // scripting backend, no JS backend resolves and we fail with a clear message: this
         // package can only run JavaScript.
+        //
+        // The method name stays version-neutral: it creates the environment the server calls
+        // ExecuteModule/Tick/Dispose on, whatever that type is named in the installed major.
         private static readonly string[] JsBackendTypeNames =
         {
             "Puerts.BackendV8",
@@ -1623,6 +1644,18 @@ namespace UnityPuerExec
                 "UnityPuerExec requires a Puerts JavaScript backend (V8/Node/QuickJS), but none could be initialized: "
                 + detail);
         }
+#else
+        // PuerTS 2.x has no ScriptEnv, so JsEnv is the environment and it resolves its own
+        // JavaScript backend internally. The reflection above is a 3.x-only concern, not a
+        // 2.x gap: 2.2.2 does define Backend/BackendV8/BackendNodeJS/BackendQuickJS, and
+        // ScriptEnv is the one type it lacks. Constructing it unconditionally is what made
+        // the Editor assembly fail with CS0246 on a 2.x host (GitHub issue #4), leaving the
+        // control endpoint unavailable rather than degraded.
+        private static JsEnv CreateScriptEnv(ILoader loader)
+        {
+            return new JsEnv(loader);
+        }
+#endif
 
         private static void DisposeJsEnv()
         {

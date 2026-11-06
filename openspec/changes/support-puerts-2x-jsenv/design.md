@@ -48,11 +48,11 @@ See `proposal.md` — Why. Current state and constraints that shape the approach
 
 ## Decisions
 
-### D1: `versionDefines` on the Editor asmdef, keyed to `[3.0.0`, defining `PUERTS_3`
+### D1: `versionDefines` on the Editor asmdef, keyed to the bare floor `3.0.0`, defining `PUERTS_3`
 
 ```json
 "versionDefines": [
-  { "name": "com.tencent.puerts.core", "expression": "[3.0.0", "define": "PUERTS_3" }
+  { "name": "com.tencent.puerts.core", "expression": "3.0.0", "define": "PUERTS_3" }
 ]
 ```
 
@@ -60,10 +60,15 @@ Unity sets `PUERTS_3` only when `com.tencent.puerts.core` is present **and** its
 expression; the existing `references` entry already makes the package a hard requirement, so "absent" is not a
 state this assembly can be compiled in.
 
-*Why the bracketed open-ended range rather than a bare `3.0.0`*: a bare version in `versionDefines` is
-documented as an exact-ish match in some Unity versions and as "or newer" in others. `[3.0.0` is unambiguously
-"3.0.0 or higher" in every version that supports the field, and it is what issue #4 asked for. A future 3.x or
-4.x host then needs no edit.
+*Why a bare version rather than the bracketed `[3.0.0` that issue #4 suggested* — this was settled
+empirically, not from documentation, and the first attempt was wrong. A bare version in `versionDefines` means
+"this version or higher": `com.unity.cinemachine` gates the same package three times at `5.3.1`, `7.3.1` and
+`14.0.0` with three cumulative defines, which only reads as a floor. Bracketed expressions in shipping Unity
+packages always carry **both** bounds (`[6000.0.52f1,6000.1.0)`, `[2021.1.2f1,2021.2.0a1]`,
+`[6000.3.0a1,7000)`); the one-sided `[3.0.0` appears nowhere. It was tried first and **matched nothing** —
+Unity ignored it silently, `PUERTS_3` never reached the response file, and the 3.0.0 host compiled the 2.x
+branch, surfacing only as `warning CS0618: 'JsEnv' is obsolete` on three lines of this package. A future 3.x or
+4.x host needs no edit under either reading, so the floor costs nothing.
 
 *Why detect 3 rather than detect 2*: the failure directions are asymmetric. If the expression silently fails to
 match, `PUERTS_3` is undefined and a 3.x host compiles the 2.x branch — which still compiles, because 3.0.0
@@ -149,9 +154,15 @@ wiring, so the tests would silently exercise the old shipped source. `--restore-
   `PuerExecLoader` under the same `#if` split — a contained follow-up, not a redesign. Issue #4's reporter
   observed `exec` working end to end on 2.2.2 with the equivalent local workaround, which is corroborating but
   not substituting evidence.
-- **[`versionDefines` silently does not match]** → Mitigation: D1 chooses the mapping whose mis-detection is
-  soft, and step 4 of D4 asserts the 3.x branch compiled by the absence of CS0618. Both directions are
-  observed on a real host, not assumed.
+- **[`versionDefines` silently does not match]** This one **happened**, with the one-sided `[3.0.0` form:
+  preflight on the 3.0.0 host reported `status: passed`, `exit_code: 0`, `diagnostics: []`, and the assembly
+  compiled — through the wrong branch. Nothing this repository gates on failed, because
+  `preflight_compile_check.py` parses only `error CS` and the mis-detection produced warnings. It was caught
+  solely by reading `UnityPuerExec.Editor.rsp` for the define. → Mitigation, kept as a permanent obligation
+  rather than a one-off: a `passed` preflight is **not** evidence that the intended branch compiled. Task 4.2
+  requires the define to be present in the 3.x response file and task 3.2 requires it to be absent from the
+  2.x one, and D1's asymmetry means the soft direction is the one that gets checked. The pin in
+  `tests/test_puerts_version_compat.py` rejects a one-sided bracket expression outright.
 - **[Two `#if` branches to maintain]** Every future edit to environment construction has to be correct twice.
   → Mitigation: the branches are confined to the declaration and the factory; no request-handling code is
   conditional, and the shared name `jsEnv` means call sites are written once.

@@ -14,6 +14,6 @@
     "name": "Will Huang"
   },
   "dependencies": {
-    "com.tencent.puerts.core": "3.0.0"
+    "com.tencent.puerts.core": "2.2.2"
   }
 }
