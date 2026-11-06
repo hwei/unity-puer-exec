@@ -3,6 +3,7 @@ import datetime
 import os
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -6392,6 +6393,7 @@ class PlayModeCommandTests(unittest.TestCase):
     def _run_project(self, handler, args, probe, read_publication, session, invoke_map, extra_patches=()):
         clock = _FakeClock()
         posted = []
+        pid_state = {"alive": True}
 
         def invoke(command, base_url, payload, _wait_timeout_ms, transport=None):
             posted.append((command, base_url))
@@ -6412,6 +6414,11 @@ class PlayModeCommandTests(unittest.TestCase):
             mock.patch.object(unity_session, "read_endpoint_publication", side_effect=read_publication),
             mock.patch.object(unity_session, "_probe_health", side_effect=probe),
             mock.patch.object(unity_session, "probe_health_payload", side_effect=probe),
+            # These cases model a domain reload, not a crash: the published Editor
+            # process survives the dropped endpoint.
+            mock.patch.object(
+                unity_session, "is_pid_running", side_effect=lambda _pid: pid_state["alive"]
+            ),
             mock.patch.object(unity_puer_exec_runtime.direct_exec_client, "invoke_command", side_effect=invoke),
         ]
         patches.extend(extra_patches)
@@ -6436,7 +6443,10 @@ class PlayModeCommandTests(unittest.TestCase):
 
             def read_publication(_path):
                 reads["n"] += 1
-                if reads["n"] <= 1:
+                # The first read names the pid this command watches (the session
+                # carries none here), the second backs the pre-transition probe; the
+                # Editor republishes after that.
+                if reads["n"] <= 2:
                     return {
                         "base_url": url_a,
                         "session_marker": "marker-a",
@@ -6581,6 +6591,52 @@ class PlayModeCommandTests(unittest.TestCase):
         self.assertIn("has not settled", body["situation"])
         self.assertNotIn("endpoint resolution", body["situation"])
 
+    def test_running_from_an_answering_editor_skips_the_crash_grace_watch(self):
+        # The budget ran out while the Editor kept answering with a play state, so it
+        # is alive: the deadline must not add the crash grace window to `running`.
+        url = "http://127.0.0.1:55240"
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp) / "Project"
+            project.mkdir()
+            abs_path = str(project.resolve())
+
+            def read_publication(_path):
+                return {
+                    "base_url": url,
+                    "session_marker": "marker-target",
+                    "unity_pid": 9,
+                    "project_path": abs_path,
+                }
+
+            def probe(base_url, _timeout):
+                if base_url == url:
+                    return self._published_health("playing", "marker-target", abs_path), None
+                return None, "connection refused"
+
+            session = unity_session.UnitySession(
+                owner="published_endpoint", base_url=url, project_path=abs_path
+            )
+            invoke_map, _calls, _holder = self._default_invoke_map()
+            grace_watch = mock.Mock(return_value=False)
+            code, stdout, stderr, _posted = self._run_project(
+                unity_puer_exec_runtime.run_stop,
+                self._project_args("stop", abs_path, "--timeout-seconds", "0.05"),
+                probe,
+                read_publication,
+                session,
+                invoke_map,
+                extra_patches=[
+                    mock.patch.object(
+                        unity_puer_exec_runtime, "_post_refresh_ready_timeout_seconds", return_value=0.05
+                    ),
+                    mock.patch.object(unity_puer_exec_runtime, "_wait_for_editor_exit", grace_watch),
+                ],
+            )
+
+        self.assertEqual(code, unity_puer_exec.EXIT_RUNNING, stderr)
+        self.assertEqual(json.loads(stdout)["result"]["play_state"], "playing")
+        grace_watch.assert_not_called()
+
     def test_stop_running_marks_an_unresolved_endpoint(self):
         with tempfile.TemporaryDirectory() as tmp:
             project = Path(tmp) / "Project"
@@ -6622,6 +6678,175 @@ class PlayModeCommandTests(unittest.TestCase):
         self.assertIn("endpoint resolution", body["situation"])
         self.assertNotIn("has not settled", body["situation"])
         self.assertIn("get-blocker-state", [step["command"] for step in body["next_steps"]])
+
+    # --- a dead Editor behind a dropped endpoint (surface-editor-crash change) ---
+
+    def _crash_publication(self, project_path, url="http://127.0.0.1:55240", pid=4242):
+        return {
+            "base_url": url,
+            "session_marker": "marker-crash",
+            "unity_pid": pid,
+            "project_path": project_path,
+        }
+
+    def _assert_command_crash_payload(self, exit_code, stdout, stderr, command, editor_pid=4242):
+        self.assertEqual(exit_code, 26, (exit_code, stdout, stderr))
+        self.assertEqual(exit_code, unity_puer_exec.EXIT_EDITOR_CRASHED_DURING_REQUEST)
+        self.assertEqual(stderr, "")
+        body = json.loads(stdout)
+        self.assertFalse(body["ok"])
+        self.assertEqual(body["status"], "editor_crashed_during_request")
+        self.assertEqual(body["operation"], command)
+        self.assertEqual(body["editor_pid"], editor_pid)
+        self.assertFalse(body["recoverable"])
+        # There is no script behind a control request, so replay metadata must not
+        # appear: a caller must not read this as a resubmittable exec request.
+        self.assertNotIn("request_id", body)
+        self.assertNotIn("resubmit_safe", body)
+        self.assertTrue(body.get("editor_log_path"))
+        self.assertIn("situation", body)
+        started_at = body.get("started_at")
+        self.assertIsInstance(started_at, str)
+        self.assertIsNotNone(unity_session_logs.parse_exec_journal_utc(started_at))
+        self.assertIn("next_steps", body)
+        return body
+
+    def _run_dead_editor_post_drop(self, handler, command, args, publication, invoke_map):
+        """A project-mode command whose first play-mode post loses the endpoint."""
+        started = time.monotonic()
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp) / "Project"
+            project.mkdir()
+            abs_path = str(project.resolve())
+            publication = dict(publication, project_path=abs_path)
+
+            def read_publication(_path):
+                return dict(publication)
+
+            def probe(base_url, _timeout):
+                return self._published_health("playing", "marker-crash", abs_path), None
+
+            session = unity_session.UnitySession(
+                owner="published_endpoint",
+                base_url=publication["base_url"],
+                project_path=abs_path,
+                unity_pid=publication["unity_pid"],
+            )
+            code, stdout, stderr, posted = self._run_project(
+                handler,
+                args,
+                probe,
+                read_publication,
+                session,
+                invoke_map,
+                extra_patches=[mock.patch.object(unity_session, "is_pid_running", return_value=False)],
+            )
+        elapsed = time.monotonic() - started
+        return code, stdout, stderr, posted, elapsed, abs_path
+
+    def test_play_reports_a_dead_editor_instead_of_retrying_the_drop(self):
+        invoke_map, _calls, _holder = self._default_invoke_map()
+        invoke_map["play-mode"] = lambda _payload: (12, self._transport_drop_body())
+        args = self._project_args("play", "Project", "--timeout-seconds", "60")
+        code, stdout, stderr, posted, elapsed, _path = self._run_dead_editor_post_drop(
+            unity_puer_exec_runtime.run_play,
+            "play",
+            args,
+            self._crash_publication(None),
+            invoke_map,
+        )
+        self._assert_command_crash_payload(code, stdout, stderr, "play")
+        # One post, then the pid check ends the command: no retry, no re-resolve.
+        self.assertEqual([name for name, _url in posted].count("play-mode"), 1)
+        self.assertLess(elapsed, 5.0)
+
+    def test_pause_reports_a_dead_editor_instead_of_retrying_the_drop(self):
+        invoke_map, _calls, _holder = self._default_invoke_map()
+        invoke_map["play-mode"] = lambda _payload: (12, self._transport_drop_body())
+        args = self._project_args("pause", "Project", "--timeout-seconds", "60")
+        code, stdout, stderr, posted, elapsed, _path = self._run_dead_editor_post_drop(
+            unity_puer_exec_runtime.run_pause,
+            "pause",
+            args,
+            self._crash_publication(None),
+            invoke_map,
+        )
+        self._assert_command_crash_payload(code, stdout, stderr, "pause")
+        self.assertEqual([name for name, _url in posted].count("play-mode"), 1)
+        self.assertLess(elapsed, 5.0)
+
+    def test_stop_reports_a_dead_editor_instead_of_retrying_the_drop(self):
+        invoke_map, _calls, _holder = self._default_invoke_map()
+        invoke_map["play-mode"] = lambda _payload: (12, self._transport_drop_body())
+        args = self._project_args("stop", "Project", "--timeout-seconds", "60")
+        code, stdout, stderr, posted, elapsed, _path = self._run_dead_editor_post_drop(
+            unity_puer_exec_runtime.run_stop,
+            "stop",
+            args,
+            self._crash_publication(None),
+            invoke_map,
+        )
+        self._assert_command_crash_payload(code, stdout, stderr, "stop")
+        self.assertEqual([name for name, _url in posted].count("play-mode"), 1)
+        self.assertLess(elapsed, 5.0)
+
+    def test_play_reports_a_dead_editor_while_waiting_for_the_target_state(self):
+        invoke_map, _calls, _holder = self._default_invoke_map()
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp) / "Project"
+            project.mkdir()
+            abs_path = str(project.resolve())
+            publication = self._crash_publication(abs_path)
+            probes = {"n": 0}
+
+            def probe(base_url, _timeout):
+                probes["n"] += 1
+                # The pre-transition probe resolves the Edit-mode Editor; every later
+                # health probe is dropped, as it would be while a crashed Editor's
+                # listener is gone.
+                if probes["n"] == 1:
+                    return self._published_health("edit", "marker-crash", abs_path), None
+                return None, "connection refused"
+
+            def read_publication(_path):
+                return dict(publication)
+
+            session = unity_session.UnitySession(
+                owner="published_endpoint",
+                base_url=publication["base_url"],
+                project_path=abs_path,
+                unity_pid=publication["unity_pid"],
+            )
+            started = time.monotonic()
+            code, stdout, stderr, posted = self._run_project(
+                unity_puer_exec_runtime.run_play,
+                self._project_args("play", abs_path, "--timeout-seconds", "60"),
+                probe,
+                read_publication,
+                session,
+                invoke_map,
+                extra_patches=[mock.patch.object(unity_session, "is_pid_running", return_value=False)],
+            )
+            elapsed = time.monotonic() - started
+
+        self._assert_command_crash_payload(code, stdout, stderr, "play")
+        self.assertEqual([name for name, _url in posted].count("play-mode"), 1)
+        self.assertLess(elapsed, 5.0)
+
+    def test_base_url_drop_still_reports_the_transport_status_without_a_pid_check(self):
+        invoke_map, calls, _holder = self._default_invoke_map()
+        invoke_map["play-mode"] = self._sequence_play_mode(calls, [(12, self._transport_drop_body())])
+        with mock.patch.object(unity_session, "is_pid_running") as is_pid_running:
+            code, stdout, stderr = self._run(
+                unity_puer_exec_runtime.run_play,
+                self._args("play", "--timeout-seconds", "1"),
+                [self._health("edit"), self._health("edit")],
+                invoke_map,
+            )
+        self.assertEqual(code, 12, stderr)
+        self.assertEqual(json.loads(stdout)["status"], "empty_response")
+        # Base-url mode has no process handle, so there is nothing to watch.
+        is_pid_running.assert_not_called()
 
 
 class PeerResetCommandContractTests(unittest.TestCase):

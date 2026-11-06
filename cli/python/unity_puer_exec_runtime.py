@@ -1089,6 +1089,50 @@ def _emit_editor_crash_payload(
     return attach_diagnostics(payload, include_diagnostics=args.include_diagnostics, session=session)
 
 
+class _EditorExitedDuringCommand(Exception):
+    """The Editor a project-scoped control command talks to exited mid-command.
+
+    Raised from the retry loops so the command can answer with the terminal crash
+    payload instead of spending the rest of its budget on a process that is gone.
+    Carries the pid it watched, which is the evidence the payload must name.
+    """
+
+    def __init__(self, editor_pid):
+        super().__init__("the Editor process exited while the command waited on it")
+        self.editor_pid = editor_pid
+
+
+def _emit_command_crash_payload(operation, args, editor_pid, started_at, session):
+    """Crash payload for a non-exec command whose Editor exited mid-request.
+
+    Same status and exit code as the exec crash (design D3), but there is no script
+    behind it, so there is no ``request_id`` to name and nothing to resubmit: a
+    replay flag here would invite a caller to treat a control request as replayable.
+    """
+    payload = {
+        "ok": False,
+        "status": "editor_crashed_during_request",
+        "operation": operation,
+        "recoverable": False,
+        "situation": help_surface.EDITOR_EXIT_SITUATION,
+    }
+    if isinstance(editor_pid, int) and not isinstance(editor_pid, bool) and editor_pid > 0:
+        payload["editor_pid"] = editor_pid
+    if started_at:
+        payload["started_at"] = started_at
+    editor_log_path = getattr(session, "effective_log_path", None) if session is not None else None
+    payload["editor_log_path"] = str(editor_log_path or _journal_log_path(args, None))
+    crash_report_dir = _find_editor_crash_report_dir(started_at)
+    if crash_report_dir:
+        payload["crash_report_dir"] = crash_report_dir
+    if session is not None:
+        payload["session"] = session.to_payload()
+    _attach_guidance(payload, operation, "editor_crashed_during_request", args)
+    return attach_diagnostics(
+        payload, include_diagnostics=args.include_diagnostics, session=session
+    )
+
+
 def _format_journal_started_at(value):
     """A datetime as the journal's string form, so the payload stays JSON-serializable."""
     if value.tzinfo is None:
@@ -2930,7 +2974,7 @@ def _is_play_mode_transport_drop(body):
     return _is_transport_loss_body(body)
 
 
-def _post_play_mode(selector, args, session, base_url, action, force_run_in_background, endpoint_resolver=None):
+def _post_play_mode(selector, args, session, base_url, action, force_run_in_background, endpoint_resolver=None, editor_pid=None):
     """Post the play-mode action, re-resolving a dropped endpoint within a bound.
 
     A transport drop (an empty/unreachable body) is a domain-reload edge: re-resolve
@@ -2938,6 +2982,11 @@ def _post_play_mode(selector, args, session, base_url, action, force_run_in_back
     Every server-answered body is returned immediately. When the budget elapses the
     last observed structured state is returned so the envelope can report its formal
     exit code instead of collapsing it into a generic failure.
+
+    A drop is only a reload edge while the Editor process is still alive: the pid is
+    checked before each re-resolve (design D2), and once at the deadline. A dead pid
+    raises ``_EditorExitedDuringCommand`` so the command answers with the crash
+    payload instead of the transport status.
     """
     payload = {"action": action, "force_run_in_background": bool(force_run_in_background)}
     wait_ms = getattr(args, "wait_timeout_ms", direct_exec_client.DEFAULT_WAIT_TIMEOUT_MS)
@@ -2955,7 +3004,13 @@ def _post_play_mode(selector, args, session, base_url, action, force_run_in_back
             last_body = body
         if body is not None and not _is_play_mode_transport_drop(body):
             return exit_code, body, base_url
+        # The endpoint dropped between the health probe and the post. Before treating
+        # that as a reload edge, check whether the Editor behind it is still there.
+        if _editor_pid_state(editor_pid) == EDITOR_PID_EXITED:
+            raise _EditorExitedDuringCommand(editor_pid)
         if time.monotonic() >= deadline:
+            if _wait_for_editor_exit(editor_pid):
+                raise _EditorExitedDuringCommand(editor_pid)
             return last_exit_code, last_body, base_url
         # The endpoint dropped between the health probe and the post: a reload edge.
         # Re-resolve before retrying instead of reporting a transport failure.
@@ -2971,7 +3026,7 @@ def _play_mode_absent(body):
     return isinstance(body, dict) and body.get("http_status") == 404
 
 
-def _wait_for_play_state(operation, selector, args, session, base_url, target, timeout_seconds, endpoint_resolver=None):
+def _wait_for_play_state(operation, selector, args, session, base_url, target, timeout_seconds, endpoint_resolver=None, editor_pid=None):
     """Poll health until the target state is reached.
 
     Returns ``(state, payload, base_url, blocker, endpoint_resolved)``. ``state``
@@ -2979,7 +3034,8 @@ def _wait_for_play_state(operation, selector, args, session, base_url, target, t
     blocker that stalled the transition, or ``None``. ``endpoint_resolved`` is
     true once any probe in this wait identified the target endpoint. A transport
     failure is expected while a domain reload is in progress and is never
-    reported as failure on its own.
+    reported as failure on its own -- but only while the Editor process survives
+    it: an exited pid raises ``_EditorExitedDuringCommand`` (design D2).
     """
     health_timeout = getattr(args, "health_timeout_seconds", unity_session.DEFAULT_HEALTH_TIMEOUT_SECONDS)
     deadline = time.monotonic() + timeout_seconds
@@ -2988,9 +3044,14 @@ def _wait_for_play_state(operation, selector, args, session, base_url, target, t
     blocker = None
     endpoint_resolved = False
     next_blocker_check = time.monotonic() + 5.0
+    last_probe_answered = False
     while True:
         remaining = deadline - time.monotonic()
         if remaining <= 0:
+            # Only a budget that ran out on a silent endpoint can hide a crash handler
+            # still writing its dump; an Editor that just answered is alive.
+            if not last_probe_answered and _wait_for_editor_exit(editor_pid):
+                raise _EditorExitedDuringCommand(editor_pid)
             return state, payload, base_url, blocker, endpoint_resolved
         probed, probed_payload, new_base, reached = _play_probe_endpoint(
             selector, args, base_url, health_timeout, endpoint_resolver
@@ -2999,11 +3060,16 @@ def _wait_for_play_state(operation, selector, args, session, base_url, target, t
             endpoint_resolved = True
         if new_base:
             base_url = new_base
+        last_probe_answered = probed is not None
         if probed is not None:
             state = probed
             payload = probed_payload
             if probed == target:
                 return probed, payload, base_url, None, endpoint_resolved
+        elif _editor_pid_state(editor_pid) == EDITOR_PID_EXITED:
+            # No play state came back and the process behind the endpoint is gone:
+            # this is not a reload edge, so do not keep polling it.
+            raise _EditorExitedDuringCommand(editor_pid)
         now = time.monotonic()
         if now >= next_blocker_check:
             next_blocker_check = now + 5.0
@@ -3025,7 +3091,7 @@ def _play_transition(operation, pre_state):
     return "already_in_state" if pre_state == PLAY_STATE_EDIT else "performed"
 
 
-def _play_pre_settle(args, selector, session, base_url, recovery):
+def _play_pre_settle(args, selector, session, base_url, recovery, editor_pid=None):
     """Settle pending code before entering play mode, without an exec request.
 
     Mirrors the exec refresh loop: ask the server for the refresh decision, settle
@@ -3069,7 +3135,11 @@ def _play_pre_settle(args, selector, session, base_url, recovery):
             continue
         if exit_code == EXIT_NOT_AVAILABLE:
             # The endpoint is down for the reload that ends the compile. Keep polling
-            # so the compile gate (a failing build) can answer once it is back.
+            # so the compile gate (a failing build) can answer once it is back -- but
+            # a reload never kills the Editor, so a dead pid means the command's own
+            # Editor is gone and the gate will never answer.
+            if _editor_pid_state(editor_pid) == EDITOR_PID_EXITED:
+                raise _EditorExitedDuringCommand(editor_pid)
             if time.monotonic() >= deadline:
                 return session, base_url, (
                     EXIT_RUNNING,
@@ -3313,6 +3383,10 @@ def _play_mode_exit_code(body):
 
 
 def _run_play_mode_command(operation, args, recovery):
+    # The command start time, not the process start: it is what a crash report found
+    # during this command must postdate. Formatted like a journal timestamp so the
+    # same `_find_editor_crash_report_dir` parsing applies.
+    started_at = _format_journal_started_at(datetime.datetime.now(datetime.timezone.utc))
     action = operation
     selector = resolve_selector(args)
     validate_positive(args.timeout_seconds, "timeout-seconds")
@@ -3332,19 +3406,50 @@ def _run_play_mode_command(operation, args, recovery):
         recovery.record(getattr(session, "api_updater_declines", 0))
         session.api_updater_declines = 0
         base_url = session.base_url
+        # The pid this command watches. Read once the session is ready, so a launch
+        # fills it. Base-url mode has no process handle, hence None there.
+        editor_pid = _command_editor_pid(args, session)
     else:
         session = None
         base_url = args.base_url
+        editor_pid = None
 
+    session_holder = {"session": session}
+    try:
+        return _play_mode_command_body(
+            operation, action, selector, args, recovery, session, base_url, editor_pid, session_holder
+        )
+    except _EditorExitedDuringCommand as exc:
+        crash_pid = exc.editor_pid if exc.editor_pid is not None else editor_pid
+        payload = _emit_command_crash_payload(
+            operation, args, crash_pid, started_at, session_holder["session"]
+        )
+        return EXIT_EDITOR_CRASHED_DURING_REQUEST, emit_payload(payload), ""
+
+
+def _play_mode_command_body(
+    operation, action, selector, args, recovery, session, base_url, editor_pid, session_holder
+):
+    """The play-mode command proper, with the crash check already armed.
+
+    ``session_holder`` carries the session the crash payload should name: the
+    pre-settle can re-establish it (a refresh settle relaunches/re-attaches), and
+    the payload must describe the session this command really talked to.
+    """
     force_run_in_background = False
     refresh_block = None
     if operation == "play":
         force_run_in_background = not bool(getattr(args, "no_run_in_background", False))
         session, base_url, error_result, refresh_block = _play_pre_settle(
-            args, selector, session, base_url, recovery
+            args, selector, session, base_url, recovery, editor_pid=editor_pid
         )
         if error_result is not None:
             return error_result
+        if selector == "project_path":
+            # The settle can re-establish the session; watch the Editor it ended on.
+            editor_pid = _command_editor_pid(args, session) or editor_pid
+
+    session_holder["session"] = session
 
     health_timeout = getattr(args, "health_timeout_seconds", unity_session.DEFAULT_HEALTH_TIMEOUT_SECONDS)
     # One resolver per invocation. Re-reading the publication each poll follows a
@@ -3369,7 +3474,14 @@ def _run_play_mode_command(operation, args, recovery):
                 pending = refresh.get("pending")
 
     exit_code, body, base_url = _post_play_mode(
-        selector, args, session, base_url, action, force_run_in_background, endpoint_resolver
+        selector,
+        args,
+        session,
+        base_url,
+        action,
+        force_run_in_background,
+        endpoint_resolver,
+        editor_pid=editor_pid,
     )
     if _play_mode_absent(body):
         return _version_mismatch_result(args, cli_version.feature_missing_detail(base_url))
@@ -3405,7 +3517,15 @@ def _run_play_mode_command(operation, args, recovery):
     if operation == "stop":
         exit_wait_seconds = max(exit_wait_seconds, _post_refresh_ready_timeout_seconds(args))
     state, _state_payload, base_url, blocker, endpoint_resolved = _wait_for_play_state(
-        operation, selector, args, session, base_url, target, exit_wait_seconds, endpoint_resolver
+        operation,
+        selector,
+        args,
+        session,
+        base_url,
+        target,
+        exit_wait_seconds,
+        endpoint_resolver,
+        editor_pid=editor_pid,
     )
     if state != target:
         if blocker is not None:
