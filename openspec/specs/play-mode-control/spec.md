@@ -175,7 +175,15 @@ body — `stop` SHALL omit `compile_errors_total` and SHALL include
 #### Scenario: Project settings stay unmodified
 
 - **WHEN** a forced play session starts and ends
-- **THEN** the project's Player Settings asset is not modified on disk
+- **AND** the Editor then exits
+- **THEN** the project's Player Settings asset on disk is byte-identical to its content before the session started
+- **AND** the project's run-in-background setting reads back as the value reported in the result's project setting
+
+#### Scenario: Editor exits while a forced session is still playing
+
+- **WHEN** a forced play session is still running
+- **AND** the Editor exits without the session first being stopped
+- **THEN** the project's Player Settings asset on disk is byte-identical to its content before the session started
 
 #### Scenario: Override survives a domain reload on entering play mode
 
