@@ -1027,6 +1027,14 @@ class _SharedRealHostDevice:
         scene_path.parent.mkdir(parents=True, exist_ok=True)
         asset_literal = _js_string_literal(HOST_RESET_SCENE_RELATIVE.as_posix())
         file_literal = _js_string_literal(scene_path)
+        # Each failure carries a named `failure` field, because this helper runs in
+        # setUp for every shared-device case: an unnamed failure here reads as "the
+        # whole suite is red" for all of them at once. Naming the step distinguishes
+        # "the type could not be resolved" (a PuerTS reflection-binding regression --
+        # what 2.2.2 did to Assembly.GetType(string)) from "the internal method moved"
+        # (a Unity version change) from "invoke threw", so the one real cause is
+        # legible in every one of those failures instead of an opaque payload.
+        #
         # BindingFlags.Static | Public | NonPublic. ClearSceneDirtiness is internal.
         # SceneManager.GetActiveScene is the bound call. EditorSceneManager.GetActiveScene
         # is not a function on this host's puer.loadType wrapper. The Scene argument has to
@@ -1062,8 +1070,22 @@ class _SharedRealHostDevice:
             "     if (candidate.FullName === target) { type = candidate; break; }"
             "   }"
             " }"
+            " if (type == null) {"
+            "   return { path: '', dirty: !!scene.isDirty, cleared: false,"
+            "     failure: 'type_not_resolved', target: target, assemblies: asms.Length,"
+            "     detail: 'no loaded assembly exposes ' + target + '.FullName; this is a '"
+            "       + 'PuerTS reflection-binding regression (Assembly.GetType / GetTypes).' };"
+            " }"
             " let method = null;"
-            " if (type != null) method = type.GetMethod('ClearSceneDirtiness', flags);"
+            " try { method = type.GetMethod('ClearSceneDirtiness', flags); }"
+            " catch (e) { return { path: '', dirty: !!scene.isDirty, cleared: false,"
+            "   failure: 'getmethod_threw', detail: String(e) }; }"
+            " if (method == null) {"
+            "   return { path: '', dirty: !!scene.isDirty, cleared: false,"
+            "     failure: 'method_not_found', flags: flags,"
+            "     detail: 'EditorSceneManager.ClearSceneDirtiness(Scene) with flags ' + flags"
+            "       + ' was not found; the internal API moved.' };"
+            " }"
             " let invokeError = null;"
             " if (method != null) {"
             "   try {"
@@ -1073,7 +1095,8 @@ class _SharedRealHostDevice:
             "   } catch (e) { invokeError = String(e); }"
             " }"
             " if (method == null || invokeError != null) {"
-            "   return { path: '', dirty: !!scene.isDirty, cleared: false, invoke_error: invokeError || 'ClearSceneDirtiness was not found' };"
+            "   return { path: '', dirty: !!scene.isDirty, cleared: false,"
+            "     failure: 'invoke_failed', invoke_error: invokeError };"
             " }"
             " const File = puer.loadType('System.IO.File');"
             " const assetPath = " + asset_literal + ";"
@@ -1115,12 +1138,42 @@ class _SharedRealHostDevice:
             or not result.get("cleared")
             or result.get("dirty")
         ):
-            self.fail("shared Editor did not restore the active scene: {}".format(payload))
+            self.fail(_describe_restore_scene_failure(payload, result))
         return payload
 
+    @staticmethod
+    def _describe_restore_scene_failure(payload, result):
+        """Name the reset failure by cause, not just "the scene did not restore".
+
+        ``_restore_active_scene`` runs in ``setUp`` for every shared-device case, so
+        whatever goes wrong here fails the whole class identically. The JS side
+        returns a ``failure`` field per step; surfacing it here means one real cause
+        is named in all 50-odd failures instead of each reporting an opaque blob.
+        """
+        if not isinstance(result, dict):
+            return "shared Editor did not restore the active scene: {}".format(payload)
+
+        failure = result.get("failure")
+        if failure:
+            return (
+                "shared Editor reset helper failed at `{}`: {} (payload: {})"
+            ).format(failure, result.get("detail") or result.get("invoke_error"), payload)
+
+        if result.get("dirty"):
+            return (
+                "shared Editor restored {!r} but it is still dirty; the reset helper "
+                "ran without clearing scene dirtiness (payload: {})"
+            ).format(result.get("path"), payload)
+        if not result.get("path"):
+            return (
+                "shared Editor did not restore the active scene: {!r} was empty "
+                "(payload: {})"
+            ).format(result.get("path"), payload)
+        return (
+            "shared Editor reset helper did not report `cleared: true` (payload: {})"
+        ).format(payload)
+
     def _payload_is_declared_temp_compile_error(self, payload):
-        if not isinstance(payload, dict) or payload.get("status") != "unity_compile_error":
-            return False
         roots = tuple(
             root.as_posix() for root in cleanup_validation_host.DECLARED_VALIDATION_TEMP_ROOTS
         )

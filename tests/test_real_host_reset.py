@@ -171,6 +171,53 @@ class RealHostResetTests(unittest.TestCase):
             device._clear_residual_modal_blocker()
         self.assertEqual(reads["n"], 2)
 
+    def test_scene_restore_failure_names_the_step_that_broke(self):
+        """A broken reset helper names its cause instead of an opaque payload.
+
+        ``_restore_active_scene`` runs in setUp for every shared-device case, so a
+        failure there fails the entire class identically. The JS side reports which
+        step broke; the description must carry that through, otherwise 50-odd
+        failures all read as "the suite is red" with no root cause.
+
+        This is the regression pin for the PuerTS 2.2.2 defect: there,
+        ``Assembly.GetType(string)`` could not be bound, so the type was never
+        resolved and every case died here.
+        """
+        device = _device()
+        payload = {"status": "completed", "result": {"path": "", "cleared": False,
+                                                     "failure": "type_not_resolved",
+                                                     "detail": "no loaded assembly exposes X"}}
+        described = device._describe_restore_scene_failure(payload, payload["result"])
+        self.assertIn("type_not_resolved", described)
+        self.assertIn("no loaded assembly exposes X", described)
+
+    def test_scene_restore_failure_distinguishes_dirty_from_uncleared(self):
+        device = _device()
+        dirty = device._describe_restore_scene_failure(
+            {"status": "completed"},
+            {"path": "Assets/__codex_host_reset/Baseline.unity", "dirty": True},
+        )
+        self.assertIn("still dirty", dirty)
+
+        uncleared = device._describe_restore_scene_failure(
+            {"status": "completed"},
+            {"path": "Assets/__codex_host_reset/Baseline.unity", "dirty": False,
+             "cleared": False},
+        )
+        self.assertIn("cleared: true", uncleared)
+
+    def test_scene_restore_helper_does_not_use_unbindable_assembly_gettype(self):
+        """Pin the binding: PuerTS 2.2.2 cannot bind Assembly.GetType(string).
+
+        The helper must resolve the System.Type through GetTypes()+FullName, which
+        binds on both PuerTS majors. A regression to ``.GetType('...')`` silently
+        breaks every shared-device case on 2.2.2, so catch it statically here.
+        """
+        source = inspect.getsource(real_host._SharedRealHostDevice._restore_active_scene)
+        self.assertNotIn(".GetType('", source)
+        self.assertIn("GetTypes()", source)
+        self.assertIn("candidate.FullName === target", source)
+
     def test_scene_restore_opens_the_baseline_scene(self):
         device = _device()
         seen = {}
