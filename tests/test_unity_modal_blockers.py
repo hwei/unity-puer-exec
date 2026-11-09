@@ -246,11 +246,10 @@ class DialogBodyReaderTests(unittest.TestCase):
         dialog matched no fingerprint and was never auto-declined.
         """
         dialog = _dialog(1, "Script Updating Consent")
-        edit = fake_user32.FakeWindow(
-            2, title=self.MESSAGE, class_name="Edit", style=fake_user32._style(0)
-        )
-        # Win32 hands a foreign reader this cached stub instead of the text.
-        edit.cached_text = "Static"
+        # `foreign_control` states the measured shape: GetWindowTextW answers this
+        # Win32 cached stub for a foreign child control, WM_GETTEXT answers the
+        # real message.
+        edit = fake_user32.foreign_control(2, self.MESSAGE)
         dialog.with_children(
             fake_user32.static_text(3, ""),
             edit,
@@ -270,10 +269,7 @@ class DialogBodyReaderTests(unittest.TestCase):
         # must match the catalog entry and stay out of blocker listings.
         owner = _main(1, enabled=False)
         dialog = _dialog(2, "Script Updating Consent", owner=1)
-        edit = fake_user32.FakeWindow(
-            3, title=self.MESSAGE, class_name="Edit", style=fake_user32._style(0)
-        )
-        edit.cached_text = "Static"
+        edit = fake_user32.foreign_control(3, self.MESSAGE)
         dialog.with_children(
             edit,
             _button(4, "&Yes, for these and other files that might be found later"),

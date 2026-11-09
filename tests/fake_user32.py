@@ -9,6 +9,43 @@ user32 surface is scripted.
 The double is intentionally shallow: it implements only the calls the modal-blocker
 code makes, and it records every call so tests can assert on interaction order (for
 example that a click never called ``SetForegroundWindow``).
+
+Cross-process semantics
+-----------------------
+
+This double answers every call as if the target window belonged to *this* process.
+Win32 does not always do that. Several calls behave differently when the target
+window is owned by another process, and a single-process fake then silently answers
+a question the product never asked.
+
+The calls modeled here that carry that hazard:
+
+``GetWindowTextW`` / ``GetWindowTextLengthW``
+    Valid only for a same-process window, or for the *caption* of a top-level
+    window. For a foreign child control they return a Win32-maintained cached stub
+    (observed on the ScriptUpdater consent dialog: the literal string ``"Static"``),
+    not the control's text. The double reproduces that by answering a
+    ``FakeWindow.cached_text`` when one is set.
+
+``SendMessageTimeoutW(WM_GETTEXT)``
+    The call that reads a foreign control's real text. Its answer is
+    ``FakeWindow.title``, unless the window models a control that ignores the
+    message (``FakeWindow.answer_wm_gettext = False``).
+
+So a text read is one model with three fields, not three independent knobs:
+
+``title``
+    The window's real text, as ``WM_GETTEXT`` returns it.
+``cached_text``
+    The text ``GetWindowTextW`` returns. ``None`` means "this window is readable the
+    same way both ways" (a same-process window, or a top-level caption).
+``answer_wm_gettext``
+    ``False`` models a control that ignores ``WM_GETTEXT``; the reader then falls
+    back to ``GetWindowTextW``.
+
+Use :func:`foreign_control` to write the measured foreign-control shape. Any other
+Win32 call found to diverge across the process boundary gets its own stated field
+here rather than being folded into the in-process semantics.
 """
 
 import ctypes
@@ -119,6 +156,29 @@ def static_text(hwnd, text):
     return FakeWindow(hwnd, title=text, class_name="Static", style=_style(0))
 
 
+def foreign_control(hwnd, real_text, gwt_stub="Static", class_name="Edit", **kwargs):
+    """A child control owned by another process: readable only via ``WM_GETTEXT``.
+
+    Models the measured ScriptUpdater consent dialog control: an ``Edit`` whose
+    ``GetWindowTextW`` answer is the cached stub Windows maintains for a foreign
+    control (``"Static"``, length 6) while ``WM_GETTEXT`` returns the real
+    272-character message.
+
+    This is the deliberate statement a test makes when it reproduces a
+    cross-process text read. Win32 does not answer ``GetWindowTextW`` this way for a
+    same-process window, so a fixture that wants the readable-either-way shape must
+    not use this helper.
+    """
+    kwargs.setdefault("style", _style(0))
+    return FakeWindow(
+        hwnd,
+        title=real_text,
+        class_name=class_name,
+        cached_text=gwt_stub,
+        **kwargs
+    )
+
+
 class FakeWindow:
     """A scripted window or child control.
 
@@ -138,6 +198,8 @@ class FakeWindow:
         rect=(0, 0, 400, 300),
         children=(),
         pid=None,
+        cached_text=None,
+        answer_wm_gettext=True,
     ):
         self.hwnd = hwnd
         self.title = title
@@ -154,14 +216,13 @@ class FakeWindow:
         # Tests flip this to simulate a handle that dies mid-walk: GetWindow on it
         # fails the way a destroyed window does (NULL result plus a last-error).
         self.enumeration_fails = False
-        # A control that does not answer WM_GETTEXT (the reader then falls back
-        # to GetWindowTextW, which is the only thing the fake could answer).
-        self.answer_wm_gettext = True
-        # Models the cross-process stub Win32 returns from GetWindowTextW for a
-        # foreign child control. Observed on the real consent dialog: an `Edit`
-        # whose GetWindowTextW answer was the literal string "Static" (length 6)
-        # while its WM_GETTEXT answer was the real 272-character message.
-        self.cached_text = None
+        # Text-read model (see the module docstring): `title` is the real text as
+        # WM_GETTEXT returns it; `cached_text` is what GetWindowTextW answers and
+        # is only set for a window whose foreign-control stub a test models; and
+        # `answer_wm_gettext = False` models a control that ignores the message,
+        # so the reader falls back to GetWindowTextW.
+        self.answer_wm_gettext = answer_wm_gettext
+        self.cached_text = cached_text
 
     def with_children(self, *children):
         self.children.extend(children)
