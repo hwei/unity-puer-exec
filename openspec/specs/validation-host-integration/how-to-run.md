@@ -477,6 +477,24 @@ Distinguish an invalidated log source from a product regression before bisecting
 A wait timeout under any of those conditions is an invalidated log source, not a
 regression in the CLI chain or the runtime.
 
+### Writing a case that stages a dialog
+
+When a case stages a dialog, what it may assert depends on whether the product dismisses that dialog
+by itself.
+
+- **The product dismisses it** (the ScriptUpdater consent prompt). The command under test is what
+  removes the dialog, so asserting its post-command presence is a race against the behavior being
+  measured. Assert the product's own report instead — `warning = "api_updater_declined"` with its
+  `warning_detail` — and treat any window read as a diagnostic, not as the evidence.
+- **The product leaves it alone** (save-scene, modified-scene, an unknown `EditorUtility.DisplayDialog`
+  prompt, Safe Mode). Reading the window after a command is the intended observation. Assert on the
+  observed dialog and its payload. A guard will not treat this as a race.
+
+The distinction is the **dialog type**, not whether a command ran. `tests/test_real_host_reset.py`
+enforces it: it derives the suite's window reads from the suite source and fails, by case name and
+line, when an auto-recovered dialog is asserted from a post-command read. Nothing needs updating
+there when you add a case — the inventory is derived, not listed.
+
 ### Control-port binding coverage prerequisites
 
 Two cases in this suite assert control-port binding behavior and have extra

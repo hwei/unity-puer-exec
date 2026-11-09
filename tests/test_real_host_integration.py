@@ -3406,6 +3406,14 @@ class RealHostIntegrationTests(_SharedRealHostDevice, unittest.TestCase):
         with a diagnosed reason naming the unreadable-body blocker instead of
         failing as a fingerprint mismatch: only readable text that matches no
         configured fingerprint is a mismatch.
+
+        Suite rule: a case that stages a dialog the product dismisses asserts the
+        product's own report (`warning = "api_updater_declined"`), never the
+        dialog's post-command presence. A post-command window read here is a
+        diagnostic; the warning is the evidence. `tests/test_real_host_reset.py`
+        enforces this shape for the whole suite, and a case staging a dialog the
+        product leaves alone (save-scene, modified-scene, an unknown prompt) may
+        still read the window directly.
         """
         ready_exit_code, ready_payload, _, _ = _warm_up_project_exec(self.project_path, self.unity_exe_path)
         self.assertEqual(ready_exit_code, 0, ready_payload)
