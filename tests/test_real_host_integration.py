@@ -3634,15 +3634,33 @@ def _post_control_json(base_url, path, payload, timeout_seconds=5.0):
 # outside (the settled-import timestamp), set that state through reflection. This
 # runs inside the Editor's own JS environment, so it observes the same static state
 # the server uses -- it is a white-box probe, not a stub of the behavior under test.
+# Reflection idioms here must survive both PuerTS majors: this suite is the only
+# coverage for the tracker's C# decision logic, and the validation host is switched
+# between 2.2.2 and 3.0.0. Four idioms the 2.2.2 bridge strips -- zero-arg
+# ``Assembly.GetName()``, ``Assembly.GetType(string)``, and the short
+# ``MethodBase.Invoke`` / ``FieldInfo.SetValue`` overloads -- all throw "invalid
+# arguments to <name> or the overload is striped by unity", which reads as a package
+# failure but is a limitation of the reflection surface. The compatible forms are
+# used below: ``GetName(false)``, a ``GetTypes()`` walk, the five-arg ``Invoke`` with
+# an empty ``object[]`` built through ``CS.System.Array.CreateInstance``, and the
+# five-arg ``SetValue``. The field is an ``Int64``, so the value is converted with
+# ``System.Convert.ToInt64``: a plain JS number reaches the binder as ``System.Double``
+# and is rejected with "Object of type 'System.Double' cannot be converted to type
+# 'System.Int64'".
 _TRACKER_REFLECTION_JS = (
     "function trackerType() {\n"
     "  const AppDomain = puer.loadType('System.AppDomain');\n"
     "  const asms = AppDomain.CurrentDomain.GetAssemblies();\n"
     "  for (let i = 0; i < asms.Length; i++) {\n"
     "    const a = asms.get_Item(i);\n"
-    "    if (String(a.GetName().Name) === 'UnityPuerExec.Editor') {\n"
-    "      const t = a.GetType('UnityPuerExec.UnityPuerExecImportChangeTracker');\n"
-    "      if (t) return t;\n"
+    "    if (String(a.GetName(false).Name) === 'UnityPuerExec.Editor') {\n"
+    "      const types = a.GetTypes();\n"
+    "      for (let j = 0; j < types.Length; j++) {\n"
+    "        const t = types.get_Item(j);\n"
+    "        if (String(t.FullName) === 'UnityPuerExec.UnityPuerExecImportChangeTracker') {\n"
+    "          return t;\n"
+    "        }\n"
+    "      }\n"
     "    }\n"
     "  }\n"
     "  return null;\n"
@@ -3652,10 +3670,14 @@ _TRACKER_REFLECTION_JS = (
     "  return trackerType().GetField(name, TRACKER_NONPUBLIC_STATIC).GetValue(null);\n"
     "}\n"
     "function setTrackerField(name, value) {\n"
-    "  trackerType().GetField(name, TRACKER_NONPUBLIC_STATIC).SetValue(null, value);\n"
+    "  const asInt64 = puer.loadType('System.Convert').ToInt64(value);\n"
+    "  trackerType().GetField(name, TRACKER_NONPUBLIC_STATIC)"
+    ".SetValue(null, asInt64, TRACKER_NONPUBLIC_STATIC, null, null);\n"
     "}\n"
     "function invokeTracker(name) {\n"
-    "  return trackerType().GetMethod(name, TRACKER_NONPUBLIC_STATIC).Invoke(null, []);\n"
+    "  const args = CS.System.Array.CreateInstance(puer.$typeof(CS.System.Object), 0);\n"
+    "  return trackerType().GetMethod(name, TRACKER_NONPUBLIC_STATIC)"
+    ".Invoke(null, 0, null, args, null);\n"
     "}\n"
     "function trackerState() {\n"
     "  const value = Number(String(invokeTracker('GetPendingState')));\n"
