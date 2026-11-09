@@ -6,13 +6,15 @@ This repository has three distinct test layers:
 
 **Mocked and helper-tool unit tests** (default):
 ```
-python -m unittest tests.test_cleanup_validation_host_tool tests.test_cli_version tests.test_default_suite_selection tests.test_direct_exec_client tests.test_editor_log_isolation tests.test_openspec_backlog tests.test_openspec_change_meta tests.test_openspec_spec_hygiene tests.test_package_layout tests.test_preflight_compile_check tests.test_prepare_validation_host_tool tests.test_puerts_version_compat tests.test_real_host_reset tests.test_refresh_change_signal tests.test_unity_log_brief tests.test_unity_puer_session tests.test_unity_session tests.test_unity_session_cli tests.test_unity_session_modules
+python -m unittest tests.test_cleanup_validation_host_tool tests.test_cli_version tests.test_default_suite_selection tests.test_direct_exec_client tests.test_editor_log_isolation tests.test_fake_user32 tests.test_openspec_backlog tests.test_openspec_change_meta tests.test_openspec_spec_hygiene tests.test_package_layout tests.test_preflight_compile_check tests.test_prepare_validation_host_tool tests.test_puerts_version_compat tests.test_real_host_reset tests.test_real_host_retry tests.test_refresh_change_signal tests.test_release_openupm_tool tests.test_response_file_output tests.test_unity_log_brief tests.test_unity_modal_blockers tests.test_unity_puer_session tests.test_unity_session tests.test_unity_session_cli tests.test_unity_session_modules
 ```
 Cover parsing, payload contracts, status codes, packaging checks, OpenSpec tooling, and local validation-host helper logic. Run without Unity Editor or a validation-host project.
 
 `tests.test_openspec_spec_hygiene` is a pure-Python structural guard over `openspec/specs/**/spec.md`: it mirrors only two stable validator rules (every requirement needs a `#### Scenario:` and a `SHALL`/`MUST`) so this class of drift fails the default suite without the `openspec` CLI on PATH. It is not a substitute for the CLI — `openspec validate --all` remains the authority for full spec validation.
 
 This is the same default suite executed by the repository's GitHub Actions unit-test workflow for pull requests and pushes to `main`.
+
+The list must stay complete against the directory: `tests/test_default_suite_selection.py` enumerates every `tests/test_*.py` file and fails by name when a module is in neither this command nor the workflow, unless the module is named in that guard's `EXCLUSIONS` table with a reason. Adding a new mocked module therefore means adding it to both this command line and the workflow — it cannot be left out silently.
 
 **Package EditMode tests** (`python tools/run_editmode_tests.py`):
 Run the package's own EditMode assembly (`packages/com.txcombo.unity-puer-exec/Tests/EditMode/`)

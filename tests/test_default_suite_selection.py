@@ -11,6 +11,13 @@ This module parses both lists **as they are written** and compares them as
 sets. It deliberately introduces no third representation: there is no expected
 module list here to keep in sync, only the two parsed inputs.
 
+Set equality between the two lists cannot see a module that is missing from
+both of them -- both sides omit it, so the comparison passes. The second
+property below closes that hole by enumerating ``tests/test_*.py`` on disk and
+requiring the unselected remainder to be an explicit, reasoned ``EXCLUSIONS``
+table. That table is a complement, never a copy: it names only modules that are
+in neither list, so it cannot drift with the lists it complements.
+
 Mocked layer only: it reads two text files and needs neither a Unity Editor nor
 a validation host.
 """
@@ -21,6 +28,7 @@ from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+TESTS_DIR = REPO_ROOT / "tests"
 WORKFLOW_PATH = REPO_ROOT / ".github" / "workflows" / "unit-tests.yml"
 HOW_TO_RUN_PATH = (
     REPO_ROOT
@@ -29,6 +37,16 @@ HOW_TO_RUN_PATH = (
     / "validation-host-integration"
     / "how-to-run.md"
 )
+
+# Modules that are in neither default-suite list, each with the reason it cannot
+# run there. Every ``tests/test_*.py`` module must be selected in both lists or
+# appear here -- a module in neither place fails the guard by name.
+EXCLUSIONS = {
+    "tests.test_real_host_integration": (
+        "requires a live Unity Editor and a prepared validation host; "
+        "runs only under UNITY_PUER_EXEC_RUN_REAL_HOST_TESTS=1"
+    ),
+}
 
 _UNITTEST_COMMAND = "python -m unittest"
 _FENCE_RE = re.compile(r"^```")
@@ -122,6 +140,27 @@ def describe_disagreement(workflow_modules, documented_modules):
     return "\n".join(lines)
 
 
+def enumerate_test_modules(tests_dir=TESTS_DIR):
+    """Return every ``tests.test_*`` module name that exists on disk."""
+    return {
+        "tests.{0}".format(path.stem)
+        for path in Path(tests_dir).glob("test_*.py")
+    }
+
+
+def describe_unselected(on_disk, selected):
+    """Return one line per module that is neither selected nor excluded."""
+    described = []
+    for module in sorted(on_disk - selected):
+        if module in EXCLUSIONS:
+            continue
+        described.append(
+            "{0} is in neither the CI workflow nor the documented default suite, "
+            "and is not named in EXCLUSIONS".format(module)
+        )
+    return "\n".join(described)
+
+
 class DefaultSuiteSelectionTests(unittest.TestCase):
     def setUp(self):
         self.workflow_text = WORKFLOW_PATH.read_text(encoding="utf-8")
@@ -155,15 +194,58 @@ class DefaultSuiteSelectionTests(unittest.TestCase):
             + describe_disagreement(self.workflow_modules, self.documented_modules),
         )
 
-    def test_real_host_integration_is_not_a_selected_module(self):
-        """``tests/test_real_host_integration.py`` stays out of both lists.
+    def test_every_test_module_is_selected_or_excluded_by_name(self):
+        """Every module on disk is selected in both lists or explicitly excluded.
 
-        Mocked modules that import it (and drive it under ``unittest.mock``) are
-        fine; only the real-host suite itself must not be selected.
+        ``set`` equality between the two lists cannot see a module that both
+        lists omit. This complements it: ``selected`` is still derived from the
+        parsed lists, and the on-disk enumeration supplies the universe that
+        equality alone cannot express.
         """
-        excluded = "tests.test_real_host_integration"
-        self.assertNotIn(excluded, self.workflow_modules)
-        self.assertNotIn(excluded, self.documented_modules)
+        on_disk = enumerate_test_modules()
+        selected = set(self.workflow_modules) | set(self.documented_modules)
+
+        self.assertTrue(
+            on_disk,
+            "enumerated no tests.test_* modules under {0}".format(
+                TESTS_DIR.as_posix()
+            ),
+        )
+
+        unselected = on_disk - selected
+        self.assertEqual(
+            unselected,
+            set(EXCLUSIONS),
+            "The unselected test modules and the EXCLUSIONS table must be the same "
+            "set. Every tests/test_*.py module must be selected in both default-suite "
+            "lists or named in EXCLUSIONS with a reason.\n"
+            + describe_unselected(on_disk, selected)
+            + "\nMissing from EXCLUSIONS: {0}\nStale in EXCLUSIONS: {1}".format(
+                sorted(unselected - set(EXCLUSIONS)),
+                sorted(set(EXCLUSIONS) - unselected),
+            ),
+        )
+
+    def test_every_exclusion_states_a_reason(self):
+        """An exclusion cannot be added without saying why it cannot run."""
+        for module, reason in EXCLUSIONS.items():
+            self.assertIsInstance(
+                reason, str, "{0}: exclusion reason must be a string".format(module)
+            )
+            self.assertTrue(
+                reason.strip(),
+                "{0}: exclusion reason must be non-empty, otherwise the exclusion is "
+                "an unexplained omission".format(module),
+            )
+
+    def test_no_exclusion_is_also_a_selected_module(self):
+        """The exclusion table complements the lists, so it cannot overlap them."""
+        selected = set(self.workflow_modules) | set(self.documented_modules)
+        for module in sorted(set(EXCLUSIONS) & selected):
+            self.fail(
+                "{0} is named in EXCLUSIONS but is also selected in a default-suite "
+                "list; drop the exclusion or drop it from the list".format(module)
+            )
 
 
 if __name__ == "__main__":
