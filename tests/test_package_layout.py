@@ -1,4 +1,5 @@
 import json
+import os
 import re
 import sys
 import unittest
@@ -84,6 +85,14 @@ class PackageLayoutTests(unittest.TestCase):
         try:
             import yaml  # type: ignore
         except ImportError:
+            # A missing PyYAML is legitimate on a developer machine but is a
+            # provisioning defect on a CI runner: the run must not report a green
+            # check for an assertion that never executed.
+            if os.environ.get("CI"):
+                self.fail(
+                    "PyYAML is not installed; the CI runner must provision it via "
+                    "requirements-test.txt"
+                )
             self.skipTest("PyYAML not installed")
 
         workflow = yaml.safe_load(RELEASE_WORKFLOW_PATH.read_text(encoding="utf-8"))

@@ -19,6 +19,10 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Install test dependencies
+        shell: pwsh
+        run: python -m pip install --upgrade pip -r requirements-test.txt
+
       - name: Run mocked and helper-tool unit tests
         shell: pwsh
         run: |

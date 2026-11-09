@@ -1,0 +1,7 @@
+# Test-time dependencies for the default mocked and helper-tool unit-test suite.
+#
+# Installed by .github/workflows/unit-tests.yml before the suite runs, so a
+# missing package cannot turn a real assertion into a green skip. Note that a
+# third-party import here is a provisioning contract, not a convenience: see
+# openspec/specs/validation-host-integration/how-to-run.md.
+PyYAML

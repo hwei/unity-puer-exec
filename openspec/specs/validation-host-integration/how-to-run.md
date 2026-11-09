@@ -10,6 +10,16 @@ python -m unittest tests.test_cleanup_validation_host_tool tests.test_cli_versio
 ```
 Cover parsing, payload contracts, status codes, packaging checks, OpenSpec tooling, and local validation-host helper logic. Run without Unity Editor or a validation-host project.
 
+Install the suite's third-party dependencies first:
+
+```
+python -m pip install -r requirements-test.txt
+```
+
+`requirements-test.txt` is the tracked list of test-time dependencies (`PyYAML` at the time of writing, imported by `tests.test_package_layout` to parse a workflow file). The GitHub Actions unit-test workflow installs the same file before running the suite, so provisioning is one contract rather than two.
+
+A missing `PyYAML` on a bare local interpreter skips exactly one packaging assertion; in CI the same condition fails instead, naming `PyYAML` and `requirements-test.txt` (detected through the `CI` environment variable the provider sets). That asymmetry is deliberate: a contributor without the package is not blocked, but a green CI check always means the assertion actually ran.
+
 `tests.test_openspec_spec_hygiene` is a pure-Python structural guard over `openspec/specs/**/spec.md`: it mirrors only two stable validator rules (every requirement needs a `#### Scenario:` and a `SHALL`/`MUST`) so this class of drift fails the default suite without the `openspec` CLI on PATH. It is not a substitute for the CLI — `openspec validate --all` remains the authority for full spec validation.
 
 This is the same default suite executed by the repository's GitHub Actions unit-test workflow for pull requests and pushes to `main`.
