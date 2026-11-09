@@ -167,6 +167,37 @@ namespace UnityPuerExec
         private static readonly object TempFileGate = new object();
         private static readonly HashSet<string> PendingTempEntryPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
+        // Local module paths this server wrote for its own request framing. A filesystem
+        // --import-base-url makes the server write __puer_exec_entry_<request-id>.js into
+        // the caller's directory (BuildEntrySpecifier) and sweep the previous one, so the
+        // loader reads a file whose disappearance the staleness ledger would otherwise
+        // report as a changed caller module -- resetting the JsEnv before every exec.
+        //
+        // Kept separate from PendingTempEntryPaths on purpose (design D2): that set is
+        // mutated on cleanup, which is exactly when this membership must still be
+        // recognizable, and it is guarded by TempFileGate for deletion bookkeeping. This
+        // set answers one question only -- "did the harness write this path?" -- and its
+        // authority is the write site, not the file name.
+        private static readonly object HarnessOwnedModuleGate = new object();
+        private static readonly HashSet<string> HarnessOwnedModulePaths =
+            new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        // Base directories this process wrote a harness entry module into, and the exact
+        // entry file name it wrote there most recently. Only the narrow name-based fallback
+        // in IsHarnessOwnedModulePath consults this.
+        //
+        // The fallback matches the exact generated name for that directory rather than the
+        // __puer_exec_entry_ prefix, because the cache-staleness-detection requirement
+        // "Caller module in the import base directory is still tracked" covers a caller
+        // module in that same directory "including one whose name begins with
+        // __puer_exec_entry_". A prefix+directory rule would silently stop tracking it; an
+        // exact generated-name rule cannot. Bounded by the number of distinct base
+        // directories this process wrote into, not by requests.
+        private static readonly Dictionary<string, string> LastHarnessEntryFileNameByDirectory =
+            new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+        private const string HarnessEntryFileNamePrefix = "__puer_exec_entry_";
+
         private static HttpListener listener;
         private static CancellationTokenSource listenerCancellation;
         // The JavaScript environment's type differs by PuerTS major: 3.x exposes ScriptEnv
@@ -565,6 +596,17 @@ namespace UnityPuerExec
         {
             StopListener();
             DisposeJsEnv();
+
+            // Both sets describe in-flight temp files for this process. Statics do not
+            // survive a domain reload, which is where Stop() normally runs, so this drop
+            // keeps the explicit invariant visible rather than relying on that. The ledger
+            // is cleared by DisposeJsEnv above and is deliberately not a reason to clear
+            // these: they describe files the server wrote, not modules a JsEnv loaded.
+            lock (HarnessOwnedModuleGate)
+            {
+                HarnessOwnedModulePaths.Clear();
+                LastHarnessEntryFileNameByDirectory.Clear();
+            }
         }
 
         private static void StopListener()
@@ -1535,14 +1577,11 @@ namespace UnityPuerExec
                 }
                 else
                 {
-                    tempEntryPath = entrySpecifier.Replace('/', Path.DirectorySeparatorChar);
-                    var tempEntryDirectory = Path.GetDirectoryName(tempEntryPath);
-                    if (!string.IsNullOrEmpty(tempEntryDirectory))
-                    {
-                        Directory.CreateDirectory(tempEntryDirectory);
-                    }
-
-                    File.WriteAllText(tempEntryPath, request.code, Encoding.UTF8);
+                    // The helper writes the file and, immediately after a successful
+                    // write, records harness ownership -- before execLoader.SetContext and
+                    // therefore before the loader can read it. A read recorded first could
+                    // not be un-recorded (task 1.2).
+                    tempEntryPath = WriteHarnessEntryModule(entrySpecifier, request.code);
                 }
             }
 
@@ -1656,6 +1695,140 @@ namespace UnityPuerExec
             return new JsEnv(loader);
         }
 #endif
+
+        /// <summary>
+        /// Write the per-request entry module into a filesystem --import-base-url
+        /// directory and record that the harness owns it.
+        ///
+        /// The two steps live together so registering ownership cannot be forgotten at
+        /// the single existing write site: a path that is written but not registered is
+        /// recorded by the loader and reported stale on the next exec (design Risk 1).
+        /// A failed write throws before registration, so no phantom membership leaks.
+        /// </summary>
+        internal static string WriteHarnessEntryModule(string entrySpecifier, string code)
+        {
+            var tempEntryPath = entrySpecifier.Replace('/', Path.DirectorySeparatorChar);
+            var tempEntryDirectory = Path.GetDirectoryName(tempEntryPath);
+            if (!string.IsNullOrEmpty(tempEntryDirectory))
+            {
+                Directory.CreateDirectory(tempEntryDirectory);
+            }
+
+            File.WriteAllText(tempEntryPath, code, Encoding.UTF8);
+            RecordHarnessOwnedModulePath(tempEntryPath);
+            return tempEntryPath;
+        }
+
+        /// <summary>
+        /// Record that this server wrote <paramref name="tempEntryPath"/> for its own
+        /// request framing. Normalized the same way the ledger normalizes
+        /// (NormalizeLocalModulePath, '/'-separated) so membership compares like with like.
+        /// </summary>
+        internal static void RecordHarnessOwnedModulePath(string tempEntryPath)
+        {
+            if (string.IsNullOrEmpty(tempEntryPath))
+            {
+                return;
+            }
+
+            try
+            {
+                var normalizedPath = NormalizeLocalModulePath(tempEntryPath);
+                if (string.IsNullOrEmpty(normalizedPath))
+                {
+                    return;
+                }
+
+                var directory = NormalizeLocalModuleDirectory(normalizedPath);
+                var fileName = NormalizeLocalModuleFileName(normalizedPath);
+                lock (HarnessOwnedModuleGate)
+                {
+                    HarnessOwnedModulePaths.Add(normalizedPath);
+                    if (!string.IsNullOrEmpty(directory))
+                    {
+                        LastHarnessEntryFileNameByDirectory[directory] = fileName;
+                    }
+                }
+            }
+            catch
+            {
+            }
+        }
+
+        /// <summary>
+        /// Drop harness ownership of a path once the file has been removed. Called next to
+        /// the PendingTempEntryPaths mutation on both cleanup paths, so every add has a
+        /// paired remove and the set stays bounded by in-flight plus awaiting-sweep files.
+        /// </summary>
+        internal static void ForgetHarnessOwnedModulePath(string tempEntryPath)
+        {
+            if (string.IsNullOrEmpty(tempEntryPath))
+            {
+                return;
+            }
+
+            try
+            {
+                var normalizedPath = NormalizeLocalModulePath(tempEntryPath);
+                lock (HarnessOwnedModuleGate)
+                {
+                    HarnessOwnedModulePaths.Remove(normalizedPath);
+                }
+            }
+            catch
+            {
+            }
+        }
+
+        /// <summary>
+        /// True when this server generated <paramref name="filePath"/> for its own request
+        /// framing. Membership recorded at the write site is the authority (design D2); the
+        /// name-based branch is only a fallback for a path whose membership was already
+        /// dropped. It requires the parent directory to be one this process wrote a harness
+        /// entry into *and* the file name to be the exact entry name it generated there, so
+        /// a caller module -- even one named __puer_exec_entry_x.js in that same directory --
+        /// is still tracked.
+        /// </summary>
+        internal static bool IsHarnessOwnedModulePath(string filePath)
+        {
+            if (string.IsNullOrEmpty(filePath))
+            {
+                return false;
+            }
+
+            try
+            {
+                var normalizedPath = NormalizeLocalModulePath(filePath);
+                if (string.IsNullOrEmpty(normalizedPath))
+                {
+                    return false;
+                }
+
+                lock (HarnessOwnedModuleGate)
+                {
+                    if (HarnessOwnedModulePaths.Contains(normalizedPath))
+                    {
+                        return true;
+                    }
+
+                    var directory = NormalizeLocalModuleDirectory(normalizedPath);
+                    if (string.IsNullOrEmpty(directory)
+                        || !LastHarnessEntryFileNameByDirectory.TryGetValue(directory, out var lastEntryFileName))
+                    {
+                        return false;
+                    }
+
+                    var fileName = NormalizeLocalModuleFileName(normalizedPath);
+                    return !string.IsNullOrEmpty(lastEntryFileName)
+                        && string.Equals(fileName, lastEntryFileName, StringComparison.OrdinalIgnoreCase)
+                        && fileName.StartsWith(HarnessEntryFileNamePrefix, StringComparison.OrdinalIgnoreCase);
+                }
+            }
+            catch
+            {
+                return false;
+            }
+        }
 
         private static void DisposeJsEnv()
         {
@@ -1821,6 +1994,15 @@ namespace UnityPuerExec
                     return;
                 }
 
+                // A file the harness wrote is not a module the caller changed, so it never
+                // enters the ledger. Guarding the record (rather than the check) keeps every
+                // ledger entry caller-owned by construction and CheckModuleStaleness'
+                // "missing or mtime-moved" rules simple and unchanged (design D3).
+                if (IsHarnessOwnedModulePath(normalizedPath))
+                {
+                    return;
+                }
+
                 var fingerprint = new ModuleFingerprint
                 {
                     Exists = true,
@@ -1836,7 +2018,10 @@ namespace UnityPuerExec
             }
         }
 
-        private static List<string> CheckModuleStaleness()
+        // Internal (not private) so the EditMode test assembly can assert the ledger's
+        // contents directly. The rules below are deliberately unfiltered: every entry is a
+        // caller-owned module because RecordLocalModuleRead excludes harness-owned paths.
+        internal static List<string> CheckModuleStaleness()
         {
             var stale = new List<string>();
             lock (ModuleFingerprintGate)
@@ -1873,6 +2058,30 @@ namespace UnityPuerExec
             }
 
             return Path.GetFullPath(path).Replace('\\', '/');
+        }
+
+        // The '/'-separated parent directory of an already-normalized path. Uses the
+        // normalized form so it compares against LastHarnessEntryFileNameByDirectory, which
+        // is built from the same normalization.
+        private static string NormalizeLocalModuleDirectory(string normalizedPath)
+        {
+            if (string.IsNullOrEmpty(normalizedPath))
+            {
+                return string.Empty;
+            }
+
+            var separatorIndex = normalizedPath.LastIndexOf('/');
+            return separatorIndex <= 0 ? string.Empty : normalizedPath.Substring(0, separatorIndex);
+        }
+
+        private static string NormalizeLocalModuleFileName(string normalizedPath)
+        {
+            if (string.IsNullOrEmpty(normalizedPath))
+            {
+                return string.Empty;
+            }
+
+            return normalizedPath.Substring(normalizedPath.LastIndexOf('/') + 1);
         }
 
         private static bool IsCompilingOrReloading()
@@ -1964,6 +2173,10 @@ namespace UnityPuerExec
                 {
                     PendingTempEntryPaths.Remove(tempEntryPath);
                 }
+
+                // The file is gone, so membership has nothing left to protect. On the
+                // failure path below the file may still exist and is kept.
+                ForgetHarnessOwnedModulePath(tempEntryPath);
             }
             catch
             {
@@ -1996,6 +2209,8 @@ namespace UnityPuerExec
                     {
                         PendingTempEntryPaths.Remove(path);
                     }
+
+                    ForgetHarnessOwnedModulePath(path);
                 }
                 catch
                 {

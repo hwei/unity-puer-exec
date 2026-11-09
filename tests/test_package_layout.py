@@ -11,6 +11,10 @@ RELEASE_WORKFLOW_PATH = REPO_ROOT / ".github" / "workflows" / "release.yml"
 UNITY_IMPORTED_PUBLISHABLE_ASSETS = ("Editor", "package.json", "LICENSE", "README.md")
 EDITMODE_TEST_ASMDEF_RELATIVE_PATH = "Tests/EditMode/UnityPuerExec.EditMode.Tests.asmdef"
 EDITMODE_TEST_SOURCE_RELATIVE_PATH = "Tests/EditMode/UnityPuerExecRefreshBlockRetentionTests.cs"
+EDITMODE_TEST_SOURCE_RELATIVE_PATHS = (
+    EDITMODE_TEST_SOURCE_RELATIVE_PATH,
+    "Tests/EditMode/UnityPuerExecHarnessOwnedModuleTests.cs",
+)
 
 CLI_DIR = REPO_ROOT / "cli" / "python"
 if str(CLI_DIR) not in sys.path:
@@ -141,8 +145,7 @@ class PackageLayoutTests(unittest.TestCase):
             "Tests",
             "Tests/EditMode",
             EDITMODE_TEST_ASMDEF_RELATIVE_PATH,
-            EDITMODE_TEST_SOURCE_RELATIVE_PATH,
-        ):
+        ) + EDITMODE_TEST_SOURCE_RELATIVE_PATHS:
             asset_path = PACKAGE_ROOT / relative_path
             meta_path = asset_path.parent / "{}.meta".format(asset_path.name)
             self.assertTrue(asset_path.exists(), "{} should exist".format(relative_path))
@@ -300,6 +303,56 @@ class PackageLayoutTests(unittest.TestCase):
         self.assertIn('"request_id_conflict"', server_content)
         self.assertLess(server_content.index('return "busy";'), server_content.index("staleModules = CheckModuleStaleness();"))
         self.assertLess(server_content.index('"request_id_conflict"'), server_content.index("staleModules = CheckModuleStaleness();"))
+
+    def test_harness_owned_entry_paths_are_excluded_from_the_staleness_ledger(self):
+        # A filesystem --import-base-url makes the server write
+        # __puer_exec_entry_<request-id>.js into the caller's directory and sweep the
+        # previous one. If that path entered the ledger, the next exec would report it
+        # stale and the default policy would reset the JsEnv every time. The exclusion
+        # is recorded at the write site, and the guard lives in the record path -- not
+        # in CheckModuleStaleness, whose rules must stay caller-identical.
+        server_content = (PACKAGE_ROOT / "Editor" / "UnityPuerExecServer.cs").read_text(encoding="utf-8")
+
+        self.assertIn("HarnessOwnedModulePaths", server_content)
+        self.assertIn("RecordHarnessOwnedModulePath", server_content)
+        self.assertIn("ForgetHarnessOwnedModulePath", server_content)
+        self.assertIn("IsHarnessOwnedModulePath", server_content)
+
+        # Ownership is recorded as part of the write, and the write site precedes
+        # execLoader.SetContext, so the loader cannot read the file unregistered.
+        self.assertLess(
+            server_content.index("tempEntryPath = WriteHarnessEntryModule("),
+            server_content.index("execLoader.SetContext(requestContext);"),
+        )
+        write_body = self._method_body(
+            server_content, "internal static string WriteHarnessEntryModule(string entrySpecifier, string code)"
+        )
+        self.assertLess(
+            write_body.index("File.WriteAllText(tempEntryPath, code, Encoding.UTF8);"),
+            write_body.index("RecordHarnessOwnedModulePath(tempEntryPath);"),
+        )
+
+        # The guard is in RecordLocalModuleRead, before the fingerprint is stored.
+        record_body = self._method_body(server_content, "internal static void RecordLocalModuleRead(string filePath)")
+        self.assertIn("if (IsHarnessOwnedModulePath(normalizedPath))", record_body)
+        self.assertLess(
+            record_body.index("if (IsHarnessOwnedModulePath(normalizedPath))"),
+            record_body.index("LocalModuleFingerprints[normalizedPath] = fingerprint;"),
+        )
+
+        # The rejected fix -- dropping "missing means stale" -- must stay rejected: the
+        # missing-file branch is the durable requirement "Removed loaded module is stale".
+        staleness_body = self._method_body(server_content, "internal static List<string> CheckModuleStaleness()")
+        self.assertIn("!File.Exists(entry.Key)", staleness_body)
+        self.assertIn("File.GetLastWriteTimeUtc(entry.Key) != entry.Value.LastWriteTimeUtc", staleness_body)
+        self.assertNotIn("IsHarnessOwnedModulePath", staleness_body)
+
+        # Both cleanup paths drop membership next to the pending-deletion mutation, so a
+        # swept entry cannot leave a permanent hole in the ledger.
+        cleanup_body = self._method_body(server_content, "private static void CleanupTempEntryFile(string tempEntryPath)")
+        self.assertIn("ForgetHarnessOwnedModulePath(tempEntryPath);", cleanup_body)
+        sweep_body = self._method_body(server_content, "private static void SweepPendingTempEntryFiles()")
+        self.assertIn("ForgetHarnessOwnedModulePath(path);", sweep_body)
 
     def test_exec_start_journal_is_written_before_execution_and_cleared_at_terminal(self):
         # The journal is the only evidence that survives an Editor dying inside a

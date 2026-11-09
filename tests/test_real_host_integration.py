@@ -1965,6 +1965,138 @@ class RealHostIntegrationTests(_SharedRealHostDevice, unittest.TestCase):
             "explain it: {}".format(reset_payload),
         )
 
+    def test_import_base_url_preserves_globals_across_execs_against_real_host(self):
+        """A filesystem ``--import-base-url`` must not reset the JsEnv by itself.
+
+        The server writes its own per-request entry module into the base directory
+        (``BuildEntrySpecifier`` names it ``__puer_exec_entry_<request-id>.js``) and
+        sweeps the previous one. If that file is recorded in the local-module ledger,
+        the next exec sees it gone, ``CheckModuleStaleness`` reports it stale, and the
+        default ``auto-reset`` policy disposes the JsEnv -- so ``ctx.globals`` can
+        never survive an exec that uses a filesystem base URL.
+
+        Two execs share one fixture directory: the first seeds a marker on
+        ``ctx.globals``, the second reads it back. Both pass inline code that imports
+        a sibling module, so the base directory is genuinely in use and the harness
+        entry file is genuinely written. The discriminator is that the second
+        response carries **no** ``recovery`` block; the pre-fix failure reports
+        ``reason=module_cache_stale`` with ``affected_modules`` naming an
+        ``__puer_exec_entry_*.js`` path.
+        """
+        ready_exit_code, ready_payload, _, _ = _warm_up_project_exec(
+            self.project_path, self.unity_exe_path
+        )
+        self.assertEqual(ready_exit_code, 0, ready_payload)
+
+        fixture_dir = self._import_fixture_dir()
+        fixture_dir.mkdir(parents=True, exist_ok=True)
+        (fixture_dir / "greeting.js").write_text(
+            "export default 'resolved-through-import-base-url';\n", encoding="utf-8"
+        )
+
+        marker = "import-base-marker-{}".format(time.time_ns())
+        seed_code = (
+            "import greeting from './greeting.js';\n"
+            "export default function run(ctx) {"
+            " ctx.globals.importBaseMarker = " + _js_string_literal(marker) + ";"
+            " return { marker: ctx.globals.importBaseMarker, greeting: greeting }; }"
+        )
+        read_code = (
+            "import greeting from './greeting.js';\n"
+            "export default function run(ctx) {"
+            " return { marker: (ctx.globals.importBaseMarker === undefined"
+            " ? null : ctx.globals.importBaseMarker), greeting: greeting }; }"
+        )
+
+        seed_exit_code, seed_payload = self._exec_with_import_context(
+            seed_code, import_base_url=fixture_dir
+        )
+        self.assertEqual(seed_exit_code, 0, seed_payload)
+        self.assertIsInstance(seed_payload, dict, seed_payload)
+        self.assertEqual(seed_payload["status"], "completed", seed_payload)
+        self.assertEqual(seed_payload["result"]["marker"], marker, seed_payload)
+
+        read_exit_code, read_payload = self._exec_with_import_context(
+            read_code, import_base_url=fixture_dir
+        )
+        self.assertEqual(read_exit_code, 0, read_payload)
+        self.assertIsInstance(read_payload, dict, read_payload)
+        self.assertEqual(read_payload["status"], "completed", read_payload)
+        self.assertIsNone(
+            read_payload.get("recovery"),
+            "a filesystem --import-base-url reset the JsEnv by itself: {}".format(
+                read_payload
+            ),
+        )
+        self.assertEqual(
+            read_payload["result"]["marker"],
+            marker,
+            "ctx.globals did not survive successive execs that both use a filesystem "
+            "--import-base-url: {}".format(read_payload),
+        )
+        self.assertEqual(
+            read_payload["result"]["greeting"], "resolved-through-import-base-url", read_payload
+        )
+
+    def test_import_base_url_still_detects_a_changed_caller_module_against_real_host(self):
+        """Control direction: the entry-file exclusion must not widen.
+
+        The harness-owned entry module is excluded from the staleness ledger; a
+        caller-owned module that the previous exec imported and that then changes on
+        disk must still be reported stale. Without this direction, "nothing in a base
+        directory is tracked" would pass the continuity case too.
+        """
+        ready_exit_code, ready_payload, _, _ = _warm_up_project_exec(
+            self.project_path, self.unity_exe_path
+        )
+        self.assertEqual(ready_exit_code, 0, ready_payload)
+
+        fixture_dir = self._import_fixture_dir()
+        fixture_dir.mkdir(parents=True, exist_ok=True)
+        module_path = fixture_dir / "changing.js"
+        module_path.write_text("export default 'before-change';\n", encoding="utf-8")
+
+        entry_code = (
+            "import changing from './changing.js';\n"
+            "export default function run(ctx) { return { value: changing }; }"
+        )
+
+        first_exit_code, first_payload = self._exec_with_import_context(
+            entry_code, import_base_url=fixture_dir
+        )
+        self.assertEqual(first_exit_code, 0, first_payload)
+        self.assertIsInstance(first_payload, dict, first_payload)
+        self.assertEqual(first_payload["status"], "completed", first_payload)
+        self.assertEqual(first_payload["result"]["value"], "before-change", first_payload)
+
+        # Make the mtime move unambiguously on a filesystem with coarse timestamps.
+        time.sleep(0.05)
+        module_path.write_text("export default 'after-change';\n", encoding="utf-8")
+
+        second_exit_code, second_payload = self._exec_with_import_context(
+            entry_code, import_base_url=fixture_dir
+        )
+        self.assertEqual(second_exit_code, 0, second_payload)
+        self.assertIsInstance(second_payload, dict, second_payload)
+        self.assertEqual(second_payload["status"], "completed", second_payload)
+        recovery = second_payload.get("recovery")
+        self.assertIsInstance(
+            recovery,
+            dict,
+            "a changed caller module in the base directory was not reported stale: "
+            "{}".format(second_payload),
+        )
+        self.assertTrue(recovery.get("performed"), second_payload)
+        self.assertEqual(recovery.get("reason"), "module_cache_stale", second_payload)
+        affected = recovery.get("affected_modules") or []
+        self.assertTrue(
+            any(path.endswith("changing.js") for path in affected),
+            "the changed caller module was not named in affected_modules: {}".format(
+                second_payload
+            ),
+        )
+        self.assertEqual(second_payload["result"]["value"], "after-change", second_payload)
+
     def test_exec_script_args_are_visible_against_real_host(self):
         ready_exit_code, ready_payload, _, _ = _warm_up_project_exec(self.project_path, self.unity_exe_path)
         self.assertEqual(ready_exit_code, 0, ready_payload)
