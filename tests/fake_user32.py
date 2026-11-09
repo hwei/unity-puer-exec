@@ -15,7 +15,9 @@ import ctypes
 from ctypes import wintypes
 
 
+GW_HWNDNEXT = 2
 GW_OWNER = 4
+GW_CHILD = 5
 GWL_STYLE = -16
 
 WS_DISABLED = 0x08000000
@@ -49,6 +51,7 @@ BM_CLICK = 0x00F5
 WM_COMMAND = 0x0111
 WM_KEYDOWN = 0x0100
 WM_KEYUP = 0x0101
+WM_GETTEXT = 0x000D
 BN_CLICKED = 0
 VK_RETURN = 0x0D
 
@@ -148,6 +151,17 @@ class FakeWindow:
         self.pid = pid
         # Tests flip this to simulate a dialog that closes in response to a click.
         self.auto_close = False
+        # Tests flip this to simulate a handle that dies mid-walk: GetWindow on it
+        # fails the way a destroyed window does (NULL result plus a last-error).
+        self.enumeration_fails = False
+        # A control that does not answer WM_GETTEXT (the reader then falls back
+        # to GetWindowTextW, which is the only thing the fake could answer).
+        self.answer_wm_gettext = True
+        # Models the cross-process stub Win32 returns from GetWindowTextW for a
+        # foreign child control. Observed on the real consent dialog: an `Edit`
+        # whose GetWindowTextW answer was the literal string "Static" (length 6)
+        # while its WM_GETTEXT answer was the real 272-character message.
+        self.cached_text = None
 
     def with_children(self, *children):
         self.children.extend(children)
@@ -252,9 +266,26 @@ class FakeUser32:
         window = self._find(hwnd)
         if window is None:
             return 0
+        if window.enumeration_fails:
+            ctypes.set_last_error(1400)  # ERROR_INVALID_WINDOW_HANDLE
+            return 0
         if cmd == GW_OWNER:
             return window.owner if window.owner else 0
+        if cmd == GW_CHILD:
+            return window.children[0].hwnd if window.children else 0
+        if cmd == GW_HWNDNEXT:
+            sibling = self._next_sibling(hwnd)
+            return sibling.hwnd if sibling is not None else 0
         return 0
+
+    def _next_sibling(self, hwnd):
+        """The sibling window after ``hwnd`` in its parent's child list."""
+        for window in self._all():
+            for index, child in enumerate(window.children):
+                if child.hwnd == hwnd:
+                    nxt = window.children[index + 1] if index + 1 < len(window.children) else None
+                    return nxt
+        return None
 
     def GetWindowLongW(self, hwnd, index):
         window = self._find(hwnd)
@@ -283,14 +314,19 @@ class FakeUser32:
 
     def GetWindowTextLengthW(self, hwnd):
         window = self._find(hwnd)
-        return len(window.title) if window is not None else 0
+        if window is None:
+            return 0
+        if window.cached_text is not None:
+            return len(window.cached_text)
+        return len(window.title)
 
     def GetWindowTextW(self, hwnd, buffer, count):
         window = self._find(hwnd)
         if window is None:
             buffer.value = ""
             return 0
-        text = window.title[: count - 1] if count > 1 else ""
+        source = window.title if window.cached_text is None else window.cached_text
+        text = source[: count - 1] if count > 1 else ""
         buffer.value = text
         return len(text)
 
@@ -307,6 +343,31 @@ class FakeUser32:
 
     def SendMessageW(self, hwnd, msg, wparam, lparam):
         self._maybe_close(hwnd, msg)
+        return 1
+
+    def SendMessageTimeoutW(self, hwnd, msg, wparam, lparam, flags, timeout, result_ref):
+        """Model ``WM_GETTEXT`` cross-process reads.
+
+        The double holds the whole tree in one process, so ``GetWindowTextW``
+        would answer here even though the real call cannot for a foreign child.
+        Tests that exercise the reader's real path go through this method; a
+        window may opt out with ``answer_wm_gettext = False`` to model a control
+        that ignores the message.
+        """
+        if msg != WM_GETTEXT:
+            return 0
+        window = self._find(hwnd)
+        if window is None or not window.answer_wm_gettext:
+            return 0
+        text = window.title
+        capacity = wparam
+        if capacity <= 0:
+            return 0
+        target = ctypes.cast(lparam, ctypes.POINTER(ctypes.c_wchar * capacity)).contents
+        target.value = text[: capacity - 1]
+        written = len(target.value)
+        if result_ref is not None:
+            _deref(result_ref).value = written
         return 1
 
     def PostMessageW(self, hwnd, msg, wparam, lparam):
@@ -379,6 +440,7 @@ class FakeUser32:
             "GetWindowTextW",
             "GetClassNameW",
             "SendMessageW",
+            "SendMessageTimeoutW",
             "PostMessageW",
             "SetForegroundWindow",
             "keybd_event",

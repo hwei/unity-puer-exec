@@ -433,6 +433,154 @@ class RealHostResetTests(unittest.TestCase):
         cleanup.assert_called_once_with(wait_for_editor=True)
 
 
+class ScriptUpdaterObservationClassificationTests(unittest.TestCase):
+    """Task 3.1: an empty body from the consent dialog is not a mismatch.
+
+    The case used to fail on an empty body with a fingerprint-extension message,
+    which pointed at the wrong defect: the dialog had surfaced, the reader had
+    simply returned nothing. These pins are pure Python and need no Editor.
+    """
+
+    MESSAGE = real_host.unity_modal_blockers.API_UPDATER_MESSAGE_FINGERPRINT
+
+    def test_matching_body_is_a_match(self):
+        observation = real_host._classify_script_updater_observation(
+            {"title": "Script Updating Consent", "body": self.MESSAGE}
+        )
+
+        self.assertEqual(observation["outcome"], real_host.SCRIPT_UPDATER_OBSERVED_MATCHED)
+
+    def test_empty_body_from_the_consent_title_is_an_unreadable_body(self):
+        observation = real_host._classify_script_updater_observation(
+            {
+                "title": "Script Updating Consent",
+                "body": "",
+                "body_outcome": real_host.unity_modal_blockers.DIALOG_BODY_NO_READABLE_TEXT,
+            }
+        )
+
+        self.assertEqual(
+            observation["outcome"], real_host.SCRIPT_UPDATER_OBSERVED_UNREADABLE_BODY
+        )
+        self.assertTrue(observation["title_in_family"])
+        self.assertEqual(
+            observation["body_outcome"],
+            real_host.unity_modal_blockers.DIALOG_BODY_NO_READABLE_TEXT,
+        )
+
+    def test_empty_body_defaults_to_the_absent_text_condition(self):
+        # A dialog record from an older reader carries no body_outcome at all.
+        observation = real_host._classify_script_updater_observation(
+            {"title": "Script Updating Consent", "body": ""}
+        )
+
+        self.assertEqual(
+            observation["body_outcome"],
+            real_host.unity_modal_blockers.DIALOG_BODY_NO_READABLE_TEXT,
+        )
+
+    def test_enumeration_failure_is_kept_distinct_from_absent_text(self):
+        observation = real_host._classify_script_updater_observation(
+            {
+                "title": "Script Updating Consent",
+                "body": "",
+                "body_outcome": real_host.unity_modal_blockers.DIALOG_BODY_ENUMERATION_FAILED,
+            }
+        )
+
+        self.assertEqual(
+            observation["outcome"], real_host.SCRIPT_UPDATER_OBSERVED_UNREADABLE_BODY
+        )
+        self.assertEqual(
+            observation["body_outcome"],
+            real_host.unity_modal_blockers.DIALOG_BODY_ENUMERATION_FAILED,
+        )
+        reason = real_host._unreadable_body_skip_reason(
+            observation, {"title": "Script Updating Consent"}, "2022.3.62f2"
+        )
+        self.assertIn("window enumeration failed", reason)
+        self.assertIn("2022.3.62f2", reason)
+        self.assertIn("Script Updating Consent", reason)
+
+    def test_absent_text_skip_reason_names_readability_not_triggering(self):
+        observation = real_host._classify_script_updater_observation(
+            {"title": "Script Updating Consent", "body": ""}
+        )
+
+        reason = real_host._unreadable_body_skip_reason(
+            observation, {"title": "Script Updating Consent"}, "2022.3.62f2"
+        )
+
+        self.assertIn("carries no readable text", reason)
+        self.assertIn("readability, not triggering", reason)
+        self.assertNotIn("could not be triggered", reason)
+
+    def test_non_empty_non_matching_body_is_still_a_fingerprint_miss(self):
+        observation = real_host._classify_script_updater_observation(
+            {"title": "Script Updating Consent", "body": "Some unrelated message"}
+        )
+
+        self.assertEqual(
+            observation["outcome"], real_host.SCRIPT_UPDATER_OBSERVED_FINGERPRINT_MISS
+        )
+        self.assertEqual(observation["body"], "Some unrelated message")
+
+    def test_title_family_covers_the_observed_editor_titles(self):
+        for title in (
+            "Script Updating Consent",
+            "API Updating",
+            "API Updater",
+            "ScriptUpdater",
+        ):
+            self.assertTrue(real_host._is_script_updater_title(title), title)
+        for title in ("Save Scene", "Enter Safe Mode?", "Unity"):
+            self.assertFalse(real_host._is_script_updater_title(title), title)
+
+    def test_unreadable_consent_dialog_is_still_found_by_its_title(self):
+        # The message that would identify the dialog is exactly what could not
+        # be read, so the title has to carry discovery on its own.
+        candidate, others = real_host._find_script_updater_dialog(
+            [
+                {"hwnd": 2, "title": "Script Updating Consent", "body": ""},
+                {"hwnd": 3, "title": "Save Scene", "body": ""},
+            ]
+        )
+
+        self.assertEqual(candidate["hwnd"], 2)
+        self.assertEqual([d["hwnd"] for d in others], [3])
+
+    def test_unrelated_textless_dialog_is_not_the_consent_dialog(self):
+        candidate, others = real_host._find_script_updater_dialog(
+            [{"hwnd": 4, "title": "Delete Asset?", "body": ""}]
+        )
+
+        self.assertIsNone(candidate)
+        self.assertEqual([d["hwnd"] for d in others], [4])
+
+    def test_empty_body_on_an_unrelated_title_is_not_an_unreadable_consent_body(self):
+        # Only the title family makes an empty body evidence about this case;
+        # otherwise an unrelated textless dialog would be reported as the
+        # ScriptUpdater's readability blocker.
+        observation = real_host._classify_script_updater_observation(
+            {"title": "Delete Asset?", "body": ""}
+        )
+
+        self.assertEqual(
+            observation["outcome"], real_host.SCRIPT_UPDATER_OBSERVED_FINGERPRINT_MISS
+        )
+        self.assertFalse(observation.get("title_in_family", False))
+
+    def test_fingerprint_matching_body_wins_over_the_title_family(self):
+        # A dialog whose title is not in the family is still the consent dialog
+        # when its body matches; the body is the real identifier.
+        candidate, others = real_host._find_script_updater_dialog(
+            [{"hwnd": 5, "title": "Unity", "body": self.MESSAGE}]
+        )
+
+        self.assertEqual(candidate["hwnd"], 5)
+        self.assertEqual(others, [])
+
+
 class RealHostCompileTriggeringProbeTests(unittest.TestCase):
     def test_watched_extensions_are_read_from_the_exec_help_statement(self):
         watched = real_host._watched_compile_triggering_extensions()

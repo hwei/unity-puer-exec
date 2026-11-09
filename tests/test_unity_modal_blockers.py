@@ -136,6 +136,231 @@ def _dialog(hwnd, title, **kwargs):
     return fake_user32.FakeWindow(hwnd, title=title, **kwargs)
 
 
+def _text(hwnd, text, class_name="Static", children=()):
+    """A descendant carrying message text under a caller-chosen window class."""
+    return fake_user32.FakeWindow(
+        hwnd, title=text, class_name=class_name, style=fake_user32._style(0), children=children
+    )
+
+
+class DialogBodyReaderTests(unittest.TestCase):
+    """The body reader's contract: any readable descendant, recursively.
+
+    The ScriptUpdater consent dialog is matched by its message text, and the
+    window class and nesting depth carrying that text are not stable across
+    Editor versions. A reader that only looks at direct `Static` children
+    returns an empty body, which silently disables auto-decline.
+    """
+
+    MESSAGE = unity_modal_blockers.API_UPDATER_MESSAGE_FINGERPRINT
+
+    def _read(self, dialog):
+        with fake_user32.install(unity_modal_blockers, [dialog]):
+            return unity_modal_blockers._read_dialog_body(dialog.hwnd)
+
+    def test_message_in_a_non_static_child_is_read(self):
+        # Observed shape: the message lives in a SysLink, not a Static.
+        dialog = _dialog(1, "Script Updating Consent")
+        dialog.with_children(_text(2, self.MESSAGE, class_name="SysLink"))
+
+        body = self._read(dialog)
+
+        self.assertEqual(body["outcome"], unity_modal_blockers.DIALOG_BODY_READ)
+        self.assertIn(self.MESSAGE, body["text"])
+
+    def test_message_nested_in_a_container_is_read(self):
+        # Observed shape: a DirectUIHWND container with the message below it.
+        dialog = _dialog(1, "Script Updating Consent")
+        dialog.with_children(
+            _text(2, "", class_name="DirectUIHWND", children=[_text(3, self.MESSAGE)])
+        )
+
+        body = self._read(dialog)
+
+        self.assertEqual(body["outcome"], unity_modal_blockers.DIALOG_BODY_READ)
+        self.assertIn(self.MESSAGE, body["text"])
+
+    def test_textless_dialog_names_the_absent_text_condition(self):
+        dialog = _dialog(1, "Script Updating Consent")
+        dialog.with_children(_text(2, "", class_name="DirectUIHWND"))
+
+        body = self._read(dialog)
+
+        self.assertEqual(body["text"], "")
+        self.assertEqual(
+            body["outcome"], unity_modal_blockers.DIALOG_BODY_NO_READABLE_TEXT
+        )
+
+    def test_failed_enumeration_is_not_reported_as_an_absent_text(self):
+        # A window tree that moved under the walk must not read as "this dialog
+        # has no message": the two conditions call for different follow-ups.
+        dialog = _dialog(1, "Script Updating Consent")
+        broken = _text(2, self.MESSAGE)
+        broken.enumeration_fails = True
+        dialog.with_children(broken)
+
+        body = self._read(dialog)
+
+        self.assertEqual(body["text"], "")
+        self.assertEqual(
+            body["outcome"], unity_modal_blockers.DIALOG_BODY_ENUMERATION_FAILED
+        )
+
+    def test_absent_text_and_enumeration_failure_are_distinguishable(self):
+        textless = _dialog(1, "Script Updating Consent")
+        textless.with_children(_text(2, ""))
+        broken = _dialog(3, "Script Updating Consent")
+        broken_child = _text(4, "")
+        broken_child.enumeration_fails = True
+        broken.with_children(broken_child)
+
+        textless_body = self._read(textless)
+        broken_body = self._read(broken)
+
+        self.assertEqual(textless_body["text"], broken_body["text"], "both report no text")
+        self.assertNotEqual(textless_body["outcome"], broken_body["outcome"])
+
+    def test_plain_static_child_still_reads(self):
+        # The shape this code was originally written for must not regress.
+        dialog = _dialog(1, "Script Updating Consent")
+        dialog.with_children(
+            fake_user32.static_text(2, self.MESSAGE), _button(3, "&Yes"), _button(4, "&No")
+        )
+
+        body = self._read(dialog)
+
+        self.assertEqual(body["outcome"], unity_modal_blockers.DIALOG_BODY_READ)
+        self.assertIn(self.MESSAGE, body["text"])
+
+    def test_message_in_an_edit_control_is_read_across_the_process_boundary(self):
+        """The measured 0.13.0 failure: an `Edit` body GetWindowTextW cannot read.
+
+        Observed tree on Unity 2022.3.62f2:
+          #32770 'Script Updating Consent'
+            Static  len=0
+            Edit    GetWindowTextW -> 'Static' (stub), WM_GETTEXT -> the message
+            Button  '&Yes, for these and other files that might be found later'
+            Button  'Y&es, just for these files'
+            Button  '&No'
+        The reader used to return the stub text and no message, so the consent
+        dialog matched no fingerprint and was never auto-declined.
+        """
+        dialog = _dialog(1, "Script Updating Consent")
+        edit = fake_user32.FakeWindow(
+            2, title=self.MESSAGE, class_name="Edit", style=fake_user32._style(0)
+        )
+        # Win32 hands a foreign reader this cached stub instead of the text.
+        edit.cached_text = "Static"
+        dialog.with_children(
+            fake_user32.static_text(3, ""),
+            edit,
+            _button(4, "&Yes, for these and other files that might be found later"),
+            _button(5, "Y&es, just for these files"),
+            _button(6, "&No"),
+        )
+
+        body = self._read(dialog)
+
+        self.assertEqual(body["outcome"], unity_modal_blockers.DIALOG_BODY_READ)
+        self.assertIn(self.MESSAGE, body["text"])
+        self.assertNotIn("Static", body["text"].split("\n"))
+
+    def test_edit_message_still_reaches_the_catalog_match(self):
+        # The end that matters: the measured tree must be auto-declined, so it
+        # must match the catalog entry and stay out of blocker listings.
+        owner = _main(1, enabled=False)
+        dialog = _dialog(2, "Script Updating Consent", owner=1)
+        edit = fake_user32.FakeWindow(
+            3, title=self.MESSAGE, class_name="Edit", style=fake_user32._style(0)
+        )
+        edit.cached_text = "Static"
+        dialog.with_children(
+            edit,
+            _button(4, "&Yes, for these and other files that might be found later"),
+            _button(5, "Y&es, just for these files"),
+            _button(6, "&No"),
+        )
+
+        with fake_user32.install(unity_modal_blockers, [owner, dialog]):
+            blockers = unity_modal_blockers.list_supported_modal_blockers(4321, scope="exec")
+            listed = unity_modal_blockers._list_supported_api_updater_dialogs(4321)
+
+        self.assertEqual(blockers, [])
+        self.assertEqual(
+            [d["type"] for d in listed], [unity_modal_blockers.API_UPDATER_DIALOG_TYPE]
+        )
+
+    def test_wm_gettext_is_not_used_in_place_of_an_unanswered_window(self):
+        # A control that ignores WM_GETTEXT falls back to GetWindowTextW rather
+        # than reporting an empty body for a window that does carry text.
+        dialog = _dialog(1, "Script Updating Consent")
+        silent = _text(2, "readable fallback text", class_name="SysLink")
+        silent.answer_wm_gettext = False
+        dialog.with_children(silent)
+
+        body = self._read(dialog)
+
+        self.assertEqual(body["outcome"], unity_modal_blockers.DIALOG_BODY_READ)
+        self.assertEqual(body["text"], "readable fallback text")
+
+    def test_concatenation_follows_tree_order_parent_before_descendants(self):
+        dialog = _dialog(1, "Script Updating Consent")
+        dialog.with_children(
+            _text(2, "first"),
+            _text(3, "second", children=[_text(4, "nested-before-sibling")]),
+            _text(5, "third"),
+        )
+
+        body = self._read(dialog)
+
+        self.assertEqual(body["text"], "first\nsecond\nnested-before-sibling\nthird")
+
+    def test_non_static_message_reaches_the_catalog_match(self):
+        # The end that matters: a readable body must actually match the
+        # ScriptUpdater catalog entry and be auto-declined, not reported.
+        owner = _main(1, enabled=False)
+        dialog = _dialog(2, "Script Updating Consent", owner=1)
+        dialog.with_children(
+            _text(3, self.MESSAGE, class_name="SysLink"),
+            _button(4, "&Yes"),
+            _button(5, "&No"),
+        )
+
+        with fake_user32.install(unity_modal_blockers, [owner, dialog]):
+            blockers = unity_modal_blockers.list_supported_modal_blockers(4321, scope="exec")
+            listed = unity_modal_blockers._list_supported_api_updater_dialogs(4321)
+
+        self.assertEqual(blockers, [])
+        self.assertEqual([d["type"] for d in listed], [unity_modal_blockers.API_UPDATER_DIALOG_TYPE])
+
+    def test_nested_message_reaches_the_catalog_match(self):
+        owner = _main(1, enabled=False)
+        dialog = _dialog(2, "Script Updating Consent", owner=1)
+        dialog.with_children(
+            _text(3, "", class_name="DirectUIHWND", children=[_text(4, self.MESSAGE)]),
+            _button(5, "&No"),
+        )
+
+        with fake_user32.install(unity_modal_blockers, [owner, dialog]):
+            listed = unity_modal_blockers._list_supported_api_updater_dialogs(4321)
+
+        self.assertEqual([d["type"] for d in listed], [unity_modal_blockers.API_UPDATER_DIALOG_TYPE])
+
+    def test_unrelated_readable_text_is_still_a_fingerprint_miss(self):
+        # The reader's new breadth must not make a non-ScriptUpdater dialog match.
+        dialog = _dialog(1, "Some Other Prompt")
+        dialog.with_children(_text(2, "Proceed?", class_name="SysLink"))
+
+        with fake_user32.install(unity_modal_blockers, [dialog]):
+            body = unity_modal_blockers._read_dialog_body(1)
+            spec = unity_modal_blockers._match_dialog_spec(
+                {"hwnd": 1, "title": "Some Other Prompt", "body": body["text"]}
+            )
+
+        self.assertEqual(body["outcome"], unity_modal_blockers.DIALOG_BODY_READ)
+        self.assertIsNone(spec)
+
+
 class ModalDiscriminationTests(unittest.TestCase):
     """D2: a visible titled window is not evidence of blocking on its own."""
 
@@ -271,7 +496,24 @@ class UnknownDialogReportingTests(unittest.TestCase):
         self.assertEqual(blockers[0]["type"], "unknown_modal_dialog")
         self.assertEqual(blockers[0]["scope"], "exec")
         self.assertEqual(blockers[0]["hwnd"], 2)
-        self.assertEqual(blockers[0]["body"], "")
+        # A successful read reports the text it found, not an empty string:
+        # an empty body would be indistinguishable from an unreadable one.
+        self.assertEqual(blockers[0]["body"], "&Delete\nCancel")
+        self.assertEqual(blockers[0]["body_outcome"], unity_modal_blockers.DIALOG_BODY_READ)
+
+    def test_unknown_textless_dialog_names_the_absent_text_condition(self):
+        owner = _main(1, enabled=False)
+        # A dialog whose tree carries no readable text at all: no child of any
+        # class, so no label and no message to fingerprint.
+        dialog = _dialog(2, "Delete Asset?", owner=1, rect=(200, 200, 640, 380))
+
+        with fake_user32.install(unity_modal_blockers, [owner, dialog]):
+            blocker = unity_modal_blockers.list_supported_modal_blockers(4321, scope="exec")[0]
+
+        self.assertEqual(blocker["body"], "")
+        self.assertEqual(
+            blocker["body_outcome"], unity_modal_blockers.DIALOG_BODY_NO_READABLE_TEXT
+        )
 
     def test_unknown_payload_carries_hwnd_title_body_and_buttons(self):
         owner, dialog = self._unknown_setup()

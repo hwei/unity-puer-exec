@@ -53,14 +53,29 @@ DEFAULT_API_UPDATER_DISMISS_TIMEOUT_MS = 2000
 DEFAULT_API_UPDATER_DISMISS_POLL_MS = 100
 
 IDCANCEL = 2
+GW_HWNDNEXT = 2
 GW_OWNER = 4
+GW_CHILD = 5
 GWL_STYLE = -16
 BM_CLICK = 0x00F5
 WM_COMMAND = 0x0111
 WM_KEYDOWN = 0x0100
 WM_KEYUP = 0x0101
+WM_GETTEXT = 0x000D
 BN_CLICKED = 0
 VK_RETURN = 0x0D
+
+# Cross-process text reads. SendMessageTimeoutW is used with ABORTIFHUNG so a
+# dialog whose thread stops pumping cannot wedge the CLI, and with BLOCK so the
+# call is not silently dropped.
+SMTO_ABORTIFHUNG = 0x0002
+SMTO_BLOCK = 0x0001
+WM_GETTEXT_TIMEOUT_MS = 500
+# MessageBox-style dialogs put their message in a single control; the largest
+# observed is a few hundred characters. A buffer this size is read whole, and a
+# truncated result is retried at the next size up to the ceiling.
+WM_GETTEXT_BUFFER_CHARS = 4096
+WM_GETTEXT_BUFFER_CEILING_CHARS = 65536
 
 WS_DISABLED = 0x08000000
 WS_POPUP = 0x80000000
@@ -75,6 +90,18 @@ MAX_MODAL_DIALOG_EDGE_PX = 1600
 # Window class of Windows dialogs (`Save Scene`, `Scene(s) Have Been Modified`).
 # Unity's own windows use `UnityContainerWndClass` and are never dialogs.
 DIALOG_WINDOW_CLASS = "#32770"
+
+# Outcomes of reading a dialog's message body. A caller needs to tell a dialog
+# that carries no readable text from one whose window tree could not be
+# enumerated: the first is a dead end for fingerprinting, the second is a window
+# that vanished or was never readable and may succeed on a retry.
+DIALOG_BODY_READ = "read"
+DIALOG_BODY_NO_READABLE_TEXT = "no_readable_text"
+DIALOG_BODY_ENUMERATION_FAILED = "enumeration_failed"
+DIALOG_BODY_UNSUPPORTED_PLATFORM = "unsupported_platform"
+# A dialog record assembled by something other than the reader (a test fixture,
+# a caller replaying a payload) has no observed outcome to report.
+DIALOG_BODY_UNKNOWN = "unknown"
 
 # Button low-word styles that are not clickable as an action. Win32 reports
 # these under the same "Button" class as push buttons, so they must be filtered
@@ -165,6 +192,7 @@ def _unknown_blocker_entry(dialog):
         "hwnd": dialog["hwnd"],
         "title": dialog["title"],
         "body": dialog.get("body") or "",
+        "body_outcome": dialog.get("body_outcome") or DIALOG_BODY_UNKNOWN,
     }
     entry.update(_button_fields(dialog["hwnd"]))
     return entry
@@ -626,7 +654,15 @@ def _list_windows_dialogs(unity_pid):
         # Note: some dialogs (e.g. Safe Mode) appear before the main window and have no owner
         title = _get_window_text(hwnd, get_window_text_length, get_window_text, ctypes)
         if title:
-            dialogs.append({"hwnd": hwnd, "title": title, "body": _read_dialog_body_text(hwnd)})
+            body = _read_dialog_body(hwnd)
+            dialogs.append(
+                {
+                    "hwnd": hwnd,
+                    "title": title,
+                    "body": body["text"],
+                    "body_outcome": body["outcome"],
+                }
+            )
         return True
 
     enum_proc = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)(callback)
@@ -919,47 +955,161 @@ def _get_window_text(hwnd, get_window_text_length, get_text_fn, ctypes, buffer_s
 
 
 def _read_dialog_body_text(dialog_hwnd):
-    """Concatenated Static child text of a dialog, used to fingerprint its message.
+    """Message text of a dialog, used to fingerprint it.
 
-    The ScriptUpdater consent dialog's title is not a stable identifier, so the
-    message sentence is read from the dialog body. Returns "" when nothing can be
-    read (non-Windows, no children, or a dialog whose tree is not standard).
+    Lossy convenience wrapper over :func:`_read_dialog_body` for callers that
+    only need the text. Returns "" when nothing was read; use
+    ``_read_dialog_body`` to tell an unreadable body from a failed enumeration.
+    """
+    return _read_dialog_body(dialog_hwnd)["text"]
+
+
+def _read_window_text(hwnd, get_window_text_length, get_window_text, ctypes, send_message_timeout=None):
+    """Text of a window as the dialog body reader needs it.
+
+    ``GetWindowTextW`` cannot read another process's control text: for a foreign
+    child control it returns a cached stub (observed: the class name ``Static``
+    with length 6) rather than the control's text. ``WM_GETTEXT`` is the message
+    that works cross-process, so it is tried first and ``GetWindowTextW`` is the
+    fallback for windows that do not answer it (and for the fake surface the
+    mocked tests install).
+    """
+    if send_message_timeout is not None:
+        text = send_message_timeout(hwnd)
+        if text:
+            return text
+    return _get_window_text(hwnd, get_window_text_length, get_window_text, ctypes)
+
+
+def _send_message_timeout_text(hwnd):
+    """Read a foreign window's text with ``SendMessageTimeoutW(WM_GETTEXT)``.
+
+    Returns "" when the window does not answer or does not fit, so the caller
+    can fall back rather than report a partial body.
+    """
+    user32, wintypes, ctypes = _load_win32_modules()
+    send_message_timeout = user32.SendMessageTimeoutW
+    # LRESULT and DWORD_PTR are pointer-sized on Windows, so c_long/c_int would
+    # truncate them on a 64-bit Python.
+    send_message_timeout.restype = ctypes.c_ssize_t
+    send_message_timeout.argtypes = [
+        wintypes.HWND,
+        wintypes.UINT,
+        wintypes.WPARAM,
+        wintypes.LPARAM,
+        wintypes.UINT,
+        wintypes.UINT,
+        ctypes.POINTER(ctypes.c_size_t),
+    ]
+
+    capacity = WM_GETTEXT_BUFFER_CHARS
+    while capacity <= WM_GETTEXT_BUFFER_CEILING_CHARS:
+        buffer = ctypes.create_unicode_buffer(capacity)
+        result = ctypes.c_size_t(0)
+        answered = send_message_timeout(
+            hwnd,
+            WM_GETTEXT,
+            capacity,
+            ctypes.addressof(buffer),
+            SMTO_ABORTIFHUNG | SMTO_BLOCK,
+            WM_GETTEXT_TIMEOUT_MS,
+            ctypes.byref(result),
+        )
+        if not answered:
+            return ""
+        if result.value < capacity - 1:
+            return buffer.value
+        # The text filled the buffer, so it may be truncated: retry larger.
+        capacity *= 4
+    return ""
+
+
+def _read_dialog_body(dialog_hwnd):
+    """Read a dialog's message text and name the outcome.
+
+    The ScriptUpdater consent dialog's title is not a stable identifier, so its
+    message sentence is read out of the window tree instead. Any descendant
+    carrying readable text contributes, whatever its window class: on some
+    Editor versions the message lives in a `SysLink` or `DirectUIHWND` rather
+    than a `Static`, and inside a container rather than as a direct child. The
+    traversal is therefore recursive and class-agnostic, and visits each window
+    once in tree order (parent before descendants) so the concatenation the
+    fingerprint is matched against is deterministic.
+
+    Returns ``{"outcome": ..., "text": ...}``. The outcome separates a dialog
+    whose tree carries no readable text from one whose enumeration failed, so a
+    caller can name the condition instead of reporting an empty string that
+    means either.
     """
     if sys.platform != "win32":
-        return ""
+        return {"outcome": DIALOG_BODY_UNSUPPORTED_PLATFORM, "text": ""}
     user32, wintypes, ctypes = _load_win32_modules()
-    enum_child_windows = user32.EnumChildWindows
-    get_class_name = user32.GetClassNameW
+    get_window = user32.GetWindow
     get_window_text_length = user32.GetWindowTextLengthW
     get_window_text = user32.GetWindowTextW
-
-    enum_child_windows.restype = wintypes.BOOL
-    enum_child_windows.argtypes = [
-        wintypes.HWND,
-        ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM),
-        wintypes.LPARAM,
-    ]
-    get_class_name.restype = ctypes.c_int
-    get_class_name.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+    is_window = user32.IsWindow
+    get_window.restype = wintypes.HWND
+    get_window.argtypes = [wintypes.HWND, ctypes.c_uint]
     get_window_text_length.restype = ctypes.c_int
     get_window_text_length.argtypes = [wintypes.HWND]
     get_window_text.restype = ctypes.c_int
     get_window_text.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+    is_window.restype = wintypes.BOOL
+    is_window.argtypes = [wintypes.HWND]
+
+    if not is_window(dialog_hwnd):
+        # A stale or invalid handle: nothing about this dialog is readable, and
+        # naming that is what separates it from a dialog with no message.
+        return {"outcome": DIALOG_BODY_ENUMERATION_FAILED, "text": ""}
 
     parts = []
+    enumeration_failed = []
+    visited = set()
 
-    def callback(hwnd, _l_param):
-        class_name = _get_window_text(hwnd, None, get_class_name, ctypes, buffer_size=256)
-        if class_name != "Static":
-            return True
-        text = _get_window_text(hwnd, get_window_text_length, get_window_text, ctypes)
+    def read_text(hwnd):
+        text = _read_window_text(
+            hwnd, get_window_text_length, get_window_text, ctypes, _send_message_timeout_text
+        )
         if text:
             parts.append(text)
-        return True
 
-    enum_proc = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)(callback)
-    enum_child_windows(dialog_hwnd, enum_proc, 0)
-    return "\n".join(parts)
+    def child_of(hwnd):
+        ctypes.set_last_error(0)
+        child = get_window(hwnd, GW_CHILD)
+        if not child and ctypes.get_last_error():
+            # A childless window reports NULL with no error set; only a set
+            # last-error means the query itself failed.
+            enumeration_failed.append(True)
+        return child
+
+    def walk(first_child):
+        # Walk siblings with GetWindow rather than EnumChildWindows: the walk is
+        # then ours to order (parent before descendants, tree order) and does not
+        # depend on how deep a given enumerator chooses to recurse.
+        hwnd = first_child
+        while hwnd:
+            if hwnd in visited:
+                # A repeated handle means the tree mutated into a cycle under
+                # us; the walk is no longer a faithful read of the dialog.
+                enumeration_failed.append(True)
+                return
+            visited.add(hwnd)
+            read_text(hwnd)
+            walk(child_of(hwnd))
+            ctypes.set_last_error(0)
+            hwnd = get_window(hwnd, GW_HWNDNEXT)
+            if not hwnd and ctypes.get_last_error():
+                # A sibling walk that dies mid-list means the tree moved under
+                # us; report the enumeration failure rather than a partial body.
+                enumeration_failed.append(True)
+                return
+
+    walk(child_of(dialog_hwnd))
+    if enumeration_failed:
+        return {"outcome": DIALOG_BODY_ENUMERATION_FAILED, "text": ""}
+    if not parts:
+        return {"outcome": DIALOG_BODY_NO_READABLE_TEXT, "text": ""}
+    return {"outcome": DIALOG_BODY_READ, "text": "\n".join(parts)}
 
 
 def _load_win32_modules():

@@ -40,9 +40,35 @@ class HarnessSmokeTests(unittest.TestCase):
             read = unity_modal_blockers._read_dialog_body_text(1)
             title = unity_modal_blockers._list_windows_dialogs(4321)
 
-        self.assertEqual(read, "")
+        # Any descendant's readable text counts, whatever its window class: a
+        # class filter is what hid the ScriptUpdater message.
+        self.assertEqual(read, "&Save")
         self.assertEqual(len(title), 1)
         self.assertEqual(title[0]["title"], "Main")
+        self.assertEqual(title[0]["body"], "&Save")
+        self.assertEqual(title[0]["body_outcome"], unity_modal_blockers.DIALOG_BODY_READ)
+
+    def test_childless_dialog_names_the_absent_text_condition(self):
+        owner = _dialog(1, title="Main")
+
+        with fake_user32.install(unity_modal_blockers, [owner]):
+            body = unity_modal_blockers._read_dialog_body(1)
+
+        self.assertEqual(body["text"], "")
+        self.assertEqual(
+            body["outcome"], unity_modal_blockers.DIALOG_BODY_NO_READABLE_TEXT
+        )
+
+    def test_stale_handle_names_the_enumeration_failure(self):
+        owner = _dialog(1, title="Main")
+
+        with fake_user32.install(unity_modal_blockers, [owner]):
+            body = unity_modal_blockers._read_dialog_body(999)
+
+        self.assertEqual(body["text"], "")
+        self.assertEqual(
+            body["outcome"], unity_modal_blockers.DIALOG_BODY_ENUMERATION_FAILED
+        )
 
     def test_owner_lookup(self):
         owner = _dialog(1, title="Main")

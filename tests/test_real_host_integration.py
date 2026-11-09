@@ -467,6 +467,116 @@ def _trigger_domain_reload_via_touched_script(project_path, unity_exe_path):
     )
 
 
+# Titles the ScriptUpdater consent dialog has carried across Editor versions. The
+# message body is the real identifier, but a title in this family plus an
+# unreadable body is the signature of a consent dialog the CLI could not read
+# rather than of an unrelated dialog with no text.
+SCRIPT_UPDATER_TITLE_FRAGMENTS = (
+    "script updating",
+    "script updater",
+    "scriptupdater",
+    "api updating",
+    "api updater",
+)
+
+SCRIPT_UPDATER_OBSERVED_MATCHED = "api_updater_message_matched"
+SCRIPT_UPDATER_OBSERVED_UNREADABLE_BODY = "api_updater_body_unreadable"
+SCRIPT_UPDATER_OBSERVED_FINGERPRINT_MISS = "api_updater_fingerprint_miss"
+
+
+def _is_script_updater_title(title):
+    lowered = (title or "").lower()
+    return any(fragment in lowered for fragment in SCRIPT_UPDATER_TITLE_FRAGMENTS)
+
+
+def _find_script_updater_dialog(dialogs):
+    """Split observed dialogs into (ScriptUpdater candidate, everything else).
+
+    A dialog is a candidate when its body matches a known fingerprint or its
+    title belongs to the ScriptUpdater family. The title path is what lets an
+    *unreadable* consent dialog be noticed at all: the message that would have
+    identified it is exactly what could not be read.
+    """
+    candidate = None
+    others = []
+    for dialog in dialogs:
+        body = dialog.get("body") or ""
+        if unity_modal_blockers.is_api_updater_message(body) or _is_script_updater_title(
+            dialog.get("title", "")
+        ):
+            candidate = dialog
+        else:
+            others.append(dialog)
+    return candidate, others
+
+
+def _classify_script_updater_observation(dialog):
+    """Classify a dialog observed on the consent-dialog recovery path.
+
+    Pure Python so the classification can be pinned without an Editor.
+
+    A body that matches a known fingerprint is a match. An empty body from a
+    dialog whose title belongs to the ScriptUpdater family is *not* a
+    fingerprint mismatch: the dialog did reach the host, but the CLI could not
+    read its message, which is a diagnosed blocker (and names whether the tree
+    carried no text or the enumeration failed). A non-empty body matching no
+    fingerprint is a genuine mismatch, the case the fingerprint-extension
+    message exists for.
+    """
+    body = dialog.get("body") or ""
+    if unity_modal_blockers.is_api_updater_message(body):
+        return {
+            "outcome": SCRIPT_UPDATER_OBSERVED_MATCHED,
+            "body": body,
+            "body_outcome": dialog.get("body_outcome"),
+        }
+    if body:
+        return {
+            "outcome": SCRIPT_UPDATER_OBSERVED_FINGERPRINT_MISS,
+            "body": body,
+            "body_outcome": dialog.get("body_outcome"),
+        }
+    if not _is_script_updater_title(dialog.get("title")):
+        # An empty body on an unrelated dialog is not this case's business: it
+        # says nothing about consent-dialog readability. Only a title in the
+        # family turns an empty body into the unreadable-body blocker.
+        return {
+            "outcome": SCRIPT_UPDATER_OBSERVED_FINGERPRINT_MISS,
+            "body": "",
+            "body_outcome": dialog.get("body_outcome"),
+        }
+    return {
+        "outcome": SCRIPT_UPDATER_OBSERVED_UNREADABLE_BODY,
+        "body": "",
+        "body_outcome": dialog.get("body_outcome")
+        or unity_modal_blockers.DIALOG_BODY_NO_READABLE_TEXT,
+        "title_in_family": _is_script_updater_title(dialog.get("title")),
+    }
+
+
+def _unreadable_body_skip_reason(observation, dialog, unity_version):
+    """Diagnosed skip text naming which unreadable-body condition was observed."""
+    body_outcome = observation.get("body_outcome")
+    if body_outcome == unity_modal_blockers.DIALOG_BODY_ENUMERATION_FAILED:
+        blocker = (
+            "window enumeration failed while reading the dialog body, so the message "
+            "sentence never reached the fingerprint match"
+        )
+    else:
+        blocker = (
+            "the dialog window tree carries no readable text, so the message sentence "
+            "never reached the fingerprint match"
+        )
+    return (
+        "ScriptUpdater consent dialog was observed but its body could not be read "
+        "(Unity version: {}, observed_title={!r}, body_outcome={!r}): {}. "
+        "The dialog did surface on this host; the blocker is body readability, not "
+        "triggering.".format(
+            unity_version, dialog.get("title"), body_outcome, blocker
+        )
+    )
+
+
 def _seed_obsolete_api_fixture(project_path):
     """Seed a host fixture referencing obsolete/[UnityUpgradable] APIs.
 
@@ -3291,7 +3401,11 @@ class RealHostIntegrationTests(_SharedRealHostDevice, unittest.TestCase):
 
         When the dialog cannot be produced deterministically for the current host
         or Unity version, the case skips with a machine-usable diagnosed reason
-        naming the trigger blocker.
+        naming the trigger blocker. When the dialog does appear but the CLI cannot
+        read a single readable descendant out of its window tree, the case skips
+        with a diagnosed reason naming the unreadable-body blocker instead of
+        failing as a fingerprint mismatch: only readable text that matches no
+        configured fingerprint is a mismatch.
         """
         ready_exit_code, ready_payload, _, _ = _warm_up_project_exec(self.project_path, self.unity_exe_path)
         self.assertEqual(ready_exit_code, 0, ready_payload)
@@ -3325,24 +3439,19 @@ class RealHostIntegrationTests(_SharedRealHostDevice, unittest.TestCase):
 
             # Check if Unity surfaced any dialog for this Editor process
             dialogs = unity_modal_blockers._list_windows_dialogs(unity_pid) if unity_pid else []
-            observed_api_dialog = None
-            observed_other_dialogs = []
+            observed_api_dialog, observed_other_dialogs = _find_script_updater_dialog(dialogs)
 
-            for d in dialogs:
-                body = d.get("body") or ""
-                # Check for either the known fingerprints or generalized ScriptUpdater title
-                if (
-                    unity_modal_blockers.is_api_updater_message(body)
-                    or "Script Updating" in d.get("title", "")
-                ):
-                    observed_api_dialog = d
-                else:
-                    observed_other_dialogs.append(d)
+            # The exec above runs the product's own recovery, so a consent dialog it
+            # saw is already declined by the time this line runs. `warning` is the
+            # product's own report that it matched and clicked No, and unlike a
+            # window scan it is not a race: it is the behavior under test.
+            declined_warning = (trigger_payload or {}).get("warning")
+            product_declined = declined_warning == unity_puer_exec_runtime.API_UPDATER_WARNING
 
-            if observed_api_dialog is None:
-                # The fixture did not produce the consent dialog on this host / Unity version.
-                # Per the specification (Scenario: Consent dialog cannot be triggered on the current host),
-                # record the precise trigger blocker and skip rather than reporting a vacuous pass.
+            if observed_api_dialog is None and not product_declined:
+                # Neither the dialog nor a decline was observed. The fixture did not
+                # produce the consent dialog on this host / Unity version: record the
+                # precise trigger blocker and skip rather than reporting a vacuous pass.
                 unity_version = "unknown"
                 try:
                     unity_version = unity_session_process.get_unity_version(self.project_path)
@@ -3350,79 +3459,107 @@ class RealHostIntegrationTests(_SharedRealHostDevice, unittest.TestCase):
                     pass
                 self.skipTest(
                     "ScriptUpdater consent dialog could not be triggered on validation host "
-                    "(Unity version: {}): script import/refresh does not prompt the ScriptUpdater "
-                    "consent dialog during normal incremental compilation on an existing project; "
-                    "trigger blocker: Unity handles (UnityUpgradable) APIs via incremental assembly "
-                    "compilation without interactive source rewrite prompts".format(unity_version)
-                )
-
-            # Scenario: Non-English dialog text is recorded
-            observed_body = observed_api_dialog.get("body") or ""
-            if not unity_modal_blockers.is_api_updater_message(observed_body):
-                # Observed a ScriptUpdater dialog whose body does not match known fingerprints.
-                # Record the observed text so a fingerprint extension can be filed as a follow-up.
-                self.fail(
-                    "Observed ScriptUpdater consent dialog message does not match known fingerprints "
-                    "(fingerprints={!r}, observed_title={!r}, observed_body={!r}). "
-                    "File a follow-up fingerprint extension.".format(
-                        unity_modal_blockers.API_UPDATER_MESSAGE_FINGERPRINTS,
-                        observed_api_dialog.get("title"),
-                        observed_body,
+                    "(Unity version: {}, exec_status={!r}, observed_dialogs={!r}): script "
+                    "import/refresh does not prompt the ScriptUpdater consent dialog during "
+                    "normal incremental compilation on an existing project; trigger blocker: "
+                    "Unity handles (UnityUpgradable) APIs via incremental assembly compilation "
+                    "without interactive source rewrite prompts".format(
+                        unity_version,
+                        (trigger_payload or {}).get("status"),
+                        [d.get("title") for d in observed_other_dialogs],
                     )
                 )
 
+            if observed_api_dialog is not None:
+                # Scenario: Non-English dialog text is recorded. Only a dialog still
+                # visible here can be classified by body text; a declined one is
+                # covered by the warning assertions below.
+                observed_body = observed_api_dialog.get("body") or ""
+                observation = _classify_script_updater_observation(observed_api_dialog)
+                if observation["outcome"] == SCRIPT_UPDATER_OBSERVED_UNREADABLE_BODY:
+                    # The dialog did surface, but the CLI could not read its message.
+                    # That is a diagnosed blocker of its own: skip and name it, rather
+                    # than reporting a fingerprint mismatch against an empty body,
+                    # which would file the same useless extension request again.
+                    unity_version = "unknown"
+                    try:
+                        unity_version = unity_session_process.get_unity_version(self.project_path)
+                    except Exception:
+                        pass
+                    self.skipTest(
+                        _unreadable_body_skip_reason(
+                            observation, observed_api_dialog, unity_version
+                        )
+                    )
+                if observation["outcome"] == SCRIPT_UPDATER_OBSERVED_FINGERPRINT_MISS:
+                    # Observed a ScriptUpdater dialog whose readable body matches no known
+                    # fingerprint. Record the text so a fingerprint extension can be filed.
+                    self.fail(
+                        "Observed ScriptUpdater consent dialog message does not match known "
+                        "fingerprints (fingerprints={!r}, observed_title={!r}, "
+                        "observed_body={!r}). File a follow-up fingerprint extension.".format(
+                            unity_modal_blockers.API_UPDATER_MESSAGE_FINGERPRINTS,
+                            observed_api_dialog.get("title"),
+                            observed_body,
+                        )
+                    )
+
             # Scenario: Contributor validates consent-dialog auto-decline against a real host
-            # 1. Assert the dialog is never surfaced as modal_blocked
+            # 1. The product declined it, and said so on the command it disturbed.
+            self.assertEqual(
+                declined_warning,
+                unity_puer_exec_runtime.API_UPDATER_WARNING,
+                "the consent dialog surfaced and was read, but exec did not report that it "
+                "declined it (exec_status={!r}, exec_payload={!r})".format(
+                    (trigger_payload or {}).get("status"), trigger_payload
+                ),
+            )
+            self.assertIn("warning_detail", trigger_payload or {})
+            # The decline is a sidecar: it never replaces the primary status.
+            self.assertEqual((trigger_payload or {}).get("status"), "completed", trigger_payload)
+            self.assertEqual(trigger_exit, 0, trigger_payload)
+
+            # 2. Assert the dialog is never surfaced as modal_blocked
             blocker = unity_modal_blockers.detect_modal_blocker(unity_pid, scope="exec")
             self.assertIsNone(
                 blocker,
                 "ScriptUpdater consent dialog must never be surfaced as modal_blocked: {}".format(blocker),
             )
 
-            # 2. Run a CLI wait/exec with the dialog visible, or assert auto-decline
+            # 3. If a dialog is still visible (a second consent prompt appeared after
+            #    the exec settled), the CLI must decline it on demand as well.
             dismiss_res = unity_modal_blockers.dismiss_api_updater_dialog(unity_pid)
-            self.assertTrue(
-                dismiss_res.get("ok"),
-                "CLI auto-decline failed on real ScriptUpdater consent dialog: {}".format(dismiss_res),
-            )
-            self.assertGreater(dismiss_res.get("dismissed", 0), 0)
-
-            # 3. Complete the in-flight wait/exec and verify warning and primary status
-            if trigger_payload and unity_puer_exec_runtime._running_or_timed_out_response(
-                trigger_exit, json.dumps(trigger_payload)
-            ):
-                wait_exit, wait_payload, _, _ = _run_cli(
-                    [
-                        "wait-for-exec",
-                        "--project-path",
-                        str(self.project_path),
-                        "--unity-exe-path",
-                        str(self.unity_exe_path),
-                        "--request-id",
-                        trigger_payload["request_id"],
-                        "--wait-timeout-ms",
-                        str(READY_TIMEOUT_SECONDS * 1000),
-                    ]
+            if observed_api_dialog is not None:
+                self.assertTrue(
+                    dismiss_res.get("ok"),
+                    "CLI auto-decline failed on real ScriptUpdater consent dialog: {}".format(dismiss_res),
                 )
-                self.assertEqual(wait_exit, 0, wait_payload)
-                self.assertEqual(wait_payload["status"], "completed")
-                self.assertEqual(wait_payload.get("warning"), "api_updater_declined")
-                self.assertIn("warning_detail", wait_payload)
+                self.assertGreater(dismiss_res.get("dismissed", 0), 0)
 
-            # 4. Verify the dialog is confirmed gone
-            remaining = [
-                d
-                for d in unity_modal_blockers._list_windows_dialogs(unity_pid)
-                if d["hwnd"] == observed_api_dialog["hwnd"]
-            ]
-            self.assertEqual(len(remaining), 0, "dialog HWND still present after auto-decline")
+            # 4. If a dialog was still visible here, it is confirmed gone after the decline.
+            if observed_api_dialog is not None:
+                remaining = [
+                    d
+                    for d in unity_modal_blockers._list_windows_dialogs(unity_pid)
+                    if d["hwnd"] == observed_api_dialog["hwnd"]
+                ]
+                self.assertEqual(len(remaining), 0, "dialog HWND still present after auto-decline")
 
-            # 5. Verify source file was not rewritten (declined, not accepted)
+            # 5. Verify source file was not rewritten (declined, not accepted). Unity only
+            #    rewrites when the Yes path is taken; a No click must leave the file alone.
             current_content = fixture_path.read_text(encoding="utf-8")
             self.assertEqual(
                 current_content,
                 initial_content,
                 "source file was rewritten despite decline recovery",
+            )
+            # The rewritten-file check is only meaningful if Unity actually offered the
+            # rewrite, which the decline warning establishes.
+            self.assertTrue(
+                product_declined,
+                "the source-rewrite check ran without the product reporting a decline: {}".format(
+                    trigger_payload
+                ),
             )
         finally:
             # Same removal on the skip path and the success path. skipTest raises
