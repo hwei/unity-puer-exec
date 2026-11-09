@@ -1,0 +1,24 @@
+{
+    "name": "UnityPuerExec.Editor",
+    "rootNamespace": "UnityPuerExec",
+    "references": [
+        "com.tencent.puerts.core"
+    ],
+    "includePlatforms": [
+        "Editor"
+    ],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [
+        {
+            "name": "com.tencent.puerts.core",
+            "expression": "3.0.0",
+            "define": "PUERTS_3"
+        }
+    ],
+    "noEngineReferences": false
+}
